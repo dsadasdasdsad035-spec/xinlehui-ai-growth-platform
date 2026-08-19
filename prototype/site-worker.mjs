@@ -1,4 +1,5 @@
-// Cloudflare Sites entrypoint for the static Vite trial build.
+// Cloudflare Sites entrypoint for the static Vite trial build. The deployment
+// bundle places browser files under dist/client, matching the Sites runtime.
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
