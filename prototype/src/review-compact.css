@@ -1,0 +1,1211 @@
+/* 装裱与点评：让三类素材平等呈现，把注意力留给作品和真诚的反馈。 */
+.feedback-flow-v2 .studio-task .media-process article:first-child .small-action {
+  display: none;
+}
+
+.feedback-flow-v2 .studio-task .uploaded-art img {
+  object-fit: contain;
+  background: #fbf8f2;
+}
+
+/* 智能装裱页：作品完整居中于展框，照片使用独立相片框与展签。 */
+.feedback-flow-v2 .studio-task .media-process article:first-child,
+.feedback-flow-v2 .studio-task .media-process article:nth-child(2) { grid-template-rows: 380px auto; }
+.feedback-flow-v2 .studio-task .media-process .uploaded-art { position: relative; display: grid; place-items: center; padding: 22px 22px 68px !important; border: 13px solid #d1a62f !important; border-radius: 4px; background: #eee6d5; box-shadow: inset 0 0 0 2px rgba(255,255,255,.75), 0 10px 23px rgba(58,43,9,.16); }
+.feedback-flow-v2 .studio-task .media-process .uploaded-art img { width: 100% !important; height: 100% !important; max-width: 100%; max-height: 100%; object-fit: contain !important; background: #fff; box-shadow: 0 0 0 10px #fff, 0 0 0 11px rgba(136,112,55,.12); }
+.feedback-flow-v2 .studio-task .media-process .uploaded-art:after { content: '陈一诺  ·  《向着光的花》  ·  2026.08.11'; right: 18px; bottom: 17px; left: 18px; padding: 0; background: transparent; color: #352f24; font-size: 10px; line-height: 1.3; text-align: center; letter-spacing: .05em; }
+
+/* 智能装裱最终输出：透明线稿直接落在卡纸上，不再呈现整张白纸。 */
+.feedback-flow-v2 .studio-task .media-process .uploaded-art {
+  place-items: center !important;
+  background: #f4eee1 !important;
+}
+.feedback-flow-v2 .studio-task .media-process .uploaded-art img {
+  object-fit: contain !important;
+  object-position: center center !important;
+  background: transparent !important;
+  mix-blend-mode: normal !important;
+}
+
+/* 作品装裱采用竖向展签比例，而不是正方形画框。 */
+.feedback-flow-v2 .studio-task .media-process .uploaded-art {
+  box-sizing: border-box;
+  width: min(100%, 340px);
+  height: auto !important;
+  min-height: 0 !important;
+  aspect-ratio: 3 / 4;
+  margin-inline: auto;
+}
+.feedback-flow-v2 .studio-task .frame-rotate-button { position: absolute; top: 13px; right: 13px; z-index: 5; display: inline-flex; gap: 6px; align-items: center; padding: 8px 10px; border: 0; border-radius: 999px; background: rgba(42,37,27,.9); color: #fffdf4; font-size: 11px; font-weight: 800; box-shadow: 0 4px 12px rgba(0,0,0,.2); cursor: pointer; }
+.feedback-flow-v2 .studio-task .frame-rotate-button:hover { background: #b98a0b; }
+.feedback-flow-v2 .studio-task .frame-rotate-controls { position:absolute;top:13px;right:13px;z-index:5;display:flex;gap:6px;padding:5px;border-radius:999px;background:rgba(42,37,27,.92);box-shadow:0 4px 12px rgba(0,0,0,.2) }
+.feedback-flow-v2 .studio-task .frame-rotate-controls button { display:grid;width:34px;height:34px;place-items:center;border:0;border-radius:50%;background:transparent;color:#fffdf4;cursor:pointer }
+.feedback-flow-v2 .studio-task .frame-rotate-controls button:hover { background:#b98a0b }
+.feedback-flow-v2 .studio-task .frame-rotate-controls button:disabled { opacity:.45;cursor:not-allowed }
+.feedback-flow-v2 .studio-task .uploaded-art { align-items:center!important;justify-items:center!important;background:#f4eee1!important }
+.feedback-flow-v2 .studio-task .uploaded-art img { object-position:center center!important;mix-blend-mode:normal!important }
+.feedback-flow-v2 .studio-task .media-process .photo-card { position: relative; display: grid; place-items: center; padding: 14px 14px 54px !important; border: 1px solid #dfd0ad; border-radius: 4px; background: #f4ecdf; box-shadow: 0 10px 22px rgba(58,43,9,.12); }
+.feedback-flow-v2 .studio-task .media-process .photo-card img { width: 100% !important; height: 100% !important; object-fit: contain !important; object-position: center !important; background: #fff; }
+.feedback-flow-v2 .studio-task .media-process .photo-card:after { content: '陈一诺 · 2026.08.11'; right: 18px; bottom: 16px; padding: 0; background: transparent; color: #4a4133; font-size: 10px; font-weight: 700; letter-spacing: .05em; }
+
+/* 画心提取后的主预览：画面更大，纸张边缘与桌面不再成为展览画面的一部分。 */
+.feedback-flow-v2 .studio-task .media-process article:first-child,
+.feedback-flow-v2 .studio-task .media-process article:nth-child(2) { grid-template-rows: 420px auto; }
+.feedback-flow-v2 .studio-task .media-process .uploaded-art,
+.feedback-flow-v2 .studio-task .media-process .photo-card { height: 420px !important; min-height: 420px !important; }
+.feedback-flow-v2 .studio-task .media-process .uploaded-art { padding: 10px 10px 54px !important; }
+.feedback-flow-v2 .studio-task .media-process .uploaded-art img { object-fit: contain !important; background: transparent; box-shadow: none; mix-blend-mode: multiply; }
+.feedback-flow-v2 .studio-task .media-process .photo-card { overflow: hidden; }
+.feedback-flow-v2 .studio-task .media-process .photo-card img { transition: transform .22s ease; }
+.feedback-flow-v2 .studio-task .photo-rotate-button { top: 12px; right: 12px; bottom: auto; left: auto; z-index: 3; }
+.feedback-flow-v2 .studio-task .confirm-artwork-button { margin-top: 9px; border: 0; border-radius: 8px; background: #2d2921; color: #fff9e8; padding: 8px 10px; font-size: 10px; font-weight: 800; cursor: pointer; }
+.feedback-flow-v2 .class-framing-preview img { transition: transform .22s ease; }
+
+@media (max-width: 800px) {
+  .feedback-flow-v2 .studio-task .media-process article:first-child,
+  .feedback-flow-v2 .studio-task .media-process article:nth-child(2) { grid-template-rows: 360px auto; }
+  .feedback-flow-v2 .studio-task .media-process .uploaded-art,
+  .feedback-flow-v2 .studio-task .media-process .photo-card { height: 360px !important; min-height: 360px !important; }
+}
+
+/* 第二步采用 2+1 的阅读顺序：作品与照片上排，视频独占下排。装裱只保留一层边框。 */
+.feedback-flow-v2 .studio-task .media-process { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: auto auto; gap: 18px; }
+.feedback-flow-v2 .studio-task .media-process article:nth-child(3) { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1fr) minmax(200px, .7fr); }
+.feedback-flow-v2 .studio-task .media-process article:nth-child(3) .video-card { height: 220px !important; min-height: 220px !important; }
+.feedback-flow-v2 .studio-task .media-process .uploaded-art { padding: 10px 10px 54px !important; border: 7px solid #d1a62f !important; background: #f4eee1; box-shadow: 0 8px 18px rgba(58,43,9,.12); }
+.feedback-flow-v2 .studio-task .media-process .uploaded-art img { box-shadow: none; }
+.feedback-flow-v2 .studio-task .media-process .uploaded-art:after { bottom: 13px; color: #463b2b; }
+.feedback-flow-v2 .studio-task .media-process .photo-card { padding: 8px 8px 45px !important; background: #f7f2e8; box-shadow: 0 8px 18px rgba(58,43,9,.1); }
+.feedback-flow-v2 .studio-task .media-process .photo-card:after { bottom: 13px; }
+@media (max-width: 800px) { .feedback-flow-v2 .studio-task .media-process { grid-template-columns: 1fr; } .feedback-flow-v2 .studio-task .media-process article:nth-child(3) { grid-column: auto; grid-template-columns: 1fr; } }
+
+/* 单层装裱：只留金色外框和一块白色衬底，作品画心直接融入其中。 */
+.feedback-flow-v2 .studio-task .media-process .uploaded-art {
+  padding: 18px 18px 54px !important;
+  border: 7px solid #d1a62f !important;
+  background: #fff !important;
+  box-shadow: 0 8px 18px rgba(58,43,9,.12) !important;
+}
+.feedback-flow-v2 .studio-task .media-process .uploaded-art img {
+  background: transparent !important;
+  box-shadow: none !important;
+  mix-blend-mode: multiply;
+}
+
+/* 课堂照片与作品使用同一套单层展框：金色外框、白色衬底、底部展签。 */
+.feedback-flow-v2 .studio-task .media-process .photo-card {
+  padding: 18px 18px 54px !important;
+  border: 7px solid #d1a62f !important;
+  border-radius: 4px !important;
+  background: #fff !important;
+  box-shadow: 0 8px 18px rgba(58,43,9,.12) !important;
+}
+.feedback-flow-v2 .studio-task .media-process .photo-card img {
+  background: #fff !important;
+  box-shadow: none !important;
+}
+.feedback-flow-v2 .studio-task .media-process .photo-card:after {
+  color: #463b2b;
+  bottom: 13px;
+}
+
+/* 展示保持克制：移除外侧金色框，只留白色衬底与信息展签。 */
+.feedback-flow-v2 .studio-task .media-process .uploaded-art,
+.feedback-flow-v2 .studio-task .media-process .photo-card {
+  border: 1px solid #eee8dd !important;
+  background: #fff !important;
+  box-shadow: 0 8px 18px rgba(58,43,9,.08) !important;
+}
+
+.class-framing-wall {
+  margin: 16px 0;
+  padding: 18px;
+  border: 1px solid #e3ca7e;
+  border-radius: 18px;
+  background: linear-gradient(135deg, #fffaf0, #f7eed8);
+}
+.class-framing-wall-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
+.class-framing-wall-head b, .class-framing-wall-head small { display: block; }
+.class-framing-wall-head b { color: #30291e; font-size: 16px; }
+.class-framing-wall-head small { margin-top: 4px; color: #897552; font-size: 12px; }
+.class-framing-wall-head > span { color: #99730c; font-size: 12px; font-weight: 800; white-space: nowrap; }
+.class-framing-section { margin-top: 18px; }
+.class-framing-section + .class-framing-section { padding-top: 18px; border-top: 1px solid #e6d6ae; }
+.class-framing-section-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.class-framing-section-head > div { display: inline-flex; gap: 7px; align-items: center; color: #3b3225; }
+.class-framing-section-head svg { color: #b7880e; }
+.class-framing-section-head b { font-size: 14px; }
+.class-framing-section-head > span { color: #a17816; font-size: 12px; font-weight: 800; }
+.class-framing-scroll { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; max-height: 520px; overflow-y: auto; padding-right: 4px; }
+.class-framing-item { overflow: hidden; border: 1px solid #e6d8bd; border-radius: 12px; background: #fffdf8; box-shadow: 0 5px 15px rgba(83,60,13,.08); }
+.class-framing-preview { position: relative; display: grid; height: 170px; place-items: center; overflow: hidden; background: #f3eee4; }
+.class-framing-preview img { width: 100%; height: 100%; object-fit: contain; transition: transform .2s ease; }
+.class-framing-item.photo .class-framing-preview { padding: 7px; background: #f6f0e5; }
+.class-framing-item.photo .class-framing-preview img { background: #fff; object-fit: contain; }
+.class-framing-preview button { position: absolute; top: 8px; right: 8px; display: grid; width: 30px; height: 30px; place-items: center; border: 0; border-radius: 50%; background: #fffdf6; color: #8c6505; box-shadow: 0 2px 8px rgba(0,0,0,.16); }
+.class-framing-item > div:last-child { display: grid; gap: 3px; padding: 9px 10px 11px; }
+.class-framing-item b { color: #332d23; font-size: 12px; }
+.class-framing-item small { overflow: hidden; color: #867961; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.class-framing-item em { color: #a17c1a; font-size: 10px; font-style: normal; }
+.class-framing-empty { display: grid; min-height: 180px; place-items: center; color: #9c7a20; font-size: 13px; }
+@media (max-width: 800px) { .class-framing-wall { padding: 14px; } .class-framing-scroll { grid-template-columns: repeat(2, minmax(0, 1fr)); max-height: 480px; gap: 9px; } .class-framing-preview { height: 145px; } .class-framing-wall-head { align-items: flex-start; } .class-framing-wall-head > span { font-size: 10px; } }
+
+.feedback-flow-v2 { position: relative; }
+.artwork-rotate-control {
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+  padding: 8px 12px;
+  border: 1px solid #dec06e;
+  border-radius: 999px;
+  background: #fffaf0;
+  color: #725409;
+  font-size: 12px;
+  font-weight: 700;
+  box-shadow: 0 6px 18px rgba(96, 72, 13, .12);
+  margin: 10px 0 0 auto;
+}
+.feedback-flow-v2 .scene-panel.studio-task {
+  padding: 22px;
+}
+
+.feedback-flow-v2 .media-process {
+  gap: 12px;
+  margin: 18px 0;
+}
+
+.feedback-flow-v2 .media-process article {
+  display: grid;
+  grid-template-rows: 238px auto;
+}
+
+.feedback-flow-v2 .media-process .mini-frame,
+.feedback-flow-v2 .media-process .photo-card,
+.feedback-flow-v2 .media-process .video-card {
+  height: 238px;
+  min-height: 238px;
+}
+
+.feedback-flow-v2 .media-process .uploaded-art {
+  padding: 8px !important;
+  border-width: 7px !important;
+}
+
+.feedback-flow-v2 .media-process .uploaded-art:after {
+  left: 8px;
+  right: 8px;
+  bottom: 5px;
+  font-size: 7px;
+}
+
+.feedback-flow-v2 .media-process .photo-card {
+  padding: 6px;
+}
+
+.feedback-flow-v2 .media-process .photo-card img {
+  object-fit: contain;
+  object-position: 50% 35%;
+}
+
+/* 点评页不再让素材区域撑满屏幕，三种内容使用同一展签尺度。 */
+.feedback-flow-v2 .review-task-v2 .review-media {
+  padding: 18px 22px !important;
+}
+
+.feedback-flow-v2 .review-task-v2 .review-gallery {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.feedback-flow-v2 .review-task-v2 .review-art,
+.feedback-flow-v2 .review-task-v2 .review-photo,
+.feedback-flow-v2 .review-task-v2 .review-video {
+  height: 150px !important;
+  min-height: 150px !important;
+  border-radius: 12px;
+}
+
+.feedback-flow-v2 .review-task-v2 .review-art {
+  border-width: 7px;
+  box-shadow: inset 0 0 0 1px #d7b461, 0 7px 14px rgba(47, 35, 10, .16);
+}
+
+.feedback-flow-v2 .review-task-v2 .review-photo {
+  padding: 5px;
+}
+
+.feedback-flow-v2 .review-task-v2 .coach-review {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+  padding: 20px 22px !important;
+}
+
+.feedback-flow-v2 .coach-review > .scene-heading,
+.feedback-flow-v2 .coach-review > select,
+.feedback-flow-v2 .coach-review > .evidence,
+.feedback-flow-v2 .coach-review > .scene-actions {
+  grid-column: 1 / -1;
+}
+
+.feedback-flow-v2 .coach-review .coach-card {
+  margin: 0;
+  padding: 9px 10px;
+}
+
+.feedback-flow-v2 .coach-review .coach-card:last-of-type {
+  grid-column: 1 / -1;
+}
+
+.feedback-flow-v2 .coach-review .coach-card textarea {
+  min-height: 58px;
+  margin-top: 6px;
+  padding: 8px;
+  font-size: 10.5px;
+}
+
+/* 关键词是同页的轻量浮层，而非一次跳出的全屏临时页。 */
+.review-keyword-dock {
+  position: fixed !important;
+  top: 112px !important;
+  right: 28px !important;
+  left: auto !important;
+  z-index: 50;
+  width: 360px !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  transform: none !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.review-keyword-toggle {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  width: 100%;
+  padding: 11px 13px !important;
+  border: 1px solid #dfc977 !important;
+  border-radius: 14px !important;
+  background: #fffdf7 !important;
+  color: #302c22 !important;
+  box-shadow: 0 10px 24px rgba(67, 49, 7, .14) !important;
+  text-align: left;
+}
+
+.review-keyword-toggle span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.review-keyword-toggle span svg { color: #b88604; }
+.review-keyword-toggle small { margin-top: 3px; color: #83745a; font-size: 9px; }
+.review-keyword-toggle > svg { align-self: center; color: #9b770d; transition: transform .2s ease; }
+.review-keyword-toggle > svg.open { transform: rotate(180deg); }
+
+.review-keyword-panel {
+  max-height: calc(100vh - 180px);
+  margin-top: 8px;
+  padding: 15px !important;
+  overflow: auto;
+  border: 1px solid #e6d6ab;
+  border-radius: 16px;
+  background: rgba(255, 253, 247, .98);
+  box-shadow: 0 16px 34px rgba(67, 49, 7, .16);
+}
+
+.review-keyword-intro b { font-size: 14px !important; }
+.review-keyword-intro small { line-height: 1.5; }
+
+.review-keyword-panel .review-keyword-groups {
+  display: grid !important;
+  gap: 13px !important;
+  margin-top: 14px;
+}
+
+.review-keyword-panel .review-keyword-groups section > strong {
+  margin-bottom: 7px;
+  color: #332d22;
+  font-size: 11px;
+}
+
+.review-keyword-panel .review-keyword-groups section > div { gap: 6px; }
+.review-keyword-panel .review-keyword-groups button {
+  padding: 5px 9px !important;
+  font-size: 10px;
+}
+
+@media (max-width: 800px) {
+  .review-keyword-dock {
+    top: auto !important;
+    right: 12px !important;
+    bottom: 14px;
+    width: calc(100vw - 24px) !important;
+  }
+
+  .review-keyword-panel {
+    max-height: min(58vh, 500px);
+    padding: 14px !important;
+  }
+}
+
+@media (max-width: 800px) {
+  .feedback-flow-v2 .scene-panel.studio-task {
+    padding: 16px;
+  }
+
+  .feedback-flow-v2 .media-process article {
+    grid-template-rows: 215px auto;
+  }
+
+  .feedback-flow-v2 .media-process .mini-frame,
+  .feedback-flow-v2 .media-process .photo-card,
+  .feedback-flow-v2 .media-process .video-card {
+    height: 215px;
+    min-height: 215px;
+  }
+
+  .feedback-flow-v2 .review-task-v2 .review-media {
+    padding: 16px !important;
+  }
+
+  .feedback-flow-v2 .review-task-v2 .review-gallery {
+    grid-template-columns: 1fr;
+    gap: 9px;
+  }
+
+  .feedback-flow-v2 .review-task-v2 .review-art,
+  .feedback-flow-v2 .review-task-v2 .review-photo,
+  .feedback-flow-v2 .review-task-v2 .review-video {
+    height: 146px !important;
+    min-height: 146px !important;
+  }
+
+  .feedback-flow-v2 .review-task-v2 .coach-review {
+    grid-template-columns: 1fr;
+    padding: 16px !important;
+  }
+
+  .feedback-flow-v2 .coach-review .coach-card:last-of-type {
+    grid-column: auto;
+  }
+}
+
+/* 完整查看模式：关键词回到点评流程内部，绝不覆盖或挤压素材。 */
+.feedback-flow-v2 .media-process article {
+  grid-template-rows: 300px auto;
+}
+
+.feedback-flow-v2 .media-process .mini-frame,
+.feedback-flow-v2 .media-process .photo-card,
+.feedback-flow-v2 .media-process .video-card {
+  height: 300px;
+  min-height: 300px;
+}
+
+.feedback-flow-v2 .review-task-v2 .review-art,
+.feedback-flow-v2 .review-task-v2 .review-photo,
+.feedback-flow-v2 .review-task-v2 .review-video {
+  height: 300px !important;
+  min-height: 300px !important;
+}
+
+.feedback-flow-v2 .review-keyword-dock {
+  position: static !important;
+  z-index: auto;
+  width: auto !important;
+  margin: 0 22px 18px !important;
+}
+
+.feedback-flow-v2 .review-keyword-panel {
+  max-height: none;
+  overflow: visible;
+}
+
+.feedback-flow-v2 .review-keyword-panel .review-keyword-groups {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@media (max-width: 800px) {
+  .feedback-flow-v2 .media-process article {
+    grid-template-rows: 250px auto;
+  }
+
+  .feedback-flow-v2 .media-process .mini-frame,
+  .feedback-flow-v2 .media-process .photo-card,
+  .feedback-flow-v2 .media-process .video-card {
+    height: 250px;
+    min-height: 250px;
+  }
+
+  .feedback-flow-v2 .review-task-v2 .review-art,
+  .feedback-flow-v2 .review-task-v2 .review-photo,
+  .feedback-flow-v2 .review-task-v2 .review-video {
+    height: 240px !important;
+    min-height: 240px !important;
+  }
+
+  .feedback-flow-v2 .review-keyword-dock {
+    position: static !important;
+    width: auto !important;
+    margin: 0 16px 14px !important;
+  }
+
+  .feedback-flow-v2 .review-keyword-panel {
+    max-height: none;
+    overflow: visible;
+  }
+
+  .feedback-flow-v2 .review-keyword-panel .review-keyword-groups {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* 三张素材都以竖向展卡呈现，保留作品全貌与人物完整构图。 */
+.feedback-flow-v2 .review-task-v2 .review-gallery {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.feedback-flow-v2 .review-task-v2 .review-art,
+.feedback-flow-v2 .review-task-v2 .review-photo,
+.feedback-flow-v2 .review-task-v2 .review-video {
+  height: 420px !important;
+  min-height: 420px !important;
+}
+
+.feedback-flow-v2 .review-task-v2 .review-art img,
+.feedback-flow-v2 .review-task-v2 .review-photo img,
+.feedback-flow-v2 .review-task-v2 .review-video video {
+  object-fit: contain;
+  object-position: center;
+  background: #f8f4e9;
+}
+
+/* 作品采用居中留白的展陈方式，不用原图撑满容器。 */
+.feedback-flow-v2 .review-task-v2 .review-art {
+  display: grid;
+  place-items: center;
+  padding: 22px;
+  background: #f4eee0;
+}
+
+.feedback-flow-v2 .review-task-v2 .review-art img {
+  width: 82% !important;
+  height: 82% !important;
+  margin: auto;
+  object-fit: contain !important;
+  object-position: center !important;
+  box-shadow: 0 10px 24px rgba(49, 36, 10, .12);
+}
+
+@media (max-width: 800px) {
+  .feedback-flow-v2 .review-task-v2 .review-art {
+    padding: 14px;
+  }
+
+  .feedback-flow-v2 .review-task-v2 .review-art img {
+    width: 84% !important;
+    height: 84% !important;
+  }
+}
+
+.feedback-flow-v2 .review-keyword-panel .review-keyword-groups {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+@media (max-width: 800px) {
+  .feedback-flow-v2 .review-task-v2 .review-gallery {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .feedback-flow-v2 .review-task-v2 .review-art,
+  .feedback-flow-v2 .review-task-v2 .review-photo,
+  .feedback-flow-v2 .review-task-v2 .review-video {
+    height: 320px !important;
+    min-height: 320px !important;
+  }
+
+  .feedback-flow-v2 .review-keyword-panel .review-keyword-groups {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* 关键词区的左侧留给成长伙伴，右侧保留完整的筛选能力。 */
+.feedback-flow-v2 .review-keyword-dock {
+  display: grid !important;
+  grid-template-columns: 280px minmax(0, 1fr);
+  grid-template-rows: auto;
+  gap: 20px;
+  align-items: stretch;
+  min-height: 330px;
+  position: relative !important;
+}
+
+.feedback-flow-v2 .review-keyword-dock::before {
+  content: '';
+  grid-column: 1;
+  grid-row: 1;
+  align-self: end;
+  height: 270px;
+  background: url('./assets/panda-gold-observe.png') center bottom / contain no-repeat;
+  pointer-events: none;
+}
+
+.feedback-flow-v2 .review-keyword-toggle {
+  grid-column: 1;
+  grid-row: 1;
+  align-self: start;
+  z-index: 1;
+}
+
+.feedback-flow-v2 .review-keyword-panel {
+  grid-column: 2;
+  grid-row: 1;
+  margin: 0;
+}
+
+/* 美术馆展签：原作居中、完整显示，并保留作者、题名与日期。 */
+.feedback-flow-v2 .review-task-v2 .exhibition-art {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 10px;
+  padding: 16px;
+  background: #eee7d8;
+}
+
+.feedback-flow-v2 .review-task-v2 .artwork-mat {
+  display: grid;
+  min-height: 0;
+  place-items: center;
+  padding: 12px;
+  background: #fffdf8;
+  box-shadow: inset 0 0 0 1px rgba(161, 122, 23, .14);
+}
+
+.feedback-flow-v2 .review-task-v2 .exhibition-art .artwork-mat img {
+  width: 100% !important;
+  height: 100% !important;
+  margin: 0;
+  object-fit: contain !important;
+  object-position: center;
+  box-shadow: none;
+}
+
+.artwork-plaque {
+  display: grid;
+  gap: 5px;
+  justify-items: center;
+  padding: 8px 10px;
+  border-top: 1px solid #d9c89b;
+  color: #3b3428;
+  font-size: 10px;
+  text-align: center;
+}
+
+.artwork-plaque b { font-size: 11px; }
+.artwork-plaque span { font-weight: 700; }
+.artwork-plaque > div { display: flex; gap: 8px; align-items: baseline; justify-content: center; }
+.artwork-plaque time { margin-top: 0; color: #887b62; font-size: 9px; }
+
+/* 课堂照片使用白色小边框与日期落款，保持人物原貌。 */
+.feedback-flow-v2 .review-task-v2 .portrait-print {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 7px;
+  padding: 9px;
+  background: #fff;
+  box-shadow: 0 9px 18px rgba(58, 43, 9, .14);
+}
+
+.feedback-flow-v2 .review-task-v2 .portrait-mat {
+  min-height: 0;
+  overflow: hidden;
+  background: #f5efe3;
+}
+
+.feedback-flow-v2 .review-task-v2 .portrait-mat img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: contain;
+  object-position: center;
+}
+
+.portrait-caption {
+  padding: 1px 3px 2px;
+  color: #675b45;
+  font-size: 9px;
+  letter-spacing: .03em;
+}
+
+@media (max-width: 800px) {
+  .feedback-flow-v2 .review-keyword-dock {
+    grid-template-columns: 1fr;
+    min-height: 0;
+    gap: 12px;
+  }
+
+  .feedback-flow-v2 .review-keyword-dock::before { display: none; }
+  .feedback-flow-v2 .review-keyword-toggle,
+  .feedback-flow-v2 .review-keyword-panel { grid-column: 1; grid-row: auto; }
+
+  .feedback-flow-v2 .review-task-v2 .exhibition-art { padding: 10px; }
+  .feedback-flow-v2 .review-task-v2 .artwork-mat { padding: 7px; }
+  .artwork-plaque { padding: 6px 4px; font-size: 8px; }
+  .artwork-plaque b { font-size: 9px; }
+  .feedback-flow-v2 .review-task-v2 .portrait-print { padding: 6px; }
+  .feedback-flow-v2 .review-task-v2 .portrait-mat { padding: 5px; }
+  .feedback-flow-v2 .review-task-v2 .portrait-caption { min-height: 30px; padding: 5px 4px 1px; font-size: 9px; }
+}
+
+/* 素材展陈采用左右双展框：第一眼完整看见作品与课堂照片。 */
+.feedback-flow-v2 .review-task-v2 .review-gallery {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: 440px auto;
+  gap: 18px;
+  align-items: stretch;
+}
+
+.feedback-flow-v2 .review-task-v2 .review-art.exhibition-art,
+.feedback-flow-v2 .review-task-v2 .review-photo.portrait-print {
+  height: 440px !important;
+  min-height: 440px !important;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+.feedback-flow-v2 .review-task-v2 .exhibition-art {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.feedback-flow-v2 .review-task-v2 .portrait-print {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+/* 作品与课堂照片同等展位：作品完整可见，照片采用克制的白边装裱与展签。 */
+.feedback-flow-v2 .review-task-v2 .exhibition-art,
+.feedback-flow-v2 .review-task-v2 .portrait-print {
+  border: 7px solid #d1a62f;
+  border-radius: 14px;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.7), 0 12px 28px rgba(58,43,9,.14);
+}
+
+.feedback-flow-v2 .review-task-v2 .portrait-print {
+  padding: 16px;
+  border-color: #e4d5b2;
+  background: #fbf8f1;
+}
+
+.feedback-flow-v2 .review-task-v2 .portrait-mat {
+  padding: 10px;
+  background: #fff;
+  box-shadow: inset 0 0 0 1px rgba(166,137,60,.16);
+}
+
+.feedback-flow-v2 .review-task-v2 .portrait-caption {
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 8px 10px 2px;
+  border-top: 1px solid #d9c89b;
+  color: #3b3428;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  justify-content: flex-end;
+  text-align: right;
+}
+
+.feedback-flow-v2 .review-task-v2 .review-video {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  height: 210px !important;
+  min-height: 210px !important;
+}
+
+.feedback-flow-v2 .review-task-v2 .artwork-mat,
+.feedback-flow-v2 .review-task-v2 .portrait-mat {
+  overflow: visible;
+}
+
+.feedback-flow-v2 .review-task-v2 .artwork-mat img,
+.feedback-flow-v2 .review-task-v2 .portrait-mat img {
+  width: 100% !important;
+  height: 100% !important;
+  max-width: 100%;
+  max-height: 100%;
+  display: block;
+  object-fit: contain !important;
+  object-position: center center !important;
+}
+
+/* 五维点评素材区：只保留一张白色卡纸，不再叠加外框、内框、金色线或额外留白。 */
+.feedback-flow-v2 .review-task-v2 .exhibition-art,
+.feedback-flow-v2 .review-task-v2 .portrait-print {
+  padding: 8px !important;
+  border: 0 !important;
+  border-radius: 16px !important;
+  background: #fff !important;
+  box-shadow: 0 8px 18px rgba(58,43,9,.08) !important;
+}
+.feedback-flow-v2 .review-task-v2 .artwork-mat,
+.feedback-flow-v2 .review-task-v2 .portrait-mat {
+  padding: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  border-radius: 11px;
+}
+.feedback-flow-v2 .review-task-v2 .exhibition-art .artwork-mat img,
+.feedback-flow-v2 .review-task-v2 .portrait-mat img {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+.feedback-flow-v2 .review-task-v2 .exhibition-art .artwork-mat img {
+  transition: transform .22s ease;
+  object-fit: contain !important;
+}
+.feedback-flow-v2 .review-task-v2 .exhibition-art .artwork-mat img.is-sideways { width: 100% !important; height: 100% !important; }
+
+/* 课堂照片只保留极细的拍立得边缘，优先让人物照片铺满展位。 */
+.feedback-flow-v2 .review-task-v2 .portrait-print { padding: 4px 4px 12px !important; }
+.feedback-flow-v2 .review-task-v2 .portrait-mat { padding: 0 !important; }
+.feedback-flow-v2 .review-task-v2 .portrait-caption { min-height: 24px; padding: 7px 2px 0; }
+.feedback-flow-v2 .review-task-v2 .artwork-plaque,
+.feedback-flow-v2 .review-task-v2 .portrait-caption {
+  border-top: 0 !important;
+}
+.feedback-flow-v2 .review-task-v2 .artwork-plaque { padding: 6px 4px 3px; }
+.feedback-flow-v2 .review-task-v2 .portrait-caption { min-height: 28px; padding: 5px 3px 1px; }
+
+/* 照片采用裁切填充，而非完整适配；这样不会在左右形成明显白边。 */
+.feedback-flow-v2 .review-task-v2 .portrait-mat { overflow: hidden !important; }
+.feedback-flow-v2 .review-task-v2 .portrait-mat img {
+  object-fit: cover !important;
+  object-position: center 38% !important;
+}
+
+@media (max-width: 800px) {
+  .feedback-flow-v2 .review-task-v2 .review-gallery {
+    grid-template-columns: minmax(0, 1.28fr) minmax(0, .92fr);
+    grid-template-rows: 360px auto;
+    gap: 10px;
+  }
+
+  .feedback-flow-v2 .review-task-v2 .review-art.exhibition-art,
+  .feedback-flow-v2 .review-task-v2 .review-photo.portrait-print {
+    height: 360px !important;
+    min-height: 360px !important;
+  }
+
+  .feedback-flow-v2 .review-task-v2 .review-video {
+    height: 170px !important;
+    min-height: 170px !important;
+  }
+}
+
+/* 班级反馈：多份作品与课堂照片在同一页形成清晰的班级素材墙。 */
+.feedback-flow-v2 .review-task-v2 .class-review-gallery {
+  grid-template-columns: minmax(0, 1.35fr) minmax(240px, .85fr);
+  grid-template-rows: 420px auto;
+}
+
+.class-media-mosaic {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-rows: none;
+  grid-auto-rows: 108px;
+  gap: 7px;
+  min-height: 0;
+  padding: 14px 14px 42px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  border: 8px solid #d2a934;
+  border-radius: 14px;
+  background: #f0eadc;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.72), 0 10px 20px rgba(58,43,9,.12);
+}
+
+.class-media-mosaic.artwork { grid-column: 1; grid-row: 1; }
+.class-media-mosaic.photo { grid-column: 2; grid-row: 1; border-color: #e7dcc2; background: #fffdf9; }
+.class-media-mosaic figure { min-width: 0; margin: 0; overflow: hidden; background: #fff; }
+.class-media-mosaic figure img { width: 100%; height: calc(100% - 16px); display: block; object-fit: contain; background: #faf8f2; }
+.class-media-mosaic figure figcaption { overflow: hidden; padding: 2px 4px; color: #766a55; font-size: 8px; line-height: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.class-media-mosaic.photo figure img { object-fit: cover; }
+.class-media-mosaic figure { position: relative; }
+.orientation-note { position: absolute; top: 4px; left: 4px; padding: 2px 4px; border-radius: 3px; background: rgba(43,39,30,.75); color: #fff7d5; font-size: 7px; }
+.rotate-work { position: absolute; top: 4px; right: 4px; display: grid; width: 22px; height: 22px; place-items: center; border: 0; border-radius: 50%; background: #fff9e8; color: #8e6804; box-shadow: 0 2px 7px rgba(0,0,0,.18); }
+.rotate-work:hover { background: #f4d46a; }
+.class-group-photo { grid-column: 1 / -1; display: grid; grid-template-rows: 1fr auto; min-height: 0; background: #f2ede2; }
+.class-group-photo > div { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); min-height: 0; overflow: hidden; }
+.class-media-mosaic.photo .class-group-photo > div img { width: 100%; height: 100%; object-fit: cover; }
+.class-group-photo figcaption { padding: 4px 6px; color: #6c5d44; font-size: 8px; font-weight: 800; }
+.class-media-mosaic.photo { grid-template-rows: 1.18fr .82fr; }
+.class-media-mosaic.photo figure:not(.class-group-photo) { grid-row: 2; }
+
+/* 班级照片保持逐张呈现，不再合成为一张合影。 */
+.class-media-mosaic.photo { grid-template-rows: repeat(2, minmax(0, 1fr)); }
+.class-media-mosaic.photo figure:not(.class-group-photo) { grid-row: auto; }
+.class-media-mosaic.photo { grid-template-rows: none; grid-auto-rows: 108px; }
+.mosaic-empty { grid-column: 1 / -1; display: grid; place-items: center; gap: 6px; color: #a27908; font-size: 11px; }
+.mosaic-empty svg { width: 25px; height: 25px; }
+.mosaic-label { position: absolute; right: 13px; bottom: 11px; left: 13px; display: flex; justify-content: space-between; align-items: baseline; color: #3c3528; }
+.mosaic-label b { font-size: 11px; }
+.mosaic-label small { color: #847762; font-size: 9px; }
+.mosaic-more { position: absolute; right: 18px; top: 18px; display: grid; width: 27px; height: 27px; place-items: center; border-radius: 50%; background: #292720; color: #fff7d7; font-size: 9px; font-weight: 800; }
+
+/* 智能装裱最终展示规格：覆盖旧版小预览，保证作品和照片第一眼即可完整看清。 */
+.feedback-flow-v2 .studio-task .media-process article:first-child,
+.feedback-flow-v2 .studio-task .media-process article:nth-child(2) { grid-template-rows: 380px auto; }
+.feedback-flow-v2 .studio-task .media-process .uploaded-art { position: relative; display: grid; place-items: center; padding: 14px 14px 54px !important; height: 420px !important; min-height: 420px !important; overflow: hidden; border: 1px solid #eee8dd !important; border-radius: 4px; background: #fff; box-shadow: 0 8px 18px rgba(58,43,9,.08); }
+.feedback-flow-v2 .studio-task .media-process .uploaded-art img { width: 100% !important; height: 100% !important; max-width: 100%; max-height: 100%; object-fit: contain !important; background: transparent; box-shadow: none; mix-blend-mode: multiply; }
+.feedback-flow-v2 .studio-task .media-process .uploaded-art:after { content: '陈一诺  ·  《向着光的花》  ·  2026.08.11'; right: 18px; bottom: 17px; left: 18px; padding: 0; background: transparent; color: #352f24; font-size: 10px; line-height: 1.3; text-align: center; letter-spacing: .05em; }
+.feedback-flow-v2 .studio-task .media-process .photo-card { position: relative; display: grid; place-items: center; height: 420px !important; min-height: 420px !important; padding: 14px 14px 54px !important; overflow: hidden; border: 1px solid #eee8dd; border-radius: 4px; background: #fff; box-shadow: 0 8px 18px rgba(58,43,9,.08); }
+.feedback-flow-v2 .studio-task .media-process .photo-card img { width: 100% !important; height: 100% !important; object-fit: cover !important; object-position: center 38% !important; background: #fff; }
+.feedback-flow-v2 .studio-task .media-process .photo-card:after { content: '陈一诺 · 2026.08.11'; right: 18px; bottom: 16px; padding: 0; background: transparent; color: #4a4133; font-size: 10px; font-weight: 700; letter-spacing: .05em; }
+
+@media (max-width: 800px) {
+  .feedback-flow-v2 .review-task-v2 .class-review-gallery {
+    grid-template-columns: minmax(0, 1.25fr) minmax(0, .95fr);
+    grid-template-rows: 330px auto;
+  }
+
+  .class-media-mosaic { padding: 9px 9px 34px; border-width: 5px; gap: 4px; }
+  .class-media-mosaic figure figcaption { display: none; }
+  .orientation-note { display: none; }
+  .rotate-work { top: 3px; right: 3px; width: 19px; height: 19px; }
+  .class-group-photo figcaption { display: block !important; padding: 3px 4px; font-size: 7px; }
+  .class-media-mosaic.photo figure figcaption { display: block; padding: 2px 3px; font-size: 7px; }
+  .mosaic-label { right: 8px; bottom: 7px; left: 8px; }
+  .mosaic-label b { font-size: 9px; }
+  .mosaic-label small { font-size: 8px; }
+}
+
+/* 班级反馈是一份课程交付报告：呈现目标、过程、收获与后续陪伴。 */
+.feedback-flow-v2 .class-coach-review .class-review-content {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.class-review-banner {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 14px;
+  padding: 13px 15px;
+  border-radius: 12px;
+  background: linear-gradient(110deg, #fff0b4, #fffaf0);
+  color: #382f20;
+}
+
+.class-review-banner span { color: #966e00; font-size: 10px; font-weight: 800; }
+.class-review-banner b { font-size: 13px; }
+.class-review-content article { padding: 12px; border: 1px solid #eadfbd; border-radius: 12px; background: #fffdf8; }
+.class-review-content article:nth-of-type(1),
+.class-review-content article:nth-of-type(4),
+.class-review-content article:nth-of-type(5),
+.class-review-content article:nth-of-type(6) { grid-column: 1 / -1; }
+.class-review-content article b { color: #3c3426; font-size: 12px; }
+.class-review-content article textarea { width: 100%; min-height: 58px; margin-top: 7px; resize: vertical; border: 0; outline: 0; background: transparent; color: #625845; font: inherit; font-size: 11px; line-height: 1.65; }
+.class-review-content article:nth-of-type(3) textarea,
+.class-review-content article:nth-of-type(4) textarea { min-height: 72px; }
+
+@media (max-width: 800px) {
+  .feedback-flow-v2 .class-coach-review .class-review-content { grid-template-columns: 1fr; }
+  .class-review-banner { align-items: flex-start; flex-direction: column; gap: 5px; }
+  .class-review-content article:nth-of-type(1),
+  .class-review-content article:nth-of-type(4),
+  .class-review-content article:nth-of-type(5),
+  .class-review-content article:nth-of-type(6) { grid-column: auto; }
+}
+
+/* 智能装裱助手：默认完成复杂处理，只留下老师真正需要确认的选择。 */
+.smart-framing-assistant{margin-top:18px;padding:24px;border:1px solid #e6d29a;border-radius:20px;background:linear-gradient(135deg,#fff8dc,#fffdf7);box-shadow:0 12px 26px rgba(72,52,8,.08)}.smart-framing-head{display:flex;justify-content:space-between;gap:18px;align-items:flex-start}.smart-framing-head span{font-size:10px;font-weight:800;color:#9a6e00}.smart-framing-head h3{margin:6px 0;color:#302b21;font-size:21px}.smart-framing-head p{margin:0;color:#746952;font-size:12px}.framing-quality{padding:10px 12px;border-radius:11px;background:#2c2921;color:#fff8de}.framing-quality b,.framing-quality small{display:block}.framing-quality b{font-size:11px}.framing-quality small{margin-top:4px;color:#d9cda5;font-size:9px}.framing-auto-checks{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin:19px 0}.framing-auto-checks article{display:grid;grid-template-columns:24px 1fr auto;gap:7px;align-items:center;padding:10px;border:1px solid #eadfbd;border-radius:12px;background:rgba(255,255,255,.75)}.framing-auto-checks i{display:grid;width:24px;height:24px;place-items:center;border-radius:50%;background:#f2c83d;color:#45381b;font-style:normal;font-size:10px;font-weight:800}.framing-auto-checks b,.framing-auto-checks small{display:block}.framing-auto-checks b{color:#40382a;font-size:11px}.framing-auto-checks small{margin-top:2px;color:#827660;font-size:9px;line-height:1.35}.framing-auto-checks em{color:#8a6905;font-size:9px;font-style:normal;font-weight:800}.framing-settings-grid{display:grid;grid-template-columns:1.35fr .85fr;gap:16px}.framing-settings-grid>div>b{display:block;margin-bottom:8px;color:#3b3326;font-size:12px}.framing-preset-options{display:grid;grid-template-columns:repeat(3,1fr);gap:7px}.framing-preset-options button{display:grid;grid-template-columns:8px 1fr;gap:2px 7px;align-items:center;padding:10px;border:1px solid #e8dbbb;border-radius:11px;background:#fffdf8;color:#5d533f;text-align:left}.framing-preset-options button span{grid-row:1/3;width:8px;height:25px;border-radius:4px;background:#2c2921}.framing-preset-options button:nth-child(2) span{background:#b68959}.framing-preset-options button:nth-child(3) span{background:#594f4b}.framing-preset-options button.active{border-color:#bd8d07;background:#fff1b9;box-shadow:0 0 0 2px rgba(214,168,25,.14)}.framing-preset-options b{font-size:10px}.framing-preset-options small{font-size:8px;line-height:1.35}.framing-switches{padding:12px;border:1px solid #eadfbd;border-radius:13px;background:#fffdf8}.framing-switches label{display:flex;gap:8px;align-items:flex-start;margin:8px 0}.framing-switches input{margin-top:2px;accent-color:#b88604}.framing-switches strong,.framing-switches small{display:block}.framing-switches strong{color:#41382a;font-size:10px}.framing-switches small{margin-top:2px;color:#81745e;font-size:9px;line-height:1.4}.framing-output{margin-top:10px;padding-top:9px;border-top:1px solid #eee2c2}.framing-output span,.framing-output b,.framing-output small{display:block}.framing-output span{font-size:9px;color:#9a7204}.framing-output b{margin-top:3px;color:#40372a;font-size:10px}.framing-output small{margin-top:3px;color:#877962;font-size:9px}.framing-helper-actions{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:16px}.framing-helper-actions small{color:#796d56;font-size:10px}.framing-helper-actions button{border:0;border-radius:9px;background:#2d2921;color:#fff8e0;padding:9px 12px;font-size:11px;font-weight:800}@media(max-width:800px){.smart-framing-assistant{padding:16px}.smart-framing-head{display:block}.framing-quality{display:inline-block;margin-top:10px}.framing-auto-checks,.framing-settings-grid,.framing-preset-options{grid-template-columns:1fr}.framing-auto-checks article{grid-template-columns:24px 1fr auto}.framing-helper-actions{align-items:flex-start;flex-direction:column}.framing-helper-actions button{width:100%}}
+
+/* 智能装裱作品：竖向长方形画框。此规则必须最后声明，避免历史样式回写为正方形。 */
+.feedback-flow-v2 .studio-task .media-process .uploaded-art {
+  box-sizing: border-box;
+  width: min(100%, 340px);
+  height: auto !important;
+  min-height: 0 !important;
+  aspect-ratio: 3 / 4;
+  margin-inline: auto;
+}
+
+/* 必须位于文件末尾，避免旧版装裱样式把透明线稿重新垫成白纸。 */
+.feedback-flow-v2 .studio-task .media-process .uploaded-art {
+  place-items: center !important;
+  background: #f4eee1 !important;
+}
+.feedback-flow-v2 .studio-task .media-process .uploaded-art img {
+  object-fit: contain !important;
+  object-position: center center !important;
+  background: transparent !important;
+  mix-blend-mode: normal !important;
+}
+
+/* 成品装裱：原木外框、米色内衬与白色作品底。 */
+.feedback-flow-v2 .studio-task .media-process .uploaded-art {
+  box-sizing: border-box;
+  width: min(100%, 340px);
+  height: auto !important;
+  min-height: 0 !important;
+  aspect-ratio: 3 / 4;
+  padding: 14px 14px 54px !important;
+  border: 1px solid #eee8dd !important;
+  background: #fff !important;
+  background-color: #fff !important;
+  box-shadow: 0 8px 18px rgba(58,43,9,.08) !important;
+}
+.feedback-flow-v2 .studio-task .media-process .uploaded-art img {
+  background: transparent !important;
+  mix-blend-mode: normal !important;
+  box-shadow: none !important;
+}
+.feedback-flow-v2 .studio-task .confirm-artwork-button { display: none !important; }
+
+.review-absence-reminder {
+  margin: 14px 0;
+  padding: 13px 15px;
+  border: 1px solid #eadfbd;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #fffaf0, #f6efe0);
+  color: #6c5327;
+}
+.review-absence-reminder b { display: block; font-size: 13px; }
+.review-absence-reminder p { margin: 5px 0 0; font-size: 13px; line-height: 1.65; }
+
+.student-rail-head { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; }
+.auth-role-choice { display:grid; grid-template-columns:1fr 1fr; gap:7px; margin:14px 0 2px; padding:4px; border-radius:10px; background:#f5f0e5; }
+.auth-role-choice button { border:0; border-radius:7px; background:transparent; color:#786d5a; padding:9px; font-size:12px; font-weight:800; }
+.auth-role-choice button.active { background:#fffdf8; color:#453a29; box-shadow:0 2px 7px rgba(82,65,30,.11); }
+.student-head-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; }
+.parent-binding-button { display:inline-flex; align-items:center; gap:5px; border:1px solid #d7bf80; border-radius:9px; background:#fffaf0; color:#7c5d13; padding:9px 11px; font-size:11px; font-weight:800; }
+.parent-binding-summary { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:16px; padding:13px 14px; border:1px solid #eadcba; border-radius:12px; background:#fffaf0; }
+.parent-binding-summary > div { display:flex; align-items:center; gap:9px; color:#9a7215; }
+.parent-binding-summary b,.parent-binding-summary small { display:block; }
+.parent-binding-summary b { color:#5b492c; font-size:12px; }
+.parent-binding-summary small { margin-top:3px; color:#82725a; font-size:10px; }
+.parent-binding-summary button { border:1px solid #d9c08a; border-radius:8px; background:#fff; color:#775a17; padding:7px 9px; font-size:10px; font-weight:800; white-space:nowrap; }
+.add-student-button { display:inline-flex; align-items:center; gap:4px; border:1px solid #d5b762; border-radius:8px; background:#fffaf0; color:#805f10; padding:6px 8px; font-size:10px; font-weight:800; white-space:nowrap; }
+.add-student-button svg { width:14px; }
+.student-create-dialog { position:fixed; z-index:40; inset:0; display:grid; place-items:center; padding:20px; background:rgba(39,31,17,.38); }
+.student-create-dialog > section { position:relative; width:min(100%,480px); padding:27px; border-radius:20px; background:#fffdf8; box-shadow:0 24px 60px rgba(41,31,13,.25); }
+.student-create-dialog .dialog-close { position:absolute; top:14px; right:14px; border:0; background:transparent; color:#766950; }
+.student-create-dialog > section > span { color:#9b7200; font-size:10px; font-weight:800; letter-spacing:.07em; }
+.student-create-dialog h2 { margin:7px 0; color:#352f24; font-size:22px; }
+.student-create-dialog p { margin:0 0 17px; color:#766b58; font-size:11px; line-height:1.65; }
+.student-create-dialog label { display:grid; gap:6px; margin-top:11px; color:#4d4332; font-size:11px; font-weight:700; }
+.student-create-dialog label em { color:#a77500; font-size:9px; font-style:normal; }
+.student-create-dialog input,.student-create-dialog select,.student-create-dialog textarea { width:100%; box-sizing:border-box; border:1px solid #e1d5b8; border-radius:9px; background:#fff; color:#433b2d; padding:9px 10px; font:inherit; font-size:12px; font-weight:400; }
+.student-create-dialog textarea { min-height:68px; resize:vertical; }
+.dialog-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:19px; }
+.dialog-actions > span { flex:1; }
+.dialog-actions button { display:inline-flex; align-items:center; gap:5px; border:1px solid #dfd2b4; border-radius:9px; background:#fff; color:#665b48; padding:9px 12px; font-size:11px; font-weight:800; }
+.dialog-actions .primary { border:0; background:#2d2921; color:#fff9e6; }
+.dialog-actions .danger { border-color:#e2b7ae; background:#fff6f4; color:#aa4d3d; }
+
+/* 学员管理：将学员、班级与两类成长档案放入同一工作台。 */
+.management-hub { max-width:1180px; margin:0 auto; padding:8px 0 36px; }
+.management-hub-head { padding:18px 3px 14px; }
+.management-hub-head > div > span,
+.class-management-panel header > div > span,
+.archive-overview header > div > span { color:#a47511; font-size:10px; font-weight:800; letter-spacing:.08em; }
+.management-hub-head h1 { max-width:680px; margin:8px 0; color:#342d22; font-size:28px; line-height:1.3; }
+.management-hub-head p { margin:0; color:#776b56; font-size:13px; line-height:1.7; }
+.management-section-nav { display:flex; gap:6px; padding:5px; border:1px solid #e8dcc1; border-radius:13px; background:#fffdf8; }
+.management-section-nav button { flex:1; border:0; border-radius:9px; background:transparent; color:#786e5d; padding:10px 13px; font-size:12px; font-weight:800; }
+.management-section-nav button.active { background:#332f27; color:#fff9e9; box-shadow:0 3px 8px rgba(43,34,20,.14); }
+.student-archive-layout { display:grid; grid-template-columns:250px minmax(0,1fr); gap:18px; margin-top:18px; }
+.student-archive-layout .archive-student-rail { height:max-content; }
+.class-management-panel,
+.archive-overview { margin-top:18px; padding:26px; border:1px solid #ebdfc6; border-radius:22px; background:#fffdf8; box-shadow:0 12px 30px rgba(77,58,23,.05); }
+.class-management-panel > header,
+.archive-overview > header { display:flex; align-items:flex-start; justify-content:space-between; gap:18px; padding-bottom:20px; border-bottom:1px solid #eee3cf; }
+.class-management-panel h2,
+.archive-overview h2 { margin:7px 0; color:#3b3123; font-size:23px; }
+.class-management-panel p,
+.archive-overview p { margin:0; color:#7a6d57; font-size:12px; line-height:1.7; }
+.class-management-list { display:grid; gap:10px; margin-top:16px; }
+.class-management-list article { display:grid; grid-template-columns:42px minmax(0,1fr) auto; align-items:center; gap:13px; padding:16px; border:1px solid #eadfca; border-radius:15px; background:#fff; }
+.class-icon { display:grid; width:42px; height:42px; place-items:center; border-radius:12px; background:#f7eac8; color:#906b15; }
+.class-management-list b { color:#413729; font-size:14px; }
+.class-management-list article p { margin:4px 0 2px; }
+.class-management-list small { color:#9a8c76; font-size:11px; }
+.class-card-actions { display:flex; gap:7px; }
+.class-card-actions button { display:inline-flex; align-items:center; gap:3px; border:1px solid #dfd2b5; border-radius:8px; background:#fffdf8; color:#6f5c36; padding:8px 10px; font-size:11px; font-weight:800; white-space:nowrap; }
+.archive-overview-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:11px; margin-top:19px; }
+.archive-overview-grid article { display:flex; flex-direction:column; min-height:114px; padding:17px; border-radius:15px; background:#f8f1df; color:#a87813; }
+.archive-overview-grid article:nth-child(2) { background:#f5f2e9; color:#76684d; }
+.archive-overview-grid article:nth-child(3) { background:#f9ead7; color:#9c7041; }
+.archive-overview-grid b { margin-top:auto; color:#463827; font-size:23px; }
+.archive-overview-grid span { margin-top:4px; color:#786a54; font-size:11px; }
+.archive-overview-note { display:flex; gap:12px; margin-top:14px; padding:15px; border:1px dashed #dec89a; border-radius:14px; background:#fffaf0; color:#99721d; }
+.archive-overview-note svg { flex:0 0 auto; margin-top:2px; }
+.archive-overview-note b { color:#604d2d; font-size:12px; }
+.archive-overview-note p { margin:5px 0 0; color:#7c6b50; }
+.parent-bound-summary { margin:0; color:#75664e; font-size:13px; line-height:1.8; }
+.parent-child-switch { display:flex; align-items:center; flex-wrap:wrap; gap:7px; margin:0 0 13px; }
+.parent-child-switch span { color:#85755d; font-size:11px; font-weight:800; }
+.parent-child-switch button { border:1px solid #e0d2b7; border-radius:999px; background:#fffdf8; color:#705e43; padding:6px 11px; font-size:11px; font-weight:800; }
+.parent-child-switch button.active { border-color:#b58b28; background:#fff0bd; color:#674a11; }
+.parent-bound-timeline { margin-top:18px; padding:22px; border:1px solid #eadfca; border-radius:20px; background:#fffdf8; }
+.parent-bound-timeline h2 { margin:0 0 14px; color:#493b2a; font-size:18px; }
+.parent-bound-timeline article { display:grid; grid-template-columns:98px minmax(0,1fr); gap:14px; padding:15px 0; border-top:1px solid #eee3d1; }
+.parent-bound-timeline time { color:#9a771f; font-size:11px; font-weight:800; }
+.parent-bound-timeline b { color:#4e402d; font-size:13px; }
+.parent-bound-timeline p { margin:6px 0 0; color:#786b57; font-size:12px; line-height:1.7; }
+.archive-student-finder { margin-top:18px; padding:15px; border:1px solid #e8dcc1; border-radius:15px; background:#fffaf0; }
+.archive-finder-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+.archive-finder-head b,
+.archive-finder-head span { display:block; }
+.archive-finder-head b { color:#493b27; font-size:13px; }
+.archive-finder-head span { margin-top:4px; color:#857661; font-size:11px; }
+.archive-finder-head small { color:#9a761e; font-size:11px; font-weight:800; white-space:nowrap; }
+.archive-finder-controls { display:grid; grid-template-columns:minmax(0,1fr) 176px; gap:9px; margin-top:12px; }
+.archive-finder-controls label { display:flex; align-items:center; gap:7px; padding:0 10px; border:1px solid #e1d5bd; border-radius:9px; background:#fff; color:#9a761e; }
+.archive-finder-controls input,
+.archive-finder-controls select { min-width:0; border:0; outline:0; background:transparent; color:#4c4030; font:inherit; font-size:12px; }
+.archive-finder-controls input { width:100%; padding:9px 0; }
+.archive-finder-controls select { padding:9px 10px; border:1px solid #e1d5bd; border-radius:9px; background:#fff; }
+.archive-class-search { grid-template-columns:minmax(0,1fr); }
+.archive-student-results { display:flex; flex-wrap:wrap; gap:7px; max-height:146px; margin-top:11px; overflow-y:auto; padding-right:2px; }
+.archive-student-results > button { display:flex; align-items:center; gap:7px; min-width:164px; padding:7px 9px; border:1px solid #e4d8c0; border-radius:10px; background:#fffdf9; color:#514533; text-align:left; }
+.archive-student-results > button:hover,
+.archive-student-results > button.active { border-color:#bd9029; background:#fff1c9; }
+.archive-student-results .avatar { display:grid; flex:0 0 auto; width:26px; height:26px; place-items:center; font-size:11px; }
+.archive-student-results b,
+.archive-student-results small { display:block; }
+.archive-student-results b { font-size:11px; }
+.archive-student-results small { margin-top:2px; color:#867862; font-size:9px; }
+.archive-student-results em { margin-left:auto; color:#9b7318; font-size:9px; font-style:normal; font-weight:800; white-space:nowrap; }
+.archive-student-results > p { margin:4px 0; color:#82735d; font-size:11px; }
+.class-result-icon { display:grid; flex:0 0 auto; width:26px; height:26px; place-items:center; border-radius:8px; background:#f6e5b9; color:#986f16; }
+
+@media (max-width:800px) {
+  .management-hub-head h1 { font-size:23px; }
+  .management-section-nav { overflow-x:auto; }
+  .management-section-nav button { flex:0 0 auto; white-space:nowrap; }
+  .student-archive-layout { grid-template-columns:1fr; }
+  .class-management-panel,
+  .archive-overview { padding:18px; }
+  .class-management-panel > header,
+  .archive-overview > header { align-items:stretch; flex-direction:column; }
+  .class-management-panel > header .primary,
+  .archive-overview > header .primary { justify-content:center; }
+  .class-management-list article { grid-template-columns:38px minmax(0,1fr); }
+  .class-icon { width:38px; height:38px; }
+  .class-card-actions { grid-column:1 / -1; }
+  .class-card-actions button { flex:1; justify-content:center; }
+  .archive-overview-grid { grid-template-columns:1fr; }
+  .student-head-actions { justify-content:flex-start; }
+  .parent-binding-summary { align-items:flex-start; flex-direction:column; }
+  .archive-finder-controls { grid-template-columns:1fr; }
+  .archive-student-results { flex-wrap:nowrap; overflow-x:auto; overflow-y:hidden; max-height:none; }
+  .archive-student-results > button { flex:0 0 174px; }
+  .parent-bound-timeline { padding:17px; }
+  .parent-bound-timeline article { grid-template-columns:1fr; gap:5px; }
+}
+
+
+.flipbook-title-page,
+.flipbook-preface,
+.flipbook-letter {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  min-height: 390px;
+  padding: 46px !important;
+}
+.flipbook-title-page {
+  align-items: center;
+  text-align: center;
+  background: radial-gradient(circle at 50% 24%, #fffdf2, #f4e9d2 58%, #e9d6ae) !important;
+}
+.flipbook-title-page > span,
+.flipbook-preface > span,
+.flipbook-letter > span { font-size: 11px; font-weight: 800; letter-spacing: .08em; color: #a47511; }
+.flipbook-title-mark { display:grid; place-items:center; width:72px; height:72px; margin:20px 0 10px; border-radius:50%; background:#b88922; color:#fff7dd; font-size:30px; box-shadow:0 8px 18px rgba(120,85,20,.18); }
+.flipbook-title-page h2 { margin: 8px 0; font-family: Georgia, serif; font-size: 32px !important; }
+.flipbook-title-page p { max-width: 330px; margin: 10px 0 24px; color: #6e5b38 !important; }
+.flipbook-title-page time { color:#8e774a; font-size:11px; }
+.flipbook-preface { background: linear-gradient(135deg, #fffdf7, #f7efe0) !important; }
+.flipbook-preface h2,
+.flipbook-letter h2 { max-width: 480px; margin: 15px 0 20px !important; font-family: Georgia, serif; font-size: 29px !important; line-height: 1.35; }
+.flipbook-preface p,
+.flipbook-letter p { max-width: 510px; margin: 0 0 14px !important; font-size: 14px !important; line-height: 2 !important; }
+.flipbook-letter { background: linear-gradient(145deg, #fffdf6, #f1e2c5) !important; }
+.letter-sign { display:flex; flex-direction:column; gap:5px; margin-top:19px; padding-top:15px; border-top:1px solid #d8c296; color:#705827; }
+.letter-sign b { font-size:14px; }
+.letter-sign small { font-size:11px; }
+
+@media (max-width: 800px) {
+  .flipbook-title-page,
+  .flipbook-preface,
+  .flipbook-letter { min-height: 350px; padding: 30px !important; }
+  .flipbook-title-page h2 { font-size: 27px !important; }
+  .flipbook-preface h2,
+  .flipbook-letter h2 { font-size: 24px !important; }
+}
+
+.stage-growth-review {
+  margin-top: 26px;
+  padding-top: 26px;
+  border-top: 1px dashed #dfcda8;
+}
+.growth-report-preview > .report-radar-panel,
+.growth-report-preview > .growth-summary-plus { display: none; }
+.stage-growth-review .stage-radar-panel { margin: 0 0 26px; }
+.stage-growth-review header > span,
+.stage-position > b,
+.creative-observation > b,
+.next-semester-plan span {
+  color: #a47511;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .06em;
+}
+.stage-growth-review header h3 { margin: 8px 0; color: #3b3122; font-size: 21px; }
+.stage-growth-review header p { max-width: 610px; margin: 0; color: #83745b; font-size: 11px; line-height: 1.7; }
+.stage-position { display: grid; grid-template-columns: 130px 1fr; gap: 14px; margin-top: 18px; padding: 16px; border-radius: 14px; background: #f8f0df; }
+.stage-position > b { padding-top: 3px; }
+.stage-position strong { display:block; color:#5e4722; font-size:15px; }
+.stage-position p,
+.creative-observation p { margin:7px 0 0; color:#715f43; font-size:12px; line-height:1.75; }
+.creative-observation { margin-top: 12px; padding: 16px; border: 1px solid #eee0c6; border-radius: 14px; background:#fffdf7; }
+.art-learning-breakdown { margin-top: 12px; padding: 16px; border: 1px solid #e8dbbf; border-radius: 14px; background: #fffaf0; }
+.art-breakdown-head span { color:#a47511; font-size:10px; font-weight:800; letter-spacing:.06em; }
+.art-breakdown-head p { margin:6px 0 0; color:#75664e; font-size:11px; line-height:1.65; }
+.art-learning-breakdown > div:last-child { display:grid; grid-template-columns:repeat(2,1fr); gap:9px; margin-top:13px; }
+.art-learning-breakdown article { padding:12px; border-radius:10px; background:rgba(255,255,255,.7); }
+.art-learning-breakdown article b { display:block; color:#5e4722; font-size:13px; }
+.art-learning-breakdown article p { margin:6px 0 0; color:#75664e; font-size:11px; line-height:1.65; }
+.semester-gains { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-top:12px; }
+.semester-gains article { min-height:150px; padding:16px; border-radius:14px; background:#f9f5ec; }
+.semester-gains article:nth-child(2) { background:#f4f0e7; }
+.semester-gains article:nth-child(3) { background:#f7eedf; }
+.semester-gains span { display:block; color:#a47511; font-size:10px; font-weight:800; }
+.semester-gains b { display:block; margin-top:10px; color:#44351f; font-size:14px; }
+.semester-gains p { margin:8px 0 0; color:#75664e; font-size:11px; line-height:1.7; }
+.next-semester-plan { margin-top:18px; padding:18px; border-radius:16px; background:linear-gradient(135deg,#4d422f,#6b593b); color:#fffdf7; }
+.next-semester-plan h4 { max-width:430px; margin:7px 0 0; font-size:18px; line-height:1.5; }
+.next-semester-plan > div:first-child span { color:#f2d47f; }
+.plan-list { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-top:17px; }
+.plan-list article { padding-top:11px; border-top:1px solid rgba(255,255,255,.27); }
+.plan-list b { font-size:12px; color:#f3d989; }
+.plan-list p { margin:7px 0 0; color:#f1eadc; font-size:11px; line-height:1.7; }
+@media (max-width:800px) { .stage-position,.semester-gains,.plan-list,.art-learning-breakdown > div:last-child { grid-template-columns:1fr; } .stage-position > b { padding-top:0; } .semester-gains article { min-height:0; } }

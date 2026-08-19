@@ -1,0 +1,21 @@
+{
+  "name": "xinlehui-ai-prototype",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node node_modules/.pnpm/vite@8.2.0/node_modules/vite/bin/vite.js --host 127.0.0.1",
+    "dev:api": "node server/index.mjs",
+    "build": "node node_modules/.pnpm/vite@8.2.0/node_modules/vite/bin/vite.js build",
+    "preview": "node node_modules/.pnpm/vite@8.2.0/node_modules/vite/bin/vite.js preview --host 127.0.0.1"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "latest",
+    "vite": "latest",
+    "typescript": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "lucide-react": "latest"
+  },
+  "devDependencies": {}
+}

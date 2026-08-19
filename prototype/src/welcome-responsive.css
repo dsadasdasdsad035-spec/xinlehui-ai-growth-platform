@@ -1,0 +1,32 @@
+@media (min-width:821px) and (max-width:1120px){
+  .teacher-welcome{grid-template-columns:1.18fr .82fr;gap:0}
+  .welcome-copy{max-width:500px}
+  .welcome-copy h1{font-size:33px;letter-spacing:-.065em;line-height:1.45;white-space:nowrap}
+  .welcome-art{height:400px}
+  .welcome-art:before{width:310px;height:270px;right:-12%;top:52px}
+  .card-front{width:275px;height:370px;right:-10px}
+  .card-front img{height:325px;right:0}
+  .card-back{width:190px;height:250px;right:11%;top:78px}
+}
+
+/* Mobile uses a composed portrait: visual first, calm copy second, and one clear action. */
+@media (max-width:820px){
+  .teacher-welcome{display:flex;flex-direction:column;align-items:stretch;gap:0;min-height:calc(100vh - 74px);padding:18px 20px 30px;background:radial-gradient(ellipse 90% 42% at 50% 12%,#fff0b3 0,rgba(255,240,179,.3) 43%,transparent 74%),#fffdf6}
+  .welcome-art{order:0;height:285px;margin:0 -8px 6px}
+  .welcome-copy{order:1;max-width:none;text-align:left}
+  .welcome-copy>span:after{font-size:11px}
+  .welcome-copy h1{font-size:29px;letter-spacing:-.06em;line-height:1.42;max-width:100%;margin:10px 0 22px}
+  .welcome-copy .primary{width:100%;min-height:52px;border-radius:14px;font-size:14px}
+  .teacher-welcome:after{left:20px;bottom:11px;font-size:10px}
+  .welcome-art:before{width:270px;height:220px;right:50%;top:22px;transform:translateX(50%) rotate(-8deg)}
+  .card-front{width:270px;height:290px;right:50%;top:0;transform:translateX(50%)}
+  .card-front:before{width:172px;height:218px;right:48px;bottom:13px}
+  .card-front img{height:272px;right:0;top:4px}
+  .card-back{width:178px;height:205px;right:50%;top:46px;transform:translateX(50%) rotate(-8deg);opacity:.58}
+}
+
+@media (max-width:390px){
+  .welcome-art{height:255px}
+  .welcome-copy h1{font-size:27px}
+  .card-front{transform:translateX(50%) scale(.9)}
+}

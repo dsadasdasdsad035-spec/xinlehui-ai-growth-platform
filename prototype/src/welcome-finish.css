@@ -1,0 +1,11 @@
+/* Final welcome-page balance: warm light without a literal yellow circle. */
+.teacher-welcome{background:radial-gradient(ellipse 38% 46% at 72% 44%,rgba(255,232,141,.48) 0 8%,transparent 72%),radial-gradient(ellipse 42% 44% at 18% 8%,#fff8dd 0 15%,transparent 72%),#fffdf6}
+.welcome-copy h1{letter-spacing:-.045em;line-height:1.38;font-size:42px}
+.welcome-art:before{width:390px;height:310px;border-radius:55% 45% 62% 38%/56% 42% 58% 44%;background:radial-gradient(ellipse at 46% 36%,#fffdf0 0 12%,#ffedac 52%,rgba(249,212,97,.16) 73%,transparent 74%);right:-4%;top:28px;transform:rotate(-9deg)}
+.welcome-art:after{display:none}
+
+/* On tablets and desktop, the promise is intentionally read as two calm lines. */
+@media (min-width:821px){
+  .welcome-copy{max-width:640px}
+  .welcome-copy h1{font-size:34px;letter-spacing:-.065em;line-height:1.5;white-space:nowrap}
+}
