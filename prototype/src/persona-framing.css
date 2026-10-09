@@ -274,3 +274,235 @@
    放到 persona-framing.css 里（最后 import）统一压掉。 */
 .feedback-flow-v2 .studio-task .media-process .uploaded-art:after,
 .feedback-flow-v2 .studio-task .media-process .photo-card:after { content: none !important; }
+
+/* ==========================================================================
+   课后反馈步骤条（.flow-stepper）
+   原来用「圆形序号 + 高亮边框」表示当前环节，老师看不出哪些环节已经做完。
+   现在每一环节是一段进度条：当前环节整段金色高亮，已完成段压深并换成对勾，
+   未到达段整段置灰。放在最后 import 的样式表里，避免被 review-compact 的
+   通用 button 规则盖掉。
+   ========================================================================== */
+.feedback-flow-v2 .flow-stepper {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  margin: 0 0 14px;
+  padding: 16px 20px 14px;
+  border: 1px solid #eadfbd;
+  border-radius: 18px;
+  background: #fffef9;
+  box-shadow: 0 10px 26px rgba(84, 64, 12, .06);
+}
+.feedback-flow-v2 .flow-stepper-step {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 14px;
+  border: 0;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  transition: opacity .18s ease;
+}
+.feedback-flow-v2 .flow-stepper-step:first-child { padding-left: 0; }
+.feedback-flow-v2 .flow-stepper-step:last-child { padding-right: 0; }
+/* 当前环节整段垫一层暖色，跟两侧形成明显区分 */
+.feedback-flow-v2 .flow-stepper-step.active::before {
+  content: '';
+  position: absolute;
+  inset: -8px 8px 2px;
+  border-radius: 14px;
+  background: linear-gradient(140deg, #fff6d6, #fffdf4);
+  box-shadow: inset 0 0 0 1px #f0dc9a;
+  z-index: 0;
+}
+.feedback-flow-v2 .flow-stepper-step > * { position: relative; z-index: 1; }
+
+.feedback-flow-v2 .flow-stepper-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: .01em;
+  color: #a8a08c;                 /* 未到达：置灰 */
+}
+.feedback-flow-v2 .flow-stepper-title em {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 7px;             /* 方形角标，不再是圆圈 */
+  background: #f2ecdd;
+  color: #a8a08c;
+  font-style: normal;
+  font-size: 10px;
+  font-weight: 800;
+  flex: none;
+  transition: background .18s ease, color .18s ease;
+}
+.feedback-flow-v2 .flow-stepper-step small {
+  font-size: 9.5px;
+  line-height: 1.5;
+  color: #b6ad98;                 /* 未到达：说明文字同样置灰 */
+}
+.feedback-flow-v2 .flow-stepper-track {
+  position: relative;
+  height: 4px;
+  margin-top: 2px;
+  border-radius: 999px;
+  background: #f1ebdb;
+  overflow: hidden;
+}
+.feedback-flow-v2 .flow-stepper-track i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  border-radius: 999px;
+  background: #4a453a;
+  transition: width .38s ease;
+}
+
+/* 已完成环境：对勾角标 + 压深标题 + 整段进度条填满 */
+.feedback-flow-v2 .flow-stepper-step.done .flow-stepper-title { color: #3a3529; }
+.feedback-flow-v2 .flow-stepper-step.done .flow-stepper-title em { background: #292720; color: #f7c515; }
+.feedback-flow-v2 .flow-stepper-step.done small { color: #8b826f; }
+.feedback-flow-v2 .flow-stepper-step.done .flow-stepper-track { background: #e6dfcc; }
+.feedback-flow-v2 .flow-stepper-step.done .flow-stepper-track i { width: 100%; background: #4a453a; }
+
+/* 当前环节：金色高亮 */
+.feedback-flow-v2 .flow-stepper-step.active .flow-stepper-title { color: #292720; }
+.feedback-flow-v2 .flow-stepper-step.active .flow-stepper-title em { background: #292720; color: #f7c515; }
+.feedback-flow-v2 .flow-stepper-step.active small { color: #7a7059; }
+.feedback-flow-v2 .flow-stepper-step.active .flow-stepper-track { background: #f6e6b4; }
+.feedback-flow-v2 .flow-stepper-step.active .flow-stepper-track i {
+  width: 100%;
+  background: linear-gradient(90deg, #f7c515, #e2a312);
+  background-size: 200% 100%;
+  animation: flowStepperShimmer 1.8s linear infinite;
+}
+@keyframes flowStepperShimmer {
+  from { background-position: 0 0; }
+  to { background-position: -200% 0; }
+}
+.feedback-flow-v2 .flow-stepper-step:hover .flow-stepper-title { color: #292720; }
+
+@media (max-width: 800px) {
+  /* 窄屏改成竖向排，进度条仍然保留 */
+  .feedback-flow-v2 .flow-stepper { flex-direction: column; gap: 14px; padding: 16px; }
+  .feedback-flow-v2 .flow-stepper-step,
+  .feedback-flow-v2 .flow-stepper-step:first-child,
+  .feedback-flow-v2 .flow-stepper-step:last-child { padding: 0; }
+  .feedback-flow-v2 .flow-stepper-step.active::before { inset: -6px -8px; }
+}
+
+/* ==========================================================================
+   五维点评：正文来源标注 + 待生成状态
+   五维正文只由大模型产出，所以空态要明确写出「等谁生成」，而不是留一段假评语。
+   ========================================================================== */
+.feedback-flow-v2 .review-task-v2 .review-source {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 12px;
+  padding: 9px 12px;
+  border-radius: 12px;
+  border: 1px dashed #e3d6b4;
+  background: #fffdf5;
+  font-size: 10.5px;
+  line-height: 1.55;
+  color: #6f6756;
+}
+.feedback-flow-v2 .review-task-v2 .review-source svg { flex: none; color: #ad7e00; }
+.feedback-flow-v2 .review-task-v2 .review-source span { flex: 1 1 auto; min-width: 0; }
+.feedback-flow-v2 .review-task-v2 .review-source strong { color: #8a5a00; }
+.feedback-flow-v2 .review-task-v2 .review-source em {
+  font-style: normal;
+  font-weight: 800;
+  font-size: 9.5px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: #ffe9a8;
+  color: #7d5500;
+}
+.feedback-flow-v2 .review-task-v2 .review-source.ai { border-style: solid; border-color: #e9dcb0; background: #fffaf0; }
+.feedback-flow-v2 .review-task-v2 .review-source.local { border-style: solid; border-color: #f0cdb6; background: #fff6f0; color: #8a5a44; }
+.feedback-flow-v2 .review-task-v2 .review-source.local svg { color: #c2703f; }
+
+/* 还没生成时：卡片留空 + 一行「待生成」标记，老师一眼知道这里的内容由谁来填 */
+.feedback-flow-v2 .review-task-v2 .coach-card.is-empty { border-style: dashed; background: #fffdf8; }
+.feedback-flow-v2 .review-task-v2 .coach-card b { display: flex; align-items: center; gap: 7px; }
+.feedback-flow-v2 .review-task-v2 .coach-card b .review-pending {
+  font-style: normal;
+  font-size: 9px;
+  font-weight: 800;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #f3ecda;
+  color: #9a8f78;
+}
+.feedback-flow-v2 .review-task-v2 .coach-card textarea::placeholder { color: #b8ae97; }
+
+/* 云端不可用时的本地兜底入口，刻意做得低调：默认路径永远是大模型生成 */
+.feedback-flow-v2 .local-draft-link {
+  border: 0;
+  background: none;
+  padding: 0;
+  font-size: 10.5px;
+  color: #8a7a58;
+  text-decoration: underline dotted;
+  cursor: pointer;
+}
+.feedback-flow-v2 .local-draft-link:hover { color: #6b5a34; }
+.feedback-flow-v2 .review-stream-error { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+
+/* ==========================================================================
+   作品观察词：AI 识别出来的词单独打标
+   老师需要一眼分清「大模型从画面里读出来的」和「我自己补的」。
+   ========================================================================== */
+.feedback-flow-v2 .review-keyword-toggle small.has-ai { color: #8a5a00; font-weight: 800; }
+.feedback-flow-v2 .review-keyword-toggle .keyword-scanning {
+  width: 7px;
+  height: 7px;
+  margin-left: 2px;
+  border-radius: 50%;
+  background: #e2a312;
+  animation: keywordScanning 1s ease-in-out infinite;
+}
+@keyframes keywordScanning {
+  0%, 100% { opacity: .25; transform: scale(.8); }
+  50% { opacity: 1; transform: scale(1.15); }
+}
+.feedback-flow-v2 .review-keyword-panel .review-keyword-dirty {
+  margin: 10px 0 0;
+  padding: 8px 11px;
+  border-radius: 10px;
+  background: #fff3cf;
+  color: #7d5500;
+  font-size: 10px;
+  line-height: 1.5;
+}
+.feedback-flow-v2 .review-keyword-groups button { position: relative; padding-right: 26px; }
+.feedback-flow-v2 .review-keyword-groups button .ai-mark {
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  font-style: normal;
+  font-size: 7.5px;
+  font-weight: 800;
+  letter-spacing: .02em;
+  padding: 1px 3px;
+  border-radius: 5px;
+  background: #efe4c2;
+  color: #9a8f78;
+}
+.feedback-flow-v2 .review-keyword-groups button.active {
+  background: #292720;
+  color: #fff8e6;
+  border-color: #292720;
+}
+.feedback-flow-v2 .review-keyword-groups button.active .ai-mark { background: #f7c515; color: #3a2d00; }

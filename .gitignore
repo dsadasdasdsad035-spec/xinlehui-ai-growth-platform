@@ -47,6 +47,11 @@ docs/_render/
 # ── 一次性调试脚手架（依赖本机 /tmp 与固定 persona，不属于项目代码）──
 prototype/tr.mjs
 
+# ── 画廊素材：只提交构建实际引用的成品图 ─────────────────────────
+# 默认展厅的原始生成图（未压缩、源码无引用），留本机即可；
+# 应用真正加载的是由它派生出的 gallery-hall-default.jpg。
+prototype/src/assets/gallery/Photorealistic_interior_photog_*.png
+
 # ── 系统与工具文件 ───────────────────────────────────────────────
 .DS_Store
 **/.DS_Store

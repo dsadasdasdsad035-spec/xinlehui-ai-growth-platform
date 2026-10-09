@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import {
   Archive, ArrowLeft, ArrowRight, Bell, BookOpen, Boxes, Check, ChevronDown,
   CircleAlert, CircleCheck, Clock3, Download, FileText, Film, FolderOpen, Frame,
-  GraduationCap, Image, LayoutDashboard, LogOut, Menu, MessageSquareText, MoreHorizontal,
+  GraduationCap, Image, Landmark, LayoutDashboard, LogOut, Menu, MessageSquareText, MoreHorizontal,
   Package, PanelLeftClose, Plus, RefreshCw, RotateCcw, RotateCw, Search, Settings, ShieldCheck, Sparkles,
   Store, Trash2, UploadCloud, UserRound, Users, Video, WandSparkles, X, Zap
 } from 'lucide-react';
@@ -28,6 +28,7 @@ import './premium-framing.css';
 import './p0-local-draft.css';
 import './review-compact.css';
 import './persona-framing.css';
+import './gallery/gallery.css';
 import pandaMascot from './assets/panda-gold-hero.png';
 import pandaObserve from './assets/panda-gold-observe.png';
 import pandaWave from './assets/panda-poses/01-wave-paintbrush.png';
@@ -48,6 +49,22 @@ import { createEmptyFramingPreset, loadFramingPresets, persistFramingPresets } f
 import { deleteRemoteFramingPreset, loadRemoteFramingPresets, saveRemoteFramingPreset } from './services/framingPresetsApi';
 import { DEFAULT_FRAME_SPEC, generateFrameSpec, normalizeFrameSpec } from './services/frameSpec';
 import { REVIEW_MODEL, describeReviewError, readableFromRawJson, streamArtworkReview } from './services/llmReview';
+import { keywordCandidatesPrompt, keywordCategoriesFor, keywordOptionsFor, orderKeywords, pickSupportedKeywords } from './data/reviewKeywords';
+// 三个基础展示原语抽到 ui.jsx，3D 画廊页与主文件共用同一份
+import { Button, PageHeader, Status } from './ui';
+import { hydrateGalleryExhibitions, hydrateGalleryVenues, loadGalleryExhibitions, loadGalleryVenues, persistGalleryExhibitions, persistGalleryVenues } from './data/galleryVenues';
+import { loadRemoteGalleryExhibitions, loadRemoteGalleryVenues } from './services/galleryVenuesApi';
+import GalleryPage from './gallery/GalleryPage';
+import GalleryAdminPage from './gallery/GalleryAdminPage';
+
+// 五个维度各自的留空提示语 —— 只说明「这一维该看什么」，不预填任何成句的点评。
+const REVIEW_DIMENSION_HINTS = {
+  美术能力: '等待大模型读取作品后生成：画面里能指认的色彩、构图、造型或材料使用。',
+  上课状态: '等待大模型依据课堂素材生成：投入、停顿后是否回到画面、是否主动补充细节。',
+  行为能力: '等待大模型依据课堂素材生成：任务理解、表达、协作或整理等可观察行为。',
+  内在状态: '等待大模型生成：本次课堂中可观察到的表达与变化，不作心理诊断。',
+  家长建议: '等待大模型生成：1—3 条与本次观察有关、家长今晚就能尝试的具体行动。'
+};
 
 const PRD = {
   auth: 'PRD-7.1 / F-ID-01', dashboard: 'PRD-5 / F-PORTAL-01', lessons: 'PRD-7 / F-FEEDBACK-01',
@@ -57,7 +74,6 @@ const PRD = {
   logs: 'PRD-6 / F-LOG-01', archiveAdmin: 'PRD-14 / F-ARCHIVE-ADM-01', permissions: 'PRD-2.1 / F-RBAC-02',
   guide: 'PRD-4~17 / PROTOTYPE-MAP'
 };
-
 const roleMeta = {
   teacher: { label: '老师', name: '林晓老师', campus: '星河校区' },
   parent: { label: '家长', name: '陈一诺妈妈', campus: '家长端' },
@@ -69,10 +85,11 @@ const navByRole = {
   // 老师只能在「课后反馈」里只读选用人设来生成点评，看不到这两个维护入口。
   teacher: [
     ['dashboard','课后反馈工作台',LayoutDashboard], ['teacherFlow','课后反馈',WandSparkles], ['ai','AI助手',WandSparkles],
-    ['classes','学员管理',Users], ['growthCenter','个人成长中心',BookOpen], ['progress','进度看板',Clock3]
+    ['classes','学员管理',Users], ['growthCenter','个人成长中心',BookOpen], ['progress','进度看板',Clock3],
+    ['gallery','3D 画廊',Landmark]
   ],
-  parent: [['parent','首页',LayoutDashboard],['parentInsight','作品观察',Sparkles],['parentArchive','成长档案',Archive],['growthCenter','个人成长中心',BookOpen],['authorization','授权管理',ShieldCheck],['profile','个人中心',UserRound]],
-  admin: [['adminDash','运营总览',LayoutDashboard],['apps','应用中心',Boxes],['providers','模型供应商',Zap],['teacherPersona','老师人设',GraduationCap],['skillLibrary','技能库',Boxes],['framingSettings','装裱设置',Frame],['users','用户管理',Users],['logs','生成日志',FileText],['archiveAdmin','档案管理',Archive],['permissions','权限设置',ShieldCheck],['settings','系统配置',Settings]]
+  parent: [['parent','首页',LayoutDashboard],['parentInsight','作品观察',Sparkles],['parentArchive','成长档案',Archive],['gallery','3D 画廊',Landmark],['growthCenter','个人成长中心',BookOpen],['authorization','授权管理',ShieldCheck],['profile','个人中心',UserRound]],
+  admin: [['adminDash','运营总览',LayoutDashboard],['apps','应用中心',Boxes],['providers','模型供应商',Zap],['teacherPersona','老师人设',GraduationCap],['skillLibrary','技能库',Boxes],['framingSettings','装裱设置',Frame],['galleryAdmin','3D 画廊',Landmark],['users','用户管理',Users],['logs','生成日志',FileText],['archiveAdmin','档案管理',Archive],['permissions','权限设置',ShieldCheck],['settings','系统配置',Settings]]
 };
 
 const aiAppsSeed = [
@@ -109,6 +126,9 @@ function App(){
   const [framingPresets,setFramingPresets]=useState(loadFramingPresets);
   // 技能库是与人设分开维护的基础数据，人设只持有被勾选的 id。
   const [skillLibrary,setSkillLibrary]=useState(loadSkillLibrary);
+  // 3D 画廊：展厅地点（实景图 + 重建参数）与画展（作品清单），同样以云端表为准。
+  const [galleryVenues,setGalleryVenues]=useState(loadGalleryVenues);
+  const [galleryExhibitions,setGalleryExhibitions]=useState(loadGalleryExhibitions);
   const [flow,setFlow]=useState({step:1,classId:'',students:[],files:[],apps:['frame','review'],tone:'温暖专业',generateState:'idle',published:false});
   const [demoState,setDemoState]=useState('normal');
   useEffect(()=>{ if(toast){const t=setTimeout(()=>setToast(''),2600); return()=>clearTimeout(t)}},[toast]);
@@ -117,10 +137,16 @@ function App(){
   useEffect(()=>{persistTeacherProfiles(teacherProfiles)},[teacherProfiles]);
   useEffect(()=>{persistFramingPresets(framingPresets)},[framingPresets]);
   useEffect(()=>{persistSkillLibrary(skillLibrary)},[skillLibrary]);
+  useEffect(()=>{persistGalleryVenues(galleryVenues)},[galleryVenues]);
+  useEffect(()=>{persistGalleryExhibitions(galleryExhibitions)},[galleryExhibitions]);
   useEffect(()=>{let active=true;
     loadRemoteTeacherProfiles().then(remote=>{if(active&&remote.length)setTeacherProfiles(remote)}).catch(()=>{});
     loadRemoteFramingPresets().then(remote=>{if(active&&remote.length)setFramingPresets(remote)}).catch(()=>{});
     loadRemoteSkillLibrary().then(remote=>{if(active&&remote.length)setSkillLibrary(remote)}).catch(()=>{});
+    // 画廊这两个必须过 hydrate：内置展厅的实景图不进库，云端那条回来是没图的，
+    // 直接 setState 顶掉会让内置展厅变成"没有实景图"。
+    loadRemoteGalleryVenues().then(remote=>{if(active&&remote.length)setGalleryVenues(hydrateGalleryVenues(remote))}).catch(()=>{});
+    loadRemoteGalleryExhibitions().then(remote=>{if(active&&remote.length)setGalleryExhibitions(hydrateGalleryExhibitions(remote))}).catch(()=>{});
     return()=>{active=false};
   },[]);
   const navigate=(p)=>{setPage(p);setMobileNav(false);window.scrollTo(0,0)};
@@ -137,7 +163,7 @@ function App(){
     <main className="main">
       <Topbar role={role} onMenu={()=>setMobileNav(true)} onSwitch={(r)=>login(r,'demo')} onGuide={()=>navigate('guide')} onLogout={()=>setAuth(false)}/>
       <div className="content">
-        <PageRouter {...{page,role,navigate,setToast,setModal,apps,setApps,tasks,setTasks,flow,setFlow,demoState,setDemoState,records,setRecords,parentStudent,parentStudents,parentPhone,parentSession,setParentStudent,teacherProfiles,setTeacherProfiles,framingPresets,setFramingPresets,skillLibrary,setSkillLibrary}}/>
+        <PageRouter {...{page,role,navigate,setToast,setModal,apps,setApps,tasks,setTasks,flow,setFlow,demoState,setDemoState,records,setRecords,parentStudent,parentStudents,parentPhone,parentSession,setParentStudent,teacherProfiles,setTeacherProfiles,framingPresets,setFramingPresets,skillLibrary,setSkillLibrary,galleryVenues,setGalleryVenues,galleryExhibitions,setGalleryExhibitions}}/>
       </div>
     </main>
     {toast?<div className="toast panda-toast"><img src={pandaWave} alt="熊猫鼓励"/><span><CircleCheck size={18}/>{toast}</span></div>:null}
@@ -193,10 +219,7 @@ function Topbar({role,onMenu,onSwitch,onGuide,onLogout}){
  return <header className="topbar"><button className="mobile-menu" onClick={onMenu}><Menu/></button><div className="top-search"><Search size={17}/><input placeholder="搜索班级、学员、任务或档案"/></div><div className="top-actions"><button className="icon-btn" title="通知"><Bell size={19}/><i/></button><div className="role-switch"><button onClick={()=>setOpen(!open)}><span className="avatar">{roleMeta[role].name[0]}</span><span><b>{roleMeta[role].name}</b><small>{roleMeta[role].label}</small></span><ChevronDown size={15}/></button>{open?<div className="role-menu"><span>切换体验身份</span>{Object.entries(roleMeta).map(([k,v])=><button key={k} onClick={()=>{onSwitch(k);setOpen(false)}} className={k===role?'selected':''}>{v.label}<small>{v.name}</small></button>)}<hr/><button onClick={onGuide}>查看页面导览</button><button onClick={onLogout}><LogOut size={15}/>退出登录</button></div>:null}</div></div></header>
 }
 
-function PageHeader({title,desc,prd,actions}){const displayedTitle=title==='班级学员'?'学员管理':title==='课后工作台'?'课后反馈工作台':title;return <div className="page-head"><div><div className="title-line"><h1>{displayedTitle}</h1><span className="prd-tag">{prd}</span></div>{desc?<p>{desc}</p>:null}</div>{actions?<div className="head-actions">{actions}</div>:null}</div>}
-function Button({children,variant='primary',icon:Icon,onClick,disabled=false,type='button'}){return <button type={type} disabled={disabled} onClick={onClick} className={variant}>{Icon?<Icon size={17}/>:null}{children}</button>}
 function Stat({label,value,delta,icon:Icon,tone='blue'}){return <div className="stat"><span className={`stat-icon ${tone}`}><Icon size={20}/></span><div><span>{label}</span><b>{value}</b><small>{delta}</small></div></div>}
-function Status({value}){const cls=value==='成功'||value==='已启用'||value==='正常'?'success':value.includes('中')||value==='排队中'?'processing':value.includes('失败')||value==='已停用'?'danger':'warning';return <span className={`status ${cls}`}><i/>{value}</span>}
 
 function TeacherFlow({setToast}){const [step,setStep]=useState(1);const [mode,setMode]=useState('个人反馈');const [subject,setSubject]=useState('通用美术');const [style,setStyle]=useState('星光展');const [saved,setSaved]=useState(false);const next=()=>setStep(x=>x+1);return <><PageHeader title="课后反馈" desc={step===1?'先创建本次课后反馈。':step===2?'完成作品、照片和视频的智能呈现。':step===3?'基于本节课素材，完成有依据的五维点评。':'成长已被记录。'} prd="课后反馈工作流"/><div className="flow-steps"><b className={step===1?'on':''}>1 创建信息</b><i/><b className={step===2?'on':''}>2 智能装裱</b><i/><b className={step===3?'on':''}>3 五维点评</b><i/><b className={step===4?'on':''}>4 归档转发</b></div>{step===1?<section className="single-task"><div className="task-title"><span>第一步</span><h2>创建课后反馈信息</h2><p>选择对象后，同时上传作品、照片和课堂视频。</p></div><div className="feedback-mode"><button className={mode==='个人反馈'?'selected':''} onClick={()=>setMode('个人反馈')}>个人反馈<small>为一位孩子制作</small></button><button className={mode==='班级反馈'?'selected':''} onClick={()=>setMode('班级反馈')}>班级反馈<small>可批量处理多位学员</small></button></div><div className="task-form"><label>选择班级<select><option>周六创意绘画 2 班</option><option>素描基础班</option><option>水彩启蒙 1 班</option></select></label><label>选择学员<select><option>{mode==='个人反馈'?'陈一诺':'本班全部学员（18人）'}</option><option>陈一诺、林小满、周子乐</option></select></label></div><div className="sync-upload"><div><Frame/><b>学员作品 <em>必选</em></b><small>{mode==='个人反馈'?'上传 1 幅作品':'支持按学员批量上传'}</small><button onClick={()=>setToast('作品已添加（演示）')}>上传作品</button></div><div><Image/><b>学员照片 <em>选填</em></b><small>课堂人物照片，可批量上传</small><button onClick={()=>setToast('照片已添加（演示）')}>上传照片</button></div><div><Video/><b>上课视频 <em>选填</em></b><small>课堂片段，可批量上传</small><button onClick={()=>setToast('视频已添加（演示）')}>上传视频</button></div></div><div className="task-action"><Button icon={ArrowRight} onClick={next}>创建信息，进入智能装裱</Button></div></section>:step===2?<section className="single-task studio-task"><div className="task-title"><span>第二步</span><h2>智能装裱</h2><p>作品、人物照片与课堂视频在这里分别完成处理。</p></div><div className="media-process"><article><div className={`mini-frame ${style==='自然原木'?'oak':style==='东方雅境'?'ink':''}`}>✺</div><div><b>学员作品</b><p>智能校正光影、去除背景，生成展览级装裱。</p><div className="tiny-choice">{['星光展','自然原木','东方雅境'].map(x=><button key={x} className={style===x?'active':''} onClick={()=>setStyle(x)}>{x}</button>)}</div></div></article><article><div className="photo-card"><img src={pandaMascot} alt="课堂人物美化"/></div><div><b>学员照片</b><p>自然优化光线、肤色与构图，不改变孩子真实面貌。</p><button className="small-action" onClick={()=>setToast('人物照片已自然美化（演示）')}>一键人物 P 图</button></div></article><article><div className="video-card"><Film/></div><div><b>上课视频</b><p>自动选取高光片段，生成一支温暖的课堂短片。</p><button className="small-action" onClick={()=>setToast('课堂视频已开始一键剪辑（演示）')}>一键剪辑</button></div></article></div><div className="task-action"><Button variant="secondary" onClick={()=>setStep(1)}>返回修改</Button><Button icon={ArrowRight} onClick={next}>装裱完成，进入五维点评</Button></div></section>:step===3?<section className="review-task"><div className="review-media"><div className="task-title"><span>本次课素材</span><h2>陈一诺 · 《向着光的花》</h2></div><div className="review-gallery"><div className="review-art">✺</div><div className="review-photo"><img src={pandaMascot} alt="课堂照片"/></div><div className="review-video"><Film/><span>课堂高光 00:38</span></div></div></div><div className="coach-review"><div className="focus-head"><div><span>第三步</span><h2>五维点评</h2></div><select value={subject} onChange={e=>setSubject(e.target.value)}><option>通用美术</option><option>创意绘画（3-6岁）</option><option>儿童画（6-9岁）</option><option>素描（9-18岁）</option><option>速写（9-18岁）</option><option>水彩 / 水粉（7-18岁）</option><option>国画（6-18岁）</option><option>漫画 / 动画（8-18岁）</option></select></div><p className="evidence">以下内容仅依据本次作品、课堂照片与视频生成；老师可编辑后发布。</p>{[['美术能力','作品使用黄、蓝两种主色形成清晰冷暖对比；向上延伸的花瓣线条表现出稳定的造型控制。'],['上课状态','视频片段中，她能持续投入创作，并在老师提示后继续补充花瓣细节。'],['行为能力','课堂中主动分享“花想把光送给妈妈”，表达清楚，也能等待同伴完成。'],['内在状态','明亮的色彩和向上构图呈现出积极、开放的表达倾向；这不是心理诊断。'],['家长建议','今晚请先欣赏再提问： “这朵花今天想把光送给谁？” 让孩子继续讲自己的故事。']].map(([a,b])=><article className="coach-card" key={a}><b>{a}</b><p>{b}</p></article>)}<div className="task-action"><Button icon={Archive} onClick={()=>{setSaved(true);next();setToast('点评已归档到成长档案')}}>归档并生成分享</Button></div></div></section>:<section className="share-task"><img src={pandaObserve} alt="熊猫艺术导师"/><div><span>已归档至陈一诺的成长档案</span><h2>这一次的成长，<br/>已经被完整记录。</h2><p>作品、课堂照片、视频与五维点评已经同步保存。</p><div className="share-actions"><Button icon={Archive} onClick={()=>setToast('成长集锦制作中')}>制作成长集锦</Button><Button variant="secondary" icon={Frame} onClick={()=>setToast('个人作品集制作中')}>制作个人作品集</Button><Button variant="secondary" icon={MessageSquareText} onClick={()=>setToast('家长分享链接已生成')}>一键转发给家长</Button></div></div></section>}</>}
 
@@ -247,19 +270,27 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
   const activeFrame=enabledFrames.find(item=>item.id===frame)||enabledFrames[0]||null;
   const activeFrameId=activeFrame?.id||'';
   const [subject,setSubject]=useState('通用美术');
-  const [media,setMedia]=useState({artwork:null,photo:null,video:null});
-  const [batchUploads,setBatchUploads]=useState({artwork:[],photo:[],video:[]});
-  const [uploadState,setUploadState]=useState({artwork:'idle',photo:'idle',video:'idle'});
+  const [media,setMedia]=useState({artwork:null,photo:null});
+  const [batchUploads,setBatchUploads]=useState({artwork:[],photo:[]});
+  const [uploadState,setUploadState]=useState({artwork:'idle',photo:'idle'});
   const [archived,setArchived]=useState(false);
+  // 五维点评的正文默认留空：内容只能来自大模型（人设 + 专业技能 + 记忆）。
+  // 留空状态下的提示语只说明这一维要看什么，不预填任何「像点评的句子」。
   const reviewDefaults={
-    美术能力:'请依据作品中的色彩、构图、造型或材料使用，写下一个具体优势和一个下一步练习。',
-    上课状态:'请由老师补充课堂中可观察到的投入、转换或回应。',
-    行为能力:'请描述任务理解、表达、协作或整理等可观察行为，不给孩子贴标签。',
-    内在状态:'仅记录本次课堂中可观察的表达与变化，不作心理诊断。',
-    家长建议:'给出 1—3 条与本次观察有关、家长今晚就能尝试的具体行动。'
+    美术能力:'',
+    上课状态:'',
+    行为能力:'',
+    内在状态:'',
+    家长建议:''
   };
   const [reviews,setReviews]=useState(reviewDefaults);
   const [keywords,setKeywords]=useState([]);
+  // 大模型识别出的观察词（用于在面板上打「AI」标记）；keywords 是最终生效的集合。
+  const [aiKeywords,setAiKeywords]=useState([]);
+  const [keywordSuggesting,setKeywordSuggesting]=useState(false);
+  const [keywordDirty,setKeywordDirty]=useState(false);
+  // 只有点击「使用本地草稿」时才为 true：五维点评正文默认必须来自大模型。
+  const [localDraftUsed,setLocalDraftUsed]=useState(false);
   const [framingState,setFramingState]=useState('idle');
   const [reviewState,setReviewState]=useState('idle');
   // 本次点评使用哪个老师人设（人设 + 技能库 + 大模型记忆一起进 system 提示词）。
@@ -272,8 +303,8 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
   const [reviewGenerated,setReviewGenerated]=useState(false);
   const [artworkEvidence,setArtworkEvidence]=useState(null);
   const resolvedArtworkEvidence=artworkEvidence;
-  const artworkInput=useRef(null), photoInput=useRef(null), videoInput=useRef(null);
-  const steps=[['创建信息','选择对象并上传素材'],['智能装裱','完成作品、照片与视频'],['五维点评','依据素材完成温暖点评'],['归档转发','形成一次完整课后反馈']];
+  const artworkInput=useRef(null), photoInput=useRef(null);
+  const steps=[['创建信息','选择对象并上传素材'],['智能装裱','完成作品与照片的裁剪装裱'],['五维点评','依据素材完成温暖点评'],['归档转发','形成一次完整课后反馈']];
   useEffect(()=>{
     // This compact legacy form is hydrated from the current student registry so
     // a newly created class or student can immediately be selected for feedback.
@@ -304,8 +335,10 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
   },[step,media]);
   useEffect(()=>{window.dispatchEvent(new CustomEvent('xinlehui-feedback-step',{detail:step}))},[step]);
   useEffect(()=>{window.__xinlehuiFeedbackMode=mode;window.dispatchEvent(new CustomEvent('xinlehui-feedback-mode',{detail:mode}))},[mode]);
+  // 观察词变化不改写 reviewGenerated：正文是老师自己的判断结果，
+  // 改词只提示「建议重新生成」，是否重新生成由老师决定（归档不被硬挡）。
   useEffect(()=>{
-    const handleKeywords=(event)=>{setKeywords(event.detail);setReviewGenerated(false)};
+    const handleKeywords=(event)=>{setKeywords(event.detail);setKeywordDirty(true)};
     window.addEventListener('xinlehui-review-keywords',handleKeywords);
     return()=>window.removeEventListener('xinlehui-review-keywords',handleKeywords);
   },[]);
@@ -374,37 +407,40 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
     }).catch(()=>{});
     return()=>{cancelled=true};
   },[step,media.photo?.id,media.photo?.url,media.photo?.portraitReady]);
-  useEffect(()=>{
-    if(step!==3||reviewGenerated||!resolvedArtworkEvidence) return;
-    setReviewState('processing');
+  // 五维点评的正文只由大模型产出（人设 + 专业技能 + 记忆 + 作品图）。
+  // 这里不再做「进入第三步就自动预填」的本地文案：那样老师看到的其实不是 AI 的思考结果。
+  // 云端不可用时，才由老师在面板上显式点击「使用本地草稿模板」兜底，并明确标注来源。
+  const fillLocalDraft=()=>{
     const has=(...items)=>items.some(item=>keywords.includes(item));
-    const colorEvidence=resolvedArtworkEvidence.hasColor?(has('暖色调','冷色调','色彩丰富','对比鲜明','渐变柔和')?'孩子主动使用了有辨识度的色彩关系':'作品中可见多种明显色相与局部变化'):'';
+    const evidence=resolvedArtworkEvidence||{status:'ready',hasColor:false,visibleMarks:false};
+    const colorEvidence=evidence.hasColor?(has('暖色调','冷色调','色彩丰富','对比鲜明','渐变柔和')?'孩子主动使用了有辨识度的色彩关系':'作品中可见多种明显色相与局部变化'):'';
     const compositionEvidence=has('构图饱满','留白意境','居中主体','散点分布','层次分明','自由布局')?'画面的主体位置与空间安排有自己的选择':'主体、细节与画面空间之间已经有了初步安排';
     const lineEvidence=has('线条流畅','笔触有力','细致入微','自由奔放','涂色均匀','大胆粗犷')?'线条与笔触呈现出清楚的创作节奏':'线条与可见笔触里保留了孩子自然、真实的手感';
-    const artReview=resolvedArtworkEvidence.hasColor?`本次作品中，${colorEvidence}；${compositionEvidence}。${lineEvidence}。下一次可以邀请一诺在主体周围尝试一处深浅或大小的变化，让画面的层次更清楚。`:`本次作品以可见的线条、形状和画面安排为主要依据。${compositionEvidence}。${lineEvidence}。下一次可以邀请一诺围绕已经画出的主体补充一处大小、位置或细节变化，让画面表达得更清楚。`;
+    const student=selectedStudentLabel||'孩子';
+    const artReview=evidence.hasColor?`本次作品中，${colorEvidence}；${compositionEvidence}。${lineEvidence}。下一次可以邀请${student}在主体周围尝试一处深浅或大小的变化，让画面的层次更清楚。`:`本次作品以可见的线条、形状和画面安排为主要依据。${compositionEvidence}。${lineEvidence}。下一次可以邀请${student}围绕已经画出的主体补充一处大小、位置或细节变化，让画面表达得更清楚。`;
     const focus=keywords.length?keywords.join('、'):'本次作品、课堂素材与老师观察';
-    const timer=setTimeout(()=>{
-      setReviews({
-        美术能力:artReview,
-        上课状态:media.video?.url?'从课堂影像可见，一诺能持续投入创作；在老师提示后，她愿意回到画面补充细节。她已经在“自己先完成，再接受一点支持”的节奏里建立起稳定感。':'从本次作品完成度和课堂照片看，一诺愿意把自己的想法慢慢放进画面。下次老师会继续用一个具体、轻松的问题，帮助她更快进入创作状态。',
-        行为能力:has('表达自然','故事性强','同伴协作','课堂回应')?'一诺愿意把画面想法说出来，也在课堂互动中练习倾听与回应。老师会继续给她清晰的表达机会，让这份主动慢慢变成更笃定的沟通能力。':'一诺能跟着任务一步步完成，也愿意讲述自己的画面想法。面对新的要求时，她正在建立自己的节奏和判断；老师会用分步骤的提醒支持她自主完成。',
-        内在状态:`这次创作里，她通过${focus}留下了真实的表达。我们尊重这份表达，也会持续观察她在课堂中的投入、选择和回应；这些是本次创作观察，不作为心理诊断。`,
-        家长建议:'回家后先请一诺给作品取一个名字，再问：“你最喜欢画面里的哪一处？为什么？” 听完后只补一句具体肯定，例如“我看见你把这里画得很认真”。不急着评价像不像，让她继续相信自己的表达。'
-      });
-      setReviewState('ready');setReviewGenerated(true);
-    },800);
-    return()=>clearTimeout(timer);
-  },[step,reviewGenerated,keywords,media.video?.url,resolvedArtworkEvidence]);
+    setReviews({
+      美术能力:artReview,
+      上课状态:`从本次作品完成度和课堂照片看，${student}愿意把自己的想法慢慢放进画面。下次老师会继续用一个具体、轻松的问题，帮助${student}更快进入创作状态。`,
+      行为能力:`${student}能跟着任务一步步完成，也愿意讲述自己的画面想法。面对新的要求时，正在建立自己的节奏和判断；老师会用分步骤的提醒支持自主完成。`,
+      内在状态:`这次创作里，${student}通过${focus}留下了真实的表达。我们尊重这份表达，也会持续观察课堂中的投入、选择和回应；这些是本次创作观察，不作为心理诊断。`,
+      家长建议:`回家后先请${student}给作品取一个名字，再问：「你最喜欢画面里的哪一处？为什么？」听完后只补一句具体肯定，例如「我看见你把这里画得很认真」。不急着评价像不像，让${student}继续相信自己的表达。`
+    });
+    setLocalDraftUsed(true);
+    setReviewState('ready');
+    setReviewGenerated(true);
+    setKeywordDirty(false);
+    setToast('已填入本地草稿模板（未调用大模型），请老师逐条修改后再发布。');
+  };
+  // 课后反馈只收图片：作品与课堂照片。视频已从这条工作流里去掉。
   const readFile=async(kind,file)=>{
     if(!file) return;
-    const isImage=kind==='artwork'||kind==='photo';
-    const maxBytes=isImage?20*1024*1024:2*1024*1024*1024;
-    if(isImage&&!['image/jpeg','image/png','image/webp'].includes(file.type)){
+    if(!['image/jpeg','image/png','image/webp'].includes(file.type)){
       setToast('请选择 JPG、PNG 或 WebP 格式的图片');
       return;
     }
-    if(file.size>maxBytes){
-      setToast(`${isImage?'图片':'视频'}大小超出当前限制，请选择更小的文件后重试`);
+    if(file.size>20*1024*1024){
+      setToast('图片大小超出 20MB，请压缩后重新选择');
       return;
     }
     const url=URL.createObjectURL(file);
@@ -413,12 +449,6 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
     // the user think the click did nothing.
     setMedia(current=>({...current,[kind]:{id:`local-${Date.now()}`,name:file.name,url,originalUrl:url,orientedUrl:url,rotation:0,orientationConfirmed:false,processingRequested:false,type:file.type,size:file.size,storage:'local-preview',uploadStatus:'uploading'}}));
     setUploadState(current=>({...current,[kind]:'uploading'}));
-    if(kind==='video'){
-      setMedia(current=>({...current,[kind]:{...current[kind],uploadStatus:'local-only'}}));
-      setUploadState(current=>({...current,[kind]:'local-only'}));
-      setToast(`已添加课堂视频预览：${file.name}。开发服务暂未启用视频对象存储，无法提交 AI。`);
-      return;
-    }
     try{
       const uploaded=await uploadControlledMedia(kind,file);
       setMedia(current=>({...current,[kind]:{...current[kind],...uploaded,url,storage:'controlled-memory',uploadStatus:'ready'}}));
@@ -434,13 +464,13 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
     const files=Array.from(fileList||[]);
     // Clearing the native input lets a teacher choose the same photo again
     // after a failed upload or a quick correction.
-    const sourceInput=input||({artwork:artworkInput,photo:photoInput,video:videoInput}[kind]?.current);
+    const sourceInput=input||({artwork:artworkInput,photo:photoInput}[kind]?.current);
     if(sourceInput) sourceInput.value='';
     if(!files.length) return;
     if(mode==='班级反馈'){
       setBatchUploads(current=>({...current,[kind]:files.map(file=>({name:file.name,type:file.type,size:file.size,url:URL.createObjectURL(file),rotation:0,orientationChecked:true}))}));
       readFile(kind,files[0]);
-      const names={artwork:'学员作品',photo:'课堂照片',video:'课堂视频'};
+      const names={artwork:'学员作品',photo:'课堂照片'};
       setToast(`已批量添加 ${files.length} 份${names[kind]}，可进入下一步统一处理`);
       return;
     }
@@ -448,6 +478,8 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
   };
   const hasUploadedArtwork=Boolean(media.artwork?.url);
   const hasProcessedArtwork=Boolean(media.artwork?.cleanUrl&&media.artwork?.cleanAlgorithm===ARTWORK_CLEAN_ALGORITHM);
+  // 用来在点评区标注「这几段评语是哪位人设写出来的」。
+  const activeProfileLabel=(teacherProfiles.find(item=>item.id===activeProfileId)||teacherProfiles[0])?.name||'默认人设';
   const go=(next)=>{
     if(next>=2&&!hasUploadedArtwork){setToast('请先上传学员作品，才能进入智能装裱');return}
     if(next>=3&&!hasProcessedArtwork){setToast('作品正在自动处理，请等待作品裁剪完成后再进入五维点评。');return}
@@ -459,8 +491,13 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
       setFramingState('processing');
     }
   };
-  const resetDraft=()=>{localStorage.removeItem('xinlehui-feedback-draft');setMedia({artwork:null,photo:null,video:null});setBatchUploads({artwork:[],photo:[],video:[]});setReviews(reviewDefaults);setKeywords([]);setArchived(false);setReviewGenerated(false);setStep(1);setToast('已新建一份课后反馈草稿')};
-  const toggleKeyword=(keyword)=>{setKeywords(current=>current.includes(keyword)?current.filter(item=>item!==keyword):[...current,keyword]);setReviewGenerated(false);};
+  const resetDraft=()=>{localStorage.removeItem('xinlehui-feedback-draft');setMedia({artwork:null,photo:null});setBatchUploads({artwork:[],photo:[]});setReviews(reviewDefaults);setKeywords([]);setAiKeywords([]);setLocalDraftUsed(false);setKeywordDirty(false);setArchived(false);setReviewGenerated(false);setStep(1);setToast('已新建一份课后反馈草稿')};
+  // 老师手动增删观察词。AI 选中的词被取消时，同步从「AI 已识别」集合里去掉，标记才一致。
+  const toggleKeyword=(keyword)=>{
+    setKeywords(current=>current.includes(keyword)?current.filter(item=>item!==keyword):[...current,keyword]);
+    setAiKeywords(current=>current.includes(keyword)?current.filter(item=>item!==keyword):current);
+    setKeywordDirty(true);
+  };
   const rotatePersonalArtwork=async(direction=1)=>{
     const artwork=media.artwork;
     if(!artwork?.originalUrl||framingState==='rotating'||framingState==='processing') return;
@@ -494,6 +531,7 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
     setReviewStream(current=>({...current,phase:'idle',message:'已停止生成'}));
   };
   // 云端流式点评：人设 + 技能库 + 大模型记忆一起进 system 提示词，作品图作为 image_url 传入。
+  // 五个维度的正文与「作品观察词」都由这一个调用产出：先让模型读懂画面，再按维度写评语。
   const startCloudReview=async()=>{
     if(mode==='班级反馈'){setToast('班级课程反馈将接入下一段课程目标生成服务');return;}
     if(!media.artwork?.cleanUrl&&!media.artwork?.originalUrl){setToast('请先上传并完成作品处理，再生成点评。');return;}
@@ -502,6 +540,7 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
     reviewAbort.current=controller;
     const activeProfile=teacherProfiles.find(item=>item.id===activeProfileId)||teacherProfiles[0]||null;
     setReviewState('processing');
+    setKeywordSuggesting(true);
     setReviewStream({open:true,phase:'running',reasoning:'',content:'',message:'',elapsed:0});
     try{
       const artworkDataUrl=await mediaToDataUrl(media.artwork?.cleanUrl||media.artwork?.orientedUrl||media.artwork?.originalUrl);
@@ -515,21 +554,35 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
         teacherObservation:'',
         artworkDataUrl,
         photoDataUrl,
+        keywordCandidates:keywordCandidatesPrompt(mode),
+        keywordScope:mode==='班级反馈'?'课程观察关键词':'作品观察词',
         signal:controller.signal,
         onReasoning:full=>setReviewStream(current=>({...current,reasoning:full})),
         onContent:full=>setReviewStream(current=>({...current,content:full}))
       });
       setReviews(current=>({...current,...result.reviews}));
       setReviewGenerated(true);
+      setLocalDraftUsed(false);
+      setKeywordDirty(false);
       setReviewState('ready');
       setReviewStream(current=>({...current,phase:'done',reasoning:result.reasoning||current.reasoning,content:'',message:''}));
-      setToast(`已按「${activeProfile?.name||'默认人设'}」生成点评草稿，请老师确认后再发布`);
+      // 模型识别出的观察词：与老师已手动勾选的取并集，再按目录顺序排好。
+      const picked=pickSupportedKeywords(result.keywords,mode);
+      setAiKeywords(picked);
+      if(picked.length) setKeywords(current=>orderKeywords([...current,...picked],mode));
+      const unmatched=!picked.length&&(result.keywords||[]).length;
+      setToast(picked.length
+        ?`已按「${activeProfileLabel}」生成点评，并识别出 ${picked.length} 个观察词，请老师确认后再发布`
+        :unmatched
+          ?`已按「${activeProfileLabel}」生成点评；本次识别出的词不在词表内，请老师手动勾选观察词`
+          :`已按「${activeProfileLabel}」生成点评草稿，请老师确认后再发布`);
     }catch(error){
       if(controller.signal.aborted) return;
       setReviewState('ready');
       setReviewStream(current=>({...current,phase:'error',message:describeReviewError(error)}));
       setToast(describeReviewError(error));
     }finally{
+      setKeywordSuggesting(false);
       if(reviewAbort.current===controller) reviewAbort.current=null;
     }
   };
@@ -540,15 +593,15 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
   };
   return <><PageHeader title="课后反馈" desc="每一个环节都可随时进入，当前进度会同步保留。" prd="课后反馈工作流"/>
     <section className="feedback-flow-v2">
-      <nav className="flow-scene-nav">{steps.map(([name,desc],index)=>{const stage=index+1;const done=stage===1?hasUploadedArtwork:stage===2?hasProcessedArtwork:stage===3?reviewGenerated:false;return <button key={name} className={step===stage?'active':step>stage&&done?'done':''} onClick={()=>go(stage)}><i>{step>stage&&done?<Check size={13}/>:stage}</i><span><b>{name}</b><small>{desc}</small></span></button>})}</nav>
+      <FlowStepper steps={steps} step={step} flags={[hasUploadedArtwork,hasProcessedArtwork,reviewGenerated,archived]} onGo={go}/>
       <div className="scene-status"><span>当前进行：{steps[step-1][0]}</span><button onClick={()=>go(Math.max(1,step-1))} disabled={step===1}>反馈上一步</button></div>
-      {reviewStream.open?<ReviewStreamPanel stream={reviewStream} profiles={teacherProfiles} activeProfileId={activeProfileId} setActiveProfileId={setActiveProfileId} onStart={startCloudReview} onStop={stopCloudReview} onClose={()=>setReviewStream(current=>({...current,open:false}))}/>:null}
-      {step===3&&!reviewStream.open?<ReviewLaunchPanel profiles={teacherProfiles} skillLibrary={skillLibrary} activeProfileId={activeProfileId} setActiveProfileId={setActiveProfileId} onStart={startCloudReview} hasArtwork={Boolean(media.artwork?.cleanUrl||media.artwork?.originalUrl)}/>:null}
+      {reviewStream.open?<ReviewStreamPanel stream={reviewStream} profiles={teacherProfiles} activeProfileId={activeProfileId} setActiveProfileId={setActiveProfileId} onStart={startCloudReview} onStop={stopCloudReview} onLocalDraft={fillLocalDraft} onClose={()=>setReviewStream(current=>({...current,open:false}))}/>:null}
+      {step===3&&!reviewStream.open?<ReviewLaunchPanel profiles={teacherProfiles} skillLibrary={skillLibrary} activeProfileId={activeProfileId} setActiveProfileId={setActiveProfileId} onStart={startCloudReview} onLocalDraft={fillLocalDraft} draftReady={reviewGenerated} localDraftUsed={localDraftUsed} keywordCount={keywords.length} hasArtwork={Boolean(media.artwork?.cleanUrl||media.artwork?.originalUrl)}/>:null}
       {step===2&&mode==='班级反馈'?<ClassFramingWall artworks={batchUploads.artwork} photos={batchUploads.photo} onRotate={index=>rotateBatchItem('artwork',index)} onRotatePhoto={index=>rotateBatchItem('photo',index)}/>:null}
-      {step===1?<section className="scene-panel"><div className="scene-heading"><span>第一步</span><h2>创建课后反馈信息</h2><p>先确定服务对象，再同步收集本节课素材。素材只在本次操作中保留。</p></div><div className="feedback-mode"><button className={mode==='个人反馈'?'selected':''} onClick={()=>setMode('个人反馈')}>个人反馈<small>为一位孩子完成反馈</small></button><button className={mode==='班级反馈'?'selected':''} onClick={()=>setMode('班级反馈')}>班级反馈<small>批量处理全班素材</small></button></div><div className="task-form"><label>选择班级<select><option>周六创意绘画 2 班</option><option>色彩启蒙班</option></select></label><label>选择学员<select><option>{mode==='个人反馈'?'陈一诺 · 7岁':'本班全部学员（18人）'}</option><option>林小满 · 8岁</option></select></label></div><div className="sync-upload"><div className={media.artwork?.url?'has-file':''}><Frame/><b>学员作品 <em>必选</em></b><small>{mode==='班级反馈'&&batchUploads.artwork.length?`已选择 ${batchUploads.artwork.length} 幅作品 · ${batchUploads.artwork[0].name}`:media.artwork?.url?media.artwork.name:'支持个人或按学员批量上传'}</small><input ref={artworkInput} type="file" accept="image/jpeg,image/png,image/webp" hidden multiple={mode==='班级反馈'} onChange={e=>readFiles('artwork',e.target.files,e.currentTarget)}/><button onClick={()=>artworkInput.current?.click()}>{media.artwork?.url?'已上传 · 重新选择':'上传作品'}</button></div><div className={media.photo?.url?'has-file':''}><Image/><b>学员照片 <em>选填</em></b><small>{mode==='班级反馈'&&batchUploads.photo.length?`已选择 ${batchUploads.photo.length} 张照片 · ${batchUploads.photo[0].name}`:media.photo?.url?media.photo.name:'课堂人物照片，可批量上传'}</small><input ref={photoInput} type="file" accept="image/jpeg,image/png,image/webp" hidden multiple={mode==='班级反馈'} onChange={e=>readFiles('photo',e.target.files,e.currentTarget)}/><button onClick={()=>photoInput.current?.click()}>{media.photo?.url?'已上传 · 重新选择':'上传照片'}</button></div><div className={media.video?.url?'has-file':''}><Video/><b>上课视频 <em>选填</em></b><small>{mode==='班级反馈'&&batchUploads.video.length?`已选择 ${batchUploads.video.length} 段视频 · ${batchUploads.video[0].name}`:media.video?.url?media.video.name:'课堂片段，可批量上传'}</small><input ref={videoInput} type="file" accept="video/mp4,video/quicktime,video/webm" hidden multiple={mode==='班级反馈'} onChange={e=>readFiles('video',e.target.files,e.currentTarget)}/><button onClick={()=>videoInput.current?.click()}>{media.video?.url?'已上传 · 重新选择':'上传视频'}</button></div></div><div className="upload-privacy-note"><ShieldCheck size={14}/>只有当前操作里真实选择的素材才会显示“已上传”；刷新或重新进入后请重新上传。班级反馈支持一次选择多份作品、照片或视频。</div><div className="scene-actions"><Button variant="secondary" onClick={resetDraft}>新建草稿</Button><Button icon={ArrowRight} onClick={()=>go(2)}>进入智能装裱</Button></div></section>:null}
-      {step===2?<section className="scene-panel studio-task"><div className="scene-heading"><span>第二步</span><h2>智能装裱</h2><p>先旋转完整原图并确认方向；确认后自动裁掉纸外的桌面、地面与背景，只保留作品本身。</p></div><div className="media-process"><article><div className={`mini-frame uploaded-art${media.artwork?.framedUrl?' framed-preview':''}`}>{media.artwork?.url?<><img src={media.artwork.framedUrl||media.artwork.cleanUrl||media.artwork.orientedUrl||media.artwork.originalUrl} alt={media.artwork.framedUrl?`已按「${activeFrame?.name||'默认装裱'}」完成装裱的作品`:media.artwork.cleanUrl?'已裁掉纸外背景、只保留作品本身':'等待确认方向的完整原图'}/>{media.artwork?.framedUrl?<span className="framed-badge">{activeFrame?.name||'默认装裱'}</span>:null}<div className="frame-rotate-controls" aria-label="旋转作品"><button type="button" title="向左旋转 90°" aria-label="向左旋转作品" disabled={framingState==='rotating'||framingState==='processing'} onClick={()=>rotatePersonalArtwork(-1)}><RotateCcw size={18}/></button><button type="button" title="向右旋转 90°" aria-label="向右旋转作品" disabled={framingState==='rotating'||framingState==='processing'} onClick={()=>rotatePersonalArtwork(1)}><RotateCw size={18}/></button></div></>:'✺'}</div><div><b>学员作品</b><p>{framingState==='processing'?(media.artwork?.cleanUrl?'正在按当前装裱方案合成装裱图…':'正在裁掉纸外的桌面与地面，只保留作品本身…'):media.artwork?.framedUrl?`已装裱：${activeFrame?.name||'默认装裱'}。作品只做等比缩放与居中，不裁切主体、不重绘、不调色。`:media.artwork?.cleanUrl?'已完成作品裁剪，正在生成装裱图…':'当前仅显示完整原图；请先旋转到正确方向。'}</p>{!media.artwork?.cleanUrl?<button type="button" className="confirm-artwork-button" onClick={startArtworkCleanup} disabled={framingState==='rotating'||framingState==='processing'}>{framingState==='processing'?'正在裁剪作品…':'方向正确，开始裁剪与装裱'}</button>:null}<div className="tiny-choice">{enabledFrames.length?enabledFrames.map(item=><button key={item.id} className={activeFrameId===item.id?'active':''} disabled={framingState==='processing'} onClick={()=>setFrame(item.id)} title={item.spec?.atmosphere||item.description||item.name}>{item.name}</button>):<span className="frame-loading">正在读取装裱设置…</span>}</div></div></article><article><div className="photo-card">{media.photo?.url?<><img src={media.photo.url} alt="已自然优化的课堂照片" style={{transform:`rotate(${media.photo.rotation||0}deg)`}}/><button type="button" className="frame-rotate-button photo-rotate-button" onClick={rotatePersonalPhoto}><RefreshCw size={16}/>旋转照片</button></>:<img src={pandaMascot} alt="课堂照片占位预览"/>}</div><div><b>学员照片</b><p>{media.photo?.name||'未上传课堂照片，可返回上一步补充。'}</p></div></article><article><div className="video-card">{media.video?<video src={media.video.url} controls preload="metadata"/>:<><Film/><span>暂未上传视频</span></>}</div><div><b>上课视频</b><p>{media.video?.name||'未上传课堂视频，可返回上一步补充。'}</p></div></article></div><div className="scene-actions"><Button variant="secondary" onClick={()=>go(1)}>返回创建信息</Button><Button icon={ArrowRight} onClick={()=>go(3)}>进入五维点评</Button></div></section>:null}
-      {step===3?<section className="scene-panel review-task-v2"><div className="review-media"><div className="scene-heading"><span>{mode==='班级反馈'?'本班课后素材':'本次课素材'}</span><h2>{mode==='班级反馈'?'周六创意绘画 2 班 · 班级课后反馈':`${selectedStudentLabel}${activeFrame?.plaqueTitle?` · 《${activeFrame.plaqueTitle}》`:''}`}</h2></div><div className={`review-gallery ${mode==='班级反馈'?'class-review-gallery':''}`}>{mode==='班级反馈'?<><ClassMediaMosaic items={batchUploads.artwork} kind="artwork" onRotate={index=>rotateBatchItem('artwork',index)}/><ClassMediaMosaic items={batchUploads.photo} kind="photo" onRotate={index=>rotateBatchItem('photo',index)}/><div className="review-video">{media.video?.url?<video src={media.video.url} controls preload="metadata"/>:<><Film/><span>未上传课堂视频</span></>}</div></>:<><div className={`review-art exhibition-art${media.artwork?.framedUrl?' framed-art':''}`}>{media.artwork?.framedUrl?<div className="framed-art-final"><img src={media.artwork.framedUrl} alt={`${selectedStudentLabel}的作品 · ${activeFrame?.name||'装裱'}`}/>{activeFrame?.name?<span className="framed-badge">{activeFrame.name}</span>:null}</div>:<><div className="artwork-mat">{media.artwork?.url?<img src={media.artwork.cleanUrl||media.artwork.originalUrl||media.artwork.url} alt={`${selectedStudentLabel}的作品`}/>:'✺'}</div><div className="artwork-plaque"><div><b>{selectedStudentLabel}</b><span>{activeFrame?.plaqueTitle?`《${activeFrame.plaqueTitle}》`:''}</span></div><time>创作于 {(activeFrame?.plaqueDate||new Date().toISOString().slice(0,10).replace(/-/g,'.'))}</time></div></>}</div><div className="review-photo portrait-print"><div className="portrait-mat">{media.photo?.url?<img src={media.photo.url} alt="陈一诺课堂照片"/>:<img src={pandaMascot} alt="课堂照片占位"/>}</div><div className="portrait-caption">{selectedStudentLabel} · {(activeFrame?.plaqueDate||new Date().toISOString().slice(0,10).replace(/-/g,'.'))}</div></div><div className="review-video">{media.video?.url?<video src={media.video.url} controls preload="metadata"/>:<><Film/><span>未上传课堂视频</span></>}</div></>}</div></div><ReviewKeywordDock visible/><div className={`coach-review ${mode==='班级反馈'?'class-coach-review':''}`}><div className="scene-heading"><span>第三步</span><h2>{mode==='班级反馈'?'班级课程反馈':'五维点评'}</h2></div><select value={subject} onChange={e=>setSubject(e.target.value)}><option>通用美术</option><option>创意绘画（3-6岁）</option><option>儿童画（6-9岁）</option><option>素描（9-18岁）</option><option>速写（9-18岁）</option><option>水彩 / 水粉（7-18岁）</option><option>国画（6-18岁）</option></select><p className="evidence">{mode==='班级反馈'?'以下内容基于本节课课程设计、班级素材与老师观察生成，老师可编辑确认后发布给家长。':'下列内容由老师完成并归档。正式AI生成必须以作品、课堂素材与老师观察为依据，并由老师确认后发布。'}</p>{mode==='班级反馈'?<ClassReviewContent subject={subject}/>:Object.entries(reviews).map(([name,copy])=><article className="coach-card" key={name}><b>{name}</b><textarea aria-label={name} value={copy} onChange={event=>setReviews(current=>({...current,[name]:event.target.value}))}/></article>)}<div className="scene-actions"><Button variant="secondary" onClick={()=>go(2)}>返回智能装裱</Button><Button icon={Archive} onClick={archiveRecord}>归档并生成分享</Button></div></div></section>:null}
-      {step===4?<section className="share-task scene-panel"><img src={pandaObserve} alt="熊猫成长伙伴"/><div><span>已归档至陈一诺的成长档案</span><h2>这一次的成长，<br/>已经被完整记录。</h2><p>作品、课堂照片、视频与五维点评已经同步保存到本地草稿。</p><div className="share-actions"><Button icon={Archive} onClick={()=>setToast('成长集锦任务已创建，等待服务端接入')}>制作成长集锦</Button><Button variant="secondary" icon={Frame} onClick={()=>setToast('个人作品集任务已创建，等待服务端接入')}>制作作品集</Button><Button variant="secondary" icon={Film} onClick={()=>setToast('成长记录视频任务已创建，等待服务端接入')}>制作成长记录（视频）</Button></div><div className="scene-actions"><Button variant="secondary" onClick={()=>go(3)}>返回五维点评</Button><Button icon={FileText} onClick={()=>navigate('archives')}>进入成长档案</Button></div></div></section>:null}
+      {step===1?<section className="scene-panel"><div className="scene-heading"><span>第一步</span><h2>创建课后反馈信息</h2><p>先确定服务对象，再同步收集本节课素材。素材只在本次操作中保留。</p></div><div className="feedback-mode"><button className={mode==='个人反馈'?'selected':''} onClick={()=>setMode('个人反馈')}>个人反馈<small>为一位孩子完成反馈</small></button><button className={mode==='班级反馈'?'selected':''} onClick={()=>setMode('班级反馈')}>班级反馈<small>批量处理全班素材</small></button></div><div className="task-form"><label>选择班级<select><option>周六创意绘画 2 班</option><option>色彩启蒙班</option></select></label><label>选择学员<select><option>{mode==='个人反馈'?'陈一诺 · 7岁':'本班全部学员（18人）'}</option><option>林小满 · 8岁</option></select></label></div><div className="sync-upload"><div className={media.artwork?.url?'has-file':''}><Frame/><b>学员作品 <em>必选</em></b><small>{mode==='班级反馈'&&batchUploads.artwork.length?`已选择 ${batchUploads.artwork.length} 幅作品 · ${batchUploads.artwork[0].name}`:media.artwork?.url?media.artwork.name:'支持个人或按学员批量上传'}</small><input ref={artworkInput} type="file" accept="image/jpeg,image/png,image/webp" hidden multiple={mode==='班级反馈'} onChange={e=>readFiles('artwork',e.target.files,e.currentTarget)}/><button onClick={()=>artworkInput.current?.click()}>{media.artwork?.url?'已上传 · 重新选择':'上传作品'}</button></div><div className={media.photo?.url?'has-file':''}><Image/><b>学员照片 <em>选填</em></b><small>{mode==='班级反馈'&&batchUploads.photo.length?`已选择 ${batchUploads.photo.length} 张照片 · ${batchUploads.photo[0].name}`:media.photo?.url?media.photo.name:'课堂人物照片，可批量上传'}</small><input ref={photoInput} type="file" accept="image/jpeg,image/png,image/webp" hidden multiple={mode==='班级反馈'} onChange={e=>readFiles('photo',e.target.files,e.currentTarget)}/><button onClick={()=>photoInput.current?.click()}>{media.photo?.url?'已上传 · 重新选择':'上传照片'}</button></div></div><div className="upload-privacy-note"><ShieldCheck size={14}/>只有当前操作里真实选择的素材才会显示“已上传”；刷新或重新进入后请重新上传。班级反馈支持一次选择多份作品或照片。</div><div className="scene-actions"><Button variant="secondary" onClick={resetDraft}>新建草稿</Button><Button icon={ArrowRight} onClick={()=>go(2)}>进入智能装裱</Button></div></section>:null}
+      {step===2?<section className="scene-panel studio-task"><div className="scene-heading"><span>第二步</span><h2>智能装裱</h2><p>先旋转完整原图并确认方向；确认后自动裁掉纸外的桌面、地面与背景，只保留作品本身。装裱方案（画框、卡纸、展签、日期与署名）由管理员在「装裱设置」中统一维护，这里直接选用。</p></div><div className="media-process"><article><div className={`mini-frame uploaded-art${media.artwork?.framedUrl?' framed-preview':''}`}>{media.artwork?.url?<><img src={media.artwork.framedUrl||media.artwork.cleanUrl||media.artwork.orientedUrl||media.artwork.originalUrl} alt={media.artwork.framedUrl?`已按「${activeFrame?.name||'默认装裱'}」完成装裱的作品`:media.artwork.cleanUrl?'已裁掉纸外背景、只保留作品本身':'等待确认方向的完整原图'}/>{media.artwork?.framedUrl?<span className="framed-badge">{activeFrame?.name||'默认装裱'}</span>:null}<div className="frame-rotate-controls" aria-label="旋转作品"><button type="button" title="向左旋转 90°" aria-label="向左旋转作品" disabled={framingState==='rotating'||framingState==='processing'} onClick={()=>rotatePersonalArtwork(-1)}><RotateCcw size={18}/></button><button type="button" title="向右旋转 90°" aria-label="向右旋转作品" disabled={framingState==='rotating'||framingState==='processing'} onClick={()=>rotatePersonalArtwork(1)}><RotateCw size={18}/></button></div></>:'✺'}</div><div><b>学员作品</b><p>{framingState==='processing'?(media.artwork?.cleanUrl?'正在按当前装裱方案合成装裱图…':'正在裁掉纸外的桌面与地面，只保留作品本身…'):media.artwork?.framedUrl?`已装裱：${activeFrame?.name||'默认装裱'}。作品只做等比缩放与居中，不裁切主体、不重绘、不调色。`:media.artwork?.cleanUrl?'已完成作品裁剪，正在生成装裱图…':'当前仅显示完整原图；请先旋转到正确方向。'}</p>{!media.artwork?.cleanUrl?<button type="button" className="confirm-artwork-button" onClick={startArtworkCleanup} disabled={framingState==='rotating'||framingState==='processing'}>{framingState==='processing'?'正在裁剪作品…':'方向正确，开始裁剪与装裱'}</button>:null}<div className="tiny-choice">{enabledFrames.length?enabledFrames.map(item=><button key={item.id} className={activeFrameId===item.id?'active':''} disabled={framingState==='processing'} onClick={()=>setFrame(item.id)} title={item.spec?.atmosphere||item.description||item.name}>{item.name}</button>):<span className="frame-loading">正在读取装裱设置…</span>}</div></div></article><article><div className="photo-card">{media.photo?.url?<><img src={media.photo.url} alt="已自然优化的课堂照片" style={{transform:`rotate(${media.photo.rotation||0}deg)`}}/><button type="button" className="frame-rotate-button photo-rotate-button" onClick={rotatePersonalPhoto}><RefreshCw size={16}/>旋转照片</button></>:<img src={pandaMascot} alt="课堂照片占位预览"/>}</div><div><b>学员照片</b><p>{media.photo?.name||'未上传课堂照片，可返回上一步补充。'}</p></div></article></div><div className="scene-actions"><Button variant="secondary" onClick={()=>go(1)}>返回创建信息</Button><Button icon={ArrowRight} onClick={()=>go(3)}>进入五维点评</Button></div></section>:null}
+      {step===3?<section className="scene-panel review-task-v2"><div className="review-media"><div className="scene-heading"><span>{mode==='班级反馈'?'本班课后素材':'本次课素材'}</span><h2>{mode==='班级反馈'?'周六创意绘画 2 班 · 班级课后反馈':`${selectedStudentLabel}${activeFrame?.plaqueTitle?` · 《${activeFrame.plaqueTitle}》`:''}`}</h2></div><div className={`review-gallery ${mode==='班级反馈'?'class-review-gallery':''}`}>{mode==='班级反馈'?<><ClassMediaMosaic items={batchUploads.artwork} kind="artwork" onRotate={index=>rotateBatchItem('artwork',index)}/><ClassMediaMosaic items={batchUploads.photo} kind="photo" onRotate={index=>rotateBatchItem('photo',index)}/></>:<><div className={`review-art exhibition-art${media.artwork?.framedUrl?' framed-art':''}`}>{media.artwork?.framedUrl?<div className="framed-art-final"><img src={media.artwork.framedUrl} alt={`${selectedStudentLabel}的作品 · ${activeFrame?.name||'装裱'}`}/>{activeFrame?.name?<span className="framed-badge">{activeFrame.name}</span>:null}</div>:<><div className="artwork-mat">{media.artwork?.url?<img src={media.artwork.cleanUrl||media.artwork.originalUrl||media.artwork.url} alt={`${selectedStudentLabel}的作品`}/>:'✺'}</div><div className="artwork-plaque"><div><b>{selectedStudentLabel}</b><span>{activeFrame?.plaqueTitle?`《${activeFrame.plaqueTitle}》`:''}</span></div><time>创作于 {(activeFrame?.plaqueDate||new Date().toISOString().slice(0,10).replace(/-/g,'.'))}</time></div></>}</div><div className="review-photo portrait-print"><div className="portrait-mat">{media.photo?.url?<img src={media.photo.url} alt="陈一诺课堂照片"/>:<img src={pandaMascot} alt="课堂照片占位"/>}</div><div className="portrait-caption">{selectedStudentLabel} · {(activeFrame?.plaqueDate||new Date().toISOString().slice(0,10).replace(/-/g,'.'))}</div></div></>}</div></div><ReviewKeywordDock visible selected={keywords} onToggle={toggleKeyword} suggested={aiKeywords} suggesting={keywordSuggesting} dirty={keywordDirty} generated={reviewGenerated}/><div className={`coach-review ${mode==='班级反馈'?'class-coach-review':''}`}><div className="scene-heading"><span>第三步</span><h2>{mode==='班级反馈'?'班级课程反馈':'五维点评'}</h2></div><select value={subject} onChange={e=>setSubject(e.target.value)}><option>通用美术</option><option>创意绘画（3-6岁）</option><option>儿童画（6-9岁）</option><option>素描（9-18岁）</option><option>速写（9-18岁）</option><option>水彩 / 水粉（7-18岁）</option><option>国画（6-18岁）</option></select><p className="evidence">{mode==='班级反馈'?'以下内容基于本节课课程设计、班级素材与老师观察生成，老师可编辑确认后发布给家长。':`下列内容由大模型生成：先读懂作品与课堂素材，再结合「${activeProfileLabel}」的人设、已启用技能与长期记忆，按五个维度分别输出评语。老师可逐条修改后再发布。`}</p>{mode==='班级反馈'?<ClassReviewContent subject={subject}/>:<><div className={`review-source ${reviewGenerated?(localDraftUsed?'local':'ai'):'pending'}`}>{reviewGenerated?(localDraftUsed?<><CircleAlert size={14}/><span>当前正文来自<strong>本地草稿模板</strong>（未调用大模型），发布前请老师逐条核对。</span></>:<><Sparkles size={14}/><span>当前正文由大模型「{activeProfileLabel}」依据人设、技能与长期记忆生成，可直接编辑。</span></>):<><Sparkles size={14}/><span>五个维度等待大模型生成：点击上方「开始生成点评」，评语会逐字写入这里。</span></>}{keywordDirty&&reviewGenerated?<em>观察词已调整，建议重新生成</em>:null}</div>{Object.entries(reviews).map(([name,copy])=><article className={`coach-card${copy?'':' is-empty'}`} key={name}><b>{name}{copy?null:<em className="review-pending">待生成</em>}</b><textarea aria-label={name} value={copy} placeholder={REVIEW_DIMENSION_HINTS[name]||''} onChange={event=>setReviews(current=>({...current,[name]:event.target.value}))}/></article>)}</>}<div className="scene-actions"><Button variant="secondary" onClick={()=>go(2)}>返回智能装裱</Button><Button icon={Archive} onClick={archiveRecord}>归档并生成分享</Button></div></div></section>:null}
+      {step===4?<section className="share-task scene-panel"><img src={pandaObserve} alt="熊猫成长伙伴"/><div><span>已归档至{selectedStudentLabel}的成长档案</span><h2>这一次的成长，<br/>已经被完整记录。</h2><p>作品、课堂照片与五维点评已经同步保存到本地草稿。</p><div className="share-actions"><Button icon={Archive} onClick={()=>setToast('成长集锦任务已创建，等待服务端接入')}>制作成长集锦</Button><Button variant="secondary" icon={Frame} onClick={()=>setToast('个人作品集任务已创建，等待服务端接入')}>制作作品集</Button></div><div className="scene-actions"><Button variant="secondary" onClick={()=>go(3)}>返回五维点评</Button><Button icon={FileText} onClick={()=>navigate('archives')}>进入成长档案</Button></div></div></section>:null}
     </section></>;
 }
 
@@ -622,46 +675,54 @@ function ClassMediaMosaic({items=[],kind='artwork',onRotate}){
   return <div className={`class-media-mosaic ${kind}`}>{visibleItems.length?visibleItems.map((item,index)=><figure key={`${item.name}-${index}`}><img src={item.url} alt={item.name} style={{transform:`rotate(${item.rotation||0}deg)`}}/>{kind==='artwork'?<span className="orientation-note">{item.orientationChecked?'已自动校正':'已手动旋转'}</span>:null}<button className="rotate-work" type="button" title={`顺时针旋转${kind==='artwork'?'作品':'照片'}`} onClick={()=>onRotate?.(index)}><RefreshCw size={12}/></button><figcaption>{kind==='artwork'?`${students[index%students.length]} · 《${titles[index%titles.length]}》 · 2026.08.11`:'2026.08.11'}</figcaption></figure>):<div className="mosaic-empty"><Frame/><span>等待班级素材上传</span></div>}{overflow>0?<span className="mosaic-more">+{overflow}</span>:null}<div className="mosaic-label"><b>{label}</b><small>已收录 {items.length} 份</small></div></div>
 }
 
-function ReviewKeywordDock({visible=false}){
-  const [step,setStep]=useState(1),[active,setActive]=useState([]),[open,setOpen]=useState(visible),[feedbackMode,setFeedbackMode]=useState(()=>window.__xinlehuiFeedbackMode||'个人反馈');
+/**
+ * 作品观察词面板。
+ * 词表来自 src/data/reviewKeywords.js —— 与提示词里的候选清单是同一份，
+ * 所以大模型识别出来的词一定能在这里被勾中（见 pickSupportedKeywords 的说明）。
+ *
+ * 受控组件：selected / onToggle 由 TeacherFlowV2 持有，
+ * 生成点评时模型返回的 keywords 会直接写回同一份状态。
+ */
+function ReviewKeywordDock({visible=false,selected=[],onToggle,suggested=[],suggesting=false,dirty=false,generated=false}){
+  const [step,setStep]=useState(1),[open,setOpen]=useState(visible),[feedbackMode,setFeedbackMode]=useState(()=>window.__xinlehuiFeedbackMode||'个人反馈');
   useEffect(()=>{const update=(event)=>setStep(event.detail);window.addEventListener('xinlehui-feedback-step',update);return()=>window.removeEventListener('xinlehui-feedback-step',update)},[]);
   useEffect(()=>{const update=(event)=>setFeedbackMode(event.detail);window.addEventListener('xinlehui-feedback-mode',update);return()=>window.removeEventListener('xinlehui-feedback-mode',update)},[]);
+  // 模型识别出词以后自动展开面板，老师一眼就能看到 AI 勾了什么。
+  useEffect(()=>{if(suggested.length)setOpen(true)},[suggested]);
   if(!visible&&step!==3) return null;
-  const personalCategories={
-    '画面主题':['人物','风景','动物','植物','想象世界','建筑','静物','抽象'],
-    '色彩感受':['暖色调','冷色调','色彩丰富','素雅简洁','对比鲜明','渐变柔和'],
-    '构图特点':['构图饱满','留白意境','居中主体','散点分布','层次分明','自由布局'],
-    '线条笔触':['线条流畅','笔触有力','细致入微','自由奔放','涂色均匀','大胆粗犷'],
-    '创作状态':['专注力强','耐心细致','自主规划','乐于尝试','需要引导'],
-    '想象创意':['想象丰富','创意独特','表达自然','故事性强'],
-    '情绪感受':['阳光快乐','安静内敛','活泼灵动','情感细腻','自信舒展'],
-    '成长关注点':['色彩感知待丰富','构图胆量待提升','线条控制待练习','专注时长延长','完成度待提高','自信表达待鼓励','想象力待激发','耐心细节待培养']
-  };
-  const classCategories={
-    '课程目标':['主题理解','形态观察','色彩感知','构图尝试','材料体验','审美欣赏'],
-    '能力发展':['专注投入','观察比较','自主选择','精细动作','表达叙事','问题解决'],
-    '课堂流程':['热身唤醒','问题引导','示范拆解','独立创作','作品分享','回顾整理'],
-    '集体表现':['勇敢尝试','互相欣赏','主动分享','倾听等待','同伴协作','秩序感建立'],
-    '情感体验':['好奇探索','愉悦投入','自信表达','感受自然','尊重差异','温暖连接'],
-    '后续关注':['色彩层次','画面组织','专注时长','完成质量','表达清晰','自主创作']
-  };
   const isClass=feedbackMode==='班级反馈';
-  const categories=isClass?classCategories:personalCategories;
-  const toggle=(keyword)=>{const next=active.includes(keyword)?active.filter(item=>item!==keyword):[...active,keyword];setActive(next);window.dispatchEvent(new CustomEvent('xinlehui-review-keywords',{detail:next}));};
-  return <aside className="review-keyword-dock"><button className="review-keyword-toggle" onClick={()=>setOpen(!open)}><span><Sparkles size={15}/>{isClass?'班级课程观察关键词':'智能点评关键词'}</span><small>{active.length?`已选择 ${active.length} 项`:'AI 自动识别，也可手动补充'}</small><ChevronDown className={open?'open':''} size={16}/></button>{open?<section className="review-keyword-panel"><div className="review-keyword-intro"><b>{isClass?'本节课的课程观察关键词':'作品观察关键词'}</b><small>{isClass?'选择本节课的目标、流程与班级表现，AI 会据此生成一份有教育温度的班级课程反馈。':'AI 会自动依据作品生成多维点评；老师可按课堂实际情况编辑文案。'}</small></div><div className="review-keyword-groups">{Object.entries(categories).map(([name,options])=><section key={name}><strong>{name}</strong><div>{options.map(item=><button key={item} className={active.includes(item)?'active':''} onClick={()=>toggle(item)}>{item}</button>)}</div></section>)}</div></section>:null}</aside>;
+  const categories=keywordCategoriesFor(feedbackMode);
+  const active=selected;
+  const aiSet=new Set(suggested);
+  const toggle=(keyword)=>onToggle?.(keyword);
+  const summary=suggesting
+    ?'AI 正在识别画面内容…'
+    :suggested.length?`AI 已识别 ${suggested.length} 项${active.length!==suggested.length?` · 共选 ${active.length} 项`:''}`
+    :active.length?`已选择 ${active.length} 项`:'AI 自动识别，也可手动补充';
+  return <aside className="review-keyword-dock">
+    <button className="review-keyword-toggle" onClick={()=>setOpen(!open)}>
+      <span><Sparkles size={15}/>{isClass?'班级课程观察关键词':'作品观察词'}{suggesting?<i className="keyword-scanning"/>:null}</span>
+      <small className={suggested.length?'has-ai':''}>{summary}</small>
+      <ChevronDown className={open?'open':''} size={16}/>
+    </button>
+    {open?<section className="review-keyword-panel">
+      <div className="review-keyword-intro">
+        <b>{isClass?'本节课的课程观察关键词':'作品观察词'}</b>
+        <small>{isClass?'选择本节课的目标、流程与班级表现，AI 会据此生成一份有教育温度的班级课程反馈。':'大模型会先读懂作品，自动勾选能被画面证据支持的观察词；老师可随时增删，改动会同步进下一次生成的提示词。'}</small>
+      </div>
+      {dirty&&generated?<div className="review-keyword-dirty">观察词已调整，建议重新生成点评，让评语与关键词一致。</div>:null}
+      <div className="review-keyword-groups">{Object.entries(categories).map(([name,options])=><section key={name}>
+        <strong>{name}</strong>
+        <div>{options.map(item=><button key={item}
+          className={`${active.includes(item)?'active':''}${aiSet.has(item)?' ai-picked':''}`}
+          title={aiSet.has(item)?'AI 依据画面识别并勾选':'老师手动选择'}
+          onClick={()=>toggle(item)}>
+          {item}{aiSet.has(item)?<i className="ai-mark" aria-hidden="true">AI</i>:null}
+        </button>)}</div>
+      </section>)}</div>
+    </section>:null}
+  </aside>;
 }
-
-function SmartFramingAssistant({setToast}){
-  const [step,setStep]=useState(1),[mode,setMode]=useState(()=>window.__xinlehuiFeedbackMode||'个人反馈');
-  const [preset,setPreset]=useState('展览标准'),[keepRatio,setKeepRatio]=useState(true),[applyAll,setApplyAll]=useState(true);
-  useEffect(()=>{const handler=event=>setStep(event.detail);window.addEventListener('xinlehui-feedback-step',handler);return()=>window.removeEventListener('xinlehui-feedback-step',handler)},[]);
-  useEffect(()=>{const handler=event=>setMode(event.detail);window.addEventListener('xinlehui-feedback-mode',handler);return()=>window.removeEventListener('xinlehui-feedback-mode',handler)},[]);
-  if(step!==2) return null;
-  const isClass=mode==='班级反馈';
-  return <section className="smart-framing-assistant"><div className="smart-framing-head"><div><span>AI 装裱助手</span><h3>保留原作，再让它像一件展品被看见。</h3><p>AI 会先识别作品边缘、方向和拍摄透视；老师只需要确认少量重要设置。</p></div><div className="framing-quality"><b>高清展览输出</b><small>原图完整保留 · 可随时回到原始文件</small></div></div><div className="framing-auto-checks"><article><i>1</i><span><b>边缘识别</b><small>自动找出作品四角与有效画面</small></span><em>已完成</em></article><article><i>2</i><span><b>方向与透视校正</b><small>自动处理倒置、歪斜与拍摄变形</small></span><em>已完成</em></article><article><i>3</i><span><b>光影与背景净化</b><small>弱化墙面、阴影与杂物，不重绘孩子作品</small></span><em>已完成</em></article></div><div className="framing-settings-grid"><div><b>装裱预设</b><div className="framing-preset-options">{[['展览标准','深灰框 · 暖白卡纸 · 标准展签'],['自然原木','原木框 · 米白卡纸 · 柔和展签'],['东方雅境','墨色框 · 纸纹卡纸 · 东方展签']].map(([name,desc])=><button key={name} className={preset===name?'active':''} onClick={()=>setPreset(name)}><span/><b>{name}</b><small>{desc}</small></button>)}</div></div><div className="framing-switches"><b>关键设置</b><label><input type="checkbox" checked={keepRatio} onChange={event=>setKeepRatio(event.target.checked)}/><span><strong>完整原作优先</strong><small>不裁切孩子的任何线条与色彩</small></span></label><label><input type="checkbox" checked={applyAll} onChange={event=>setApplyAll(event.target.checked)}/><span><strong>{isClass?'同款应用到本班全部作品':'保存为本节课默认装裱'}</strong><small>{isClass?'老师可对单张作品再单独调整':'下次相同课程可一键复用'}</small></span></label><div className="framing-output"><span>输出规格</span><b>家长分享图 + 高清存档图</b><small>自动附：学员姓名、作品名、创作日期</small></div></div></div><div className="framing-helper-actions"><small>{isClass?'班级模式会先自动统一处理，再保留每位孩子的独立微调入口。':'不满意时可回到原图，旋转、重选预设或调整展签信息。'}</small><button onClick={()=>setToast(`已保存“${preset}”装裱设置${applyAll&&isClass?'，将应用到班级全部作品':''}`)}>保存本次装裱设置</button></div></section>
-}
-
-function TeacherFlowWithArchive(props){return <div className="feedback-premium-shell"><TeacherFlowV2 {...props}/><SmartFramingAssistant setToast={props.setToast}/></div>}
 
 function CourseLearningTimeline(){
   const [selected,setSelected]=useState(null);
@@ -880,14 +941,45 @@ function PersonaPicker({profiles=[],activeProfileId,setActiveProfileId}){
   </label>;
 }
 
-function ReviewLaunchPanel({profiles=[],skillLibrary=[],activeProfileId,setActiveProfileId,onStart,hasArtwork}){
+/**
+ * 课后反馈步骤条。
+ * 不用圆形序号表示选中：每一环节是一段进度条，
+ *  - 当前环节：整段金色高亮；
+ *  - 已完成环节：段内压深并换上对勾；
+ *  - 未到达环节：整段置灰。
+ * flags 是各环节的「真的做完了吗」，只有已走过的环节才会显示完成态。
+ */
+function FlowStepper({steps=[],step=1,flags=[],onGo}){
+  const total=steps.length;
+  return <nav className="flow-stepper" aria-label={`课后反馈共 ${total} 步，当前第 ${step} 步`}>
+    {steps.map(([name,desc],index)=>{
+      const stage=index+1;
+      const active=step===stage;
+      const done=stage<step&&Boolean(flags[index]);
+      const state=active?'active':done?'done':'todo';
+      return <button key={name} type="button" className={`flow-stepper-step ${state}`}
+        aria-current={active?'step':undefined}
+        aria-label={`第 ${stage} 步 ${name}：${desc}${done?'（已完成）':active?'（当前进行）':'（未开始）'}`}
+        onClick={()=>onGo?.(stage)}>
+        <span className="flow-stepper-title">
+          <em aria-hidden="true">{done?<Check size={12}/>:stage}</em>
+          <b>{name}</b>
+        </span>
+        <small>{desc}</small>
+        <span className="flow-stepper-track" aria-hidden="true"><i/></span>
+      </button>;
+    })}
+  </nav>;
+}
+
+function ReviewLaunchPanel({profiles=[],skillLibrary=[],activeProfileId,setActiveProfileId,onStart,onLocalDraft,hasArtwork,draftReady,localDraftUsed,keywordCount}){
   const active=profiles.find(profile=>profile.id===activeProfileId)||profiles[0]||null;
   const skills=resolveSkills(active?.skillKeys,skillLibrary,active?.skills);
   return <section className="review-launch">
     <div className="review-launch-head">
       <span>五维点评 · 云端视觉模型</span>
       <h3>让大模型带着老师的人设，先读懂这幅画。</h3>
-      <p>生成时会把人设、{skills.length} 项技能与长期记忆一起加载，并读取作品原图；单次约 20 秒，可随时停止。</p>
+      <p>一次生成会同时完成两件事：识别画面内容并自动勾选作品观察词，再按五个维度写下评语。人设、{skills.length} 项技能与长期记忆一起加载，单次约 20 秒，可随时停止。</p>
     </div>
     <PersonaPicker profiles={profiles} activeProfileId={activeProfileId} setActiveProfileId={setActiveProfileId}/>
     {active?<div className="persona-loaded">
@@ -896,13 +988,16 @@ function ReviewLaunchPanel({profiles=[],skillLibrary=[],activeProfileId,setActiv
       <div className="persona-skill-tags">{skills.length?skills.map(skill=><em key={skill.name}>{skill.name}</em>):<span>未启用技能</span>}</div>
     </div>:null}
     <div className="review-launch-actions">
-      <Button icon={WandSparkles} onClick={onStart} disabled={!hasArtwork}>{hasArtwork?'开始生成点评':'请先上传作品'}</Button>
-      <small>模型：{REVIEW_MODEL}</small>
+      <Button icon={WandSparkles} onClick={onStart} disabled={!hasArtwork}>{hasArtwork?(draftReady?'重新生成点评':'开始生成点评'):'请先上传作品'}</Button>
+      {onLocalDraft?<button type="button" className="local-draft-link" onClick={onLocalDraft}>
+        {localDraftUsed?'已使用本地草稿 · 重新填充模板':'云端不可用？使用本地草稿模板'}
+      </button>:null}
+      <small>模型：{REVIEW_MODEL}{keywordCount?` · 已识别 ${keywordCount} 个观察词`:''}</small>
     </div>
   </section>;
 }
 
-function ReviewStreamPanel({stream,profiles=[],activeProfileId,setActiveProfileId,onStart,onStop,onClose}){
+function ReviewStreamPanel({stream,profiles=[],activeProfileId,setActiveProfileId,onStart,onStop,onClose,onLocalDraft}){
   const [showThinking,setShowThinking]=useState(true);
   const active=profiles.find(profile=>profile.id===activeProfileId)||profiles[0]||null;
   const running=stream.phase==='running';
@@ -919,7 +1014,7 @@ function ReviewStreamPanel({stream,profiles=[],activeProfileId,setActiveProfileI
         <button onClick={onClose}>收起</button>
       </div>
     </div>
-    {stream.phase==='error'?<div className="review-stream-error"><CircleAlert/><span>{stream.message}</span></div>:null}
+    {stream.phase==='error'?<div className="review-stream-error"><CircleAlert/><span>{stream.message}</span>{onLocalDraft?<button type="button" className="local-draft-link" onClick={onLocalDraft}>改用本地草稿模板</button>:null}</div>:null}
     {stream.reasoning?<div className={`review-thinking ${showThinking?'open':''}`}>
       <button onClick={()=>setShowThinking(!showThinking)}>{showThinking?'收起':'展开'} AI 思考过程<ChevronDown size={16}/></button>
       {showThinking?<pre>{stream.reasoning}</pre>:null}
@@ -1386,10 +1481,10 @@ function placeholderArtwork(){
 
 // 机构级基础数据页：只有管理员能进。导航已经隐藏入口，这里再拦一道，
 // 避免从导览页、历史链接或未来新增入口绕过。
-const ADMIN_ONLY_PAGES=['teacherPersona','skillLibrary','framingSettings'];
+const ADMIN_ONLY_PAGES=['teacherPersona','skillLibrary','framingSettings','galleryAdmin'];
 
 function PageRouter(props){
- const map={dashboard:TeacherWelcome,teacherFlow:TeacherFlowWithArchive,lessons:LessonsPage,create:CreateFlow,ai:TeacherAIWorkspace,tasks:TasksPage,progress:ProgressBoard,classes:StudentArchiveData,growthCenter:PersonalGrowthCenter,archives:GrowthArchiveData,parent:ParentHomeFamily,parentInsight:ParentInsight,parentArchive:ParentArchiveFamily,authorization:AuthorizationPage,profile:ProfilePage,adminDash:AdminDashboard,apps:AppsPage,providers:ProvidersPage,teacherPersona:TeacherPersonaPage,skillLibrary:SkillLibraryPage,framingSettings:FramingSettingsPage,users:UsersPage,logs:LogsPage,archiveAdmin:ArchiveAdmin,permissions:PermissionsPage,settings:SettingsPage,guide:GuidePage};
+ const map={dashboard:TeacherWelcome,teacherFlow:TeacherFlowV2,lessons:LessonsPage,create:CreateFlow,ai:TeacherAIWorkspace,tasks:TasksPage,progress:ProgressBoard,classes:StudentArchiveData,growthCenter:PersonalGrowthCenter,archives:GrowthArchiveData,parent:ParentHomeFamily,parentInsight:ParentInsight,parentArchive:ParentArchiveFamily,authorization:AuthorizationPage,profile:ProfilePage,adminDash:AdminDashboard,apps:AppsPage,providers:ProvidersPage,teacherPersona:TeacherPersonaPage,skillLibrary:SkillLibraryPage,framingSettings:FramingSettingsPage,galleryAdmin:GalleryAdminPage,gallery:GalleryPage,users:UsersPage,logs:LogsPage,archiveAdmin:ArchiveAdmin,permissions:PermissionsPage,settings:SettingsPage,guide:GuidePage};
  if(ADMIN_ONLY_PAGES.includes(props.page)&&props.role!=='admin'){
    const Fallback=props.role==='parent'?ParentHomeFamily:TeacherWelcome;
    return <Fallback {...props}/>;
@@ -1469,8 +1564,8 @@ function GuidePage({navigate}){const sections=[
  ['老师前台',['工作台','课后反馈','AI 创作','班级学员','成长档案','生成任务'],PRD.dashboard,'进入老师工作台'],
  ['核心业务流程',['课次学员','素材上传','AI 应用','生成审核','发布档案'],PRD.create,'体验完整流程'],
  ['家长前台',['首页','成长档案','授权管理','个人中心'],PRD.parent,'进入家长端'],
- ['管理后台',['运营总览','应用中心','模型供应商','用户','日志','档案','权限','配置'],PRD.apps,'进入管理员后台']
- ];return <><PageHeader title="原型页面与体验路径" desc="每个页面均标注 PRD 功能编号；下列入口可直接跳转体验。" prd={PRD.guide}/><div className="guide-path"><span>1 注册登录</span><ArrowRight/><span>2 选择身份</span><ArrowRight/><span>3 完成核心任务</span><ArrowRight/><span>4 验证权限差异</span><ArrowRight/><span>5 查看异常状态</span></div><div className="guide-grid">{sections.map((s,i)=><div className="guide-card" key={s[0]}><span>0{i+1}</span><h2>{s[0]}</h2><p>{s[1].join(' · ')}</p><small>{s[2]}</small><button onClick={()=>{if(i===1)navigate('dashboard');else if(i===2)navigate('create');else if(i===3)navigate('parent');else if(i===4)navigate('adminDash')}}>{s[3]}<ArrowRight/></button></div>)}</div><div className="panel page-inventory"><h2>完整页面清单（27 个页面/主要状态）</h2><div>{['登录','注册','老师工作台','课后反馈列表','创建课次','素材上传','AI 应用选择','生成进度','结果审核','发布成功','AI 创作台','生成任务','班级学员','老师端成长档案','家长首页','家长档案','授权管理','家长个人中心','运营总览','应用中心','新增应用弹窗','供应商管理','模型列表','模型池路由','用户管理','生成日志','后台档案','角色权限','系统配置','空状态','错误状态'].map((x,i)=><span key={x}>{String(i+1).padStart(2,'0')} {x}</span>)}</div></div></>}
+ ['管理后台',['运营总览','应用中心','模型供应商','老师人设','技能库','装裱设置','3D 画廊','用户','日志','档案','权限','配置'],PRD.apps,'进入管理员后台']
+ ];return <><PageHeader title="原型页面与体验路径" desc="每个页面均标注 PRD 功能编号；下列入口可直接跳转体验。" prd={PRD.guide}/><div className="guide-path"><span>1 注册登录</span><ArrowRight/><span>2 选择身份</span><ArrowRight/><span>3 完成核心任务</span><ArrowRight/><span>4 验证权限差异</span><ArrowRight/><span>5 查看异常状态</span></div><div className="guide-grid">{sections.map((s,i)=><div className="guide-card" key={s[0]}><span>0{i+1}</span><h2>{s[0]}</h2><p>{s[1].join(' · ')}</p><small>{s[2]}</small><button onClick={()=>{if(i===1)navigate('dashboard');else if(i===2)navigate('create');else if(i===3)navigate('parent');else if(i===4)navigate('adminDash')}}>{s[3]}<ArrowRight/></button></div>)}</div><div className="panel page-inventory"><h2>完整页面清单（36 个页面/主要状态）</h2><div>{['登录','注册','老师工作台','课后反馈列表','创建课次','素材上传','AI 应用选择','生成进度','结果审核','发布成功','AI 创作台','生成任务','班级学员','老师端成长档案','家长首页','家长档案','授权管理','家长个人中心','运营总览','应用中心','新增应用弹窗','供应商管理','模型列表','模型池路由','老师人设','技能库','装裱设置','3D 画廊展陈','3D 画廊设置','用户管理','生成日志','后台档案','角色权限','系统配置','空状态','错误状态'].map((x,i)=><span key={x}>{String(i+1).padStart(2,'0')} {x}</span>)}</div></div></>}
 
 function Modal({type,close,setToast,apps,setApps}){const kind=type.kind;const [error,setError]=useState('');const save=()=>{if(kind==='add-provider'){const name=document.querySelector('#provider-name')?.value;if(!name)return setError('请输入供应商名称')}if(kind==='add-app'){const name=document.querySelector('#app-name')?.value;if(!name)return setError('请输入应用名称');setApps(xs=>[...xs,{id:`custom-${Date.now()}`,name,desc:'配置式外部 API 应用',icon:Package,color:'blue',status:'disabled',version:'0.1.0'}])}if(kind==='confirm-uninstall'){setApps(xs=>xs.filter(x=>x.id!==type.id))}setToast(kind==='confirm-uninstall'?'应用已卸载，历史任务和档案仍保留':'配置已保存');close()};return <div className="modal-backdrop" onMouseDown={e=>e.target===e.currentTarget&&close()}><div className="modal"><div className="modal-head"><div><h2>{kind==='add-app'?'新增 AI 应用':kind==='add-provider'?'新增模型供应商':kind==='invite-user'?'邀请用户':'确认卸载应用'}</h2><p>{kind==='confirm-uninstall'?'卸载后将阻止新任务，但不会删除历史数据。':'填写必要信息后可继续完善配置。'}</p></div><button className="icon-btn" onClick={close}><X/></button></div>{kind==='confirm-uninstall'?<div className="danger-note"><CircleAlert/><span>请先确保没有运行中任务，并确认机构已停用该应用。</span></div>:<div className="modal-form">{kind==='add-app'?<><label>应用名称<input id="app-name" placeholder="例如：课堂语音转写"/></label><label>能力类型<select><option>外部 API</option><option>文本生成</option><option>图片生成/编辑</option><option>视频生成</option></select></label><label>输入 Schema<textarea placeholder={'{"type":"object","properties":{...}}'}/></label></>:kind==='add-provider'?<><label>供应商名称<input id="provider-name" placeholder="例如：VisualCloud"/></label><label>供应商类型<select><option>OpenAI Compatible</option><option>图片供应商</option><option>视频供应商</option></select></label><label>API Endpoint<input placeholder="https://api.example.com/v1"/></label><label>API Key<input type="password" placeholder="仅加密保存，不会明文返回"/></label></>:<><label>手机号<input placeholder="请输入手机号"/></label><label>角色<select><option>老师</option><option>家长</option><option>管理员</option></select></label><label>数据范围<select><option>星河校区</option><option>指定班级</option><option>全平台</option></select></label></>}</div>}{error?<div className="form-error"><CircleAlert/>{error}</div>:null}<div className="modal-actions"><Button variant="secondary" onClick={close}>取消</Button><Button variant={kind==='confirm-uninstall'?'danger':'primary'} onClick={save}>{kind==='confirm-uninstall'?'确认卸载':'保存并继续'}</Button></div></div></div>}
 function NotFound({navigate}){return <EmptyState icon={FolderOpen} title="页面不存在" desc="这个原型页面可能已移动。" action="返回工作台" onClick={()=>navigate('dashboard')}/>}

@@ -31,7 +31,16 @@ const DIMENSION_SPEC = [
 
 /** 把人设 / 技能库 / 记忆组装成 system 提示词。 */
 export function buildPersonaSystemPrompt(profile, extra = {}) {
-  if (!profile) return FALLBACK_SYSTEM + '\n\n' + DIMENSION_SPEC.map(([k, v]) => `- ${k}：${v}`).join('\n');
+  const scope = extra.keywordScope || '作品观察词';
+  if (!profile) {
+    const parts = [FALLBACK_SYSTEM, DIMENSION_SPEC.map(([k, v]) => `- ${k}：${v}`).join('\n')];
+    if (extra.keywordCandidates) {
+      parts.push(`【${scope}候选清单】\n${extra.keywordCandidates}`);
+      parts.push(`【${scope}选择要求】\n选 3-6 个画面里真的能被指出来的词，必须逐字复制候选清单里的词。`);
+    }
+    parts.push(`【输出格式】\n只输出 JSON：{"evidence":[...],"keywords":[...],"reviews":{"美术能力":"...","上课状态":"...","行为能力":"...","内在状态":"...","家长建议":"..."}}`);
+    return parts.join('\n\n');
+  }
 
   const parts = [];
   const identity = [profile.name, profile.roleLabel, profile.campus].filter(Boolean).join(' · ');
@@ -50,9 +59,20 @@ export function buildPersonaSystemPrompt(profile, extra = {}) {
 
   if (profile.memory) parts.push(`【长期记忆（本班本阶段，点评时必须结合并回访）】\n${profile.memory}`);
 
-  parts.push(`【本次任务】\n基于老师上传的作品图片与课堂观察，生成五维点评草稿，供老师审阅后编辑发布。`);
+  parts.push(`【本次任务】\n先看清上传的作品与素材里真实存在什么，再生成五维点评草稿，供老师审阅后编辑发布。`);
+
+  // 观察词由模型自己挑：老师不勾选时也要能选出贴合画面的词。
+  // 候选清单与前端面板共用同一份目录（src/data/reviewKeywords.js），
+  // 所以这里必须强调「逐字来自候选」，否则前端认不出模型自造的同义词。
+  if (extra.keywordCandidates) {
+    parts.push(`【${scope}候选清单】\n${extra.keywordCandidates}`);
+  }
+
   parts.push(`【写作要求】\n${DIMENSION_SPEC.map(([k, v]) => `- ${k}：${v}`).join('\n')}\n- 只使用图片与老师观察中真实可见的证据，不要虚构课堂细节。\n- 证据不足的维度必须明确写出「本次证据不足」，而不是编造。\n- 若长期记忆中提到的回访点（例如上一次给出的练习建议）在本次素材里无法判断，要说明无法判断。`);
-  parts.push(`【输出格式】\n只输出一个 JSON 对象，不要 Markdown、不要代码块、不要任何解释文字。结构：\n{"evidence":["可核验的观察依据 1","可核验的观察依据 2"],"reviews":{"美术能力":"...","上课状态":"...","行为能力":"...","内在状态":"...","家长建议":"..."}}`);
+  if (extra.keywordCandidates) {
+    parts.push(`【${scope}选择要求】\n- 看完作品后再选词，只选画面或素材里真的能被指出来的，不要按「好看」堆词。\n- 选 3-6 个，覆盖不同分组（例如画面主题 + 色彩感受 + 线条笔触），不要全挤在同一组。\n- 必须**逐字复制**候选清单里的词，不要改写、不要造同义词。候选中没有合适的就少选几个。\n- keywords 数组里**只写词本身**，不要带分组名、不要写成「色彩感受：暖色调」、不要带括号解释。`);
+  }
+  parts.push(`【输出格式】\n只输出一个 JSON 对象，不要 Markdown、不要代码块、不要任何解释文字。结构：\n{"evidence":["可核验的观察依据 1","可核验的观察依据 2"],"keywords":["${scope}"],"reviews":{"美术能力":"...","上课状态":"...","行为能力":"...","内在状态":"...","家长建议":"..."}}\n其中 keywords 是数组，元素必须逐字来自【${scope}候选清单】。`);
 
   if (extra.subject) parts.push(`【本次课题】${extra.subject}`);
   return parts.join('\n\n');
@@ -63,7 +83,8 @@ function buildUserContent({ subject, studentName, keywords = [], teacherObservat
     `学员：${studentName || '未指定'}`,
     `课题：${subject || '通用美术'}`,
     `老师补充观察：${teacherObservation || '未提供'}`,
-    `老师勾选的观察关键词：${keywords.length ? keywords.join('、') : '未勾选'}`
+    // 老师可能一个词都没勾（现在默认由模型自己识别），此时要求模型自行判断并选词。
+    `老师已勾选的观察关键词：${keywords.length ? keywords.join('、') : '老师未勾选，请你根据画面自行识别并在 keywords 里给出'}`
   ];
   if (artworkDataUrl) lines.push('附件 1：学员作品原作，请以它作为主要美术能力依据。');
   if (photoDataUrl) lines.push('附件 2：课堂照片，仅可用于观察课堂状态与行为，不要用于美术能力判断。');
@@ -90,14 +111,25 @@ export function parseReviewJson(raw) {  const text = String(raw || '').trim();
     if (typeof reviews[key] === 'string' && reviews[key].trim()) normalized[key] = reviews[key].trim();
   }
   if (!Object.keys(normalized).length) throw new Error('模型返回的点评内容为空。');
-  return { reviews: normalized, evidence: Array.isArray(parsed.evidence) ? parsed.evidence.filter(Boolean).map(String) : [] };
+  // 字段名容错：json_object 模式没有 schema 约束，模型偶尔会把 keywords 写成别的名字。
+  // 允许为空（候选中确实没有合适的），但不允许是非数组。
+  const rawKeywords = parsed.keywords ?? parsed.keyword ?? parsed.observation_keywords
+    ?? parsed.observationKeywords ?? parsed.观察词 ?? parsed.作品观察词 ?? [];
+  const keywords = Array.isArray(rawKeywords)
+    ? rawKeywords.filter((item) => typeof item === 'string' && item.trim()).map((item) => item.trim())
+    : [];
+  return {
+    reviews: normalized,
+    evidence: Array.isArray(parsed.evidence) ? parsed.evidence.filter(Boolean).map(String) : [],
+    keywords
+  };
 }
 
 /**
  * 流式过程中把半成品 JSON 转成可读中文，用于「逐字显示」。
  * 只保留长度足够的字符串值，并剔除字段名本身，所以读起来就是正在写下的点评。
  */
-const JSON_KEY_WORDS = /^(美术能力|上课状态|行为能力|内在状态|家长建议|evidence|reviews|summary)$/;
+const JSON_KEY_WORDS = /^(美术能力|上课状态|行为能力|内在状态|家长建议|evidence|keywords|reviews|summary)$/;
 export function readableFromRawJson(raw) {
   const matches = String(raw || '').match(/"(?:[^"\\]|\\.)*"/g) || [];
   const pieces = [];
@@ -113,13 +145,15 @@ export function readableFromRawJson(raw) {
  * 流式生成点评。
  * @param {object} options
  * @param {object} options.profile 老师人设（含 skills / memory）
+ * @param {string} [options.keywordCandidates] 观察词候选清单（逐行分组），由 reviewKeywords.js 生成
+ * @param {string} [options.keywordScope] 候选词的口径名称，默认「作品观察词」
  * @param {(full:string, chunk:string)=>void} [options.onReasoning] 思考链增量
  * @param {(full:string, chunk:string)=>void} [options.onContent] 正文增量
- * @returns {Promise<{reviews:object,evidence:string[],reasoning:string,usage:object|null}>}
+ * @returns {Promise<{reviews:object,evidence:string[],keywords:string[],reasoning:string,usage:object|null}>}
  */
-export async function streamArtworkReview({ profile, skillLibrary, subject, studentName, keywords, teacherObservation, artworkDataUrl, photoDataUrl, onReasoning, onContent, signal }) {
+export async function streamArtworkReview({ profile, skillLibrary, subject, studentName, keywords, teacherObservation, artworkDataUrl, photoDataUrl, keywordCandidates, keywordScope, onReasoning, onContent, signal }) {
   const messages = [
-    { role: 'system', content: buildPersonaSystemPrompt(profile, { subject, skillLibrary }) },
+    { role: 'system', content: buildPersonaSystemPrompt(profile, { subject, skillLibrary, keywordCandidates, keywordScope }) },
     { role: 'user', content: buildUserContent({ subject, studentName, keywords, teacherObservation, artworkDataUrl, photoDataUrl }) }
   ];
 
