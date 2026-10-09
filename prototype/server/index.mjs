@@ -43,7 +43,9 @@ function send(response, status, payload, extraHeaders = {}) {
   response.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
     'Access-Control-Allow-Origin': corsOrigin,
+    'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Actor-Role, X-Media-Consent, X-Media-Kind, X-Media-Name',
+    'Access-Control-Max-Age': '600',
     ...extraHeaders
   });
   response.end(JSON.stringify(payload));

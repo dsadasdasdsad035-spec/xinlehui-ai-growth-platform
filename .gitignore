@@ -1,0 +1,57 @@
+# 昕乐绘工作流
+#
+# 这个仓库是「公开」的，所以除了体积与缓存，还刻意排除了一类东西：
+# 面向甲方的商业文档与内部项目记忆（PRD、技术开发需求与询价包、报价相关笔记）。
+# 需要内部协作者也能看到这些内容时，请改用私有仓库，而不是把它们加进来。
+
+# ── 依赖与包管理器缓存 ────────────────────────────────────────────
+node_modules/
+.pnpm-store/
+.pnpm-debug.log*
+npm-debug.log*
+yarn-error.log*
+
+# ── 构建产物（可由源码重新生成）───────────────────────────────────
+dist/
+build/
+*.tsbuildinfo
+
+# ── 密钥与本地环境变量 ───────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+server/.env
+*.pem
+*.key
+*.p12
+id_rsa*
+
+# ── 本地运行时数据（开发时写入的持久化文件，不是种子数据）────────
+prototype/server/data/*.json
+prototype/vite-dev.log
+prototype/vite-dev.err.log
+
+# ── 商业文档与内部记忆：公开仓库不收录 ───────────────────────────
+昕乐绘AI成长平台_第一期产品需求文档.docx
+昕乐绘AI成长平台_第一期技术开发需求与询价包.docx
+build_prd.py
+build_dev_pack.py
+tools/audit_prd.py
+prd_render/
+dev_pack_render/
+docs/*.docx
+docs/*项目记忆*.md
+docs/_render/
+.workbuddy/
+
+# ── 一次性调试脚手架（依赖本机 /tmp 与固定 persona，不属于项目代码）──
+prototype/tr.mjs
+
+# ── 系统与工具文件 ───────────────────────────────────────────────
+.DS_Store
+**/.DS_Store
+__pycache__/
+*.py[cod]
+.wbapp_*.genie
+.idea/
+.vscode/

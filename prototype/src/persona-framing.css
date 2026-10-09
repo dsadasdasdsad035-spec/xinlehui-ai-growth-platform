@@ -1,0 +1,276 @@
+/* 老师人设 / 技能库 / 大模型记忆 + 装裱设置 —— 新增模块样式。
+   沿用 styles.css 的设计变量，保持与既有页面一致。 */
+
+.persona-page, .framing-settings { align-items: start; }
+
+.persona-list .panel-head, .persona-editor .panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.persona-list button { width: 100%; display: flex; align-items: center; gap: 12px; padding: 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); text-align: left; cursor: pointer; margin-bottom: 8px; }
+.persona-list button:hover { border-color: var(--blue); }
+.persona-list button.active { border-color: var(--blue); background: var(--blue-50); }
+.persona-list button div { flex: 1; min-width: 0; }
+.persona-list button b { display: block; font-size: 14px; }
+.persona-list button small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.persona-list button em { font-style: normal; font-size: 12px; color: var(--muted); white-space: nowrap; }
+.persona-list .avatar { width: 34px; height: 34px; border-radius: 50%; background: var(--blue-50); color: var(--blue); display: grid; place-items: center; font-weight: 600; flex: none; }
+.frame-dot { width: 26px; height: 34px; border-radius: 6px; border: 3px solid rgba(0,0,0,.08); flex: none; }
+
+.persona-field { display: block; margin-top: 14px; font-size: 13px; color: var(--muted); }
+.persona-field textarea { width: 100%; margin-top: 6px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; font: inherit; color: var(--ink); resize: vertical; line-height: 1.6; }
+.persona-field textarea:focus { outline: none; border-color: var(--blue); }
+.persona-field small { display: block; margin-top: 4px; color: var(--muted); font-size: 12px; }
+.persona-field.memory textarea { background: var(--yellow-50); border-color: #eadcbb; }
+
+.persona-skills { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 14px; }
+.persona-skills h3 { font-size: 14px; margin: 0; }
+.persona-skill { display: grid; grid-template-columns: auto 140px 1fr auto; gap: 8px; align-items: center; margin-top: 8px; }
+.persona-skill input[type="text"], .persona-skill input:not([type]) { padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; font: inherit; }
+.persona-skill input:focus { outline: none; border-color: var(--blue); }
+.persona-empty { color: var(--muted); font-size: 13px; margin: 10px 0 0; }
+.frame-loading { color: var(--muted); font-size: 12px; }
+
+/* 人设页：从技能库勾选 */
+.skill-pick-group { margin-top: 12px; }
+.skill-pick-group strong { display: block; font-size: 12px; color: var(--blue); letter-spacing: .04em; margin-bottom: 6px; }
+.skill-pick { display: flex; gap: 10px; align-items: flex-start; padding: 9px 12px; border: 1px solid var(--border); border-radius: 10px; cursor: pointer; margin-bottom: 6px; background: var(--surface); }
+.skill-pick:hover { border-color: var(--blue); }
+.skill-pick.checked { border-color: var(--blue); background: var(--blue-50); }
+.skill-pick input { margin-top: 3px; flex: none; }
+.skill-pick b { display: block; font-size: 13px; font-weight: 600; }
+.skill-pick small { display: block; margin-top: 2px; font-size: 12px; color: var(--muted); line-height: 1.5; }
+
+/* 技能库维护页 */
+.skill-library-page .persona-list .skill-cat { flex: none; width: 62px; font-size: 11px; color: var(--muted); text-align: center; line-height: 1.3; }
+
+/* —— 点评发起与流式面板 —— */
+.review-launch { margin: 16px 0; padding: 18px 20px; border: 1px solid var(--border); border-radius: var(--radius); background: linear-gradient(180deg,#fff,var(--soft)); }
+.review-launch-head span { font-size: 12px; color: var(--blue); font-weight: 600; letter-spacing: .04em; }
+.review-launch-head h3 { margin: 6px 0 4px; font-size: 17px; }
+.review-launch-head p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.persona-picker { display: block; margin: 14px 0 0; font-size: 12px; color: var(--muted); }
+.persona-picker select { display: block; margin-top: 6px; width: 100%; max-width: 340px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; font: inherit; color: var(--ink); background: var(--surface); }
+.persona-picker small { display: block; margin-top: 4px; font-size: 12px; }
+.persona-loaded { margin-top: 14px; display: grid; gap: 8px; }
+.persona-loaded > div { display: flex; gap: 10px; align-items: baseline; font-size: 13px; }
+.persona-loaded b { flex: none; width: 68px; color: var(--muted); font-weight: 500; font-size: 12px; }
+.persona-skill-tags { flex-wrap: wrap; display: flex; gap: 6px; }
+.persona-skill-tags em { font-style: normal; background: var(--blue-50); color: var(--blue); border-radius: 999px; padding: 3px 10px; font-size: 12px; }
+.review-launch-actions { margin-top: 16px; display: flex; align-items: center; gap: 12px; }
+.review-launch-actions small { color: var(--muted); font-size: 12px; }
+
+.review-stream { margin: 16px 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); overflow: hidden; }
+.review-stream-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--border); background: var(--blue-50); }
+.review-stream-head span { font-size: 12px; color: var(--blue); font-weight: 600; }
+.review-stream-head h3 { margin: 5px 0 3px; font-size: 16px; }
+.review-stream-head p { margin: 0; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.review-stream-actions { display: flex; gap: 8px; flex: none; }
+.review-stream-actions button { padding: 7px 14px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); font: inherit; font-size: 13px; cursor: pointer; }
+.review-stream-actions button:hover { border-color: var(--blue); color: var(--blue); }
+.review-stream-error { display: flex; gap: 8px; align-items: center; padding: 12px 20px; background: var(--coral-50); color: var(--coral); font-size: 13px; }
+
+.review-thinking { padding: 10px 20px; border-bottom: 1px solid var(--border); }
+.review-thinking > button { display: inline-flex; align-items: center; gap: 6px; background: none; border: none; padding: 0; font: inherit; font-size: 13px; color: var(--muted); cursor: pointer; }
+.review-thinking > button svg { transform: rotate(-90deg); transition: transform .18s; }
+.review-thinking.open > button svg { transform: none; }
+.review-thinking pre { margin: 10px 0 0; padding: 12px; background: var(--soft); border-radius: 10px; font-size: 12px; line-height: 1.7; color: var(--muted); white-space: pre-wrap; max-height: 220px; overflow: auto; font-family: inherit; }
+
+.review-typing { padding: 14px 20px 18px; }
+.review-typing-bar { height: 5px; border-radius: 999px; background: var(--soft); overflow: hidden; }
+.review-typing-bar i { display: block; height: 100%; border-radius: 999px; background: var(--blue); transition: width .3s ease; }
+.review-typing p { margin: 12px 0 0; font-size: 13px; line-height: 1.8; color: var(--ink); white-space: pre-wrap; max-height: 260px; overflow: auto; }
+.review-typing p:empty::after { content: '正在读取作品与素材…'; color: var(--muted); }
+.review-stream-done { display: flex; align-items: center; gap: 8px; padding: 14px 20px; background: var(--green-50); color: var(--green); font-size: 13px; }
+.review-stream-persona { padding: 0 20px 18px; }
+
+/* —— 装裱参数生成 —— */
+.framing-generate { margin-top: 16px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.framing-enable { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+.framing-spec { margin-top: 18px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; align-items: start; }
+.framing-preview img { width: 100%; border-radius: 12px; border: 1px solid var(--border); display: block; }
+.framing-preview small { display: block; margin-top: 6px; font-size: 12px; color: var(--muted); }
+.framing-spec-fields { display: grid; gap: 8px; }
+.spec-row { display: grid; grid-template-columns: 64px 18px 1fr auto; gap: 8px; align-items: center; font-size: 13px; }
+.spec-row span { color: var(--muted); font-size: 12px; }
+.spec-row i { width: 18px; height: 18px; border-radius: 5px; border: 1px solid var(--border); }
+.spec-row code { font-size: 12px; color: var(--ink); }
+.spec-row em { font-style: normal; font-size: 12px; color: var(--muted); text-align: right; }
+.spec-note { margin: 4px 0 0; font-size: 12px; color: var(--muted); line-height: 1.6; }
+
+/* —— 技能导入面板：上传本地 / 本机发现 / 技能市场 —— */
+.skill-import { margin: 0 0 18px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); overflow: hidden; }
+.skill-import-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--border); background: var(--soft); }
+.skill-import-head span { font-size: 12px; color: var(--blue); font-weight: 600; letter-spacing: .04em; }
+.skill-import-head h3 { margin: 4px 0 0; font-size: 15px; font-weight: 600; }
+.skill-import-tabs { display: flex; gap: 4px; padding: 10px 18px 0; border-bottom: 1px solid var(--border); }
+.skill-import-tabs button { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border: 0; border-bottom: 2px solid transparent; background: none; font: inherit; font-size: 13px; color: var(--muted); cursor: pointer; }
+.skill-import-tabs button:hover { color: var(--ink); }
+.skill-import-tabs button.active { color: var(--blue); border-bottom-color: var(--blue); font-weight: 600; }
+.skill-import-body { padding: 16px 18px 18px; }
+
+.skill-drop { display: grid; justify-items: center; gap: 6px; padding: 26px 18px; border: 1.5px dashed var(--border); border-radius: 12px; background: var(--soft); text-align: center; color: var(--muted); transition: border-color .15s, background .15s; }
+.skill-drop.over { border-color: var(--blue); background: var(--blue-50); }
+.skill-drop b { font-size: 14px; color: var(--ink); }
+.skill-drop small { font-size: 12px; line-height: 1.6; }
+.skill-drop button { margin-top: 8px; }
+.skill-import-error { display: flex; align-items: center; gap: 6px; margin: 12px 0 0; padding: 9px 12px; border-radius: 10px; background: #fdecec; color: #b3261e; font-size: 13px; }
+
+.skill-audit { margin-top: 14px; border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; background: var(--surface); }
+.skill-audit-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.skill-audit-head b { display: block; font-size: 15px; }
+.skill-audit-head small { display: block; margin-top: 3px; font-size: 12px; color: var(--muted); }
+.audit-badge { flex: none; font-size: 12px; padding: 4px 10px; border-radius: 999px; white-space: nowrap; }
+.audit-badge.safe { background: #e8f5e9; color: #1b7f34; }
+.audit-badge.review { background: var(--yellow-50); color: #8a6100; }
+.audit-badge.risky { background: #fdecec; color: #b3261e; }
+.skill-audit-desc { margin: 10px 0 0; font-size: 13px; line-height: 1.65; color: var(--ink); }
+.skill-audit-files { margin-top: 12px; }
+.skill-audit-files strong { font-size: 12px; color: var(--muted); }
+.skill-audit-files ul { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 3px; max-height: 168px; overflow: auto; }
+.skill-audit-files li { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; }
+.skill-audit-files code { color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.skill-audit-files em { font-style: normal; color: var(--muted); flex: none; }
+.skill-audit-warn { margin: 8px 0 0; font-size: 12px; line-height: 1.6; color: #8a6100; }
+.skill-audit-warn.risky { color: #b3261e; }
+.skill-audit-actions { display: flex; gap: 10px; margin-top: 14px; }
+.skill-audit-actions button:not(.primary) { padding: 8px 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); font: inherit; font-size: 13px; cursor: pointer; }
+
+.skill-import-search { display: flex; align-items: center; gap: 8px; padding: 9px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); color: var(--muted); }
+.skill-import-search input { flex: 1; border: 0; outline: none; font: inherit; font-size: 13px; color: var(--ink); background: none; }
+.skill-market-cats { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 0; }
+.skill-market-cats button { padding: 5px 12px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); font: inherit; font-size: 12px; color: var(--muted); cursor: pointer; }
+.skill-market-cats button.active { border-color: var(--blue); background: var(--blue-50); color: var(--blue); }
+.skill-index-list { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 8px; max-height: 420px; overflow: auto; }
+.skill-index-list li { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 11px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.skill-index-main { flex: 1; min-width: 0; }
+.skill-index-main b { display: block; font-size: 13.5px; }
+.skill-index-main small { display: block; margin-top: 3px; font-size: 12px; color: var(--muted); line-height: 1.55; }
+.skill-index-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.skill-index-meta em { font-style: normal; font-size: 11px; color: var(--muted); background: var(--soft); border-radius: 999px; padding: 2px 8px; }
+.installs { margin-left: 8px; font-size: 11px; font-weight: 500; color: var(--blue); background: var(--blue-50); border-radius: 999px; padding: 2px 8px; }
+.skill-index-list li > button { flex: none; padding: 7px 16px; border: 1px solid var(--blue); border-radius: 9px; background: var(--blue); color: #fff; font: inherit; font-size: 13px; cursor: pointer; }
+.skill-index-list li > button.done { border-color: var(--border); background: var(--soft); color: var(--muted); cursor: default; }
+.skill-index-empty { justify-content: center; color: var(--muted); font-size: 13px; }
+.skill-import-note { margin: 12px 0 0; font-size: 12px; color: var(--muted); }
+
+/* —— 技能来源标记 —— */
+.src-tag { font-style: normal; font-size: 10px; font-weight: 500; margin-left: 7px; padding: 1px 6px; border-radius: 4px; background: var(--soft); color: var(--muted); vertical-align: 1px; }
+.src-upload { color: var(--blue) !important; }
+.src-local { color: #1b7f34 !important; }
+.src-market { color: #8a6100 !important; }
+.skill-origin { margin-top: 14px; display: grid; gap: 6px; padding-top: 12px; border-top: 1px solid var(--border); }
+.skill-origin > div { display: flex; gap: 10px; align-items: baseline; font-size: 12.5px; }
+.skill-origin b { flex: none; width: 62px; color: var(--muted); font-weight: 500; }
+.skill-origin span { color: var(--ink); word-break: break-all; }
+.skill-origin-files { align-items: flex-start !important; }
+.skill-origin-files span { display: flex; flex-wrap: wrap; gap: 4px; }
+.skill-origin-files code { font-size: 11px; background: var(--soft); border-radius: 4px; padding: 1px 6px; color: var(--muted); }
+.audit-text.safe { color: #1b7f34; }
+.audit-text.review { color: #8a6100; }
+.audit-text.risky { color: #b3261e; }
+
+@media (max-width: 900px) {
+  .framing-spec { grid-template-columns: 1fr; }
+  .persona-skill { grid-template-columns: auto 1fr auto; }
+  .skill-index-list li { flex-direction: column; }
+}
+
+/* ── 装裱结果落在作品上（2026-10-09） ──────────────────────────────
+   装裱图由 canvas 精确渲染，卡纸、外框、展签都已经画在图片里。
+   所以外层容器只留一个中性白衬底，不能再叠一层 CSS 假框，
+   也不能再用 :after 写死「陈一诺 · 《向着光的花》 · 2026.08.11」——
+   那正是「框没有渲染到作品上」的旧观感来源。
+   放在本文件（main.jsx 里最后 import 的样式表）以保证优先级最高。 */
+.feedback-flow-v2 .studio-task .media-process .uploaded-art.framed-preview {
+  align-items: center !important;
+  justify-items: center !important;
+  padding: 12px !important;
+  border: 1px solid #ece3d1 !important;
+  background: #fff !important;
+  box-shadow: 0 10px 22px rgba(58, 43, 9, .12) !important;
+}
+
+.feedback-flow-v2 .studio-task .media-process .uploaded-art.framed-preview:after { content: none !important; }
+
+.feedback-flow-v2 .studio-task .media-process .uploaded-art.framed-preview img {
+  position: relative;
+  z-index: 1;
+  width: 100% !important;
+  height: 100% !important;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain !important;
+  object-position: center center !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  mix-blend-mode: normal !important;
+}
+
+/* 装裱方案名角标：告诉老师当前这页用的是哪套装裱。 */
+.framed-badge {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 3;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(35, 31, 24, .82);
+  color: #fff8e6;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 800;
+  letter-spacing: .04em;
+  pointer-events: none;
+}
+
+/* step 3 展陈位：装裱图自带卡纸与展签，去掉外层金色边框，避免「双层框」。 */
+.feedback-flow-v2 .review-task-v2 .review-art.exhibition-art.framed-art {
+  padding: 0;
+  border: 1px solid #ece3d1;
+  background: #fff;
+  box-shadow: 0 12px 28px rgba(58, 43, 9, .14);
+}
+
+.feedback-flow-v2 .review-task-v2 .framed-art-final {
+  position: relative;
+  display: grid;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  place-items: center;
+  padding: 8px;
+  background: #fff;
+}
+
+.feedback-flow-v2 .review-task-v2 .framed-art-final img {
+  width: 100% !important;
+  height: 100% !important;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain !important;
+  object-position: center center !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.feedback-flow-v2 .review-task-v2 .framed-art-final .framed-badge { top: 14px; left: 14px; }
+
+/* 装裱图是横幅（1800×1360），塞进给竖幅留的 420px 高格子里会四周都是空白，
+   看起来像卡片坏了。让装裱卡片按图片自身比例收高，并占满整列宽度。 */
+.feedback-flow-v2 .studio-task .media-process article:first-child:has(.framed-preview) {
+  grid-template-rows: auto auto;
+}
+
+.feedback-flow-v2 .studio-task .media-process .uploaded-art.framed-preview {
+  align-self: start;
+  height: auto !important;
+  min-height: 0 !important;
+  aspect-ratio: 1800 / 1360;
+  background: #faf7f1 !important;
+}
+
+.feedback-flow-v2 .studio-task .media-process .uploaded-art.framed-preview img { height: 100% !important; }
+
+/* 旧样式用 :after 把学员姓名与日期写死在 CSS 里（「陈一诺 · 《向着光的花》 · 2026.08.11」），
+   对任何别的学员都是错的，而且和真正渲染进图片的展签重复。
+   放到 persona-framing.css 里（最后 import）统一压掉。 */
+.feedback-flow-v2 .studio-task .media-process .uploaded-art:after,
+.feedback-flow-v2 .studio-task .media-process .photo-card:after { content: none !important; }

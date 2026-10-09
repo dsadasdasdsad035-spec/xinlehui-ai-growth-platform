@@ -1,7 +1,7 @@
 const STORAGE_KEY = 'xinlehui-student-management-v1';
 
 export const seedStudents = [
-  { name: '陈一诺', birthDate: '2019-04-18', className: '周六创意绘画 2 班', guardianName: '陈一诺妈妈', guardianPhone: '', expect: '希望孩子更自信地表达自己的想法。' },
+  { name: '陈一诺', birthDate: '2019-04-18', className: '周六创意绘画 2 班', guardianName: '陈一诺妈妈', guardianPhone: '13800000000', expect: '希望孩子更自信地表达自己的想法。' },
   { name: '林小满', birthDate: '2018-08-12', className: '周六创意绘画 2 班', guardianName: '', guardianPhone: '', expect: '' },
   { name: '赵禾', birthDate: '2019-02-06', className: '周六创意绘画 2 班', guardianName: '', guardianPhone: '', expect: '' }
 ];
