@@ -139,7 +139,9 @@ export function createParticipant(input = {}) {
     name,
     attendance: normalizeAttendance(source.attendance),
     artworkIds: normalizeIdList(source.artworkIds),
-    photoIds: normalizeIdList(source.photoIds)
+    photoIds: normalizeIdList(source.photoIds),
+    // 临时加入的插班/试听学员：只写进本次课次，不回写班级名单（US-405）。
+    temporary: source.temporary === true
   };
 }
 

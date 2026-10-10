@@ -79,6 +79,30 @@ React + Vite 单页原型（`src/main.jsx` 是主入口，另按模块拆出 `sr
 - 未来日期（预排课）与同日已有课次都属二次确认项，`browser_type` 可以直接填 `<input type="date">` /
   `<input type="number">` 来验证（与原生 `<select>` 不同，见下节）。
 
+### 参与学员与出席状态（US-405）
+
+第一步的出席名单面板变量是 `participantField`，数据是 `participants`
+（`[{studentId,name,attendance,artworkIds,photoIds,temporary}]`，`createParticipant()` 产出）。
+
+- **`participants` 只描述本次课次，不回写班级名单**：班级名单在 `data/studentManagement.js`
+  （`persistStudentManagement`）。临时加入插班/试听学员时只 `setParticipants`，**绝不要调 `persistStudentManagement`**，
+  否则一次试听就被写进班级永久名单。
+- **缺课学员必须留在 `participants` 里**（`attendance='absent'`），不能过滤掉：成长档案要用它生成缺课留白，
+  删掉就等于「这个孩子没来过这堂课」这件事实消失了。
+- **两种模式的参与者来源不同**：班级反馈 = `participants` 的勾选状态；个人反馈 = 选中的那一位
+  （`effectiveParticipants` 纯派生，`participants` 里没有就临时 `createParticipant` 一个）。两者共用同一个
+  `participants` state，所以切换模式走 `selectMode()`（清临时输入与拦截提示），不要再写 effect 同步。
+- **「全选 / 反选」只作用于本班名单，临时学员要显式保留**（`current.filter(item=>item.temporary)`）：
+  第一版 `全选` 直接 `setParticipants(rosterParticipants(classStudents))`，把老师刚加的临时学员顺手清掉了。
+  只有「清空」才清掉全部。
+- **换班 = 换名单**：`selectClass()` 里 `setParticipants(rosterParticipants(nextStudents))` 重建（默认全部出席），
+  临时学员不跨班保留。`rosterParticipants(students, previous)` 会保留已有出席标记，避免重算时抹掉刚标的缺课。
+- **进入下一步的门槛放在 `go()` 里**（`requireAttendedParticipant()`），不要只把按钮 `disabled`：
+  disabled 的按钮没法说明「为什么不能走」。全部缺课/名单为空时要给出具体原因，并且**保留「保存课次」这条独立动作**
+  （老师可以先存草稿）。到场口径 = 出席 + 补课，只有「一位到场的都没有」才拦。
+- 保存课次时 `participants` 直接进 `performLessonSave` 的 patch，由 `createEmptyLesson` → `normalizeParticipants`
+  收敛；`temporary` 也在 `createParticipant` 里归一化，因此插班学员不会在往返中丢掉标记。
+
 ### 浏览器验证原生 `<select>` 的坑（重要）
 
 DSH 的 `browser_*` 工具**没有 selectOption 能力**：`browser_type` 走的是 `locator.fill`

@@ -38,4 +38,33 @@
 .intake-lesson-confirm>span{font-size:11px;color:#5f4a06;font-weight:700}
 .intake-lesson-confirm>div{display:flex;align-items:center;gap:12px}
 .intake-lesson-confirm .text-link.muted{color:#8a8071}
-@media(max-width:800px){.intake-scope{align-items:flex-start;flex-direction:column;gap:7px}.intake-empty{padding:20px}.intake-lesson-fields{grid-template-columns:1fr}.intake-lesson-confirm{align-items:flex-start;flex-direction:column}.scene-actions{flex-wrap:wrap}}
+.intake-participants{grid-column:1/-1;border:1px solid #e6d9b8;border-radius:12px;background:#fffdf6;padding:12px;display:flex;flex-direction:column;gap:9px}
+.intake-participants-head{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap}
+.intake-participants-head b{font-size:12px;color:#292720}
+.intake-participants-head small{font-size:10px;color:#857a64;font-weight:400}
+.intake-participants-actions{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.intake-participants-actions button,.intake-attendant-add button{border:1px solid #e6d9b8;background:#fff;border-radius:9px;padding:0 12px;min-height:40px;font-size:10px;font-weight:700;color:#5f5745;cursor:pointer}
+.intake-participants-actions button:hover,.intake-attendant-add button:hover{border-color:#c99908;color:#795a00}
+.intake-attendant-add button:disabled{opacity:.5;cursor:not-allowed}
+.intake-participants-stats{display:flex;align-items:center;gap:10px;flex-wrap:wrap;border-left:3px solid #d5bd71;background:#fff8e2;border-radius:8px;padding:8px 10px;font-size:10px;color:#6f6242}
+.intake-participants-stats b{font-size:12px;color:#292720;margin-left:2px}
+.intake-participant-list{display:flex;flex-direction:column;gap:7px;max-height:320px;overflow:auto}
+.intake-participant{display:flex;align-items:center;gap:9px;flex-wrap:wrap;border:1px solid #eee3c8;border-radius:10px;background:#fff;padding:6px 10px}
+.intake-participant.off{background:#faf8f2;opacity:.6}
+.intake-participant.temporary{border-color:#e0c274;background:#fffaf0}
+.intake-participant>label{display:flex;flex-direction:row;align-items:center;justify-content:flex-start;gap:7px;flex:1;min-width:130px;min-height:40px;text-align:left;font-size:11px;font-weight:700;color:#3d382d;cursor:pointer}
+.intake-participant input[type=checkbox]{width:18px;height:18px;accent-color:#c99908}
+.intake-participant .tag{font-size:9px;font-weight:700;padding:2px 6px;border-radius:6px;background:#fff1cd;color:#8a6100}
+.intake-participant-note{font-size:10px;color:#9a917f}
+.intake-attendance{display:inline-flex;border:1px solid #e6d9b8;border-radius:9px;overflow:hidden;background:#fff}
+.intake-attendance button{border:0;background:#fff;padding:0 11px;min-height:40px;font-size:10px;font-weight:700;color:#776e5b;cursor:pointer}
+.intake-attendance button+button{border-left:1px solid #efe5cd}
+.intake-attendance button.active{background:#292720;color:#fff}
+.intake-attendance button.active.absent{background:#b03a2e}
+.intake-attendance button.active.makeup{background:#8a6100}
+.intake-attendant-add{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.intake-attendant-add input{flex:1;min-width:170px;min-height:40px;border:1px solid #e6d9b8;border-radius:10px;background:#fff;padding:0 10px;color:#3d382d;font-size:11px}
+.intake-attendant-add small,.intake-participants-foot{font-size:10px;color:#857a64}
+.intake-participants .text-link{border:0;background:none;padding:4px 2px;color:#795a00;font-size:10px;font-weight:700;cursor:pointer;text-decoration:underline}
+.intake-participants .text-link.muted{color:#8a8071}
+@media(max-width:800px){.intake-scope{align-items:flex-start;flex-direction:column;gap:7px}.intake-empty{padding:20px}.intake-lesson-fields{grid-template-columns:1fr}.intake-lesson-confirm{align-items:flex-start;flex-direction:column}.scene-actions{flex-wrap:wrap}.intake-participant{align-items:flex-start;flex-direction:column}.intake-participant>label{min-width:0;width:100%}.intake-attendance{width:100%}.intake-attendance button{flex:1;min-height:44px}.intake-attendant-add{align-items:stretch;flex-direction:column}.intake-attendant-add button{min-height:44px}}
