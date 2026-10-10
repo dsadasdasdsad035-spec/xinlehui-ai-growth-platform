@@ -19,4 +19,23 @@
 .intake-empty-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;justify-content:center;margin-top:4px}
 .intake-empty-actions .text-link{border:0;background:none;padding:6px 2px;color:#795a00;font-size:11px;font-weight:700;cursor:pointer}
 .intake-hint{font-size:10px;color:#9a6e00;margin:10px 0 0}
-@media(max-width:800px){.intake-scope{align-items:flex-start;flex-direction:column;gap:7px}.intake-empty{padding:20px}}
+/* 第一步（US-404）：课次日期与课时序号必填面板 + 唯一性/未来日期二次确认。 */
+.intake-lesson-form{grid-column:1/-1;border:1px solid #e6d9b8;border-radius:12px;background:#fffdf6;padding:12px;display:flex;flex-direction:column;gap:9px}
+.intake-lesson-head{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap}
+.intake-lesson-head b{font-size:12px;color:#292720}
+.intake-lesson-head small{font-size:10px;color:#857a64;font-weight:400}
+.intake-lesson-fields{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.intake-lesson-fields label{font-size:11px;color:#504a3c;font-weight:700;display:flex;flex-direction:column;gap:6px}
+.intake-lesson-fields em{font-size:9px;color:#aa7800;font-style:normal}
+.intake-lesson-fields input{min-height:40px;border:1px solid #e6d9b8;border-radius:10px;background:#fff;padding:0 10px;color:#3d382d;font-size:11px}
+.intake-lesson-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.intake-lesson-actions .text-link,.intake-lesson-warn .text-link,.intake-lesson-note .text-link,.intake-lesson-confirm .text-link{border:0;background:none;padding:2px 0;color:#795a00;font-size:10px;font-weight:700;cursor:pointer;text-decoration:underline}
+.intake-lesson-actions small{font-size:10px;color:#857a64}
+.intake-lesson-warn{margin:0;border-left:3px solid #d9534f;background:#fff3f1;border-radius:8px;padding:8px 10px;font-size:10px;line-height:1.6;color:#8a2f27;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.intake-lesson-note{margin:0;border-left:3px solid #d5bd71;background:#fff8e2;border-radius:8px;padding:8px 10px;font-size:10px;line-height:1.6;color:#6f6242;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.intake-lesson-note.ok{border-left-color:#3f8f5f;background:#f2faf4;color:#2f6b45}
+.intake-lesson-confirm{margin:0;border:1px solid #c99908;border-radius:10px;background:#fff5d1;padding:9px 11px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.intake-lesson-confirm>span{font-size:11px;color:#5f4a06;font-weight:700}
+.intake-lesson-confirm>div{display:flex;align-items:center;gap:12px}
+.intake-lesson-confirm .text-link.muted{color:#8a8071}
+@media(max-width:800px){.intake-scope{align-items:flex-start;flex-direction:column;gap:7px}.intake-empty{padding:20px}.intake-lesson-fields{grid-template-columns:1fr}.intake-lesson-confirm{align-items:flex-start;flex-direction:column}.scene-actions{flex-wrap:wrap}}
