@@ -28,6 +28,17 @@ React + Vite 单页原型（`src/main.jsx` 是主入口，另按模块拆出 `sr
   写接口要**先写本地镜像再推云端**，云端失败时数据不丢，只是提示同步失败。
 - 素材（图片地址、object URL、base64）不进数据模型，只存 id 或 http(s) 地址引用（`feedbackRecordsApi.js` 的 `httpOnly`）。
 
+## 课程库与课题来源（course ↔ lesson）
+
+- 课题（lesson.topic）的默认值来自课程库：`resolveSyllabusTopic(course, lessonNo)` 先查 `course.syllabus`
+  里同 `lessonNo` 的条目，查不到才回落 `course.defaultTopic`；来源可用 `resolveSyllabusEntry().fromSyllabus` 区分。
+- **`enabled: false` 只作用于「可选列表」，不作用于「显示」**：老师端选课用 `selectableCourses()` / `loadSelectableCourses()`，
+  但历史课次要显示课程名时必须走不过滤的 `findCourseById()` / `resolveLessonCourseName()`，
+  否则课程一停用，旧课次的课程名就变成空白。
+- 班级数据（`data/studentManagement.js` 的 `class.course`）存的是**课程名**而不是 courseId，
+  要拿 id 去关联课次时走 `resolveCourseId(list, value)`（先按 id 查、再按名字查）。
+- 新建课程主键用随机的 `makeUniqueCourseId()`；`makeCourseIdFromName()` 的确定性派生只用于读取没有 id 的旧数据。
+
 ## 容易踩的坑
 
 - **唯一性不能用 id 派生**：如果实体主键是「自然键的纯函数」，那么冲突检测会退化成「两条记录 id 相同」，
@@ -46,3 +57,5 @@ data 模块是零依赖的纯 ESM，可以直接用 Node 跑：`node --experimen
 （Node 不会解析 Vite 风格的无扩展名相对导入，需要一个小 loader 把 `'../cloud'` 补成 `'../cloud.js'`）。
 service 模块也能在 Node 里测：`cloud.database` 是**可写属性**，导入后替换成内存表替身
 （builder 需要 `then()` 才能被 `await`）即可覆盖「唯一性 / 状态机 / 云端失败回落」这些关键分支。
+写内存表替身时 `delete()` 必须**真的**把命中行从表里移除：只实现 `select` / `upsert`、让 `delete` 返回
+一个空 thenable，会让「删除课程/课次」的断言假通过。

@@ -57,6 +57,9 @@ import { loadRemoteGalleryExhibitions, loadRemoteGalleryVenues } from './service
 // 课次（lesson）是后续四步流程的唯一上下文实体：本地兜底 + 云端 lessons 表为真源。
 import { loadLessons, persistLessons } from './data/lessons';
 import { loadRemoteLessons } from './services/lessonApi';
+// 课程库（course）是课题的来源：课次上的 courseId 指向一门课程，课题按课时序号从 syllabus 取。
+import { loadCourses, persistCourses } from './data/courses';
+import { loadRemoteCourses } from './services/courseApi';
 import GalleryPage from './gallery/GalleryPage';
 import GalleryAdminPage from './gallery/GalleryAdminPage';
 
@@ -134,6 +137,8 @@ function App(){
   const [galleryExhibitions,setGalleryExhibitions]=useState(loadGalleryExhibitions);
   // 课次列表：云端 lessons 表为真源，本地只做兜底；下游四步流程都从这里取上下文。
   const [lessons,setLessons]=useState(loadLessons);
+  // 课程库：云端 courses 表为真源，本地只做兜底；课次课题与班级选课都从这里取。
+  const [courses,setCourses]=useState(loadCourses);
   const [flow,setFlow]=useState({step:1,classId:'',students:[],files:[],apps:['frame','review'],tone:'温暖专业',generateState:'idle',published:false});
   const [demoState,setDemoState]=useState('normal');
   useEffect(()=>{ if(toast){const t=setTimeout(()=>setToast(''),2600); return()=>clearTimeout(t)}},[toast]);
@@ -145,6 +150,7 @@ function App(){
   useEffect(()=>{persistGalleryVenues(galleryVenues)},[galleryVenues]);
   useEffect(()=>{persistGalleryExhibitions(galleryExhibitions)},[galleryExhibitions]);
   useEffect(()=>{persistLessons(lessons)},[lessons]);
+  useEffect(()=>{persistCourses(courses)},[courses]);
   useEffect(()=>{let active=true;
     loadRemoteTeacherProfiles().then(remote=>{if(active&&remote.length)setTeacherProfiles(remote)}).catch(()=>{});
     loadRemoteFramingPresets().then(remote=>{if(active&&remote.length)setFramingPresets(remote)}).catch(()=>{});
@@ -155,6 +161,8 @@ function App(){
     loadRemoteGalleryExhibitions().then(remote=>{if(active&&remote.length)setGalleryExhibitions(hydrateGalleryExhibitions(remote))}).catch(()=>{});
     // 课次：云端不可用时保留本地兜底数据，不把列表清空。
     loadRemoteLessons().then(remote=>{if(active&&remote.length)setLessons(remote)}).catch(()=>{});
+    // 课程库：同上；云端返回全部课程（含停用），可选性由 selectableCourses 判断。
+    loadRemoteCourses().then(remote=>{if(active&&remote.length)setCourses(remote)}).catch(()=>{});
     return()=>{active=false};
   },[]);
   const navigate=(p)=>{setPage(p);setMobileNav(false);window.scrollTo(0,0)};
@@ -171,7 +179,7 @@ function App(){
     <main className="main">
       <Topbar role={role} onMenu={()=>setMobileNav(true)} onSwitch={(r)=>login(r,'demo')} onGuide={()=>navigate('guide')} onLogout={()=>setAuth(false)}/>
       <div className="content">
-        <PageRouter {...{page,role,navigate,setToast,setModal,apps,setApps,tasks,setTasks,flow,setFlow,demoState,setDemoState,records,setRecords,parentStudent,parentStudents,parentPhone,parentSession,setParentStudent,teacherProfiles,setTeacherProfiles,framingPresets,setFramingPresets,skillLibrary,setSkillLibrary,galleryVenues,setGalleryVenues,galleryExhibitions,setGalleryExhibitions,lessons,setLessons}}/>
+        <PageRouter {...{page,role,navigate,setToast,setModal,apps,setApps,tasks,setTasks,flow,setFlow,demoState,setDemoState,records,setRecords,parentStudent,parentStudents,parentPhone,parentSession,setParentStudent,teacherProfiles,setTeacherProfiles,framingPresets,setFramingPresets,skillLibrary,setSkillLibrary,galleryVenues,setGalleryVenues,galleryExhibitions,setGalleryExhibitions,lessons,setLessons,courses,setCourses}}/>
       </div>
     </main>
     {toast?<div className="toast panda-toast"><img src={pandaWave} alt="熊猫鼓励"/><span><CircleCheck size={18}/>{toast}</span></div>:null}
