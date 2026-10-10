@@ -39,6 +39,29 @@ React + Vite 单页原型（`src/main.jsx` 是主入口，另按模块拆出 `sr
   要拿 id 去关联课次时走 `resolveCourseId(list, value)`（先按 id 查、再按名字查）。
 - 新建课程主键用随机的 `makeUniqueCourseId()`；`makeCourseIdFromName()` 的确定性派生只用于读取没有 id 的旧数据。
 
+## 管理端页面（admin）的接线与写入约定
+
+新增一个管理端页面要**同时**改三处，缺一处就出问题（见 `CourseLibraryPage` / `FramingSettingsPage`）：
+
+1. `main.jsx` 的 `navByRole.admin` —— 侧边栏入口；
+2. `main.jsx` 的 `ADMIN_ONLY_PAGES` —— 非管理员访问时兜底回自己的工作台（导航里没有不代表访问不到）；
+
+   只加导航不加这个数组，老师/家长仍能通过历史链接或导览页进来。
+3. `main.jsx` 的 `PageRouter` 的 `map` —— 真正的页面映射。
+
+页面本体放在 `src/admin/<Name>.jsx`，通过 `{...props}` 拿到 `courses / setCourses / lessons / setToast` 等；
+展示原语从 `../ui` 取（`PageHeader` / `Button` / `Status`），布局复用 `styles.css` 的 `.split-page` 与
+`persona-framing.css` 的 `.persona-list` / `.persona-editor` / `.persona-field`，不要另造一套。
+
+- **写接口抛错时也要更新 state**：`save<X>` 是「先写本地镜像再推云端」，云端不通时会 throw，
+  此时本地镜像其实已经落盘。调用方必须在 `catch` 里仍然把这条记录并进 React state，
+  否则下一次 `persist<X>` 会用不含它的旧列表把本地镜像覆盖掉 —— 表现就是「保存成功，一刷新就没了」。
+  表单校验（必填、同名）要在调用前自己判一遍，好把「填错了」和「云端没同步」分成两条提示。
+- **引用范围提示要按各自的关联方式分别数**：课次持有 `courseId`，班级持有课程名（见 `class.course`），
+  删除前提示「有 N 个课次引用」时两种都要查，不能只看 id 相等。
+- 「新建」在点击保存前**不要**先塞进受控列表：`main.jsx` 的 `persist<X>` effect 会把 state 立刻落盘，
+  半成品（没名字的课程）就会活过一次刷新。用 `isNew` 之类的外部草稿，保存成功后再并入列表。
+
 ## 容易踩的坑
 
 - **唯一性不能用 id 派生**：如果实体主键是「自然键的纯函数」，那么冲突检测会退化成「两条记录 id 相同」，

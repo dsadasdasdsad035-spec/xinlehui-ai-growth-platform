@@ -62,6 +62,8 @@ import { loadCourses, persistCourses } from './data/courses';
 import { loadRemoteCourses } from './services/courseApi';
 import GalleryPage from './gallery/GalleryPage';
 import GalleryAdminPage from './gallery/GalleryAdminPage';
+// 课程库（US-402b）：管理员维护课程与分课时课题，是老师端选课与课次推荐课题的来源。
+import CourseLibraryPage from './admin/CourseLibraryPage';
 
 // 五个维度各自的留空提示语 —— 只说明「这一维该看什么」，不预填任何成句的点评。
 const REVIEW_DIMENSION_HINTS = {
@@ -95,7 +97,7 @@ const navByRole = {
     ['gallery','3D 画廊',Landmark]
   ],
   parent: [['parent','首页',LayoutDashboard],['parentInsight','作品观察',Sparkles],['parentArchive','成长档案',Archive],['gallery','3D 画廊',Landmark],['growthCenter','个人成长中心',BookOpen],['authorization','授权管理',ShieldCheck],['profile','个人中心',UserRound]],
-  admin: [['adminDash','运营总览',LayoutDashboard],['apps','应用中心',Boxes],['providers','模型供应商',Zap],['teacherPersona','老师人设',GraduationCap],['skillLibrary','技能库',Boxes],['framingSettings','装裱设置',Frame],['galleryAdmin','3D 画廊',Landmark],['users','用户管理',Users],['logs','生成日志',FileText],['archiveAdmin','档案管理',Archive],['permissions','权限设置',ShieldCheck],['settings','系统配置',Settings]]
+  admin: [['adminDash','运营总览',LayoutDashboard],['apps','应用中心',Boxes],['providers','模型供应商',Zap],['teacherPersona','老师人设',GraduationCap],['skillLibrary','技能库',Boxes],['courseLibrary','课程库',BookOpen],['framingSettings','装裱设置',Frame],['galleryAdmin','3D 画廊',Landmark],['users','用户管理',Users],['logs','生成日志',FileText],['archiveAdmin','档案管理',Archive],['permissions','权限设置',ShieldCheck],['settings','系统配置',Settings]]
 };
 
 const aiAppsSeed = [
@@ -1497,10 +1499,10 @@ function placeholderArtwork(){
 
 // 机构级基础数据页：只有管理员能进。导航已经隐藏入口，这里再拦一道，
 // 避免从导览页、历史链接或未来新增入口绕过。
-const ADMIN_ONLY_PAGES=['teacherPersona','skillLibrary','framingSettings','galleryAdmin'];
+const ADMIN_ONLY_PAGES=['teacherPersona','skillLibrary','courseLibrary','framingSettings','galleryAdmin'];
 
 function PageRouter(props){
- const map={dashboard:TeacherWelcome,teacherFlow:TeacherFlowV2,lessons:LessonsPage,create:CreateFlow,ai:TeacherAIWorkspace,tasks:TasksPage,progress:ProgressBoard,classes:StudentArchiveData,growthCenter:PersonalGrowthCenter,archives:GrowthArchiveData,parent:ParentHomeFamily,parentInsight:ParentInsight,parentArchive:ParentArchiveFamily,authorization:AuthorizationPage,profile:ProfilePage,adminDash:AdminDashboard,apps:AppsPage,providers:ProvidersPage,teacherPersona:TeacherPersonaPage,skillLibrary:SkillLibraryPage,framingSettings:FramingSettingsPage,galleryAdmin:GalleryAdminPage,gallery:GalleryPage,users:UsersPage,logs:LogsPage,archiveAdmin:ArchiveAdmin,permissions:PermissionsPage,settings:SettingsPage,guide:GuidePage};
+ const map={dashboard:TeacherWelcome,teacherFlow:TeacherFlowV2,lessons:LessonsPage,create:CreateFlow,ai:TeacherAIWorkspace,tasks:TasksPage,progress:ProgressBoard,classes:StudentArchiveData,growthCenter:PersonalGrowthCenter,archives:GrowthArchiveData,parent:ParentHomeFamily,parentInsight:ParentInsight,parentArchive:ParentArchiveFamily,authorization:AuthorizationPage,profile:ProfilePage,adminDash:AdminDashboard,apps:AppsPage,providers:ProvidersPage,teacherPersona:TeacherPersonaPage,skillLibrary:SkillLibraryPage,courseLibrary:CourseLibraryPage,framingSettings:FramingSettingsPage,galleryAdmin:GalleryAdminPage,gallery:GalleryPage,users:UsersPage,logs:LogsPage,archiveAdmin:ArchiveAdmin,permissions:PermissionsPage,settings:SettingsPage,guide:GuidePage};
  if(ADMIN_ONLY_PAGES.includes(props.page)&&props.role!=='admin'){
    const Fallback=props.role==='parent'?ParentHomeFamily:TeacherWelcome;
    return <Fallback {...props}/>;
