@@ -1,5 +1,5 @@
 /**
- * 上传素材 → 学员绑定（US-406a）。
+ * 上传素材 → 学员绑定（US-406a / US-406b）。
  *
  * 背景：班级反馈一次可以选择多份作品/照片。旧实现把「第 index 份素材属于第
  * `index % students.length` 位学员」写死在展示层 —— 学员数一变（少于素材份数时）就会
@@ -13,6 +13,11 @@
  * - 位置不够时多出来的素材保持 `studentId === ''`（未绑定），界面上明说「未绑定学员」，
  *   宁可留白也不猜一个姓名。
  *
+ * US-406b 起班级反馈的作品走「学员乘上传位」：每位学员一行、每行自己的文件选择框，
+ * 上传的素材**直接绑给这一行的学员**（`bindFilesToStudent`，不再需要轮转），
+ * 每行 1–5 幅、逐幅可填作品名；超过上限的份数被忽略并回报数量（`ignored`）。
+ * 轮转版 `bindFilesToParticipants` 保留给「一次选多份、没有指定学员」的路径（课堂照片，US-009 接手）。
+ *
  * 素材本体（File / object URL）不进数据模型，条目里只留 name/type/size/url 这些会话内引用。
  */
 
@@ -22,8 +27,15 @@ export const UPLOAD_KINDS = ['artwork', 'photo'];
 /** 每种素材在 participants 上对应的 id 列表字段。 */
 export const UPLOAD_ID_FIELDS = { artwork: 'artworkIds', photo: 'photoIds' };
 
-/** 每节课每人允许的素材数量上限（US-406a 阶段作品为 1 幅/人，US-406b 的乘上传位会放宽到 5）。 */
-export const UPLOAD_SLOTS_PER_STUDENT = { artwork: 1, photo: 1 };
+/** 每节课每人允许的素材数量上限：作品 1–5 幅/人（US-406b）；照片在 US-009 放宽到 10 张/人。 */
+export const UPLOAD_SLOTS_PER_STUDENT = { artwork: 5, photo: 1 };
+
+/** 取某个 kind 的每人上限：调用方可以显式覆盖（测试与后台配置用），非法值回落常量。 */
+export function maxSlotsPerStudent(kind = 'artwork', override) {
+  const value = Number(override);
+  if (Number.isFinite(value) && value > 0) return Math.trunc(value);
+  return UPLOAD_SLOTS_PER_STUDENT[normalizeUploadKind(kind)];
+}
 
 let uploadSeq = 0;
 
@@ -92,9 +104,7 @@ export function bindFilesToParticipants(files = [], participants = [], options =
   const kind = normalizeUploadKind(options.kind);
   const idField = UPLOAD_ID_FIELDS[kind];
   const title = String(options.title || '').trim();
-  const maxPerStudent = Number.isFinite(Number(options.maxPerStudent)) && Number(options.maxPerStudent) > 0
-    ? Math.trunc(Number(options.maxPerStudent))
-    : UPLOAD_SLOTS_PER_STUDENT[kind];
+  const maxPerStudent = maxSlotsPerStudent(kind, options.maxPerStudent);
   const toUrl = typeof options.toUrl === 'function'
     ? options.toUrl
     : (file => (file && typeof URL !== 'undefined' && URL.createObjectURL ? URL.createObjectURL(file) : ''));
@@ -204,4 +214,147 @@ export function withUploadPlaques(items = [], participants = [], options = {}) {
     const entry = createUploadEntry(item);
     return { ...entry, plaque: uploadPlaque(entry, participants, options) };
   });
+}
+
+// ---- 学员乘上传位（US-406b）--------------------------------------------------------
+// 班级反馈的作品不再「一次选多份再轮转分给学员」，而是**一人一行、每行自己的选择框**：
+// 老师在这一行里选的文件，就是这一位学员的作品，不存在任何推断。下面这几个函数是那条
+// 界面路径的全部领域逻辑（筛选、计数、绑定、改名、移除），展示层只做渲染。
+
+/** 这条素材是不是属于这位学员：先比 studentId，再退回姓名（兼容没有 id 的旧条目/临时学员）。 */
+function uploadBelongsToParticipant(item, participant) {
+  if (!item || !participant?.name) return false;
+  const studentId = String(participant.studentId || '').trim();
+  const name = String(participant.name || '').trim();
+  const entryStudentId = String(item.studentId || '').trim();
+  const entryName = String(item.studentName || '').trim();
+  if (studentId && entryStudentId === studentId) return true;
+  // 条目上没写 studentId 时（旧数据），只有姓名能对上才算这位学员的；仍然不猜。
+  return !entryStudentId && Boolean(name) && entryName === name;
+}
+
+/** 某位学员在某个 kind 下已经上传的条目（保持传入顺序，供缩略图列表直接渲染）。 */
+export function uploadsOfParticipant(items = [], participant = {}, kind = 'artwork') {
+  const wanted = normalizeUploadKind(kind);
+  return (items || []).filter(item => normalizeUploadKind(item?.kind) === wanted && uploadBelongsToParticipant(item, participant));
+}
+
+/** 某位学员的用量：已上传几幅、上限几幅、还剩几个位子、是否已满。 */
+export function participantSlotUsage(items = [], participant = {}, kind = 'artwork', options = {}) {
+  const max = maxSlotsPerStudent(kind, options.maxPerStudent);
+  const used = uploadsOfParticipant(items, participant, kind).length;
+  return { used, max, remaining: Math.max(0, max - used), full: used >= max };
+}
+
+/**
+ * 把一批文件绑定给**指定的**这一位学员（班级反馈的「一人一行」上传位）。
+ *
+ * 与 `bindFilesToParticipants` 的区别：这里不做任何轮转/分配 —— 老师在谁的格子里选的文件
+ * 就是谁的作品。超过每人上限的份数直接忽略并回报数量（`ignored`），由界面提示老师重新选择；
+ * 不会变成「未绑定」条目混淆视听（那些文件的归属是明确的，只是超量）。
+ */
+export function bindFilesToStudent(files = [], participant = {}, options = {}) {
+  const list = Array.from(files || []);
+  const kind = normalizeUploadKind(options.kind);
+  const title = String(options.title || '').trim();
+  const toUrl = typeof options.toUrl === 'function'
+    ? options.toUrl
+    : (file => (file && typeof URL !== 'undefined' && URL.createObjectURL ? URL.createObjectURL(file) : ''));
+  const studentId = String(participant?.studentId || '').trim();
+  const studentName = String(participant?.name || '').trim();
+  const usage = participantSlotUsage(options.existing || [], participant, kind, { maxPerStudent: options.maxPerStudent });
+  // 没有 studentId 就没有可落库的归属：宁可一份都不收，也不要写出「绑不上任何人」的素材。
+  if (!studentId || !studentName) {
+    return { entries: [], participants: options.participants || [], used: usage.used, max: usage.max, accepted: 0, ignored: list.length, idField: UPLOAD_ID_FIELDS[kind] };
+  }
+  const accepted = list.slice(0, usage.remaining);
+  const entries = accepted.map(file => createUploadEntry({
+    kind,
+    name: file?.name,
+    type: file?.type,
+    size: file?.size,
+    url: toUrl(file),
+    // 作品名默认留空：US-406b 起由老师逐幅填写，或用界面上的「把本次课题套用为作品名」一键补默认值。
+    title,
+    studentId,
+    studentName
+  }));
+  return {
+    entries,
+    participants: applyUploadBindings(options.participants || [], entries),
+    used: usage.used,
+    max: usage.max,
+    accepted: entries.length,
+    ignored: list.length - entries.length,
+    idField: UPLOAD_ID_FIELDS[kind]
+  };
+}
+
+/** 改一条素材的字段（目前只用于逐幅填写作品名）。主键是随机唯一的 uploadId，不做自然键匹配。 */
+export function updateUploadEntry(items = [], uploadId = '', patch = {}) {
+  const target = String(uploadId || '').trim();
+  if (!target) return items || [];
+  return (items || []).map(item => (String(item?.uploadId || '').trim() === target ? createUploadEntry({ ...item, ...patch }) : item));
+}
+
+/** 移除一条素材（保留其余条目与顺序）。 */
+export function removeUploadEntry(items = [], uploadId = '') {
+  const target = String(uploadId || '').trim();
+  if (!target) return items || [];
+  return (items || []).filter(item => String(item?.uploadId || '').trim() !== target);
+}
+
+/**
+ * 把 uploadId 从 participants 的 artworkIds / photoIds 里摘掉（移除素材时必须一起做，
+ * 否则 participant 上会留着一个指向不存在素材的 id，展签/成长档案会按它去认人）。
+ */
+export function detachUploadBinding(participants = [], uploadId = '', kind = 'artwork') {
+  const target = String(uploadId || '').trim();
+  if (!target) return participants || [];
+  const field = UPLOAD_ID_FIELDS[normalizeUploadKind(kind)];
+  return (participants || []).map(item => {
+    if (!Array.isArray(item?.[field]) || !item[field].includes(target)) return item;
+    return { ...item, [field]: item[field].filter(id => id !== target) };
+  });
+}
+
+/**
+ * 一键把默认作品名套用到素材上（US-406b 的「把本次课题套用为作品名」）。
+ * 默认**只填空标题**：老师已经手填过的名字不能被一次批量动作悄悄覆盖。
+ * `options.onlyEmpty: false` 才会全部改写（留作将来「强制重刷」的入口）。
+ */
+export function applyDefaultTitles(items = [], title = '', options = {}) {
+  const fallback = String(title || '').trim();
+  const onlyEmpty = options.onlyEmpty !== false;
+  const kind = options.kind ? normalizeUploadKind(options.kind) : '';
+  let changed = 0;
+  const entries = (items || []).map(item => {
+    const entry = createUploadEntry(item);
+    if (!fallback) return item;
+    if (kind && entry.kind !== kind) return item;
+    if (entry.title === fallback) return item;
+    if (onlyEmpty && entry.title) return item;
+    changed += 1;
+    return { ...item, title: fallback };
+  });
+  return { entries, changed };
+}
+
+/** 一位作品都还没有上传的到场学员（界面顶部的「还有 N 位学员未上传作品」）。 */
+export function participantsMissingUpload(participants = [], items = [], kind = 'artwork') {
+  return attendedParticipants(participants).filter(participant => !uploadsOfParticipant(items, participant, kind).length);
+}
+
+/**
+ * 上传位列表要渲染哪些学员：**到场学员**都有位置（出席 + 补课），另外把「已经上传过素材、
+ * 但后来被标成缺课或移出名单」的学员也保留一行 —— 否则那份素材在界面上再也改不了作品名、
+ * 也删不掉，老师只能整页刷新重来。
+ */
+export function uploadSlotParticipants(participants = [], items = [], kind = 'artwork') {
+  const attended = attendedParticipants(participants);
+  const seen = new Set(attended.map(item => String(item.studentId || '').trim()));
+  const extra = (participants || []).filter(item => item?.name
+    && !seen.has(String(item.studentId || '').trim())
+    && uploadsOfParticipant(items, item, kind).length);
+  return [...attended, ...extra];
 }

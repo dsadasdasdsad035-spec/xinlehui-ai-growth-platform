@@ -67,4 +67,39 @@
 .intake-attendant-add small,.intake-participants-foot{font-size:10px;color:#857a64}
 .intake-participants .text-link{border:0;background:none;padding:4px 2px;color:#795a00;font-size:10px;font-weight:700;cursor:pointer;text-decoration:underline}
 .intake-participants .text-link.muted{color:#8a8071}
-@media(max-width:800px){.intake-scope{align-items:flex-start;flex-direction:column;gap:7px}.intake-empty{padding:20px}.intake-lesson-fields{grid-template-columns:1fr}.intake-lesson-confirm{align-items:flex-start;flex-direction:column}.scene-actions{flex-wrap:wrap}.intake-participant{align-items:flex-start;flex-direction:column}.intake-participant>label{min-width:0;width:100%}.intake-attendance{width:100%}.intake-attendance button{flex:1;min-height:44px}.intake-attendant-add{align-items:stretch;flex-direction:column}.intake-attendant-add button{min-height:44px}}
+/* 第一步（US-406b）：学员乘上传位列表 —— 班级反馈下按到场学员一人一行，每行 1–5 幅作品。 */
+.intake-upload-slots{grid-column:1/-1;border:1px solid #e6d9b8;border-radius:12px;background:#fffdf6;padding:12px;display:flex;flex-direction:column;gap:9px}
+.intake-upload-slots-head{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.intake-upload-slots-head b{font-size:12px;color:#292720}
+.intake-upload-slots-head small{font-size:10px;color:#857a64;font-weight:400;flex:1;min-width:170px}
+.intake-upload-slots-head button{border:1px solid #e6d9b8;background:#fff;border-radius:9px;padding:0 12px;min-height:40px;font-size:10px;font-weight:700;color:#5f5745;cursor:pointer}
+.intake-upload-slots-head button:hover:not(:disabled){border-color:#c99908;color:#795a00}
+.intake-upload-slots-head button:disabled{opacity:.5;cursor:not-allowed}
+.intake-upload-pending{margin:0;border-left:3px solid #d5bd71;background:#fff8e2;border-radius:8px;padding:8px 10px;font-size:10px;line-height:1.6;color:#6f6242}
+.intake-upload-pending.ok{border-left-color:#3f8f5f;background:#f2faf4;color:#2f6b45}
+.intake-upload-slot-list{display:flex;flex-direction:column;gap:8px;max-height:460px;overflow:auto}
+.intake-upload-slot{border:1px solid #eee3c8;border-radius:10px;background:#fff;padding:8px 10px;display:flex;flex-direction:column;gap:7px}
+.intake-upload-slot.full{border-color:#e0c274;background:#fffaf0}
+.intake-upload-slot.absent{border-style:dashed;background:#faf8f2}
+.intake-upload-slot-head{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.intake-upload-slot-head>label{display:flex;flex-direction:row;align-items:center;justify-content:flex-start;gap:7px;flex:1;min-width:130px;min-height:40px;text-align:left;font-size:11px;font-weight:700;color:#3d382d}
+.intake-upload-slot-head .tag{font-size:9px;font-weight:700;padding:2px 6px;border-radius:6px;background:#fff1cd;color:#8a6100}
+.intake-upload-slot-head .tag.muted{background:#f2efe6;color:#8a8071}
+.intake-upload-count{font-size:10px;color:#857a64}
+.intake-upload-count b{font-size:12px;color:#292720}
+.intake-upload-add{border:1px solid #e6d9b8;background:#fff;border-radius:9px;padding:0 12px;min-height:40px;font-size:10px;font-weight:700;color:#5f5745;cursor:pointer}
+.intake-upload-add:hover:not(:disabled){border-color:#c99908;color:#795a00}
+.intake-upload-add:disabled{opacity:.5;cursor:not-allowed}
+.intake-upload-items{display:flex;flex-direction:column;gap:6px}
+.intake-upload-items figure{margin:0;display:flex;align-items:center;gap:9px;border:1px solid #f1e8d2;border-radius:10px;background:#fffcf4;padding:6px 8px}
+.intake-upload-items img{width:52px;height:52px;flex:none;object-fit:cover;border-radius:8px;border:1px solid #e6d9b8;background:#fff}
+.intake-upload-items figure>div{flex:1;min-width:130px;display:flex;flex-direction:column;gap:4px}
+.intake-upload-items input{min-height:40px;border:1px solid #e6d9b8;border-radius:9px;background:#fff;padding:0 10px;color:#3d382d;font-size:11px}
+.intake-upload-items small{font-size:9px;color:#9a917f;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:220px}
+.intake-upload-items .text-link{border:0;background:none;padding:4px 2px;color:#795a00;font-size:10px;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;gap:4px}
+.intake-upload-items .text-link.muted{color:#8a8071}
+.intake-upload-empty{margin:0;font-size:10px;color:#9a917f}
+.intake-upload-foot{font-size:10px;color:#857a64}
+/* 班级反馈下作品走乘上传位，旧的「同步上传」区里只剩课堂照片一张卡：让它独占整行，别缩在 1/3 格里。 */
+.sync-upload>div:only-child{grid-column:1/-1;min-height:0}
+@media(max-width:800px){.intake-scope{align-items:flex-start;flex-direction:column;gap:7px}.intake-empty{padding:20px}.intake-lesson-fields{grid-template-columns:1fr}.intake-lesson-confirm{align-items:flex-start;flex-direction:column}.scene-actions{flex-wrap:wrap}.intake-participant{align-items:flex-start;flex-direction:column}.intake-participant>label{min-width:0;width:100%}.intake-attendance{width:100%}.intake-attendance button{flex:1;min-height:44px}.intake-attendant-add{align-items:stretch;flex-direction:column}.intake-attendant-add button{min-height:44px}.intake-upload-slots-head{align-items:stretch;flex-direction:column}.intake-upload-slots-head button{width:100%;min-height:44px}.intake-upload-slot-head{align-items:flex-start;flex-direction:column}.intake-upload-slot-head>label{min-width:0;width:100%}.intake-upload-count{align-self:flex-start}.intake-upload-slot-head .intake-upload-add{width:100%;min-height:44px}.intake-upload-items figure{align-items:flex-start;flex-wrap:wrap}.intake-upload-items figure>div{min-width:0;width:100%}.intake-upload-items img{width:64px;height:64px}}
