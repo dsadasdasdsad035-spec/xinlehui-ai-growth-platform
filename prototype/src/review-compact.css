@@ -841,6 +841,8 @@
 .class-media-mosaic figure { min-width: 0; margin: 0; overflow: hidden; background: #fff; }
 .class-media-mosaic figure img { width: 100%; height: calc(100% - 16px); display: block; object-fit: contain; background: #faf8f2; }
 .class-media-mosaic figure figcaption { overflow: hidden; padding: 2px 4px; color: #766a55; font-size: 8px; line-height: 12px; text-overflow: ellipsis; white-space: nowrap; }
+/* 未绑定学员的素材：展签直说「未绑定学员」，不拿别的孩子的姓名顶上（US-406a）。 */
+.class-media-mosaic figure figcaption.unbound { color: #b4453a; font-weight: 700; }
 .class-media-mosaic.photo figure img { object-fit: cover; }
 .class-media-mosaic figure { position: relative; }
 .orientation-note { position: absolute; top: 4px; left: 4px; padding: 2px 4px; border-radius: 3px; background: rgba(43,39,30,.75); color: #fff7d5; font-size: 7px; }

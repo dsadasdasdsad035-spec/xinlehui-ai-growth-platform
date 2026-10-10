@@ -90,6 +90,15 @@ export function normalizeLessonDate(value) {
 }
 
 /**
+ * 展签 / 海报上的日期格式：`2026.08.11`。
+ * 日期来源永远是课次日期（lesson.lessonDate），不是「今天」也不是归档日 —— 展签写的是
+ * 创作那一天，补录上节课时不能变成今天。
+ */
+export function formatLessonDateDots(value) {
+  return normalizeLessonDate(value).replace(/-/g, '.');
+}
+
+/**
  * 课时序号：正整数。
  * 返回 0 表示「未知」—— 历史归档记录本来就没有课时序号，用 0 而不是猜一个 1，
  * 免得凭空造出一个会和真实课次撞唯一键的序号。
