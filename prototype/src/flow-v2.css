@@ -133,3 +133,17 @@
 .intake-photo-orphans-head b{display:block;font-size:11px;color:#8c4034}
 .intake-photo-orphans-head small{display:block;margin-top:3px;font-size:10px;color:#96706a;font-weight:400}
 .intake-photo-orphans .intake-upload-items figure{border-color:#f0dcd7;background:#fffdfc}
+
+/* ---- 上传校验与素材隐私（US-408）--------------------------------------------------
+   准入规则写在界面上（格式 / 单张 10MB / 长边 3000px 降采样 / 每人数量上限），
+   被跳过的文件给**持久的内联提示**（toast 2.6 秒就消失，说不清「哪一份、为什么」），
+   刷新后素材失效也给一条可关闭的说明（object URL 只活在当次会话）。 */
+.intake-media-notice{margin:0;grid-column:1/-1;display:flex;align-items:flex-start;gap:8px;border-left:3px solid #d98324;background:#fff6e8;border-radius:8px;padding:8px 10px;font-size:10px;line-height:1.65;color:#8a5312}
+.intake-media-notice svg{flex:none;margin-top:1px;color:#c4761d}
+.intake-media-lost{grid-column:1/-1;display:flex;align-items:flex-start;gap:9px;margin-top:13px;padding:11px 12px;border:1px solid #e8c96a;border-radius:12px;background:#fffaf0;color:#7a5a12}
+.intake-media-lost svg{flex:none;margin-top:2px;color:#b8871a}
+.intake-media-lost>div{flex:1;min-width:0}
+.intake-media-lost b{display:block;font-size:11px;color:#6d4e0c}
+.intake-media-lost small{display:block;margin-top:3px;font-size:10px;line-height:1.65;color:#8a6a20}
+.intake-media-lost button{flex:none;border:0;background:none;padding:4px 2px;color:#795a00;font-size:10px;font-weight:700;cursor:pointer;text-decoration:underline;white-space:nowrap}
+@media(max-width:800px){.intake-media-lost{align-items:flex-start;flex-wrap:wrap}.intake-media-lost button{margin-left:0;min-height:44px}}
