@@ -1210,3 +1210,24 @@
 .plan-list b { font-size:12px; color:#f3d989; }
 .plan-list p { margin:7px 0 0; color:#f1eadc; font-size:11px; line-height:1.7; }
 @media (max-width:800px) { .stage-position,.semester-gains,.plan-list,.art-learning-breakdown > div:last-child { grid-template-columns:1fr; } .stage-position > b { padding-top:0; } .semester-gains article { min-height:0; } }
+
+/* ---- 课堂照片按学员分组（US-009）-------------------------------------------------
+   照片是选填项：没有照片的学员也要占位，照片才不会整体前移、看起来像是别人家的照片。 */
+.class-framing-photo-groups{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:11px;max-height:520px;overflow-y:auto;padding-right:4px}
+.class-framing-photo-group{border:1px solid #e6d8bd;border-radius:12px;background:#fffdf8;padding:9px 10px;display:flex;flex-direction:column;gap:8px}
+.class-framing-photo-group.empty{border-style:dashed;background:#faf8f2}
+.class-framing-photo-group-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+.class-framing-photo-group-head b{color:#332d23;font-size:12px}
+.class-framing-photo-group-head small{color:#867961;font-size:10px}
+.class-framing-photo-thumbs{display:grid;grid-template-columns:repeat(auto-fill,minmax(78px,1fr));gap:7px}
+.class-framing-photo-thumbs figure{position:relative;margin:0;display:grid;gap:4px}
+.class-framing-photo-thumbs img{width:100%;height:78px;object-fit:cover;border-radius:9px;border:1px solid #e6d8bd;background:#fff}
+.class-framing-photo-thumbs button{position:absolute;top:5px;right:5px;display:grid;width:26px;height:26px;place-items:center;border:0;border-radius:50%;background:#fffdf6;color:#8c6505;box-shadow:0 2px 8px rgba(0,0,0,.16)}
+.class-framing-photo-thumbs em{color:#1f6f9c;font-size:9px;font-style:normal;font-weight:700}
+.class-framing-photo-placeholder{display:flex;align-items:center;gap:6px;min-height:78px;justify-content:center;border:1px dashed #ded2b5;border-radius:9px;background:#fbf8f0;color:#9c917c;font-size:10px}
+/* 第三步素材墙：没有照片的学员显示占位（虚线框），而不是让后面的照片补位。 */
+.class-media-mosaic figure.mosaic-placeholder{border:1px dashed #ded2b5;background:#fbf8f0}
+.class-media-mosaic figure.mosaic-placeholder>div{display:grid;place-items:center;gap:3px;height:100%;padding:6px;color:#9c917c;text-align:center}
+.class-media-mosaic figure.mosaic-placeholder span{color:#6d6353;font-size:9px;font-weight:700}
+.class-media-mosaic figure.mosaic-placeholder small{font-size:8px;line-height:11px}
+@media(max-width:800px){.class-framing-photo-groups{grid-template-columns:repeat(2,minmax(0,1fr));max-height:480px;gap:9px}}

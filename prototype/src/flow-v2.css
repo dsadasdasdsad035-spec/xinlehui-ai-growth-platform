@@ -103,3 +103,33 @@
 /* 班级反馈下作品走乘上传位，旧的「同步上传」区里只剩课堂照片一张卡：让它独占整行，别缩在 1/3 格里。 */
 .sync-upload>div:only-child{grid-column:1/-1;min-height:0}
 @media(max-width:800px){.intake-scope{align-items:flex-start;flex-direction:column;gap:7px}.intake-empty{padding:20px}.intake-lesson-fields{grid-template-columns:1fr}.intake-lesson-confirm{align-items:flex-start;flex-direction:column}.scene-actions{flex-wrap:wrap}.intake-participant{align-items:flex-start;flex-direction:column}.intake-participant>label{min-width:0;width:100%}.intake-attendance{width:100%}.intake-attendance button{flex:1;min-height:44px}.intake-attendant-add{align-items:stretch;flex-direction:column}.intake-attendant-add button{min-height:44px}.intake-upload-slots-head{align-items:stretch;flex-direction:column}.intake-upload-slots-head button{width:100%;min-height:44px}.intake-upload-slot-head{align-items:flex-start;flex-direction:column}.intake-upload-slot-head>label{min-width:0;width:100%}.intake-upload-count{align-self:flex-start}.intake-upload-slot-head .intake-upload-add{width:100%;min-height:44px}.intake-upload-items figure{align-items:flex-start;flex-wrap:wrap}.intake-upload-items figure>div{min-width:0;width:100%}.intake-upload-items img{width:64px;height:64px}}
+
+/* ---- 学员课堂照片上传位（US-009）--------------------------------------------------
+   照片与作品分开管理：作品必选（1–5 幅/人），照片选填（0–10 张/人）。
+   照片多出「一张合影分给多人」的诉求，所以面板里带一个共用的分配区。 */
+.intake-upload-slots.photo-slots{border-color:#d8e2ea;background:#fbfdff}
+.intake-upload-slots.photo-slots .intake-upload-slot.full{border-color:#c3d4e2;background:#f6fbff}
+.intake-upload-slots-head small em{color:#a17816;font-style:normal;font-weight:700}
+.intake-upload-items.photo-items figure{border-color:#e7eef4;background:#fcfdff}
+.intake-upload-items small.photo-name{color:#4a5460}
+.intake-upload-items small.photo-owner{color:#9aa4ae}
+.intake-upload-items small.photo-shared{color:#1f6f9c;font-weight:700}
+.intake-photo-assign{border:1px solid #cfe0ec;border-radius:11px;background:#f6fbff;padding:10px;display:flex;flex-direction:column;gap:9px}
+.intake-photo-assign-head{display:flex;align-items:center;gap:10px}
+.intake-photo-assign-head img{width:56px;height:56px;flex:none;object-fit:cover;border-radius:9px;border:1px solid #cfe0ec;background:#fff}
+.intake-photo-assign-head b{display:block;font-size:11px;color:#26404f}
+.intake-photo-assign-head small{display:block;margin-top:3px;font-size:10px;color:#5d7383;font-weight:400}
+.intake-photo-assign-targets{display:flex;flex-wrap:wrap;gap:7px}
+.intake-photo-assign-targets label{display:flex;flex-direction:row;align-items:center;justify-content:flex-start;gap:6px;min-height:40px;padding:0 11px;border:1px solid #cfe0ec;border-radius:9px;background:#fff;font-size:11px;font-weight:700;color:#3d4b55;text-align:left;cursor:pointer}
+.intake-photo-assign-targets label.on{border-color:#1f6f9c;background:#eaf5fc;color:#14526f}
+.intake-photo-assign-targets input{width:15px;height:15px;flex:none;margin:0;accent-color:#1f6f9c}
+.intake-photo-assign-targets>small{font-size:10px;color:#857a64}
+.intake-photo-assign-actions{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.intake-photo-assign-actions .intake-upload-add{background:#1f6f9c;border-color:#1f6f9c;color:#fff}
+.intake-photo-assign-actions .intake-upload-add:hover{background:#1a5f86;border-color:#1a5f86;color:#fff}
+@media(max-width:800px){.intake-photo-assign-head{align-items:flex-start}.intake-photo-assign-targets label{flex:1;min-width:calc(50% - 4px);min-height:44px}.intake-photo-assign-actions{align-items:stretch;flex-direction:column}.intake-photo-assign-actions .intake-upload-add,.intake-photo-assign-actions .text-link{width:100%;min-height:44px}}
+/* 没有归属的照片必须仍然可见：否则「取消全部分配」会让它在界面上彻底消失、删不掉（US-009）。 */
+.intake-photo-orphans{border:1px dashed #e0b7ad;border-radius:11px;background:#fff8f6;padding:10px;display:flex;flex-direction:column;gap:8px}
+.intake-photo-orphans-head b{display:block;font-size:11px;color:#8c4034}
+.intake-photo-orphans-head small{display:block;margin-top:3px;font-size:10px;color:#96706a;font-weight:400}
+.intake-photo-orphans .intake-upload-items figure{border-color:#f0dcd7;background:#fffdfc}
