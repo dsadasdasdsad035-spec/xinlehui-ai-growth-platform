@@ -39,6 +39,37 @@ React + Vite 单页原型（`src/main.jsx` 是主入口，另按模块拆出 `sr
   要拿 id 去关联课次时走 `resolveCourseId(list, value)`（先按 id 查、再按名字查）。
 - 新建课程主键用随机的 `makeUniqueCourseId()`；`makeCourseIdFromName()` 的确定性派生只用于读取没有 id 的旧数据。
 
+## 老师端「课后反馈」第一步（班级 / 学员 / 课程 / 课次推荐）
+
+第一步的全部下拉都是 `TeacherFlowV2`（`main.jsx`）里的**受控组件**，状态是
+`selectedClassId / selectedStudentName / selectedCourseId`，派生值是 `visibleClasses / classStudents / courseOptions / activeCourseId`。
+
+- **不要再用命令式 DOM 同步**：旧实现是 `document.querySelectorAll('.feedback-flow-v2 .task-form select')`
+  + `replaceChildren()` + 手动 `addEventListener('change')`。它每次渲染都重建 `<option>`，
+  React 重渲染后选中项就丢/回退到写死的选项。下拉一律 `value={...} onChange={...}`。
+- **当前登录老师**：原型阶段只有一个老师身份，取 `roleMeta.teacher.name`（`main.jsx` 顶部）。
+  班级数据里存的是**老师姓名**（`class.teacher`），所以「我带的班」= `class.teacher === currentTeacherName`；
+  没有 `teacher` 字段的历史班级算作自己的班（否则列表会看起来是空的）。
+  跨老师（代课、教研听课）场景靠「我带的班 / 全部班级」开关切换，默认只看自己的班。
+- **换班只走一个函数**（`selectClass`）：清空已选学员 + 把课程刷新回本班课程
+  （`resolveCourseId(courses, class.course)`，因为班级上存的是课程名、课次上存的是 courseId）。
+  任何「学员/课程回落到列表第一个」的兜底都会造成跨班串档，不要加。
+- **课程下拉**用 `selectableCourses(courses)`（停用课程不可选）；SelectedCourseId 不在可选列表时
+  回落到本班课程、再回落到第一门可选课程。UI 上给本班课程加「· 本班课程」后缀，老师才知道默认选中的是哪门。
+- **课次推荐**：`lessonNo = 该班该课程已归档课次数 + 1`，`topic = resolveSyllabusTopic(course, lessonNo)`
+  （先查 syllabus，取不到回落 `defaultTopic`）。纯派生值，不要存进 state 再同步。
+- 无班级 / 无可选课程时渲染空态卡片 + 「去学员管理添加班级」/「去课程库」入口，
+  **不要渲染空 `<select>`**。
+
+### 浏览器验证原生 `<select>` 的坑（重要）
+
+DSH 的 `browser_*` 工具**没有 selectOption 能力**：`browser_type` 走的是 `locator.fill`
+（对 `<select>` 直接报 "not an <input>"），headless 下点击会打开原生弹层、`ArrowDown` / `Space` / `Enter` / 滚轮
+都不会改变受控 `<select>` 的值，`option` 元素也永远 not visible 点不到。
+验证下拉相关需求时：用 `browser_evaluate` **只读**读取 `select.value / select.options`（读取允许，改状态不允许），
+状态变化则通过真实的按钮/文本输入去制造（例如在「学员管理」里编辑班级的任课老师，再回「课后反馈」观察班级列表过滤）。
+不要在验证里用 `browser_evaluate` 触发 change 事件或写 localStorage。
+
 ## 管理端页面（admin）的接线与写入约定
 
 新增一个管理端页面要**同时**改三处，缺一处就出问题（见 `CourseLibraryPage` / `FramingSettingsPage`）：
