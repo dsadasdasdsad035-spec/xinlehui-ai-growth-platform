@@ -659,8 +659,6 @@ p.framing-coverage-bad { margin: 0; padding: 10px 18px; font-size: 12px; line-he
   color: #7d5500;
 }
 .feedback-flow-v2 .review-task-v2 .review-source.ai { border-style: solid; border-color: #e9dcb0; background: #fffaf0; }
-.feedback-flow-v2 .review-task-v2 .review-source.local { border-style: solid; border-color: #f0cdb6; background: #fff6f0; color: #8a5a44; }
-.feedback-flow-v2 .review-task-v2 .review-source.local svg { color: #c2703f; }
 
 /* 还没生成时：卡片留空 + 一行「待生成」标记，老师一眼知道这里的内容由谁来填 */
 .feedback-flow-v2 .review-task-v2 .coach-card.is-empty { border-style: dashed; background: #fffdf8; }
@@ -676,17 +674,8 @@ p.framing-coverage-bad { margin: 0; padding: 10px 18px; font-size: 12px; line-he
 }
 .feedback-flow-v2 .review-task-v2 .coach-card textarea::placeholder { color: #b8ae97; }
 
-/* 云端不可用时的本地兜底入口，刻意做得低调：默认路径永远是大模型生成 */
-.feedback-flow-v2 .local-draft-link {
-  border: 0;
-  background: none;
-  padding: 0;
-  font-size: 10.5px;
-  color: #8a7a58;
-  text-decoration: underline dotted;
-  cursor: pointer;
-}
-.feedback-flow-v2 .local-draft-link:hover { color: #6b5a34; }
+/* US-108a：云端不可用时不再提供任何离线兜底入口（正文只能来自大模型），
+   原来那条低调的兜底链接样式已随路径一起移除。 */
 .feedback-flow-v2 .review-detail-error { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
 
 /* ==========================================================================

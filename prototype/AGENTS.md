@@ -1709,6 +1709,41 @@ DOM/canvas 部分在 `src/services/artworkWriteBack.js`，编排在 `main.jsx` �
   （「生成中选项不可点（避免误触换模型）」→ 现在是「可点 + 二次确认」），跑那份脚本时会红这一条；
   截图 189~194 留档。
 
+## 第三步「五维点评」的正文只能来自大模型（US-108a / F-REVIEW-TRACE-07）
+
+老师端第三步的正文**没有**任何离线兜底：云端失败就如实报错、正文保持为空，不许用一份本地模板拼出
+「像点评的句子」让老师误以为是 AI 的结果。`reviewGenerated` 只有一处置真，落在 `startCloudReview`
+里云端成功返回之后；失败 / 中止都不置真，于是既有的归档守卫（`archiveRecord` 与 `go(4)` 读
+`!reviewGenerated`）自然拦下「没生成就归档」。
+
+- **唯一置真路径**：`setReviews(current=>({...current,...result.reviews}))` 之后紧跟
+  `setReviewGenerated(true)`（就在同一个 `try` 里、`}catch(error){` 之前）。新增任何
+  「填正文」的入口时，**不许**顺手把 `reviewGenerated` 也点亮 —— 它能置真的条件只有一个：
+  这一次云端调用成功返回了五维正文。静态判据：`setReviewGenerated(` 全站只出现两次（一次 true / 一次 false）。
+- **已删除的兜底路径**：`fillLocalDraft` / `localDraftUsed` / `ReviewLaunchPanel` 的兜底按钮
+  （`.local-draft-link`）/ `review-source` 的 `local` 变体与 `persona-framing.css` 里的对应规则。
+  一并删掉的还有只服务于那条模板路径的「画面证据」管道：`inspectArtworkEvidence()`、`artworkEvidence`
+  state 及其 effect、`keepArtworkReviewEvidenceBound()`（`COLOR_LANGUAGE` 正则）—— 它们当时是给
+  模板文案挑「有色彩 / 无色彩」的措辞用的，留着只会诱导后人复活本地模板。要重新引入画面证据，
+  请按新需求重写，别再挂回模板路径。
+- **验收点名的 `prototype/src/p0-local-draft.css` 里其实没有本地草稿规则**（那份文件装的是
+  `sync-upload` / `review-keyword-dock` / `archive-target-controls` / `.report-*` 等其它样式，
+  且其中多条在 JSX 里仍在用，**`import` 不能删**）。本地草稿的真实样式在
+  `persona-framing.css`（`.feedback-flow-v2 .local-draft-link` 与 `.review-source.local`），
+  清理动作落在那份文件里。判断「某个兜底入口是否还有样式残留」时按选择器 grep，别按文件名猜。
+- **文案残留按「概念」清**：本地草稿这条路径移除后，第四步那句「作品、课堂照片与五维点评已经同步保存到
+  本地草稿」也改成「作品、课堂照片与五维点评已经写入成长档案。」（与 `prd-archive-share` 的 FR-218
+  同一条口径：第四步不出现「本地草稿」）。`src/` 下（含注释）对 `fillLocalDraft` / `localDraftUsed` /
+  `local-draft-link` / 「本地草稿」四个串应保持 **0 命中** —— 验证脚本用这条做静态断言。
+- **验证方式**（本轮实测）：Node 静态 19 项 + 浏览器（headless Chrome + CDP，替身云端 LLM 先抛
+  `gateway_timeout` 再恢复）28 项，共 **47 项全绿** —— 生成前面板只有「开始生成点评」一个主操作、
+  没有本地草稿入口 / 文案；**模拟失败**后五个维度保持为空、来源标注停在 `review-source pending`、
+  错误是可读文案、归档仍被拦；替身恢复后来源标注变 `review-source ai`、正文写入五维、归档不再被拦；
+  390px 无横向溢出；0 未捕获异常 / 0 console error。回归：US-107b 浏览器 63/63、US-103a 浏览器 52/52、
+  US-107a 数据 104、US-107b 数据 93 全绿（`/tmp/us030-verify.mjs`、`/tmp/us031-verify.mjs` 里点
+  `.local-draft-link` 填正文的那两行老脚本自此失效 —— 那是被本故事取代的路径，不是回退）；
+  截图 195~198 留档。
+
 ## 容易踩的坑
 
 - **`<table>` 会撑宽 grid 父容器**（US-107b 真踩）：`width: 100%` + `table-layout: fixed` + 单元格
