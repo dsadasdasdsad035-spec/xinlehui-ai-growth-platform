@@ -736,6 +736,33 @@ p.framing-coverage-bad { margin: 0; padding: 10px 18px; font-size: 12px; line-he
   font-size: 10px;
   line-height: 1.5;
 }
+/* 观察词模板（US-109）：面板上写明「这一次用的是哪一套词表」。
+   降级（内置兜底 / 只读到本机镜像）时必须看得见 —— 不得静默降级（FR-142）。 */
+.feedback-flow-v2 .review-keyword-panel .review-keyword-template {
+  display: grid;
+  gap: 3px;
+  margin: 10px 0 0;
+  padding: 8px 11px;
+  border: 1px solid #eadfbd;
+  border-radius: 10px;
+  background: #fffdf6;
+}
+.feedback-flow-v2 .review-keyword-panel .review-keyword-template b { color: #3b3427; font-size: 11px; }
+.feedback-flow-v2 .review-keyword-panel .review-keyword-template small { color: #83745a; font-size: 9.5px; line-height: 1.5; }
+.feedback-flow-v2 .review-keyword-panel .review-keyword-template .review-keyword-template-note {
+  margin-top: 2px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: #ffe9e2;
+  color: #93321d;
+  font-size: 9.5px;
+  font-style: normal;
+  line-height: 1.5;
+}
+.feedback-flow-v2 .review-keyword-panel .review-keyword-template[data-keyword-template-source='builtin'] {
+  border-color: #f0c3b6;
+  background: #fff7f4;
+}
 .feedback-flow-v2 .review-keyword-groups button { position: relative; padding-right: 26px; }
 .feedback-flow-v2 .review-keyword-groups button .ai-mark {
   position: absolute;

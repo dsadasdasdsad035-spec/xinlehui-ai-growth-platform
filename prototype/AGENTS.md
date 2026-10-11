@@ -1789,6 +1789,63 @@ DOM/canvas 部分在 `src/services/artworkWriteBack.js`，编排在 `main.jsx` �
   变成 **disabled**，点它不再触发「请先完成线稿提取和智能点评」的 toast；判据改为
   「按钮 disabled + `data-archive-block-reason` 有原因 + 清单点名轨迹失败」。
 
+## 第三步「五维点评」的作品观察词模板（US-109 / F-REVIEW-KW-01 / FR-139 ~ FR-143）
+
+观察词从「代码里写死的一份词表」改成「机构维护的模板」：唯一真源是
+`src/data/reviewKeywordTemplates.js`（零依赖纯函数，可 Node 直跑），云端读写是
+`src/services/reviewKeywordTemplatesApi.js`（表名 `review_keyword_templates`，`template_key` 幂等 upsert）。
+
+- **一个产物喂三处**：`keywordTemplateLoadout({ templates, mode, courseTypes, ageRange, remoteFailed })`
+  是老师端**唯一入口**，产出 `{ source, status, template, name, versionText, groups, groupMap,
+  terms, counts, prompt, matchedBy, noteKind, noteText }`：
+  面板分组（`groupMap`，顺序 = 模板 `sortOrder`）、提示词候选清单（`prompt`）、
+  模型返回值校验（`terms` → `pickTemplateKeywords()` / `orderTemplateKeywords()`）三处读同一份。
+  **不要在组件里 import `data/reviewKeywords.js` 再过滤一遍** —— `main.jsx` 已不再直接引用内置词表，
+  静态断言盯着「主文件里 0 处 `pickSupportedKeywords` / `keywordCategoriesFor`」。
+  `pickSupportedKeywords / orderKeywords / keywordCategoriesPrompt` 只是**老入口**（回归夹具与
+  内置兜底用），内部已收敛到 `pickSupportedFromOptions / orderFromOptions`。
+- **平台默认模板 v1 = 首次上线导入**（FR-140）：`PLATFORM_DEFAULT_KEYWORD_TEMPLATES` 由
+  `keywordTemplateFromCategories(PERSONAL_KEYWORD_CATEGORIES, …)` 的**同一个构造器**生成，
+  所以「8 组 48 词 / 6 组 36 词逐字一致」是结构性成立的；守卫是
+  `keywordTemplateVerbatimIssues()`（空数组 = 一致，断言直接调它，不要另写比较逻辑）。
+  导入落点有两处：`loadReviewKeywordTemplates()` 在**本机镜像为空 / 读坏时返回种子**（这是「首次上线」
+  的定义），`main.jsx` 在首次渲染用 `reviewKeywordTemplateMirrorStored()` 判定并**幂等推一次云端**
+  （表不存在时抛错被吞掉，只影响跨设备可见）。
+- **匹配口径唯一**（FR-141）：`resolveReviewKeywordTemplate(templates, { mode, courseTypes, ageRange })`
+  —— 先按模式筛（启用 + 有生效词条 + 每条**已配置的**约束都命中），命中的按分数取最高
+  （课程类型 2 分、年龄段 1 分），都没命中用该模式标 `isDefault` 的那一套；没有标默认的用排序第一套
+  （并把这件事写进 `reasonText`）。**约束没命中的模板不算合格候选**（不硬塞给它，直接退到默认模板）。
+  课程类型 / 年龄段匹配都放宽到「相等或互相包含 / 区间重叠」（课程库存「国画」、界面写「国画（6-18岁）」），
+  当前上下文为空时按「没命中」处理（fail-safe）。`main.jsx` 传的候选课程类型是
+  `[课程库里的课程名, 第三步选中的课程类型]`，年龄段取课程库的 `ageRange`。
+- **降级必须可见**（FR-142）：`noteKind` 两种 —— `builtin`（一套可用模板都没有 → 回落内置兜底词表，
+  `noteText` 就是验收原文「当前使用内置兜底词表（模板未连通）…」）、`mirror`（云端不通但本机有模板镜像，
+  文案点名**用的是哪一套含版本**）。两者都渲染在 `.review-keyword-template` 里
+  （`data-keyword-template-note` / `data-keyword-template-note-text`），**任何一种降级都不许静默**。
+- **模板版本进轨迹**：`buildPersonaPrompt(profile, { keywordCandidates, keywordTemplate })` 的
+  `keyword_template` 元信息让 `keyword_candidates` 模块带上模板的 `version`（`v2`）与
+  `source`（`观察词模板 · <模板名>` / `内置兜底词表（模板未连通）`）—— 于是「这一次用的是哪一版模板」
+  在详情面板与轨迹留档里可复现。**不传 `keywordTemplate` 时输出与改造前逐字符 / 逐字段一致**
+  （字符串正文 → 目录里的默认 `v1` / `观察词模板`），US-102 的 13 组输入逐字符回归仍然全绿。
+- **合并方向与其它新表一致**：`mergeReviewKeywordTemplates` **本机镜像优先**（云端表还没建、带新列的写入
+  会被 PostgREST 整条拒掉），云端只补本机没有的 `templateKey`。
+- **验证方式**（本轮实测）：`/tmp/assert-us109.mjs` **150 项**（导入逐字一致 / 归一化 / 排序启停 /
+  匹配与优先级 / 兜底明示 / 模板外词丢弃 / 提示词模块版本 / 镜像读写 / 服务层行列映射与首次上线导入 /
+  源码静态），`/tmp/assert-us109-browser.mjs` **52 项**（四个 pass：平台默认 v1 + 云端不通的 `mirror` 明示 +
+  模板外词被丢弃 → 改一个词条（版本自增 v2）+ 刷新后老师端看到新词且 AI 能选中它 →
+  没有任何可用模板时逐字显示验收原文 → 班级反馈命中班级模板）。截图 205~209 留档。
+  回归：US-107a 数据 104、US-107b 数据 93 / 浏览器 63、US-102 trace 数据 114 / 服务 70 /
+  提示词 58（13 组逐字符）/ 浏览器 61、US-103a 浏览器 52、US-103b 浏览器 51、US-108a 47、US-108b 152、
+  US-106a 浏览器 65、US-106b 浏览器 55 全绿。
+
+### 验证脚本里的两个口径（US-109 真踩）
+
+- **`keywordTemplateLoadout` 的 `remoteFailed` 是入参**：独立重算必须把 App 的云端状态一起传进去，
+  否则重算出来的 `noteText` 是空串、与 DOM 上的「本机模板镜像」明示对不上（看起来像产品 bug）。
+- **别用「旧词 / 新词」的字面量包含匹配**：改词后断言「提示词里没有旧词」时写
+  `!prompt.includes('人物 / 风景')` 会被新词 `水墨人物 / 风景` 命中（假红）。判据改成
+  「候选清单逐词 = 面板词条」这种**列表相等**，或断言 `!prompt.includes('：人物 /')`。
+
 ## 容易踩的坑
 
 - **派生值（`const x = f(state)`）必须排在被它读的 state 之后**（US-108b 真踩）：把

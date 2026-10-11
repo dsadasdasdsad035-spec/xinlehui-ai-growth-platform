@@ -35,7 +35,9 @@ import {
   agentFileSensitiveRows, agentFileSensitiveText, scanAgentFileSensitive
 } from '../data/agentFileSensitive';
 import { buildPersonaPrompt } from '../services/llmReview';
-import { keywordCandidatesPrompt } from '../data/reviewKeywords';
+// 观察词模板（[第三步 US-109]）：老师端面板 / 提示词候选清单共用同一份，
+// 这里的预览也读同一份解析产物，不再直接调内置词表。
+import { keywordTemplateLoadout, loadReviewKeywordTemplates } from '../data/reviewKeywordTemplates';
 import { skillLoadout } from '../data/skillLibrary';
 import { markdownStats, markdownStatsText, parseMarkdownBlocks } from '../data/markdown';
 import { deleteRemoteAgentFile, saveRemoteAgentFile } from '../services/agentFilesApi';
@@ -152,15 +154,22 @@ export default function AgentFilesPage({ agentFiles = [], setAgentFiles, setToas
     library: skillLibrary,
     legacySkills: previewProfile?.skills
   }), [previewProfile, skillLibrary]);
+  // 与老师端「个人反馈」同口径：一位学员 = 作品观察词，候选清单来自**同一份观察词模板**
+  // （[第三步 US-109]：`keywordTemplateLoadout()` 是「这次用哪一套词表」的唯一真源 ——
+  // 这里读的是本机镜像里的模板，所以预览里的候选清单与老师端生成时发出去的那一份一致）。
+  const previewKeywordTemplate = useMemo(() => keywordTemplateLoadout({
+    templates: loadReviewKeywordTemplates(),
+    mode: '个人反馈'
+  }), []);
   const previewPrompt = useMemo(() => (previewLoadout ? buildPersonaPrompt(previewProfile, {
     subject: previewLesson?.lesson?.topic || '',
     skillLibrary,
-    // 与老师端「个人反馈」同口径：一位学员 = 作品观察词，候选清单来自同一个目录。
-    keywordCandidates: keywordCandidatesPrompt('个人反馈'),
+    keywordCandidates: previewKeywordTemplate.prompt,
     keywordScope: '作品观察词',
+    keywordTemplate: previewKeywordTemplate,
     skillLoadout: previewSkillLoadout,
     agentFiles: previewLoadout
-  }) : null), [previewLoadout, previewProfile, previewLesson, skillLibrary, previewSkillLoadout]);
+  }) : null), [previewLoadout, previewProfile, previewLesson, skillLibrary, previewSkillLoadout, previewKeywordTemplate]);
   const previewContextText = previewContext ? agentFilePreviewContextText(previewContext, { topic: previewLesson?.lesson?.topic || '' }) : '';
   const previewSummaryText = previewLoadout ? agentFileSummaryText(previewLoadout) : '';
   const previewPromptText = previewPrompt ? previewPrompt.system : '';

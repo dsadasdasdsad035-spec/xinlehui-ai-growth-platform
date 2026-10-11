@@ -37,25 +37,36 @@ export const keywordOptionsFor = (mode) => Object.values(keywordCategoriesFor(mo
 // 按逐字匹配会把它们全部丢掉，所以先剥掉「分组名：」前缀再比。
 const GROUP_PREFIX = /^[^：:]{1,10}[：:]\s*/;
 
-const normalize = (value) => String(value || '')
+/**
+ * 词条归一化 —— **唯一真源**（US-109 起对外开放：观察词模板的「同模板内重复词」判据
+ * 也复用这一条规则，不要在管理端另写一份）。
+ * 剥掉「分组名：」前缀、去空白、去标点。
+ */
+export const normalizeKeywordText = (value) => String(value || '')
   .replace(GROUP_PREFIX, '')
   .replace(/\s/g, '')
   .replace(/[，,。.、；;：:（）()【】\[\]"'「」《》/\\|~!！?？·—\-]/g, '');
+
+const normalize = normalizeKeywordText;
 
 // 词表最大 8 个，防止模型把候选表抄一半回来。
 const MAX_PICKED = 8;
 
 /**
- * 把模型返回的词过滤成「目录里真实存在的词」。
+ * 把模型返回的词过滤成「给定候选词表里真实存在的词」。
  * 两级匹配：
  *  1. 归一化后完全相等（剥掉分组前缀与标点）；
  *  2. 兜底包含匹配 —— 模型可能写成「整体偏暖色调」「风景/人物」这类短语，
  *     用「候选词是否出现在返回值里」逐个找回，一个返回值可以同时命中多个候选词。
  * 候选表之外的词仍然一律丢弃，前端不会出现勾不中的幽灵词。
+ *
+ * `options` 就是本次生效的候选词表（US-109 起由观察词模板给，见
+ * `data/reviewKeywordTemplates.js` 的 `pickTemplateKeywords`）—— 传空数组时一律返回空数组，
+ * 「模板之外的词一个都不留」在结构上成立。
  */
-export const pickSupportedKeywords = (list, mode) => {
-  const options = keywordOptionsFor(mode);
-  const normalizedOptions = options.map((option) => [normalize(option), option]);
+export const pickSupportedFromOptions = (list, options = []) => {
+  const source = Array.isArray(options) ? options.filter(Boolean) : [];
+  const normalizedOptions = source.map((option) => [normalize(option), option]);
   const exact = new Map(normalizedOptions);
   const seen = new Set();
   const picked = [];
@@ -75,11 +86,20 @@ export const pickSupportedKeywords = (list, mode) => {
   return picked.slice(0, MAX_PICKED);
 };
 
-/** 按目录顺序重排，并保持去重。 */
-export const orderKeywords = (list, mode) => {
+/** 按内置目录取词（老调用方 / 回归夹具的入口；行为与改造前逐字段一致）。 */
+export const pickSupportedKeywords = (list, mode) => pickSupportedFromOptions(list, keywordOptionsFor(mode));
+
+/**
+ * 按给定候选词表重排（模板候选清单专用；去重）。
+ * 面板上的勾选顺序永远与生效模板的 `sortOrder` 一致。
+ */
+export const orderFromOptions = (list, options = []) => {
   const chosen = new Set(Array.isArray(list) ? list : []);
-  return keywordOptionsFor(mode).filter((keyword) => chosen.has(keyword));
+  return (Array.isArray(options) ? options : []).filter((keyword) => chosen.has(keyword));
 };
+
+/** 按内置目录重排（老调用方入口）。 */
+export const orderKeywords = (list, mode) => orderFromOptions(list, keywordOptionsFor(mode));
 
 /**
  * 给提示词用的候选清单（带分组，模型更容易理解语义）。

@@ -74,12 +74,30 @@ const DIMENSION_SPEC = REVIEW_DIMENSION_NAMES.map((name) => [name, DIMENSION_INS
 /** 写作要求里的五维说明：兜底分支与老师人设分支共用同一份文本。 */
 const dimensionLines = () => DIMENSION_SPEC.map(([key, value]) => `- ${key}：${value}`).join('\n');
 
+/**
+ * 观察词候选模块（US-109）：正文永远是 `【<口径>候选清单】\n<候选正文>`。
+ * `extra.keywordTemplate` 传 `data/reviewKeywordTemplates.js` 的 `keywordTemplateLoadout()` 产物时，
+ * 模块的 `version` / `source` 跟着生效模板走（轨迹留档因此能复现「这一次用的是哪一版模板」）；
+ * 不传时与改造前逐字符 / 逐字段一致（字符串正文 → 目录里的默认 `v1` / `观察词模板`）。
+ */
+function keywordCandidateModule(extra, scope) {
+  const candidates = extra.keywordCandidates;
+  if (!candidates) return undefined;
+  const content = `【${scope}候选清单】\n${candidates}`;
+  const template = extra.keywordTemplate && typeof extra.keywordTemplate === 'object' ? extra.keywordTemplate : null;
+  if (!template) return content;
+  const source = template.source === 'builtin'
+    ? '内置兜底词表（模板未连通）'
+    : `观察词模板 · ${template.name || '未命名模板'}`;
+  return { content, version: template.versionText || '', source };
+}
+
 /** 兜底分支（没有老师人设）的模块内容：正文与拼装顺序都保持改造前的样子。 */
 function fallbackModuleContents(extra, scope) {
   return {
     base_role: FALLBACK_SYSTEM,
     writing_rules: dimensionLines(),
-    keyword_candidates: extra.keywordCandidates ? `【${scope}候选清单】\n${extra.keywordCandidates}` : undefined,
+    keyword_candidates: keywordCandidateModule(extra, scope),
     keyword_rules: extra.keywordCandidates ? `【${scope}选择要求】\n选 3-6 个画面里真的能被指出来的词，必须逐字复制候选清单里的词。` : undefined,
     output_format: `【输出格式】\n只输出 JSON：{"evidence":[...],"keywords":[...],"reviews":{"美术能力":"...","上课状态":"...","行为能力":"...","内在状态":"...","家长建议":"..."}}`
   };
@@ -118,9 +136,10 @@ function personaModuleContents(profile, extra, scope) {
     memory: memoryBody.trim() ? `【长期记忆（本班本阶段，点评时必须结合并回访）】\n${memoryBody}` : undefined,
     task: `【本次任务】\n先看清上传的作品与素材里真实存在什么，再生成五维点评草稿，供老师审阅后编辑发布。`,
     // 观察词由模型自己挑：老师不勾选时也要能选出贴合画面的词。
-    // 候选清单与前端面板共用同一份目录（src/data/reviewKeywords.js），
+    // 候选清单与前端面板共用同一份**观察词模板**（US-109 起由
+    // `data/reviewKeywordTemplates.js` 解析，模板之外没有的词不会出现在候选里），
     // 所以这里必须强调「逐字来自候选」，否则前端认不出模型自造的同义词。
-    keyword_candidates: extra.keywordCandidates ? `【${scope}候选清单】\n${extra.keywordCandidates}` : undefined,
+    keyword_candidates: keywordCandidateModule(extra, scope),
     writing_rules: `【写作要求】\n${dimensionLines()}\n- 只使用图片与老师观察中真实可见的证据，不要虚构课堂细节。\n- 证据不足的维度必须明确写出「本次证据不足」，而不是编造。\n- 若长期记忆中提到的回访点（例如上一次给出的练习建议）在本次素材里无法判断，要说明无法判断。`,
     keyword_rules: extra.keywordCandidates ? `【${scope}选择要求】\n- 看完作品后再选词，只选画面或素材里真的能被指出来的，不要按「好看」堆词。\n- 选 3-6 个，覆盖不同分组（例如画面主题 + 色彩感受 + 线条笔触），不要全挤在同一组。\n- 必须**逐字复制**候选清单里的词，不要改写、不要造同义词。候选中没有合适的就少选几个。\n- keywords 数组里**只写词本身**，不要带分组名、不要写成「色彩感受：暖色调」、不要带括号解释。` : undefined,
     output_format: `【输出格式】\n只输出一个 JSON 对象，不要 Markdown、不要代码块、不要任何解释文字。结构：\n{"evidence":["可核验的观察依据 1","可核验的观察依据 2"],"keywords":["${scope}"],"reviews":{"美术能力":"...","上课状态":"...","行为能力":"...","内在状态":"...","家长建议":"..."}}\n其中 keywords 是数组，元素必须逐字来自【${scope}候选清单】。`,
@@ -177,11 +196,14 @@ export function buildReviewPromptBundle({
   photoDataUrl,
   keywordCandidates,
   keywordScope,
+  // 生效的观察词模板（US-109）：给了就让 `keyword_candidates` 模块带上模板的版本与来源，
+  // 面板与轨迹留档因此能说明「这一次用的是哪一版模板」。
+  keywordTemplate,
   agentMd,
   agentFiles,
   images
 } = {}) {
-  const prompt = buildPersonaPrompt(profile, { subject, skillLibrary, keywordCandidates, keywordScope, agentMd, agentFiles });
+  const prompt = buildPersonaPrompt(profile, { subject, skillLibrary, keywordCandidates, keywordScope, keywordTemplate, agentMd, agentFiles });
   const userContent = buildUserContent({ subject, studentName, keywords, teacherObservation, artworkDataUrl, photoDataUrl });
   const media = images && typeof images === 'object' ? images : {};
   const attachments = buildReviewTraceAttachments([
@@ -275,7 +297,7 @@ export function readableFromRawJson(raw) {
  * @param {(trace:object)=>void} [options.onTrace] 轨迹收束回调：成功 / 失败 / 中止都恰好调一次
  * @returns {Promise<{reviews:object,evidence:string[],keywords:string[],reasoning:string,usage:object|null,raw:string,trace:object}>}
  */
-export async function streamArtworkReview({ profile, skillLibrary, subject, studentName, keywords, teacherObservation, artworkDataUrl, photoDataUrl, keywordCandidates, keywordScope, agentMd, agentFiles, model, modelSource, onReasoning, onContent, signal, trace: traceSeed, onTrace }) {
+export async function streamArtworkReview({ profile, skillLibrary, subject, studentName, keywords, teacherObservation, artworkDataUrl, photoDataUrl, keywordCandidates, keywordScope, keywordTemplate, agentMd, agentFiles, model, modelSource, onReasoning, onContent, signal, trace: traceSeed, onTrace }) {
   // 模型与来源：老师的选择（或模型池路由的结果）由调用方给，缺省回落实测可用的默认模型。
   const requestModel = String(model || '').trim() || REVIEW_MODEL;
   const requestModelSource = String(modelSource || '').trim();
@@ -293,6 +315,7 @@ export async function streamArtworkReview({ profile, skillLibrary, subject, stud
     photoDataUrl,
     keywordCandidates,
     keywordScope,
+    keywordTemplate,
     agentMd,
     agentFiles,
     images
