@@ -1,6 +1,16 @@
 import { cloud } from '../cloud';
-import { ELEMENT_POSITIONS, clampOverlayOffset, normalizeOverlayFont, OVERLAY_FONT_WHITELIST } from './overlayLayout';
+import {
+  ELEMENT_POSITIONS,
+  clampOverlayOffset,
+  normalizeOverlayFont,
+  OVERLAY_FONT_WHITELIST,
+  DATE_SOURCES,
+  DATE_FORMATS,
+  SIGNATURE_MODES,
+  SEAL_SHAPES
+} from './overlayLayout';
 import { FRAMING_ASSET_DATA_URL_MAX_CHARS } from '../data/framingAssets';
+import { normalizeQrTarget } from '../data/qrTargets';
 
 // 装裱方案由大模型「设计参数」，再由前端 canvas「精确绘制」。
 //
@@ -147,10 +157,12 @@ export { ELEMENT_POSITIONS };
 /** 字体白名单（后台/老师端面板的字体下拉直接用它；真源仍是 `overlayLayout.js`）。 */
 export const FRAMING_FONT_WHITELIST = OVERLAY_FONT_WHITELIST;
 export const PLAQUE_POSITIONS = ['bottom', 'top'];
-export const DATE_SOURCES = ['lesson', 'today', 'manual'];
-export const DATE_FORMATS = ['YYYY.MM.DD', 'YYYY-MM-DD', 'YYYY年MM月DD日'];
-export const SIGNATURE_MODES = ['text', 'image'];
-export const SEAL_SHAPES = ['square', 'round'];
+// 时间来源 / 日期格式 / 落款模式 / 印章形状的枚举真源都在 `overlayLayout.js`
+// （时间与落款的实际绘制在那一边），这里重新导出，保持既有 import 路径不变。
+export { DATE_SOURCES, DATE_FORMATS, SIGNATURE_MODES, SEAL_SHAPES };
+
+/** 签名图宽度比例（相对画布短边）的生效范围：面板可调，收敛器与渲染层共用。 */
+export const SIGNATURE_IMAGE_WIDTH_RATIO_RANGE = { min: 0.02, max: 0.4 };
 
 /** v2 默认值：除叠加元素外，逐字段等于 v1 的默认行为。 */
 export const DEFAULT_FRAME_SPEC_V2 = {
@@ -183,6 +195,8 @@ export const DEFAULT_FRAME_SPEC_V2 = {
     teacherName: '{老师姓名}',
     message: '',
     imageUrl: '',
+    // 签名图宽度比例（相对画布短边）：签名图只有「宽度」一个尺寸来源，高度按图片自身比例算。
+    imageWidthRatio: 0.12,
     seal: { visible: false, text: '昕乐绘', color: '#B33A2B', shape: 'square' },
     position: 'bottom-left',
     offsetX: 0.03,
@@ -310,8 +324,9 @@ export function normalizeFrameSpecV2(raw) {
       },
       qr: {
         visible: bool(qr.visible, base.watermark.qr.visible),
-        // 二维码内容由后台配置，老师端不可自由填 URL。
-        target: text(qr.target, base.watermark.qr.target, 60),
+        // 二维码内容由后台配置（FR-23）：这里存的是**目标键**，白名单之外一律回落默认目标 ——
+        // 老师端即便把 target 写成一条外链，渲染层也拿不到任何非白名单地址。
+        target: normalizeQrTarget(qr.target),
         position: oneOf(qr.position, ELEMENT_POSITIONS, base.watermark.qr.position),
         offsetX: clampOverlayOffset(qr.offsetX, base.watermark.qr.offsetX),
         offsetY: clampOverlayOffset(qr.offsetY, base.watermark.qr.offsetY),
@@ -325,6 +340,7 @@ export function normalizeFrameSpecV2(raw) {
       teacherName: text(signature.teacherName, base.signature.teacherName, 40),
       message: String(signature.message ?? '').trim().slice(0, 80),
       imageUrl: imageUrl(signature.imageUrl),
+      imageWidthRatio: clampRatio(signature.imageWidthRatio, SIGNATURE_IMAGE_WIDTH_RATIO_RANGE, base.signature.imageWidthRatio),
       seal: {
         visible: bool(seal.visible, base.signature.seal.visible),
         text: text(seal.text, base.signature.seal.text, 20),

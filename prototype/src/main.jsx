@@ -49,10 +49,14 @@ import { MARKETPLACE_SYNCED_AT, indexStats, marketCategories, searchMarket, sear
 // 老师端只显示自己可见的模板（filterFramingPresetsForViewer），管理端读全量。
 import { createEmptyFramingPreset, filterFramingPresetsForViewer, loadFramingPresets, persistFramingPresets } from './data/framingPresets';
 import { deleteRemoteFramingPreset, loadRemoteFramingPresets, saveRemoteFramingPreset } from './services/framingPresetsApi';
-import { DEFAULT_FRAME_SPEC, FRAMING_FONT_WHITELIST, frameSpecView, generateFrameSpec, normalizeFrameSpec, normalizeFrameSpecV2 } from './services/frameSpec';
-// 叠加元素的定位与遮挡规则（US-003a/003b）：九宫格枚举、字体白名单、位置中文名与
-// 「水印遮挡作品主体 15%」的判定全在 overlayLayout.js —— 后台面板只负责渲染控件。
-import { ELEMENT_POSITIONS, CUSTOM_ELEMENT_POSITION, overlayPositionLabel } from './services/overlayLayout';
+import { DEFAULT_FRAME_SPEC, DATE_FORMATS, DATE_SOURCES, FRAMING_FONT_WHITELIST, SEAL_SHAPES, frameSpecView, generateFrameSpec, normalizeFrameSpec, normalizeFrameSpecV2 } from './services/frameSpec';
+// 叠加元素的定位与遮挡规则（US-003a/003b/003c）：九宫格枚举、字体白名单、位置中文名、
+// 时间来源与格式、印章形状与「水印遮挡作品主体 15%」的判定全在 overlayLayout.js —— 后台面板只负责渲染控件。
+import { DATE_SOURCE_LABELS, ELEMENT_POSITIONS, CUSTOM_ELEMENT_POSITION, overlayPositionLabel } from './services/overlayLayout';
+// 二维码内容由后台配置（US-003c / FR-23）：目标白名单在 data 层，编码器在 services/qrCode.js
+// （byte 模式、版本 1–10、纠错等级 L/M/Q/H，能力已在成品图上按「能被识别器读回」验证过）。
+import { QR_TARGETS, QR_TARGET_DEFAULT, qrTargetRulesText, qrTargetSummary, resolveQrTargetUrl } from './data/qrTargets';
+import { QR_DEFAULT_ECC, QR_MAX_VERSION, qrByteLength, qrVersionFor } from './services/qrCode';
 // 装裱素材（机构 Logo）的上传准入（US-003b / FR-22）：PNG/JPG、≤512×512、≤200KB，
 // 规则在 data 层（可 Node 断言），解码与读文件在 services 层。
 import { framingAssetRulesText, framingAssetSummary, MAX_FRAMING_ASSET_BYTES } from './data/framingAssets';
@@ -2718,23 +2722,39 @@ function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast}){
   const [logoBusy,setLogoBusy]=useState(false);
   const [assetError,setAssetError]=useState('');
   const [logoInfo,setLogoInfo]=useState(null);
+  // 落款（US-003c）：签名图上传的忙碌态 / 错误文案 / 已存签名图的复核结果。
+  const [signatureBusy,setSignatureBusy]=useState(false);
+  const [signatureError,setSignatureError]=useState('');
+  const [signatureInfo,setSignatureInfo]=useState(null);
   const [coverage,setCoverage]=useState(null);
   const logoInput=useRef(null);
+  const signatureInput=useRef(null);
   useEffect(()=>{setDraft(editing?{...editing}:null)},[editingId,framingPresets.length]);
   useEffect(()=>{if(!draft)return undefined;let active=true;renderFramedArtwork({source:placeholderArtwork(),spec:draft.spec||DEFAULT_FRAME_SPEC,student:draft.plaqueStudent||'陈一诺',title:draft.plaqueTitle||'向着光的花',date:draft.plaqueDate||'2026.08.11',orgName:DEFAULT_ORG_NAME,teacherName:roleMeta.teacher.name}).then(url=>{if(active)setPreview(url)}).catch(()=>{if(active)setPreview('')});return()=>{active=false}},[draft?.spec,draft?.plaqueStudent,draft?.plaqueTitle,draft?.plaqueDate]);
   const patch=(key,value)=>setDraft(current=>current?{...current,[key]:value}:current);
   // 面板只认识 v1 平面字段，这里统一取视图：老预设（v1）原样、v2 预设映射成平面值。
   const draftSpec=frameSpecView(draft?.spec);
-  // 叠加元素（US-003b）读 v2 收敛后的分组；但**显示值优先用 draft 里的原值**，
+  // 叠加元素（US-003b/003c）读 v2 收敛后的分组；但**显示值优先用 draft 里的原值**，
   // 否则「输入 2 立刻被收敛成 8」会让数字框没法正常输入（收敛发生在渲染时，不发生在输入时）。
   const specV2=normalizeFrameSpecV2(draft?.spec);
-  const rawWatermark=draft?.spec&&typeof draft.spec==='object'&&draft.spec.watermark&&typeof draft.spec.watermark==='object'?draft.spec.watermark:{};
+  const rawGroup=(name)=>draft?.spec&&typeof draft.spec==='object'&&draft.spec[name]&&typeof draft.spec[name]==='object'?draft.spec[name]:{};
+  const rawWatermark=rawGroup('watermark');
+  const rawSignature=rawGroup('signature');
+  const rawDate=rawGroup('date');
   const logoWatermark={...specV2.watermark.logo,...(rawWatermark.logo||{})};
   const textWatermark={...specV2.watermark.text,...(rawWatermark.text||{})};
+  const qrWatermark={...specV2.watermark.qr,...(rawWatermark.qr||{})};
+  const signatureMark={...specV2.signature,...rawSignature,seal:{...specV2.signature.seal,...(rawSignature.seal||{})}};
+  const dateMark={...specV2.date,...rawDate};
 
-  // 写回水印：**只覆盖 watermark 组 + version**，老模板的平面字段（outer / mat / plaque* …）一个都不动
+  // 写回某一组叠加元素：**只覆盖这一组 + version**，老模板的平面字段（outer / mat / plaque* …）一个都不动
   // —— 混写结构在 `normalizeFrameSpecV2` 里是合法输入（v2 分组优先、v1 平面字段兜底），
-  // 所以后台加上水印不会改变这套模板原本的长相。
+  // 所以后台加落款/时间/二维码不会改变这套模板原本的长相。
+  const patchOverlayGroup=(group,value)=>setDraft(current=>{
+    if(!current) return current;
+    const base=current.spec&&typeof current.spec==='object'?current.spec:{};
+    return {...current,spec:{...base,version:2,[group]:value}};
+  });
   const patchWatermark=(groups)=>setDraft(current=>{
     if(!current) return current;
     const base=current.spec&&typeof current.spec==='object'?current.spec:{};
@@ -2756,6 +2776,40 @@ function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast}){
     patchWatermark({logo:{...logoWatermark,url:'',visible:false}});
     setToast('已移除机构 Logo，保存后老师端不再带水印');
   };
+  // 落款（US-003c）：文字（姓名 + 寄语）或手写签名图 + 可选印章。签名图沿用 Logo 的上传准入
+  // （PNG/JPG、≤512×512、≤200KB），因为它是同一个「装裱素材」口径（FR-22）。
+  const patchSignature=(values)=>patchOverlayGroup('signature',{...signatureMark,...values});
+  const patchSeal=(values)=>patchSignature({seal:{...signatureMark.seal,...values}});
+  const patchDate=(values)=>patchOverlayGroup('date',{...dateMark,...values});
+  const patchQr=(values)=>patchWatermark({qr:{...qrWatermark,...values}});
+  const uploadSignature=async(file)=>{
+    setSignatureBusy(true);
+    setSignatureError('');
+    try{
+      const result=await readFramingAsset(file);
+      if(!result.ok){setSignatureError(result.message);setToast(result.message);return}
+      patchSignature({mode:'image',visible:true,imageUrl:result.asset.url});
+      setToast(`已上传手写签名图（${framingAssetSummary(result.asset)}），右侧预览已更新`);
+    }finally{setSignatureBusy(false)}
+  };
+  const removeSignature=()=>{
+    setSignatureError('');
+    patchSignature({mode:'text',imageUrl:''});
+    setToast('已移除手写签名图，落款回到文字模式');
+  };
+  // 已存签名图的复核（与 Logo 同一个口径：只判尺寸，因为能解码就说明格式可用）。
+  const signatureUrl=signatureMark.imageUrl;
+  useEffect(()=>{
+    if(!signatureUrl){setSignatureInfo(null);return undefined}
+    let active=true;
+    inspectFramingAssetUrl(signatureUrl,'手写签名图').then(info=>{if(active)setSignatureInfo(info)}).catch(()=>{if(active)setSignatureInfo(null)});
+    return()=>{active=false};
+  },[signatureUrl]);
+  // 二维码内容（FR-23）：后台配置目标 → 解析成 URL → 编码。老师端拿不到「填 URL」的入口，
+  // 面板这里也只能选目标；长度不够放时（超出版本上限）当场说明，而不是到渲染时才静默消失。
+  const qrResolved=resolveQrTargetUrl(qrWatermark.target);
+  const qrBytes=qrByteLength(qrResolved.url);
+  const qrVersion=qrVersionFor(qrResolved.url,QR_DEFAULT_ECC);
   // 已保存 Logo 的复核：解码拿真实尺寸，尺寸超限或地址失效都在面板上说明（FR-22）。
   const logoUrl=logoWatermark.url;
   useEffect(()=>{
@@ -2919,6 +2973,123 @@ function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast}){
                 </div>
               </div>
               <p className="framing-overlay-note">字体限后台白名单；渲染时会按变量替换内容，未命中的变量保留原文。</p>
+            </div>
+
+            {/* 落款（US-003c）：文字（姓名 + 寄语）或手写签名图，另含可选印章（方形 / 圆形文字章）。
+                变量与位置口径与水印完全一致 —— 九宫格 + 短边比例，别再写第二套定位。 */}
+            <div className="framing-overlay-block">
+              <div className="framing-overlay-title">
+                <label className="framing-enable"><input type="checkbox" checked={signatureMark.visible}
+                  onChange={event=>patchSignature({visible:event.target.checked})}/> 落款</label>
+                <small>可用变量：{'{老师姓名}{机构名}{学员名}{作品名}{课次日期}'}</small>
+              </div>
+              <div className="framing-overlay-controls">
+                <label>形式<select value={signatureMark.mode} onChange={event=>patchSignature({mode:event.target.value})}>
+                  <option value="text">文字落款</option>
+                  <option value="image">手写签名图</option>
+                </select></label>
+                <label className="wide">姓名 / 落款文字<input value={signatureMark.teacherName}
+                  onChange={event=>patchSignature({teacherName:event.target.value})}/></label>
+              </div>
+              <div className="framing-overlay-controls">
+                <label className="wide">寄语（可空）<input value={signatureMark.message} maxLength={60} placeholder="例如：继续用画笔讲你的故事"
+                  onChange={event=>patchSignature({message:event.target.value})}/></label>
+              </div>
+              {signatureMark.mode==='image'?<div className="framing-overlay-row">
+                <input ref={signatureInput} type="file" accept="image/png,image/jpeg" hidden
+                  onChange={event=>{const file=event.target.files&&event.target.files[0];event.target.value='';if(file)uploadSignature(file)}}/>
+                <Button icon={UploadCloud} onClick={()=>{if(signatureInput.current)signatureInput.current.click()}} disabled={signatureBusy}>{signatureBusy?'读取中…':'上传签名图'}</Button>
+                {signatureMark.imageUrl?<img className="framing-asset-thumb" src={signatureMark.imageUrl} alt="手写签名图缩略图"/>:<em className="framing-asset-empty">还没有签名图，没有图时整支不绘制</em>}
+                {signatureMark.imageUrl?<button type="button" className="text-link" onClick={removeSignature}>移除</button>:null}
+              </div>:null}
+              {signatureMark.mode==='image'?<p className="framing-asset-rules">上传要求：{framingAssetRulesText()}（当前：{signatureInfo&&signatureInfo.ok?`${signatureInfo.width}×${signatureInfo.height}`:'待复核'}）</p>:null}
+              {signatureError?<p className="framing-asset-error">{signatureError}</p>:null}
+              {!signatureError&&signatureInfo&&!signatureInfo.ok?<p className="framing-asset-error">{signatureInfo.message}</p>:null}
+              <div className="framing-overlay-controls">
+                <label>字体<select value={signatureMark.fontFamily} onChange={event=>patchSignature({fontFamily:event.target.value})}>
+                  {FRAMING_FONT_WHITELIST.map(font=><option key={font} value={font}>{font}</option>)}
+                </select></label>
+                <label>字号 px<input type="number" min="8" max="200" step="1" value={signatureMark.fontSize}
+                  onChange={event=>patchSignature({fontSize:Number(event.target.value)})}/></label>
+                <label>颜色<input type="color" value={signatureMark.color}
+                  onChange={event=>patchSignature({color:event.target.value})}/></label>
+                {signatureMark.mode==='image'?<label>签名图宽度 %<input type="number" min="2" max="40" step="1" value={Number(((signatureMark.imageWidthRatio||0)*100).toFixed(2))}
+                  onChange={event=>patchSignature({imageWidthRatio:Number(event.target.value)/100})}/></label>:null}
+                <div className="framing-overlay-field"><span>位置</span>
+                  <OverlayPositionPad label="落款" value={signatureMark.position} onChange={position=>patchSignature({position})}/>
+                </div>
+              </div>
+              <div className="framing-overlay-controls">
+                <label className="framing-enable"><input type="checkbox" checked={signatureMark.seal.visible}
+                  onChange={event=>patchSeal({visible:event.target.checked})}/> 印章</label>
+                <label>印文<input value={signatureMark.seal.text} maxLength={4} placeholder="4 字以内"
+                  onChange={event=>patchSeal({text:event.target.value})}/></label>
+                <label>形状<select value={signatureMark.seal.shape} onChange={event=>patchSeal({shape:event.target.value})}>
+                  {SEAL_SHAPES.map(shape=><option key={shape} value={shape}>{shape==='round'?'圆形章':'方形章'}</option>)}
+                </select></label>
+                <label>颜色<input type="color" value={signatureMark.seal.color}
+                  onChange={event=>patchSeal({color:event.target.value})}/></label>
+              </div>
+              <p className="framing-overlay-note">印章贴在落款块内侧（贴左的落款章在右边）；文字模式按「姓名在上、寄语在下」排两行，图片模式按签名图原比例缩放、不拉伸。</p>
+            </div>
+
+            {/* 时间（US-003c）：来源 / 格式 / 前缀 / 位置。默认取本次课次日期（PRD 原文）。 */}
+            <div className="framing-overlay-block">
+              <div className="framing-overlay-title">
+                <label className="framing-enable"><input type="checkbox" checked={dateMark.visible}
+                  onChange={event=>patchDate({visible:event.target.checked})}/> 时间</label>
+                <small>默认取本次课次日期（lesson.lessonDate），补录上周的课次也会跟着显示上周的日期</small>
+              </div>
+              <div className="framing-overlay-controls">
+                <label>来源<select value={dateMark.source} onChange={event=>patchDate({source:event.target.value})}>
+                  {DATE_SOURCES.map(source=><option key={source} value={source}>{DATE_SOURCE_LABELS[source]}</option>)}
+                </select></label>
+                <label>格式<select value={dateMark.format} onChange={event=>patchDate({format:event.target.value})}>
+                  {DATE_FORMATS.map(format=><option key={format} value={format}>{format}</option>)}
+                </select></label>
+                <label>前缀<input value={dateMark.prefix} maxLength={12} placeholder="例如 创作于 "
+                  onChange={event=>patchDate({prefix:event.target.value})}/></label>
+                <label>手填日期<input value={dateMark.manualValue} placeholder={dateMark.source==='manual'?'来源为「手动填写」时用这里的值':'仅「手动填写」时生效'}
+                  onChange={event=>patchDate({manualValue:event.target.value})}/></label>
+              </div>
+              <div className="framing-overlay-controls">
+                <label>字号 px<input type="number" min="8" max="200" step="1" value={dateMark.fontSize}
+                  onChange={event=>patchDate({fontSize:Number(event.target.value)})}/></label>
+                <label>颜色<input type="color" value={dateMark.color}
+                  onChange={event=>patchDate({color:event.target.value})}/></label>
+                <div className="framing-overlay-field"><span>位置</span>
+                  <OverlayPositionPad label="时间" value={dateMark.position} onChange={position=>patchDate({position})}/>
+                </div>
+              </div>
+              <p className="framing-overlay-note">认不出来的手填值会原样输出（例如「上周三」），不会编造日期。</p>
+            </div>
+
+            {/* 二维码（US-003c）：**内容由后台配置**（FR-23），老师端不能填任意 URL。 */}
+            <div className="framing-overlay-block">
+              <div className="framing-overlay-title">
+                <label className="framing-enable"><input type="checkbox" checked={qrWatermark.visible}
+                  onChange={event=>patchQr({visible:event.target.checked})}/> 二维码</label>
+                <small>{qrTargetRulesText()}</small>
+              </div>
+              <div className="framing-overlay-controls">
+                <label>目标<select value={qrWatermark.target} onChange={event=>patchQr({target:event.target.value})}>
+                  {QR_TARGETS.map(target=><option key={target.key} value={target.key}>{target.label}</option>)}
+                </select></label>
+                <label className="wide">说明文字<input value={qrWatermark.caption}
+                  onChange={event=>patchQr({caption:event.target.value})}/></label>
+              </div>
+              <p className="framing-overlay-note" data-qr-url={qrResolved.url}>
+                {qrTargetSummary(qrWatermark.target)}（{qrBytes} 字节 / 纠错等级 {QR_DEFAULT_ECC} / 版本 {qrVersion||`超过 ${QR_MAX_VERSION}`}）
+                {qrVersion?null:'：链接过长，二维码不会绘制，请改用更短的目标'}
+              </p>
+              <div className="framing-overlay-controls">
+                <label>尺寸 %<input type="number" min="3" max="25" step="1" value={Number(((qrWatermark.sizeRatio||0)*100).toFixed(2))}
+                  onChange={event=>patchQr({sizeRatio:Number(event.target.value)/100})}/></label>
+                <div className="framing-overlay-field"><span>位置</span>
+                  <OverlayPositionPad label="二维码" value={qrWatermark.position} onChange={position=>patchQr({position})}/>
+                </div>
+              </div>
+              <p className="framing-overlay-note">二维码会自动铺一块带静区的白底（否则落在卡纸底色上扫不出来），说明文字排在白底外侧。</p>
             </div>
           </div>
         </>:<p className="persona-empty">选择左侧的一套装裱，或新增一套。</p>}

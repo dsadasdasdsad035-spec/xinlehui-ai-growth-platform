@@ -186,6 +186,10 @@ export function resolveOverlayAnchor({ position, offsetX, offsetY, canvasWidth, 
     y: anchor.alignY * size(canvasHeight) + dy,
     textAlign: anchor.textAlign,
     textBaseline: anchor.textBaseline,
+    // dirX / dirY 一起带出去：落款的印章要贴在**内侧**（贴左的落款章在右、贴右的在左），
+    // 判据必须是同一次定位算出来的方向，不能让调用方再自己解析一遍位置。
+    dirX: anchor.dirX,
+    dirY: anchor.dirY,
     shortEdge
   };
 }
@@ -319,10 +323,13 @@ export function visibleOverlayElements(elements) {
 /**
  * 文本类元素的绘制计划：`null` 表示**完全不绘制**（不可见 / 内容为空）。
  * 位置、字号与文本色全部在这里定好，绘制层只负责 fillText，不做任何位置推算。
+ *
+ * `content` 可选：显式给出时用它代替 `element.content`（时间元素的正文是「前缀 + 日期」，
+ * 由 `planOverlayDate` 算好再走同一条绘制路径，避免给时间另写一套文本画笔）。
  */
-export function planOverlayText({ element, canvasWidth, canvasHeight, context = {} } = {}) {
+export function planOverlayText({ element, canvasWidth, canvasHeight, context = {}, content } = {}) {
   if (!shouldDrawOverlay(element)) return null;
-  const { text, missing, empty } = applyOverlayVariables(element.content, context);
+  const { text, missing, empty } = applyOverlayVariables(content === undefined ? element.content : content, context);
   if (!text.trim()) return null;
   const anchor = resolveOverlayAnchor({
     position: element.position,
@@ -492,6 +499,394 @@ export function textPlanBox(plan, measureText) {
 }
 
 // ---------------------------------------------------------------------------
+// 时间元素（[第二步 US-003c]）
+// ---------------------------------------------------------------------------
+
+/**
+ * 时间的三个来源。`lesson` = 本次课次日期（**默认**，PRD：时间默认取本次课次日期）、
+ * `today` = 生成当天、`manual` = 老师手填（`manualValue`）。
+ * 枚举的真源在这里：`frameSpec` 的收敛器重新导出这一份，界面下拉也读它。
+ */
+export const DATE_SOURCES = ['lesson', 'today', 'manual'];
+
+/** 三种日期展示格式（PRD US-003c 的验收原文）。 */
+export const DATE_FORMATS = ['YYYY.MM.DD', 'YYYY-MM-DD', 'YYYY年MM月DD日'];
+
+/** 默认来源 / 默认格式（与 spec v2 的默认值一致）。 */
+export const DATE_SOURCE_DEFAULT = 'lesson';
+export const DATE_FORMAT_DEFAULT = 'YYYY.MM.DD';
+
+/** 日期来源的中文名（后台/老师端控件用）。 */
+export const DATE_SOURCE_LABELS = {
+  lesson: '本次课次日期',
+  today: '生成当天',
+  manual: '手动填写'
+};
+
+/**
+ * 把任意日期值拆成 `{ year, month, day }`。
+ * 认得 `2026-08-04` / `2026.08.04` / `2026/8/4` / `20260804` / 前 10 位是日期的 ISO 串，以及 `Date`。
+ * **认不出来返回 `null`**（不要编造日期 —— manual 里可能写着「上周三」这种人类说法）。
+ */
+export function overlayDateParts(value) {
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) return null;
+    return { year: value.getFullYear(), month: value.getMonth() + 1, day: value.getDate() };
+  }
+  const raw = String(value ?? '').trim();
+  if (!raw) return null;
+  const separated = raw.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+  if (separated) return { year: Number(separated[1]), month: Number(separated[2]), day: Number(separated[3]) };
+  const compact = raw.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (compact) return { year: Number(compact[1]), month: Number(compact[2]), day: Number(compact[3]) };
+  return null;
+}
+
+/**
+ * 按 `format` 输出日期文本：`YYYY.MM.DD` / `YYYY-MM-DD` / `YYYY年MM月DD日`。
+ * 认不出的值**原样返回**（保底不丢信息）；非法格式回落 `YYYY.MM.DD`。
+ */
+export function formatOverlayDate(value, format = DATE_FORMAT_DEFAULT) {
+  const parts = overlayDateParts(value);
+  if (!parts) return String(value ?? '').trim();
+  const y = String(parts.year).padStart(4, '0');
+  const m = pad2(parts.month);
+  const d = pad2(parts.day);
+  switch (format) {
+    case 'YYYY-MM-DD': return `${y}-${m}-${d}`;
+    case 'YYYY年MM月DD日': return `${y}年${m}月${d}日`;
+    case 'YYYY.MM.DD':
+    default: return `${y}.${m}.${d}`;
+  }
+}
+
+/** `today` 入参归一：未给时取当前时刻（测试里固定成某一天才能断言）。 */
+export function overlayTodayValue(today) {
+  if (today instanceof Date || typeof today === 'string') return today;
+  return new Date();
+}
+
+/**
+ * 时间元素的正文：`来源 → 日期值 → 按 format 格式化 → 加 prefix`。
+ * 返回 `null` 表示**不绘制**（来源不合法 / 手填为空 / 课次日期为空）。
+ */
+export function resolveOverlayDateText({ element, context = {}, today } = {}) {
+  const source = DATE_SOURCES.includes(element?.source) ? element.source : DATE_SOURCE_DEFAULT;
+  const format = DATE_FORMATS.includes(element?.format) ? element.format : DATE_FORMAT_DEFAULT;
+  const value = source === 'today'
+    ? overlayTodayValue(today)
+    : source === 'manual'
+      ? element?.manualValue
+      : context?.lessonDate;
+  const dateText = formatOverlayDate(value, format);
+  if (!dateText) return null;
+  const prefix = String(element?.prefix ?? '').trim() ? String(element.prefix) : '';
+  return { source, format, prefix, dateText, text: `${prefix}${dateText}` };
+}
+
+/** 时间元素的绘制计划（文本画笔 + 位置/字号/颜色全部来自 element）。 */
+export function planOverlayDate({ element, canvasWidth, canvasHeight, context = {}, today } = {}) {
+  const resolved = resolveOverlayDateText({ element, context, today });
+  if (!resolved) return null;
+  return planOverlayText({ element, content: resolved.text, canvasWidth, canvasHeight, context });
+}
+
+// ---------------------------------------------------------------------------
+// 落款元素（[第二步 US-003c]）
+// ---------------------------------------------------------------------------
+
+/** 行距（相对姓名字号）：姓名与寄语两行之间的间距。 */
+export const SIGNATURE_LINE_HEIGHT_RATIO = 1.45;
+
+/** 寄语字号（相对姓名字号）。 */
+export const SIGNATURE_MESSAGE_FONT_RATIO = 0.68;
+
+/** 印章边长（相对落款字号）。 */
+export const SEAL_SIZE_FONT_RATIO = 2.4;
+
+/** 印章与落款块之间的间距（相对落款字号）。 */
+export const SEAL_GAP_FONT_RATIO = 0.5;
+
+/** 印章文字最多排几行（2 个字一行、4 个字排 2×2）。 */
+export const SEAL_MAX_LINES = 2;
+
+/** 签名的两种模式（重新导出给 frameSpec 用，避免两处枚举漂移）。 */
+export const SIGNATURE_MODES = ['text', 'image'];
+
+/** 印章形状（方形 / 圆形文字章）。 */
+export const SEAL_SHAPES = ['square', 'round'];
+
+/** 印章文字按字数分行（≤2 字一行，其余最多 2 行）。 */
+export function sealTextLines(text) {
+  const chars = [...String(text ?? '').trim()];
+  if (!chars.length) return [];
+  if (chars.length <= 2) return [chars.join('')];
+  const lines = Math.min(SEAL_MAX_LINES, Math.ceil(chars.length / 2));
+  const perLine = Math.ceil(chars.length / lines);
+  const out = [];
+  for (let i = 0; i < lines; i += 1) {
+    const chunk = chars.slice(i * perLine, (i + 1) * perLine).join('');
+    if (chunk) out.push(chunk);
+  }
+  return out;
+}
+
+/** 印章的绘制计划：贴在落款块的**内侧**（贴左的落款把章放在右边，贴右则放在左边）。 */
+export function planOverlaySeal({ element, anchor, blockBox, fontSize } = {}) {
+  const seal = element?.seal && typeof element.seal === 'object' ? element.seal : null;
+  if (!seal || seal.visible !== true) return null;
+  const text = String(seal.text ?? '').trim();
+  if (!text) return null;
+  const block = normalizeRect(blockBox);
+  const size = Number(fontSize);
+  if (!block || !(size > 0)) return null;
+  const side = size * SEAL_SIZE_FONT_RATIO;
+  if (!(side > 0)) return null;
+  const gap = size * SEAL_GAP_FONT_RATIO;
+  const dirX = anchor?.dirX === -1 ? -1 : 1;
+  const box = normalizeRect({
+    x: dirX < 0 ? block.x - gap - side : block.x + block.width + gap,
+    y: block.y - (side - block.height) / 2,
+    width: side,
+    height: side
+  });
+  if (!box) return null;
+  const shape = seal.shape === 'round' ? 'round' : 'square';
+  const color = String(seal.color ?? '').trim() || '#B33A2B';
+  const texts = sealTextLines(text);
+  const numbers = texts.length || 1;
+  const lineFontSize = side * (numbers > 1 ? 0.38 : 0.46);
+  const lineHeight = lineFontSize * 1.08;
+  const centerX = box.x + box.width / 2;
+  const centerY = box.y + box.height / 2;
+  return {
+    shape,
+    text,
+    color,
+    box,
+    fontSize: lineFontSize,
+    lines: texts.map((line, index) => ({
+      text: line,
+      x: centerX,
+      y: centerY - ((numbers - 1) / 2) * lineHeight + index * lineHeight,
+      textAlign: 'center',
+      textBaseline: 'middle',
+      fontSize: lineFontSize,
+      // 印章是「填色 + 白字」，所以字色固定白，不读 element.color
+      fontFamily: 'sans-serif',
+      color: '#FFFFFF',
+      rotateDeg: 0
+    }))
+  };
+}
+
+/**
+ * 落款元素的绘制计划。两种模式：
+ *   - `text`：姓名（`{老师姓名}` 等变量可替换）在上、寄语在下；
+ *   - `image`：手写签名图，按 `imageWidthRatio` 定宽、按图片比例定高（不拉伸、不裁切）。
+ * 两种模式都可另带一枚印章（`seal.visible === true` 才画）。
+ *
+ * 块的位置由九宫格锚点决定（`textAlign` / `textBaseline` 与文本画笔同一套口径）：
+ * 底排的落款「块底 = 锚点 y」，顶排「块顶 = 锚点 y」，中排整块垂直居中 ——
+ * 于是「换个格子」时整块一起走，不会出现姓名与寄语分家。
+ *
+ * `null` = 完全不绘制（不可见 / 文字模式没有姓名与寄语 / 图片模式没有签名图）。
+ */
+export function planOverlaySignature({ element, canvasWidth, canvasHeight, context = {}, imageWidth, imageHeight, measureText } = {}) {
+  if (!shouldDrawOverlay(element)) return null;
+  const mode = element.mode === 'image' ? 'image' : 'text';
+  const anchor = resolveOverlayAnchor({
+    position: element.position,
+    offsetX: element.offsetX,
+    offsetY: element.offsetY,
+    canvasWidth,
+    canvasHeight
+  });
+  const fontFamily = normalizeOverlayFont(element.fontFamily);
+  const fontSize = resolveOverlayFontSize(element.fontSize, canvasWidth, canvasHeight);
+  const color = String(element.color ?? '').trim() || '#2B271F';
+  let lines = [];
+  let imageBox = null;
+  let blockBox = null;
+
+  if (mode === 'image') {
+    if (!String(element.imageUrl ?? '').trim()) return null;
+    imageBox = normalizeRect(resolveOverlayImageBox({
+      element: { ...element, widthRatio: Number(element.imageWidthRatio) || 0.12 },
+      imageWidth,
+      imageHeight,
+      canvasWidth,
+      canvasHeight
+    }));
+    if (!imageBox) return null;
+    blockBox = imageBox;
+  } else {
+    const name = applyOverlayVariables(element.teacherName, context);
+    const message = applyOverlayVariables(element.message, context);
+    const items = [];
+    if (name.text.trim()) items.push({ text: name.text.trim(), fontSize, diagnostics: name });
+    if (message.text.trim()) {
+      items.push({
+        text: message.text.trim(),
+        fontSize: fontSize * SIGNATURE_MESSAGE_FONT_RATIO,
+        diagnostics: message
+      });
+    }
+    if (!items.length) return null;
+    const lineHeight = fontSize * SIGNATURE_LINE_HEIGHT_RATIO;
+    const total = lineHeight * items.length;
+    const baseline = anchor.textBaseline;
+    lines = items.map((item, index) => {
+      const y = baseline === 'top'
+        ? anchor.y + index * lineHeight
+        : baseline === 'bottom'
+          ? anchor.y - (items.length - 1 - index) * lineHeight
+          : anchor.y - total / 2 + (index + 0.5) * lineHeight;
+      return {
+        text: item.text,
+        x: anchor.x,
+        y,
+        textAlign: anchor.textAlign,
+        // 中排每行单独垂直居中；上下两排沿用锚点基线
+        textBaseline: baseline === 'middle' ? 'middle' : baseline,
+        fontSize: item.fontSize,
+        fontFamily,
+        color,
+        rotateDeg: 0,
+        missing: item.diagnostics.missing,
+        empty: item.diagnostics.empty
+      };
+    });
+    blockBox = lines.reduce((union, line) => unionRect(union, textPlanBox(line, measureText)), null);
+  }
+
+  const seal = planOverlaySeal({ element, anchor, blockBox, fontSize });
+  return { mode, anchor, lines, imageBox, blockBox, seal: seal || null };
+}
+
+/** 落款的所有轴对齐外接框（行 + 签名图 + 印章）—— 与绘制读同一份计划，遮挡统计不会漏印章。 */
+export function signaturePlanRects(plan, measureText) {
+  if (!plan) return [];
+  const rects = plan.lines.map((line) => textPlanBox(line, measureText)).filter(Boolean);
+  if (plan.imageBox) rects.push(plan.imageBox);
+  if (plan.seal?.box) rects.push(plan.seal.box);
+  return rects.map(normalizeRect).filter(Boolean);
+}
+
+// ---------------------------------------------------------------------------
+// 二维码元素（[第二步 US-003c]）
+// ---------------------------------------------------------------------------
+
+/**
+ * 二维码四周的静区（相对模块数）：摄像头识别要求四周留白，否则扫不出来。
+ * 白底与静区都由画笔铺（成品图上往往落在卡纸 / 展签底色上，没有白底会直接扫不出）。
+ */
+export const QR_QUIET_MODULES = 4;
+
+/** 说明文字字号（相对二维码边长）。 */
+export const QR_CAPTION_FONT_RATIO = 0.15;
+
+/** 说明文字与二维码白底的间距（相对二维码边长）。 */
+export const QR_CAPTION_GAP_RATIO = 0.06;
+
+/** 说明文字的颜色与字体（二维码本身必须是黑白，说明文字不参与识别）。 */
+export const QR_CAPTION_COLOR = '#6D6559';
+export const QR_CAPTION_FONT = 'sans-serif';
+
+/** 模块数未知时的估法（按 33×33 ≈ 版本 4 估，只影响遮挡统计的保守程度）。 */
+export const QR_DEFAULT_MODULE_COUNT = 33;
+
+/**
+ * 二维码元素的绘制计划：白底（含静区）、正方形码区、可选的说明文字。
+ *
+ * - 码区尺寸由 `sizeRatio`（相对画布短边）给出，位置走九宫格 + 偏移；
+ * - 白底 = 码区向外扩 `QR_QUIET_MODULES` 个模块，**并夹在画布内**（静区越界会把码推出画面）；
+ * - 说明文字居中排在白底**下方**；下方放不下（贴底边）时改排到上方，文字永远不会被裁掉。
+ *
+ * `moduleCount` 由调用方从二维码矩阵传入（`services/qrCode.js`）—— 本模块不认识编码器。
+ */
+export function planOverlayQr({ element, canvasWidth, canvasHeight, context = {}, moduleCount = 0 } = {}) {
+  if (!shouldDrawOverlay(element)) return null;
+  const sizeRatio = Number(element.sizeRatio) || 0;
+  if (!(sizeRatio > 0)) return null;
+  const box = normalizeRect(resolveOverlayBox({
+    position: element.position,
+    offsetX: element.offsetX,
+    offsetY: element.offsetY,
+    widthRatio: sizeRatio,
+    heightRatio: sizeRatio,
+    canvasWidth,
+    canvasHeight
+  }));
+  if (!box) return null;
+
+  const modules = Math.round(Number(moduleCount)) > 0 ? Math.round(Number(moduleCount)) : QR_DEFAULT_MODULE_COUNT;
+  const moduleSize = box.width / modules;
+  const quiet = moduleSize * QR_QUIET_MODULES;
+  const plateWidth = box.width + quiet * 2;
+  const plateHeight = box.height + quiet * 2;
+  const canvasW = size(canvasWidth);
+  const canvasH = size(canvasHeight);
+  const plate = {
+    x: clamp(box.x - quiet, 0, Math.max(0, canvasW - plateWidth), box.x - quiet),
+    y: clamp(box.y - quiet, 0, Math.max(0, canvasH - plateHeight), box.y - quiet),
+    width: plateWidth,
+    height: plateHeight
+  };
+
+  const captionResult = applyOverlayVariables(element.caption, context);
+  const captionText = captionResult.text.trim();
+  let caption = null;
+  if (captionText) {
+    const fontSize = Math.max(10, box.width * QR_CAPTION_FONT_RATIO);
+    const gap = box.height * QR_CAPTION_GAP_RATIO;
+    const below = plate.y + plate.height + gap;
+    const fitsBelow = !(canvasH > 0) || below + fontSize * 1.2 <= canvasH;
+    caption = {
+      text: captionText,
+      x: plate.x + plate.width / 2,
+      y: fitsBelow ? below : plate.y - gap,
+      textAlign: 'center',
+      textBaseline: fitsBelow ? 'top' : 'bottom',
+      fontSize,
+      fontFamily: QR_CAPTION_FONT,
+      color: QR_CAPTION_COLOR,
+      rotateDeg: 0,
+      missing: captionResult.missing,
+      empty: captionResult.empty
+    };
+  }
+  return { box, plate, quiet, moduleSize, moduleCount: modules, caption };
+}
+
+/** 二维码元素的外接框（白底 + 说明文字）—— 遮挡统计用。 */
+export function qrPlanRects(plan, measureText) {
+  if (!plan) return [];
+  const rects = [plan.plate];
+  if (plan.caption) {
+    const box = textPlanBox(plan.caption, measureText);
+    if (box) rects.push(box);
+  }
+  return rects.map(normalizeRect).filter(Boolean);
+}
+
+/** 两个轴对齐矩形的并集外接框（任一为空时返回另一个）。 */
+export function unionRect(a, b) {
+  const left = normalizeRect(a);
+  const right = normalizeRect(b);
+  if (!left) return right;
+  if (!right) return left;
+  const x = Math.min(left.x, right.x);
+  const y = Math.min(left.y, right.y);
+  return {
+    x,
+    y,
+    width: Math.max(left.x + left.width, right.x + right.width) - x,
+    height: Math.max(left.y + left.height, right.y + right.height) - y
+  };
+}
+
+// ---------------------------------------------------------------------------
 // 叠加元素清单与「水印遮挡作品主体」统计
 // ---------------------------------------------------------------------------
 
@@ -512,58 +907,79 @@ export function overlayElementEntries(overlays) {
 }
 
 /**
- * **已经接了画笔**的类别（US-003b 是文字水印 + 机构 Logo）。
+ * **已经接了画笔**的类别（US-003a 文字水印 → US-003b 机构 Logo → US-003c 落款 / 时间 / 二维码）。
+ * 到这里五类元素全齐（PRD FR-16）。
  *
  * 纪律：新增一支画笔时，这里与 `framing.js` 的 `drawOverlayElements()` **一起改**，
  * 并在 `overlayElementBoxes()` 里补对应的取框分支。绘制与遮挡统计必须看同一份清单 ——
  * 只看其一就会出现「提示说挡住了、其实没画」或者「画了但统计不到」。
  */
-export const DRAWN_OVERLAY_KINDS = ['watermark.text', 'watermark.logo'];
+export const DRAWN_OVERLAY_KINDS = ['watermark.text', 'watermark.logo', 'watermark.qr', 'signature', 'date'];
 
-/** 该类别的框是否按**图片**计算（其余按文本）。 */
-const IMAGE_OVERLAY_KINDS = ['watermark.logo', 'watermark.qr', 'signature'];
+/** 该类别的框是否按**图片**计算（其余按文本）。二维码是生成出来的正方形，不算图片。 */
+const IMAGE_OVERLAY_KINDS = ['watermark.logo', 'signature'];
 
 /**
  * 每个「可见且已接画笔」的叠加元素在画布上的轴对齐外接框。
  *
  * - 文本类：走 `planOverlayText()`（内容为空 / 不可见 → 没有框），再 `textPlanBox()` 取外接框；
  * - 图片类：走 `resolveOverlayImageBox()`，尺寸由 `imageSizes[kind]` 提供（真实解码值）；
- * - 二维码：走 `resolveOverlayBox()`（`sizeRatio` 正方形，二维码本来就该是方的）。
+ * - 二维码：走 `planOverlayQr()`（白底 + 说明文字，模块数由 `qrModules` 传入）；
+ * - 落款：走 `planOverlaySignature()`（行 + 签名图 + 印章，一个元素可能占好几块）；
+ * - 时间：走 `planOverlayDate()`（来源 / 格式 / 前缀都按 `today` 解析）。
  *
  * `imageSizes` 里没有的图片按正方形估（见 `resolveOverlayImageBox`）。
- * 返回 `[{ kind, element, box }]`，顺序与 `overlayElementEntries()` 一致（也就与绘制顺序一致）。
+ * 返回 `[{ kind, element, box }]`，顺序与 `overlayElementEntries()` 一致（也就与绘制顺序一致）；
+ * 落款有多块时按块展开（同一 `kind` 出现多次）。
  */
-export function overlayElementBoxes({ overlays, canvasWidth, canvasHeight, context = {}, measureText, imageSizes = {}, kinds = DRAWN_OVERLAY_KINDS } = {}) {
+export function overlayElementBoxes({
+  overlays,
+  canvasWidth,
+  canvasHeight,
+  context = {},
+  measureText,
+  imageSizes = {},
+  kinds = DRAWN_OVERLAY_KINDS,
+  qrModules = 0,
+  today
+} = {}) {
   const wanted = Array.isArray(kinds) ? kinds : DRAWN_OVERLAY_KINDS;
   const sizes = imageSizes && typeof imageSizes === 'object' ? imageSizes : {};
   const boxes = [];
+  const push = (kind, element, rect) => {
+    const box = normalizeRect(rect);
+    if (box) boxes.push({ kind, element, box });
+  };
   for (const { kind, element } of visibleOverlayElements(overlayElementEntries(overlays))) {
     if (!wanted.includes(kind)) continue;
-    let box = null;
     if (kind === 'watermark.qr') {
-      const ratio = Number(element?.sizeRatio) || 0;
-      box = resolveOverlayBox({
-        position: element?.position,
-        offsetX: element?.offsetX,
-        offsetY: element?.offsetY,
-        widthRatio: ratio,
-        heightRatio: ratio,
+      for (const rect of qrPlanRects(planOverlayQr({ element, canvasWidth, canvasHeight, context, moduleCount: qrModules }), measureText)) {
+        push(kind, element, rect);
+      }
+    } else if (kind === 'signature') {
+      const plan = planOverlaySignature({
+        element,
         canvasWidth,
-        canvasHeight
+        canvasHeight,
+        context,
+        measureText,
+        imageWidth: sizes[kind]?.width,
+        imageHeight: sizes[kind]?.height
       });
+      for (const rect of signaturePlanRects(plan, measureText)) push(kind, element, rect);
+    } else if (kind === 'date') {
+      push(kind, element, textPlanBox(planOverlayDate({ element, canvasWidth, canvasHeight, context, today }), measureText));
     } else if (IMAGE_OVERLAY_KINDS.includes(kind)) {
-      box = resolveOverlayImageBox({
+      push(kind, element, resolveOverlayImageBox({
         element,
         imageWidth: sizes[kind]?.width,
         imageHeight: sizes[kind]?.height,
         canvasWidth,
         canvasHeight
-      });
+      }));
     } else {
-      box = textPlanBox(planOverlayText({ element, canvasWidth, canvasHeight, context }), measureText);
+      push(kind, element, textPlanBox(planOverlayText({ element, canvasWidth, canvasHeight, context }), measureText));
     }
-    const rect = normalizeRect(box);
-    if (rect) boxes.push({ kind, element, box: rect });
   }
   return boxes;
 }

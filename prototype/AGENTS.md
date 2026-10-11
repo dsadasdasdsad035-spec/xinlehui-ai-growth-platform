@@ -549,6 +549,40 @@ DSH 的 `browser_*` 工具**没有 selectOption 能力**：`browser_type` 走的
 - 面板里的数值输入要**显示 draft 里的原值**（`{...specV2.watermark.logo, ...rawWatermark.logo}`），
   不要显示收敛后的值：收敛发生在渲染时，显示收敛值会让「输入 2 立刻被改成 8」→ 数字框没法正常输入。
 
+### 落款 / 时间 / 二维码与二维码编码器（US-003c）
+
+五类叠加元素（FR-16）在 US-003c 接齐：`DRAWN_OVERLAY_KINDS` 现在是
+`watermark.text / watermark.logo / watermark.qr / signature / date`。新增画笔的纪律见上一节（三处一起改）。
+
+- **时间**：来源 / 格式 / 前缀的枚举真源在 `overlayLayout.js`（`DATE_SOURCES` / `DATE_FORMATS` /
+  `DATE_SOURCE_LABELS`，`frameSpec.js` 只是重新导出）。`resolveOverlayDateText()` 负责
+  「来源 → 日期值 → `formatOverlayDate()` → 加 prefix」：`source: 'lesson'` 读 `context.lessonDate`
+  （变量上下文已归一成 `YYYY.MM.DD`，所以**时间默认取本次课次日期**是默认行为，不需要额外传参），
+  `'today'` 读渲染入参 `today`（缺省 `new Date()`；**测试里必须固定它**才能断言），`'manual'` 读 `manualValue`。
+  `formatOverlayDate` 认不出的值**原样输出**（手填「上周三」不会被编造成某一天）；拿不到日期时整支不画。
+- **落款**：`planOverlaySignature()` 一个入口管两种模式 —— `text`（姓名 `teacherName` + 寄语 `message`，
+  变量可替换；两行按锚点基线排列，底排「块底 = 锚点 y」、顶排「块顶 = 锚点 y」、中排整块垂直居中）与
+  `image`（手写签名图，宽度 = `signature.imageWidthRatio × 画布短边`、高度按图片比例，**不拉伸**）。
+  印章是落款的一部分，由 `planOverlaySeal()` 定成「边长 = 落款字号 × 2.4、贴在落款块**内侧**」——
+  内侧判据取 `resolveOverlayAnchor()` 返回的 `dirX`（贴左的落款章在右、贴右的在左），**不要把 dirX/dirY
+  从返回里删掉**（少了它印章会一律跑到右边，踩过一次）。
+- **二维码**：内容由后台配置（FR-23）。`watermark.qr.target` 存的是**目标键**，
+  `data/qrTargets.js` 是白名单唯一真源：`normalizeQrTarget()` 对白名单之外的值（包括任意 URL）
+  **一律回落默认目标**，`resolveQrTargetUrl(key, context)` 把模板（如 `…/p/{shareToken}`）解析成 URL，
+  没有真实令牌时填 `QR_TARGET_SAMPLE` 的示例值并给 `ready: false` / `sample: true`（面板据此提示
+  「示例链接」）。老师端没有任何「填 URL」的入口，数据层再收一道 —— 两道都要有。
+- **二维码绘制**：`planOverlayQr()` 出几何（正方形码区 + 四周 `QR_QUIET_MODULES = 4` 个模块的白底静区，
+  白底夹在画布内；说明文字排在白底外侧，贴底边时自动改排上方），`paintOverlayQr()` 只负责铺白底与
+  逐模块 `fillRect`。**白底与静区必须有**：成品图上二维码常落在卡纸 / 展签底色上，没有白底就扫不出来；
+  **模块边界要 `Math.round` 取整**，否则非整数倍缩放下相邻模块之间会出现灰缝。
+- **二维码编码器在 `services/qrCode.js`（零依赖纯函数）**：byte 模式 + 版本 1–10 + 纠错等级 L/M/Q/H，
+  `qrMatrix(text, { ecc, version })` 返回 `{ size, version, ecc, modules }`，**编不出来返回 `null`**
+  （空文本 / 超长 / 非法参数），调用方按「这一支不画」处理 —— 绝不画一个扫不出来的假码。
+  改这张 RS 分块表之前先读文件头的提示：表写错时矩阵**看起来仍然像个二维码**，只有识别器能发现。
+- **后台「装裱设置」的叠加面板**：`patchOverlayGroup(group, value)` 只覆盖**这一组 + `version: 2`**
+  （落款 / 时间走它，水印仍走 `patchWatermark`），老模板的 v1 平面字段一个不动；签名图上传复用
+  `readFramingAsset`（PNG/JPG、≤512×512、≤200KB，与 Logo 同一套准入）。数值 / 文本框显示 **draft 原值**。
+
 ## 装裱模板的三层归属：scope / ownerKey（US-001b）
 
 模板分三层「平台（platform）/ 机构（org）/ 老师个人（teacher）」，**三层共用云端 `framing_presets`
@@ -709,3 +743,36 @@ service 模块也能在 Node 里测：`cloud.database` 是**可写属性**，导
   一截，症状是「图片只有上半部分」而**没有任何报错**（US-003b 真踩到 `imageUrl()` 的 `slice(0, 2048)`）。
 - 九宫格位置断言要**跑满 9 个位置 + custom**：只测一两个位置时，「偏移方向」类错误（正值朝外）也可能碰巧
   落在画面内而不被发现。
+
+### 验证「二维码画得对不对、扫不扫得出来」（US-003c 起）
+
+二维码是**唯一一种「画错了也看不出来」的元素**：模块错几个，人眼完全无法分辨，只有识别器能发现。
+所以验证分三层，缺一层都可能放过真 bug：
+
+1. **独立识别器回读**（最强）：把模块矩阵按 6 倍放大 + 4 模块静区渲染成位图，用 OpenCV 的
+   `cv2.QRCodeDetector()` / `cv2.QRCodeDetectorAruco()` 解码，断言文本**逐字符等于**输入。
+   本机 Python 有 cv2（5.0），不需要装任何 QR 库。
+   - **`QRCodeDetector` 在个别（版本 × 等级 × 内容）组合上会「定位失败」**（返回空串）而矩阵其实是对的：
+     多试几个缩放 / 静区尺寸，并**同时用 `QRCodeDetectorAruco`** 交叉验证 —— 本轮 4 个「失败」全是
+     缩放 6 / 静区 4 下的定位问题，换 Aruco 或换缩放即通过。别把它们当成编码器 bug 去改表。
+2. **码字级断言**（能定位到「哪一段错了」）：写一个小的「矩阵 → 码字」提取器（按格式信息里的掩码反掩码，
+   再按 QR 的蛇形顺序读数），断言 ① 数据码字等于**独立算出的规范序列**（模式指示符 + 字符数 + UTF-8 字节 +
+   终结符 + EC/11 补位，多块版本要**按块**比对，交错后的序列前缀不是数据段）；② 每个块的纠错码字满足
+   **RS 校验子为 0**（另用一套独立的 GF(256) 实现算综合除法）。③ 码字总数等于标准的总码字数表。
+3. **渲染像素断言**（页面内，证明「画笔把矩阵画对了」）：把成品图解码回 canvas，按
+   `box.x + (col+0.5)*moduleSize` 采样**每个模块的中心像素**，与 `qrMatrix()` 的 `modules` 逐格比对
+   （深色 < 110 亮度、浅色 > 150，命中率 ≥ 99%）；再断言白底静区是白的、墨迹外接框落在计划框内。
+
+其它两条口径：
+
+- **参考实现的两个坑**：OpenCV 的 `QRCodeEncoder` 会**忽略** `QRCodeEncoder_Params` 里的 version /
+  correction_level（请求 1 版给你 2 版），矩阵与规范实现逐字节不同，**不能当逐格参照**；
+  Python 的 `segno` 在「数据刚好落在码字边界」时会**多补一个 0x00 码字**（`write_padding_bits` 里
+  `8 - (length % 8)` 在整除时补了 8 位），于是它的补位段与规范不一致。两者都只能用来**交叉验证**，
+  判据必须是「识别器能不能读回原文」。
+- **改 RS 分块表时先跑「容量交叉校验」**：把 `qrDataCodewords(version, ecc)` 与标准的数据码字数表
+  （版本 1–10 × 四级，40 个数）逐项比，再检查「数据码字 + 纠错码字 × 块数 == 总码字数」。表里写错一个
+  数字不会让矩阵报错，只会让那一个组合扫不出来。
+- **放码位置有两个易错点**：① 校正图案（alignment）必须画在**定时图案之前**（v7 起校正图案的中心会落在
+  第 6 行 / 第 6 列，顺序反了整块会被定时图案「占位」掉，症状是 v1–v6 正常、v7+ 全灭）；
+  ② 掩码公式的 i/j 是 **行 / 列**（`i%2` 是行方向、`j%3` 是列方向），写反了矩阵照样「像二维码」。

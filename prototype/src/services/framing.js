@@ -3,6 +3,9 @@ import { archShape, archInset, bevelShape, bevelInset, shapeBox, inscribeAspectR
 import {
   overlayVariableContext,
   planOverlayText,
+  planOverlaySignature,
+  planOverlayDate,
+  planOverlayQr,
   visibleOverlayElements,
   overlayElementEntries,
   DRAWN_OVERLAY_KINDS,
@@ -12,6 +15,8 @@ import {
   evaluateOverlayCoverage,
   OVERLAY_COVERAGE_LIMIT
 } from './overlayLayout';
+import { qrMatrix, QR_DEFAULT_ECC } from './qrCode';
+import { resolveQrTargetUrl } from '../data/qrTargets';
 
 /** 合成画布的固定尺寸（装裱输出口径：1800×1360 JPEG 0.92）。几何与遮挡统计都从这里取，别各写一份。 */
 const FRAME_CANVAS_WIDTH = 1800;
@@ -553,15 +558,18 @@ function loadOverlayImage(url) {
 }
 
 /**
- * 载入叠加元素里**已接画笔的图片类元素**（US-003b 是机构 Logo）。
+ * 载入叠加元素里**已接画笔的图片类元素**（机构 Logo、手写签名图）。
  * 只解码「`visible === true`」的那些 —— 不可见的元素连解码都不做，与「不绘制、不留占位」是同一条纪律。
+ * 落款是文字模式时不解码签名图（那是上一版留下的地址，画不出来也不用加载）。
  */
 async function loadOverlayImages(overlays) {
   const entries = visibleOverlayElements(overlayElementEntries(overlays))
     .filter(({ kind }) => DRAWN_OVERLAY_KINDS.includes(kind));
   const images = {};
   await Promise.all(entries.map(async ({ kind, element }) => {
-    const url = kind === 'signature' ? element?.imageUrl : element?.url;
+    const url = kind === 'signature'
+      ? (element?.mode === 'image' ? element?.imageUrl : '')
+      : element?.url;
     if (!url) return;
     const image = await loadOverlayImage(url);
     if (image) images[kind] = image;
@@ -613,6 +621,90 @@ function paintOverlayImage(ctx, box, image, opacity) {
 }
 
 /**
+ * 印章画笔（US-003c）：方形 / 圆形填色 + 白字（2×2 排布由 `planOverlaySeal` 算好）。
+ * 底色与形状来自 `signature.seal`，文字位置与字号全在计划里，这里只画。
+ */
+function paintSeal(ctx, seal) {
+  if (!seal || !seal.box) return;
+  const { box } = seal;
+  ctx.save();
+  ctx.fillStyle = seal.color;
+  if (seal.shape === 'round') {
+    ctx.beginPath();
+    ctx.ellipse(box.x + box.width / 2, box.y + box.height / 2, box.width / 2, box.height / 2, 0, 0, Math.PI * 2);
+    ctx.fill();
+  } else {
+    ctx.fillRect(box.x, box.y, box.width, box.height);
+  }
+  ctx.restore();
+  for (const line of seal.lines || []) paintOverlayText(ctx, line);
+}
+
+/**
+ * 落款画笔（US-003c）：文字模式画「姓名 + 寄语」，图片模式画手写签名图，最后画可选的印章。
+ *
+ * 图片模式下**签名图解码失败就整支不画**（连印章也不画）：留一枚孤零零的章会让人以为
+ * 「这幅作品本来就没签名」，而少一支元素是明确可查的（US-003b 的「一张坏 Logo 的失败面
+ * 是少了水印」同一条口径）。
+ */
+function paintSignature(ctx, plan, image) {
+  if (!plan) return;
+  if (plan.mode === 'image') {
+    if (!image || !plan.imageBox) return;
+    paintOverlayImage(ctx, plan.imageBox, image, 1);
+  } else {
+    for (const line of plan.lines || []) paintOverlayText(ctx, line);
+  }
+  if (plan.seal) paintSeal(ctx, plan.seal);
+}
+
+/**
+ * 二维码画笔（US-003c）。
+ *
+ * 两个必须做对的地方：
+ *   1. **白底 + 静区**：成品图上二维码常常落在卡纸 / 展签底色上，没有白底与四周留白就扫不出来。
+ *      静区尺寸由 `planOverlayQr` 按模块大小算出，这里只负责铺这块白底。
+ *   2. **模块对齐到整像素**：每个模块用 `Math.round` 取整边界再 `fillRect`，避免相邻模块之间
+ *      出现灰色细缝（缩放到非整数倍时最容易出现，屏幕上看起来像码点模糊）。
+ */
+function paintOverlayQr(ctx, plan, matrix) {
+  if (!plan || !matrix) return;
+  const { box, plate } = plan;
+  ctx.save();
+  ctx.fillStyle = '#FFFFFF';
+  ctx.fillRect(plate.x, plate.y, plate.width, plate.height);
+  ctx.fillStyle = '#000000';
+  const count = matrix.size;
+  const moduleSize = box.width / count;
+  for (let row = 0; row < count; row += 1) {
+    const y0 = Math.round(box.y + row * moduleSize);
+    const y1 = Math.round(box.y + (row + 1) * moduleSize);
+    for (let col = 0; col < count; col += 1) {
+      if (!matrix.modules[row][col]) continue;
+      const x0 = Math.round(box.x + col * moduleSize);
+      const x1 = Math.round(box.x + (col + 1) * moduleSize);
+      ctx.fillRect(x0, y0, Math.max(1, x1 - x0), Math.max(1, y1 - y0));
+    }
+  }
+  ctx.restore();
+  if (plan.caption) paintOverlayText(ctx, plan.caption);
+}
+
+/**
+ * 二维码要编码的内容：**目标键 → 后台配置的 URL**（FR-23，老师端不可自由填 URL）。
+ * 白名单收敛在 `normalizeFrameSpecV2` 已经做过一次，这里是第二次（数据从哪来都收得住）。
+ */
+export function resolveFrameQrTarget(element, values = {}) {
+  return resolveQrTargetUrl(element?.target, values);
+}
+
+/** 二维码矩阵（编码不出来返回 null —— 调用方不画，绝不画一个扫不出来的假码）。 */
+export function qrMatrixForElement(element, values = {}) {
+  const resolved = resolveFrameQrTarget(element, values);
+  return qrMatrix(resolved.url, { ecc: QR_DEFAULT_ECC });
+}
+
+/**
  * 叠加元素绘制层（水印 / 落款 / 时间 / 二维码），画在**最上层**（作品、卡纸、相框都已画完），
  * 位置相对整块画布短边。
  *
@@ -620,11 +712,11 @@ function paintOverlayImage(ctx, box, image, opacity) {
  * （`visibleOverlayElements` + `DRAWN_OVERLAY_KINDS`），不可见的元素连画笔都不会被调用 ——
  * 所以既不会画出东西，也不会留下任何空白占位（US-003a 的验收原文）。
  *
- * 已接画笔：文字水印（US-003a）、机构 Logo（US-003b）。
- * 二维码 / 落款（含印章）/ 时间的画笔由 US-003c 接在同一个门控后面 —— 新增时三处一起改：
+ * 五类元素（FR-16）全部接齐：文字水印 / 机构 Logo（US-003a、US-003b）、
+ * 二维码 / 落款（含印章）/ 时间（US-003c）。新增画笔时三处一起改：
  * `overlayLayout.js` 的 `DRAWN_OVERLAY_KINDS` + 这里的画笔分支 + `loadOverlayImages` 的取图分支。
  */
-async function drawOverlayElements(ctx, { width, height, overlays, context, images }) {
+async function drawOverlayElements(ctx, { width, height, overlays, context, images, today, qrValues }) {
   const entries = visibleOverlayElements(overlayElementEntries(overlays))
     .filter(({ kind }) => DRAWN_OVERLAY_KINDS.includes(kind));
   for (const { kind, element } of entries) {
@@ -642,6 +734,37 @@ async function drawOverlayElements(ctx, { width, height, overlays, context, imag
         canvasWidth: width,
         canvasHeight: height
       }), image, element?.opacity);
+      continue;
+    }
+    if (kind === 'date') {
+      paintOverlayText(ctx, planOverlayDate({ element, canvasWidth: width, canvasHeight: height, context, today }));
+      continue;
+    }
+    if (kind === 'signature') {
+      const image = images?.[kind] || null;
+      const plan = planOverlaySignature({
+        element,
+        canvasWidth: width,
+        canvasHeight: height,
+        context,
+        imageWidth: image?.naturalWidth,
+        imageHeight: image?.naturalHeight,
+        measureText: measureOverlayTextForBox
+      });
+      paintSignature(ctx, plan, image);
+      continue;
+    }
+    if (kind === 'watermark.qr') {
+      // 先编码再定位：模块数决定静区大小，所以「编不出来」时整支（含说明文字）都不画。
+      const matrix = qrMatrixForElement(element, qrValues);
+      if (!matrix) continue;
+      paintOverlayQr(ctx, planOverlayQr({
+        element,
+        canvasWidth: width,
+        canvasHeight: height,
+        context,
+        moduleCount: matrix.size
+      }), matrix);
     }
   }
 }
@@ -693,6 +816,8 @@ export async function measureFramingCoverage({
   title = '',
   date = '',
   variables = null,
+  today,
+  qrValues = null,
   limit = OVERLAY_COVERAGE_LIMIT
 } = {}) {
   const view = frameSpecRenderView(spec);
@@ -714,13 +839,21 @@ export async function measureFramingCoverage({
   for (const [kind, image] of Object.entries(images)) {
     imageSizes[kind] = { width: image.naturalWidth, height: image.naturalHeight };
   }
+  // 二维码的静区取决于**模块数**，而模块数只有编码后才知道 —— 统计与渲染都从同一份
+  // `qrMatrixForElement` 拿，面板上的百分比才等于成品图上压住的面积。
+  const qrEntry = visibleOverlayElements(overlayElementEntries(view.overlays))
+    .find(({ kind }) => kind === 'watermark.qr');
+  const qrValuesInput = qrValues && typeof qrValues === 'object' ? qrValues : {};
+  const qrModules = qrEntry ? (qrMatrixForElement(qrEntry.element, qrValuesInput)?.size || 0) : 0;
   const boxes = overlayElementBoxes({
     overlays: view.overlays,
     canvasWidth: layout.width,
     canvasHeight: layout.height,
     context,
     measureText: measureOverlayTextForBox,
-    imageSizes
+    imageSizes,
+    qrModules,
+    today
   });
   return evaluateOverlayCoverage({ boxes, subjectRect: layout.subjectRect, limitRatio: limit });
 }
@@ -749,10 +882,6 @@ export async function measureFramingCoverage({
  *   lighting                                         { highlight, shadow, angle } 或 null（不画光影）
  *   matVisible                                       卡纸开关
  *   overlays                                         v2 的水印 / 落款 / 时间分组；v1 平面 spec 为 null
- *
- * 叠加元素的变量上下文（US-003a）：`{机构名}` / `{学员名}` / `{作品名}` / `{老师姓名}` / `{课次日期}`
- * 由 `orgName` / `student` / `title` / `teacherName` / `date` 拼出来，也可以用 `variables` 直接覆盖
- * （批量套用与另存模板时用得上）。上下文里的空值替换成空串，因此不会把 `{机构名}` 原样印在画面上。
  */
 /**
  * 装裱几何：从**渲染视图 + 作品像素尺寸**算出这次渲染要用的全部矩形。
@@ -846,7 +975,17 @@ function buildFramingLayout({ view, imageWidth = 1, imageHeight = 1, rotation })
   };
 }
 
-export async function renderFramedArtwork({ source, spec = {}, student = '', title = '', date = '', rotation, orgName = '', teacherName = '', variables = null }) {
+/**
+ * 叠加元素的变量上下文（US-003a）：`{机构名}` / `{学员名}` / `{作品名}` / `{老师姓名}` / `{课次日期}`
+ * 由 `orgName` / `student` / `title` / `teacherName` / `date` 拼出来，也可以用 `variables` 直接覆盖
+ * （批量套用与另存模板时用得上）。上下文里的空值替换成空串，因此不会把 `{机构名}` 原样印在画面上。
+ *
+ * 与时间 / 二维码相关的两个可选入参（US-003c）：
+ *   - `today`：时间元素 `source: 'today'` 用哪一天（缺省取当前时刻；测试里固定成某一天才能断言）；
+ *   - `qrValues`：二维码目标模板的占位符取值（如归档流程给出的 `{ shareToken }`）；
+ *     没给值时 `data/qrTargets.js` 填示例值，并把这条链接标记为「示例」。
+ */
+export async function renderFramedArtwork({ source, spec = {}, student = '', title = '', date = '', rotation, orgName = '', teacherName = '', variables = null, today, qrValues = null }) {
   const image = await loadImage(source);
 
   const view = frameSpecRenderView(spec);
@@ -950,9 +1089,17 @@ export async function renderFramedArtwork({ source, spec = {}, student = '', tit
       lessonDate: date,
       ...(variables && typeof variables === 'object' ? variables : {})
     });
-    // 图片类元素（机构 Logo）先解码再画：解码失败 → 这一张不画（不留占位），其余照画。
+    // 图片类元素（机构 Logo / 手写签名图）先解码再画：解码失败 → 这一张不画（不留占位），其余照画。
     const images = await loadOverlayImages(view.overlays);
-    await drawOverlayElements(ctx, { width, height, overlays: view.overlays, context: overlayContext, images });
+    await drawOverlayElements(ctx, {
+      width,
+      height,
+      overlays: view.overlays,
+      context: overlayContext,
+      images,
+      today,
+      qrValues: qrValues && typeof qrValues === 'object' ? qrValues : {}
+    });
   }
 
   return canvas.toDataURL('image/jpeg', 0.92);
