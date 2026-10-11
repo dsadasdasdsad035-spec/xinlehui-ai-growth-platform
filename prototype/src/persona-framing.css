@@ -89,6 +89,17 @@
 .review-model-plan { display: flex; align-items: flex-start; gap: 6px; margin: 10px 0 0; font-size: 12px; line-height: 1.6; color: var(--ink); }
 .review-model-plan svg { flex: none; margin-top: 2px; color: var(--blue); }
 .review-model-fallback { margin: 6px 0 0; color: #8a5a00; font-size: 12px; line-height: 1.5; }
+/* —— US-107b：生成中换模型的二次确认条（确认前不打断当前生成） —— */
+.review-model-switch { display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap; margin: 0 0 10px; padding: 10px 12px; border: 1px solid #c99908; border-radius: 10px; background: #fff5d1; }
+.review-model-switch > svg { flex: none; margin-top: 2px; color: #8a5a00; }
+.review-model-switch > div { flex: 1; min-width: 200px; display: grid; gap: 4px; }
+.review-model-switch b { font-size: 12px; line-height: 1.6; color: #5f4a06; }
+.review-model-switch small { color: #6d5a1e; font-size: 12px; line-height: 1.5; }
+.review-model-switch-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.review-model-switch-actions button { min-height: 44px; padding: 8px 14px; border: 1px solid #c99908; border-radius: 999px; background: var(--surface); font: inherit; font-size: 13px; color: #5f4a06; cursor: pointer; }
+.review-model-switch-actions button[data-review-model-switch-confirm] { background: #8a5a00; border-color: #8a5a00; color: #fff; font-weight: 600; }
+.review-model-switch-actions button.muted { border-color: var(--border); color: var(--muted); }
+.review-model-switch-hint { margin: 8px 0 0; color: #8a5a00; font-size: 12px; line-height: 1.5; }
 @media (max-width: 430px) {
   .review-model-head { flex-direction: column; align-items: flex-start; gap: 2px; }
   .review-model-option { padding: 12px; }
@@ -185,6 +196,30 @@
 .review-detail-rows li b { color: var(--muted); font-weight: 400; }
 .review-detail-rows li span { font-variant-numeric: tabular-nums; }
 .review-detail-section > small.review-detail-note { display: block; margin-top: 8px; color: var(--muted); font-size: 12px; }
+/* —— US-107b：两次对比（模型 / 耗时 / 推理）。六个分区之外的一块，样式与分区同族。
+   窄屏不许横向滚：`table-layout: fixed` + 单元格 `overflow-wrap: anywhere`，并且**必须**给表格
+   `min-width: 0`（表格的 `min-width: auto` 在 Chrome 里会撑出一个与内容无关的宽下限 ——
+   本轮 390px 实测：面板 scrollWidth 582px 溢出，只有 min-width:0 能收回）。 —— */
+.review-detail-compare { padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.review-detail-compare-note { margin: 0 0 10px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.review-detail-compare-table { width: 100%; min-width: 0; border-collapse: collapse; table-layout: fixed; font-size: 13px; font-variant-numeric: tabular-nums; }
+.review-detail-compare-table th, .review-detail-compare-table td { padding: 7px 8px; border-top: 1px solid var(--border); text-align: left; overflow-wrap: anywhere; }
+.review-detail-compare-table thead th { border-top: 0; color: var(--muted); font-weight: 400; font-size: 12px; }
+.review-detail-compare-table tbody th { color: var(--muted); font-weight: 400; }
+.review-detail-compare-table td { color: var(--ink); }
+.review-detail-compare-table tr.is-changed td:last-child { color: var(--blue); font-weight: 600; }
+.review-detail-compare-reasoning { margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--border); }
+.review-detail-compare-reasoning .review-detail-rows li { display: flex; align-items: baseline; justify-content: flex-start; gap: 10px; }
+/* 推理开头片段**允许折行**（不给 nowrap）：nowrap 的片段会把面板的最小宽度撑到 600+px，
+   390px 下整块面板横向滚（本轮实测）。片段本来就只有 60 字，折两行比横向滚好。 */
+.review-detail-compare-reasoning .review-detail-rows li span { flex: 1; min-width: 0; color: var(--ink); overflow-wrap: anywhere; }
+@media (max-width: 800px) {
+  .review-detail-compare-reasoning .review-detail-rows li { flex-direction: column; gap: 2px; }
+}
+@media (max-width: 800px) {
+  .review-detail-compare { padding: 10px 10px; }
+  .review-detail-compare-table th, .review-detail-compare-table td { padding: 6px 4px; font-size: 12px; }
+}
 @media (max-width: 800px) {
   /* 窄屏：摘要允许折行（一行放不下时宁可多一行，也不要把模型与耗时藏进省略号）；按钮撑满，可点区域 ≥44px 由全局兜底。 */
   .review-detail-toggle { align-items: flex-start; flex-wrap: wrap; }

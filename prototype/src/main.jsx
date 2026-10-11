@@ -34,7 +34,10 @@ import pandaObserve from './assets/panda-gold-observe.png';
 import pandaWave from './assets/panda-poses/01-wave-paintbrush.png';
 import { createFeedbackRecord, loadFeedbackRecords, persistFeedbackRecords } from './data/feedbackRecords';
 import { createParentSession, loadParentFeedbackRecords, loadRemoteFeedbackRecords, saveRemoteFeedbackRecords } from './services/feedbackRecordsApi';
-import { REVIEW_TRACE_TASKS, persistReviewTrace, reviewTraceSummary } from './data/reviewTrace';
+import { REVIEW_TRACE_TASKS, makeReviewTraceId, persistReviewTrace, reviewTraceSummary } from './data/reviewTrace';
+// 两次生成的对比（US-107b）：`parentTraceId` 关联的上一次 vs 本次的模型 / 耗时 / 推理，
+// 以及「已收束轨迹只驻留内存」的小账本，全在 data 层纯函数里（界面只渲染它的产物）。
+import { archiveReviewTraces, findArchivedTrace, reviewTraceCompare } from './data/reviewTraceCompare';
 import { saveRemoteReviewTrace } from './services/reviewTraceApi';
 import { loadStudentManagement } from './data/studentManagement';
 import StudentArchiveData from './StudentArchiveData';
@@ -133,7 +136,7 @@ import { readFramingAsset, inspectFramingAssetUrl } from './services/framingAsse
 import { REVIEW_MODEL_PARAMS, buildPersonaPrompt, buildReviewPromptBundle, describeReviewError, readableFromRawJson, streamArtworkReview } from './services/llmReview';
 // 点评模型选择器（[第三步 US-107a]）：选项行、不可选原因、池路由命中与「老师个人默认」的唯一真源。
 // 界面只渲染 `reviewModelResolve()` 的产物（`options` / `poolRow` / `modelId` / `source`），不再自己过滤或排序。
-import { REVIEW_MODEL_EMPTY_TEXT, REVIEW_MODEL_POOL_ROUTE_ID, loadReviewModelDefaults, loadReviewModels, persistReviewModelDefaults, reviewModelDefaultId, reviewModelResolve, withReviewModelDefault } from './data/reviewModels';
+import { REVIEW_MODEL_EMPTY_TEXT, REVIEW_MODEL_POOL_ROUTE_ID, REVIEW_MODEL_RUNNING_NOTE, REVIEW_MODEL_SWITCH_CANCEL_ACTION, REVIEW_MODEL_SWITCH_CONFIRM_ACTION, loadReviewModelDefaults, loadReviewModels, persistReviewModelDefaults, reviewModelDefaultId, reviewModelResolve, reviewModelSwitchConfirmText, withReviewModelDefault } from './data/reviewModels';
 import { loadRemoteReviewModelDefaults, loadRemoteReviewModels, saveRemoteReviewModelDefault } from './services/reviewModelsApi';
 import { keywordCandidatesPrompt, keywordCategoriesFor, keywordOptionsFor, orderKeywords, pickSupportedKeywords } from './data/reviewKeywords';
 // 本次点评详情面板（US-103a 折叠态 / US-103b 六分区与导出）：折叠态那一行摘要、生成中的实时状态、
@@ -825,6 +828,12 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
   // 生成中它是 null，面板回落读流式增量；换上下文（换班 / 换学员 / 换模式 / 新建草稿）一起清掉。
   // 注意它只是 `reviewTraceRef` 的一份**渲染副本** —— 留档仍只由 ref 在归档那一刻提交。
   const [reviewTracePanel,setReviewTracePanel]=useState(null);
+  // 两次对比的「上一次」（US-107b）：本次生成的 `parentTraceId` 命中的那一条已收束轨迹
+  // （可能是**被中止**的那一次 —— 生成中换模型就是这么来的）。没有它时面板不渲染对比区。
+  const [reviewCompareParent,setReviewCompareParent]=useState(null);
+  // 生成中换模型的二次确认（US-107b）：`{ value, message }`。非空时选择器出确认条，
+  // 确认前**一个选择都不改**（当前正文本就还在生成，误触不该把它打断）。
+  const [reviewModelSwitch,setReviewModelSwitch]=useState(null);
   // 本次会话里真正发起过几次模型请求（只读探针，与 data-detail-requests 一起给验证脚本用：
   // 折叠 / 展开不能让它变化 —— 那正是「不重新请求模型」的判据）。
   const [reviewRequests,setReviewRequests]=useState(0);
@@ -834,6 +843,14 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
   // 写本机镜像 + 提交云端。换班 / 换学员 / 换模式 / 新建草稿都要清掉它 ——
   // 留着上一位学员的轨迹会让下一次归档把别人家的点评详情一起交上去。
   const reviewTraceRef=useRef(null);
+  // 正在跑的这一代的账（US-107b）：`{ controller, traceId, parentTraceId }`。
+  // **traceId 在开始生成时就定下来** —— 收束后的轨迹只在 `onTrace` 才拿得到，生成中换模型时
+  // 新轨迹要关联的「上一次」正是还没有收束的这一条，只有这里能给出它的 id。
+  const reviewRunRef=useRef(null);
+  // 已收束轨迹的小账本（US-107b，内存、最多 8 条）：对比区要读「上一次」的模型 / 耗时 / 推理，
+  // 而它可能已经被新一次生成顶掉（生成中换模型时，上一次是**被中止**的那一条）。
+  // 与 `reviewTraceRef` 同一条纪律：不写 localStorage，换上下文整体清空。
+  const reviewTraceArchiveRef=useRef([]);
   // 把「解析出来的默认模板」固化进 frame：面板与后续所有消费点读的都是 activeFrameId 一个来源。
   // `frame` 为空串时才是「跟随默认」——老师手动点过卡片就不会被默认值顶掉。
   useEffect(()=>{if(!frame&&activeFrameId)setFrame(activeFrameId)},[frame,activeFrameId]);
@@ -847,17 +864,50 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
   // 本次点评的模型事实（老师指定 / 池路由命中的 id + 来源 + 回落原因）：请求、轨迹与面板读同一份。
   const reviewModelPlan=reviewModelResolve(reviewModels,{selection:reviewModelChoice,orgId:DEFAULT_ORG_ID});
   /**
-   * 老师选定点评模型（US-107a）：立即生效（下一次生成就用它），并**记住为个人默认**。
+   * 真正把选择落到 state 上（US-107a）：立即生效（下一次生成就用它），并**记住为个人默认**。
    * 本机镜像由 main.jsx 的 persistReviewModelDefaults effect 落盘；云端推一次
    * （`review_model_preferences` 表还没建 → 失败即忽略，只影响跨设备可见）。
    * 「由模型池自动路由」也是一次选择：默认存空串，下次进入照样默认选中它。
    */
-  const selectReviewModel=(value)=>{
+  const applyReviewModelChoice=(value)=>{
     const next=value===REVIEW_MODEL_POOL_ROUTE_ID?'':value;
     setReviewModelPicked(true);
     setReviewModelChoice(next);
     setReviewModelDefaults(current=>withReviewModelDefault(current,currentTeacherName,next));
     void saveRemoteReviewModelDefault({teacherKey:currentTeacherName,modelId:next}).catch(()=>{});
+  };
+  /**
+   * 老师选定点评模型（US-107a 的选择 + US-107b 的「生成中换模型」）：
+   *  - 不在生成中：立即生效（与改造前逐字符相同的行为）；
+   *  - **生成中**：先出二次确认条（验收原文「将重新生成，当前正文会被替换」），
+   *    **确认前一个 state 都不改**（当前生成继续跑，误触不会把正文打断）；
+   *    确认后换模型并立即重启生成，新轨迹用 `parentTraceId` 关联正在跑的这一条。
+   *  - 点当前已选中的那一行 = 什么都没发生（不出确认条，也不重启生成）。
+   */
+  const selectReviewModel=(value)=>{
+    const next=value===REVIEW_MODEL_POOL_ROUTE_ID?'':value;
+    if(next===reviewModelChoice){setReviewModelSwitch(null);return;}
+    if(reviewStream.phase===REVIEW_DETAIL_PHASES.running){
+      const toName=next
+        ?(reviewModelPlan.options.rows.find(row=>row.id===next)?.name||next)
+        :(reviewModelPlan.poolRow?.name||'由模型池自动路由');
+      // 确认条的文案（含验收原话）与目标名都来自 data 层，组件只渲染。
+      setReviewModelSwitch({value:next,targetName:toName,message:reviewModelSwitchConfirmText({fromName:reviewModelPlan.row?.name||reviewModelPlan.modelId,toName})});
+      return;
+    }
+    setReviewModelSwitch(null);
+    applyReviewModelChoice(next);
+  };
+  /** 取消换模型：只收起确认条，当前生成与选择都不动。 */
+  const cancelReviewModelSwitch=()=>setReviewModelSwitch(null);
+  /** 二次确认后：换模型 + **立即重启生成**（本次正文被替换，新轨迹关联上一次）。 */
+  const confirmReviewModelSwitch=()=>{
+    const pending=reviewModelSwitch;
+    setReviewModelSwitch(null);
+    if(!pending) return;
+    applyReviewModelChoice(pending.value);
+    // 把新选择直接传给这一次生成：state 是异步的，等它生效再生成会用到旧模型。
+    void startCloudReview(pending.value);
   };
   // 生成中的秒表（折叠态摘要的「已用时」）：只按 startedAt 推算，不做累加 ——
   // 折叠 / 展开、切步骤回来都不会把已用时算丢或算重。
@@ -2425,15 +2475,24 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
   // 五个维度的正文与「作品观察词」都由这一个调用产出：先让模型读懂画面，再按维度写评语。
   // [US-102] 同一次调用顺手采集推理轨迹（模型 / 耗时 / 用量 / 加载清单 / 提示词 / 推理 / 输出原文），
   // 轨迹只进 `reviewTraceRef`（内存），归档时才提交云端。
-  const startCloudReview=async()=>{
+  // [US-107b] 第一个参数是**本次要用的模型选择**（'' / 'pool-route' / 模型 id）：生成中换模型的
+  // 确认路径把它直接传进来（state 是异步的，等 `reviewModelChoice` 生效再生成会用到旧模型）；
+  // 其余调用方（按钮 `onClick` 会把事件对象当第一个参数传进来）不给字符串 → 按当前选择走。
+  const startCloudReview=async(overrideChoice)=>{
+    const plan=reviewModelResolve(reviewModels,{selection:typeof overrideChoice==='string'?overrideChoice:reviewModelChoice,orgId:DEFAULT_ORG_ID});
     if(mode==='班级反馈'){setToast('班级课程反馈将接入下一段课程目标生成服务');return;}
     if(!media.artwork?.cleanUrl&&!media.artwork?.originalUrl){setToast('请先上传并完成作品处理，再生成点评。');return;}
     // 模型可用性（US-107a）：一个可选模型都没有（全部健康失败 / 未授权 / 额度不足）时不发请求，
     // 给出可读原因 —— 不要拿一个不可用的 id 去撞云端。
-    if(!reviewModelPlan.ok){setToast(`${REVIEW_MODEL_EMPTY_TEXT}${reviewModelPlan.reasonText?`（${reviewModelPlan.reasonText}）`:''}`);return;}
+    if(!plan.ok){setToast(`${REVIEW_MODEL_EMPTY_TEXT}${plan.reasonText?`（${plan.reasonText}）`:''}`);return;}
     reviewAbort.current?.abort();
     const controller=new AbortController();
     reviewAbort.current=controller;
+    // 本次运行的账（US-107b）：**traceId 现在就定下来**（种子里带给轨迹），于是「生成中换模型」
+    // 能拿正在跑的这条做父轨迹；`parentTraceId` 指向上一次生成（换模型或重新生成都算）。
+    const runTraceId=makeReviewTraceId();
+    const parentTraceId=reviewRunRef.current?.traceId||reviewTraceRef.current?.traceId||'';
+    reviewRunRef.current={controller,traceId:runTraceId,parentTraceId};
     const activeProfile=teacherProfiles.find(item=>item.id===activeProfileId)||teacherProfiles[0]||null;
     setReviewState('processing');
     setKeywordSuggesting(true);
@@ -2479,14 +2538,16 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
     // 上一条轨迹的渲染副本立刻作废 —— 面板不能拿上一次的用量/输出冒充本次。
     setReviewPrompt(null);
     setReviewTracePanel(null);
-    // 轨迹种子：谁（学员 id）/ 哪节课 / 上一代轨迹（重新生成时用 parentTraceId 关联）/
+    // 轨迹种子：谁（学员 id）/ 哪节课 / **本次的 traceId**（US-107b：生成中就定下来，供下一次关联）/
+    // 上一代轨迹（换模型与重新生成都用 parentTraceId 关联上一次）/
     // 附件引用（文件 id 与文件名，图片正文由 llmReview 侧只取 hash）/
     // agent 文件（US-105：逐文件行 + 预算摘要；只有真正进提示词的行带正文）。
     const traceSeed={
       task:REVIEW_TRACE_TASKS.artworkReview,
+      traceId:runTraceId,
       studentId:selectedParticipant?.studentId||'',
       lessonId:currentLessonId,
-      parentTraceId:reviewTraceRef.current?.traceId||'',
+      parentTraceId,
       queuedAt:new Date().toISOString(),
       files:agentFileLoad.files,
       agentFiles:agentFileLoad.summary,
@@ -2526,16 +2587,30 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
         keywordCandidates,
         keywordScope,
         // 模型与来源（US-107a）：老师指定 / 模型池路由命中的 id + `teacher-pick` / `pool-route`
-        // 标注，一起进真实请求与推理轨迹（轨迹的 `modelSource`）。
-        model:reviewModelPlan.modelId,
-        modelSource:reviewModelPlan.source,
+        // 标注，一起进真实请求与推理轨迹（轨迹的 `modelSource`）。`plan` 是本次的选择
+        // （US-107b：生成中换模型时它就是刚确认的那个，不等 state 生效）。
+        model:plan.modelId,
+        modelSource:plan.source,
         agentFiles:agentFileLoad,
         signal:controller.signal,
         trace:traceSeed,
         onTrace:(next)=>{
+          // 已收束的轨迹进小账本（US-107b 的对比要读「上一次」；被中止的那一条也在这里）。
+          reviewTraceArchiveRef.current=archiveReviewTraces(reviewTraceArchiveRef.current,next);
+          // 只读调试钩子（与 `window.__xinlehuiReviewTrace` 同一类，供验证脚本做独立重算）：
+          // 已收束轨迹的账本，不参与任何业务判断。
+          if(typeof window!=='undefined') window.__xinlehuiReviewTraces=reviewTraceArchiveRef.current;
+          // 被新一次生成顶掉的那一代（生成中换模型 = 上一代被中止）：settle 时**只补进对比区**，
+          // 绝不能拿它的读数去盖当前面板（否则正被中止的用量/输出会冒充正在跑的这一条）。
+          if(reviewRunRef.current?.controller!==controller){
+            if(reviewRunRef.current?.parentTraceId===next.traceId) setReviewCompareParent(next);
+            return;
+          }
           reviewTraceRef.current=next;
           // 收束副本进 state（面板的用量 / 耗时 / 输出原文以它为准）；留档仍只由 ref 在归档那一刻提交。
           setReviewTracePanel(next);
+          // 两次对比的「上一次」（US-107b）：本次轨迹的 parentTraceId 命中的那一条。
+          setReviewCompareParent(next.parentTraceId?findArchivedTrace(reviewTraceArchiveRef.current,next.parentTraceId):null);
           // 只读调试钩子（与 window.__xinlehuiFeedbackMode 同一类）：验证脚本用它读「本次生成
           // 采到了什么轨迹」，不参与任何业务判断。
           if(typeof window!=='undefined') window.__xinlehuiReviewTrace=next;
@@ -2612,12 +2687,20 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
     void saveRemoteReviewTrace(stored).catch(()=>{});
     return stored;
   };
-  /** 换上下文（换班 / 换学员 / 换模式 / 新建草稿）时作废本次轨迹：它属于上一位孩子的那次生成。 */
+  /**
+   * 换上下文（换班 / 换学员 / 换模式 / 新建草稿）时作废本次轨迹：它属于上一位孩子的那次生成。
+   * US-107b 起一并清掉运行账与小账本、对比区与待确认的换模型条 —— 对比基线也属于那一位孩子，
+   * 拿别人家的上一次来对比比没有更糟。
+   */
   const clearReviewTrace=()=>{
     reviewTraceRef.current=null;
+    reviewRunRef.current=null;
+    reviewTraceArchiveRef.current=[];
     setReviewTracePanel(null);
+    setReviewCompareParent(null);
+    setReviewModelSwitch(null);
     setReviewPrompt(null);
-    if(typeof window!=='undefined') window.__xinlehuiReviewTrace=null;
+    if(typeof window!=='undefined'){window.__xinlehuiReviewTrace=null;window.__xinlehuiReviewTraces=[];}
   };
   // 第一步的「家长授权状态提示」（US-411 / F-INTAKE-CONSENT-01）。
   // 非阻断：所选学员里有「未完成查看授权」的孩子时提示一句并列出姓名，全部已授权时**不渲染**
@@ -4214,8 +4297,8 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
     <section className="feedback-flow-v2">
       <FlowStepper steps={steps} step={step} flags={[intakeReadiness.ok,hasProcessedArtwork,reviewGenerated,archived]} onGo={go}/>
       <div className="scene-status"><span>当前进行：{steps[step-1][0]}</span><button onClick={()=>go(Math.max(1,step-1))} disabled={step===1}>反馈上一步</button></div>
-      {step===3?<ReviewLaunchPanel profiles={teacherProfiles} skillLibrary={skillLibrary} activeProfileId={activeProfileId} setActiveProfileId={setActiveProfileId} onStart={startCloudReview} onLocalDraft={fillLocalDraft} draftReady={reviewGenerated} localDraftUsed={localDraftUsed} keywordCount={keywords.length} hasArtwork={Boolean(media.artwork?.cleanUrl||media.artwork?.originalUrl)} running={reviewStream.phase===REVIEW_DETAIL_PHASES.running} modelPlan={reviewModelPlan} modelChoice={reviewModelChoice} onChooseModel={selectReviewModel}/>:null}
-      {step===3&&reviewStream.phase!==REVIEW_DETAIL_PHASES.idle&&reviewDetailSurfaceAllowed({surface:REVIEW_DETAIL_SURFACES.teacherFlow,role})?<ReviewDetailPanel stream={reviewStream} loaded={reviewLoaded} prompt={reviewPrompt} trace={reviewTracePanel} model={reviewModelPlan.modelId} modelSource={reviewModelPlan.source} params={REVIEW_MODEL_PARAMS} requests={reviewRequests} student={selectedStudentLabel} lessonDate={lessonDateDots} open={reviewDetailOpen} onToggle={()=>setReviewDetailOpen(value=>!value)} onStart={startCloudReview} onStop={stopCloudReview}/>:null}
+      {step===3?<ReviewLaunchPanel profiles={teacherProfiles} skillLibrary={skillLibrary} activeProfileId={activeProfileId} setActiveProfileId={setActiveProfileId} onStart={startCloudReview} onLocalDraft={fillLocalDraft} draftReady={reviewGenerated} localDraftUsed={localDraftUsed} keywordCount={keywords.length} hasArtwork={Boolean(media.artwork?.cleanUrl||media.artwork?.originalUrl)} running={reviewStream.phase===REVIEW_DETAIL_PHASES.running} modelPlan={reviewModelPlan} modelChoice={reviewModelChoice} onChooseModel={selectReviewModel} switchConfirm={reviewModelSwitch} onConfirmSwitch={confirmReviewModelSwitch} onCancelSwitch={cancelReviewModelSwitch}/>:null}
+      {step===3&&reviewStream.phase!==REVIEW_DETAIL_PHASES.idle&&reviewDetailSurfaceAllowed({surface:REVIEW_DETAIL_SURFACES.teacherFlow,role})?<ReviewDetailPanel stream={reviewStream} loaded={reviewLoaded} prompt={reviewPrompt} trace={reviewTracePanel} compare={reviewCompareParent} model={reviewModelPlan.modelId} modelSource={reviewModelPlan.source} params={REVIEW_MODEL_PARAMS} requests={reviewRequests} student={selectedStudentLabel} lessonDate={lessonDateDots} open={reviewDetailOpen} onToggle={()=>setReviewDetailOpen(value=>!value)} onStart={startCloudReview} onStop={stopCloudReview}/>:null}
       {step===2&&mode==='班级反馈'?<ClassFramingWall artworks={batchUploads.artwork} photos={batchUploads.photo} photoGroups={photoGroups} writeBackKeyOf={classArtworkWriteBackKeyOf} onRotate={index=>rotateBatchItem('artwork',index)} onRotatePhotoEntry={uploadId=>rotateUploadEntry('photo',uploadId)}/>:null}
       {step===1?<section className="scene-panel"><div className="scene-heading"><span>第一步</span><h2>创建课后反馈信息</h2><p>先确定服务对象，再同步收集本节课素材。素材只在本次操作中保留。</p></div>{draftRestored?<div className="intake-draft-restored"><Clock3 size={14}/><div><b>已恢复上次的课次信息；素材需重新选择</b><small>{draftRestoreDetail}</small></div>{pendingTitles.length?<em>已保留 {pendingTitles.length} 个作品名，「学员作品上传位」里重新选择素材后自动填回</em>:null}<button type="button" className="text-link" onClick={()=>setDraftRestored(false)}>知道了</button></div>:null}<div className="feedback-mode"><button className={mode==='个人反馈'?'selected':''} onClick={()=>selectMode('个人反馈')}>个人反馈<small>为一位孩子完成反馈</small></button><button className={mode==='班级反馈'?'selected':''} onClick={()=>selectMode('班级反馈')}>班级反馈<small>批量处理全班素材</small></button></div>{availableClasses.length?<div className="intake-scope"><span>班级范围</span><div className="intake-scope-switch"><button type="button" className={showAllClasses?'':'active'} onClick={()=>selectClassScope(false)}>我带的班（{myClasses.length}）</button><button type="button" className={showAllClasses?'active':''} onClick={()=>selectClassScope(true)}>全部班级（{availableClasses.length}）</button></div><small>当前登录老师：{currentTeacherName}</small></div>:null}{visibleClasses.length?<div className="task-form"><label>选择班级<select value={selectedClassId} onChange={event=>selectClass(event.target.value)}>{visibleClasses.map(item=><option key={item.id} value={item.id}>{item.name}{item.teacher?`（${item.teacher}）`:''}</option>)}</select></label><label>选择学员<select value={mode==='班级反馈'?'__class__':selectedStudentName} disabled={mode==='班级反馈'} onChange={event=>{setSelectedStudentName(event.target.value);setArchived(false);setCurrentRecordId('');clearReviewTrace();setWriteBackAttempt({status:'idle',quality:'',message:''})}}>{mode==='班级反馈'?<option value="__class__">本班全部学员（{classStudents.length}人）</option>:<><option value="">请选择学员</option>{classStudents.map(item=><option key={item.name} value={item.name}>{item.name}</option>)}</>}</select></label>{courseOptions.length?<label>选择课程<select value={activeCourseId} onChange={event=>selectCourse(event.target.value)}>{courseOptions.map(item=><option key={item.courseId} value={item.courseId}>{item.name}{item.courseId===classCourseId?' · 本班课程':''}</option>)}</select></label>:<div className="intake-course-empty"><b>课程库暂时没有可选课程</b><p>{classCourseName?`本班课程「${classCourseName}」不在可选课程里，可能已被停用。`:'课程由机构管理员在「课程库」中维护。'}</p>{role==='admin'?<Button variant="secondary" onClick={()=>navigate('courseLibrary')}>去课程库添加课程</Button>:<small>请联系机构管理员在「课程库」中新增或启用课程。</small>}</div>}{lessonScheduleField}{participantField}{consentNoticeField}{mediaIntakeNotice?<p className="intake-media-notice"><ShieldAlert size={14}/><span>{mediaIntakeNotice}</span></p>:null}</div>:<div className="intake-empty"><Users size={26}/><b>{showAllClasses?'机构里还没有任何班级':'还没有属于你的班级'}</b><p>{showAllClasses?'请先在「学员管理」中新建班级，再回到这里创建课后反馈。':'可以切到「全部班级」确认是否存在其他老师名下的班级，或先去「学员管理」新建班级。'}</p><div className="intake-empty-actions">{showAllClasses?null:<button type="button" className="text-link" onClick={()=>selectClassScope(true)}>查看全部班级</button>}<Button onClick={()=>navigate('classes')}>去学员管理添加班级</Button></div></div>}{mode==='个人反馈'&&selectedClass&&!classStudents.length?<p className="intake-hint">该班级还没有学员，请先在「学员管理」里导入名单，再创建课后反馈。</p>:null}{artworkSlotField}{photoSlotField}{mode==='个人反馈'?<div className="sync-upload"><div className={media.artwork?.url?'has-file':''}><Frame/><b>学员作品 <em>必选</em></b><small>{uploadSummary('artwork')}</small><input ref={artworkInput} type="file" accept="image/jpeg,image/png,image/webp" hidden multiple={mode==='班级反馈'} onChange={e=>readFiles('artwork',e.target.files,e.currentTarget)}/><button onClick={()=>artworkInput.current?.click()}>{media.artwork?.url?'已上传 · 重新选择':'上传作品'}</button></div><div className={media.photo?.url?'has-file':''}><Image/><b>学员照片 <em>选填</em></b><small>{uploadSummary('photo')}</small><input ref={photoInput} type="file" accept="image/jpeg,image/png,image/webp" hidden multiple={mode==='班级反馈'} onChange={e=>readFiles('photo',e.target.files,e.currentTarget)}/><button onClick={()=>photoInput.current?.click()}>{media.photo?.url?'已上传 · 重新选择':'上传照片'}</button></div></div>:null}{lostSessionMedia&&!mediaLostDismissed?<div className="intake-media-lost"><ShieldAlert size={14}/><div><b>上次选择的素材已失效</b><small>作品与课堂照片只在当次会话里有效（只使用会话内 object URL，不写入 localStorage / IndexedDB）。页面刷新或重新进入后，请重新选择原始素材。</small></div><button type="button" className="text-link" onClick={()=>setMediaLostDismissed(true)}>知道了</button></div>:null}<div className="upload-privacy-note"><ShieldCheck size={14}/>{mediaRulesText(UPLOAD_SLOTS_PER_STUDENT)}</div>{intakeReadinessPanel}<div className="scene-actions"><Button variant="secondary" onClick={resetDraft}>新建草稿</Button><Button variant="secondary" icon={Save} disabled={!activeCourseId||lessonSaveState.status==='saving'} onClick={requestLessonSave}>{lessonSaveState.status==='saving'?'保存中…':'保存课次'}</Button><Button icon={ArrowRight} disabled={!intakeReadiness.ok} onClick={()=>go(2)}>进入智能装裱</Button></div></section>:null}
       {step===2?<section className="scene-panel studio-task"><div className="scene-heading"><span>第二步</span><h2>智能装裱</h2><p>先旋转完整原图并确认方向；确认后自动裁掉纸外的桌面、地面与背景，只保留作品本身。装裱方案（画框、卡纸、展签、日期与署名）由管理员在「装裱设置」中统一维护，这里直接选用。</p></div><div className="media-process"><article><div className={`mini-frame uploaded-art${media.artwork?.framedUrl&&!artworkEditor.open?' framed-preview':''}${artworkEditor.open?' is-editing':''}`}>{media.artwork?.url?<><img src={artworkEditor.open?(editorPreview||media.artwork.originalUrl):(media.artwork.framedUrl||media.artwork.cleanUrl||media.artwork.orientedUrl||media.artwork.originalUrl)} alt={artworkEditor.open?'编辑中的旋转稿预览（低分辨率画布）':media.artwork.framedUrl?`已按「${activeFrame?.name||'默认装裱'}」完成装裱的作品`:media.artwork.cleanUrl?'已裁掉纸外背景、只保留作品本身':'等待确认方向的完整原图'}/>{media.artwork?.framedUrl&&!artworkEditor.open?<span className="framed-badge">{activeFrame?.name||'默认装裱'}</span>:null}{artworkEditor.open?<span className="framed-badge editing-badge">编辑中</span>:null}<div className="frame-rotate-controls" aria-label="旋转作品"><button type="button" title="向左旋转 90°" aria-label="向左旋转作品" disabled={artworkEditor.open&&editorPreviewPending} onClick={()=>quickRotateArtwork(-1)}><RotateCcw size={18}/></button><button type="button" title="向右旋转 90°" aria-label="向右旋转作品" disabled={artworkEditor.open&&editorPreviewPending} onClick={()=>quickRotateArtwork(1)}><RotateCw size={18}/></button></div></>:'✺'}</div><div><b>学员作品</b><p>{artworkEditor.open?(editorPreviewPending?'正在生成低分辨率预览…':'编辑中：调整旋转后点「完成编辑」，再按新的方向重新裁剪与装裱。'):framingState==='processing'?(media.artwork?.cleanUrl?'正在按当前装裱方案合成装裱图…':'正在裁掉纸外的桌面与地面，只保留作品本身…'):media.artwork?.framedUrl?`已装裱：${activeFrame?.name||'默认装裱'}。作品只做等比缩放与居中，不裁切主体、不重绘、不调色。`:media.artwork?.cleanUrl?'已完成作品裁剪，正在生成装裱图…':'当前仅显示完整原图；可以先点「编辑作品」把方向摆正，再开始裁剪与装裱。'}</p>{mode==='个人反馈'?artworkEditorField:null}{!media.artwork?.cleanUrl?<button type="button" className="confirm-artwork-button" onClick={startArtworkCleanup} disabled={framingState==='rotating'||framingState==='processing'}>{framingState==='processing'?'正在裁剪作品…':'方向正确，开始裁剪与装裱'}</button>:null}<span className="frame-choice-hint">相框样式在下方「相框样式」面板里挑（缩略图用这幅作品实时渲染）→</span></div></article><article><div className="photo-card">{media.photo?.url?<><img src={media.photo.url} alt="已自然优化的课堂照片" style={{transform:`rotate(${media.photo.rotation||0}deg)`}}/><button type="button" className="frame-rotate-button photo-rotate-button" onClick={rotatePersonalPhoto}><RefreshCw size={16}/>旋转照片</button></>:<img src={pandaMascot} alt="课堂照片占位预览"/>}</div><div><b>学员照片</b><p>{media.photo?.name||'未上传课堂照片，可返回上一步补充。'}</p></div></article></div>{batchFramingPanel}{studioDrawerTrigger('frame')}{frameStylePanel}{overlayPanelTrigger}{overlayDrawerOpen?<div className="lesson-overlay-scrim" data-overlay-scrim="true" onClick={()=>setOverlayDrawerOpen(false)}/>:null}{overlayPanel}{studioDrawerTrigger('save')}{saveImagePanel}{studioDrawer?<div className="studio-drawer-scrim" data-studio-drawer-scrim={studioDrawer} onClick={()=>setStudioDrawer('')}/>:null}{framingPerfPanel}{saveImageSheet}<div className="scene-actions"><Button variant="secondary" onClick={()=>go(1)}>返回创建信息</Button><Button icon={ArrowRight} onClick={()=>go(3)}>进入五维点评</Button></div></section>:null}
@@ -4679,34 +4762,51 @@ function FlowStepper({steps=[],step=1,flags=[],onGo}){
 }
 
 /**
- * 点评模型选择器（[第三步 US-107a] / F-REVIEW-MODEL-01）。
+ * 点评模型选择器（[第三步 US-107a] / F-REVIEW-MODEL-01；生成中换模型见 US-107b）。
  *
  * 选项行、不可选原因、池路由那一行与「本次用哪个模型」的结论全部来自
  * `reviewModelPlan`（`reviewModelResolve()` 的产物）—— 组件不自己过滤、不自己排序、
  * 不自己拼「为什么用不了」的文案（那些都在 `data/reviewModels.js` 里写一次）。
  *
- * 三件事在这里只做呈现：
+ * 四件事在这里只做呈现：
  *  1. 每行显示 名称 / 供应商 / 版本 / 能力标签 / 单价 / 近期 P95 耗时 / 健康状态；
  *  2. 不可用（健康检查失败 / 未授权 / 额度不足）的行**置灰且不可点**，并写明原因；
- *  3. 「由模型池自动路由」是列表里的第一行，池里没有可用模型时同样置灰。
+ *  3. 「由模型池自动路由」是列表里的第一行，池里没有可用模型时同样置灰；
+ *  4. **生成中也能换模型**（US-107b）：行保持可点，点了出二次确认条
+ *     （文案来自 `reviewModelSwitchConfirmText`，含验收原话「将重新生成，当前正文会被替换」），
+ *     确认前选择不变、当前生成继续跑。
  *
  * 只读探针：`data-review-model-option` / `-selectable` / `-reason` / `-health` / `-price` /
  * `-p95` / `-provider` / `-version` / `-caps`（行内读数）+ `data-review-model-selected`、
- * `data-review-model-resolved`（本次实际会用的 id）与 `data-review-model-source`（来源标注）。
+ * `data-review-model-resolved`（本次实际会用的 id）与 `data-review-model-source`（来源标注）+
+ * `data-review-model-running`（生成中标记）与确认条 `data-review-model-switch`（待切换到的 id）/
+ * `-target`（切换文案）/ `-confirm` / `-cancel`。
  */
-function ReviewModelPicker({plan,choice,onChoose,disabled=false}){
+function ReviewModelPicker({plan,choice,onChoose,running=false,switchConfirm=null,onConfirmSwitch,onCancelSwitch}){
   const rows=[...(plan.poolRow?[plan.poolRow]:[]),...(plan.options?.rows||[])];
   // 选中态读 `plan.choice`（本次**实际**会用的那个）：老师上次选的模型已失效时，
   // 高亮应当落在回落后的池路由上，而不是落在那条置灰的行上（原因由下面的回落提示条说明）。
   const selected=plan.choice||choice||REVIEW_MODEL_POOL_ROUTE_ID;
-  return <section className="review-model-picker" data-review-model-picker="true" data-review-model-resolved={plan.modelId||''} data-review-model-source={plan.source||''} data-review-model-choice={selected}>
+  return <section className="review-model-picker" data-review-model-picker="true" data-review-model-resolved={plan.modelId||''} data-review-model-source={plan.source||''} data-review-model-choice={selected} data-review-model-running={running?'true':'false'}>
     <div className="review-model-head">
       <b>点评视觉模型</b>
       <small data-review-model-summary="true">{plan.options?.summaryText||''}</small>
     </div>
     <p className="review-model-note">{plan.options?.note||''}</p>
+    {/* 生成中换模型的二次确认条（US-107b）：确认前一个选择都不改，当前正文继续生成。 */}
+    {switchConfirm?<div className="review-model-switch" data-review-model-switch={switchConfirm.value||REVIEW_MODEL_POOL_ROUTE_ID} data-review-model-switch-name={switchConfirm.targetName||''}>
+      <CircleAlert size={14}/>
+      <div>
+        <b data-review-model-switch-text="true">{switchConfirm.message}</b>
+        <small>确认会立刻停掉当前这一次生成并重新开始；已经收到的正文会被新的这一次替换。</small>
+      </div>
+      <span className="review-model-switch-actions">
+        <button type="button" data-review-model-switch-confirm="true" onClick={onConfirmSwitch}>{REVIEW_MODEL_SWITCH_CONFIRM_ACTION}</button>
+        <button type="button" className="muted" data-review-model-switch-cancel="true" onClick={onCancelSwitch}>{REVIEW_MODEL_SWITCH_CANCEL_ACTION}</button>
+      </span>
+    </div>:null}
     <div className="review-model-list" role="radiogroup" aria-label="点评视觉模型">
-      {rows.map(row=><button key={row.id} type="button" role="radio" aria-checked={selected===row.id} disabled={disabled||!row.selectable}
+      {rows.map(row=><button key={row.id} type="button" role="radio" aria-checked={selected===row.id} disabled={!row.selectable}
         className={`review-model-option${selected===row.id?' is-selected':''}${row.selectable?'':' is-disabled'}`}
         data-review-model-option={row.id} data-review-model-selectable={row.selectable?'true':'false'}
         data-review-model-reason={row.reasonKey} data-review-model-health={row.health||''}
@@ -4730,12 +4830,13 @@ function ReviewModelPicker({plan,choice,onChoose,disabled=false}){
     {(plan.options?.excluded||[]).length?<p className="review-model-excluded" data-review-model-excluded="true">
       另有 {plan.options.excluded.length} 个模型未列出：{plan.options.excluded.map(item=>`${item.name}（${item.reasonText}）`).join('、')}
     </p>:null}
+    {running?<p className="review-model-switch-hint" data-review-model-switch-hint="true">{REVIEW_MODEL_RUNNING_NOTE}</p>:null}
     <p className="review-model-plan" data-review-model-plan={plan.source||''}><Sparkles size={13}/><span>{plan.note||REVIEW_MODEL_EMPTY_TEXT}</span></p>
     {plan.fallbackFrom?<p className="review-model-fallback" data-review-model-fallback={plan.fallbackFrom}>上次选用的模型已不可用，本次按模型池自动路由。保存后可在「本次点评详情」的模型分区看到来源标注 {plan.source}。</p>:null}
   </section>;
 }
 
-function ReviewLaunchPanel({profiles=[],skillLibrary=[],activeProfileId,setActiveProfileId,onStart,onLocalDraft,hasArtwork,draftReady,localDraftUsed,keywordCount,running=false,modelPlan=null,modelChoice='',onChooseModel}){
+function ReviewLaunchPanel({profiles=[],skillLibrary=[],activeProfileId,setActiveProfileId,onStart,onLocalDraft,hasArtwork,draftReady,localDraftUsed,keywordCount,running=false,modelPlan=null,modelChoice='',onChooseModel,switchConfirm=null,onConfirmSwitch,onCancelSwitch}){
   const active=profiles.find(profile=>profile.id===activeProfileId)||profiles[0]||null;
   const skills=resolveSkills(active?.skillKeys,skillLibrary,active?.skills);
   const modelName=modelPlan?.row?.name||modelPlan?.modelId||'—';
@@ -4746,7 +4847,7 @@ function ReviewLaunchPanel({profiles=[],skillLibrary=[],activeProfileId,setActiv
       <p>一次生成会同时完成两件事：识别画面内容并自动勾选作品观察词，再按五个维度写下评语。人设、{skills.length} 项技能与长期记忆一起加载，单次约 20 秒，可随时停止。</p>
     </div>
     <PersonaPicker profiles={profiles} activeProfileId={activeProfileId} setActiveProfileId={setActiveProfileId} disabled={running}/>
-    {modelPlan?<ReviewModelPicker plan={modelPlan} choice={modelChoice} onChoose={onChooseModel} disabled={running}/>:null}
+    {modelPlan?<ReviewModelPicker plan={modelPlan} choice={modelChoice} onChoose={onChooseModel} running={running} switchConfirm={switchConfirm} onConfirmSwitch={onConfirmSwitch} onCancelSwitch={onCancelSwitch}/>:null}
     {active?<div className="persona-loaded">
       <div><b>已加载人设</b><span>{[active.name,active.roleLabel,active.campus].filter(Boolean).join(' · ')}</span></div>
       <div><b>长期记忆</b><span>{active.memory?`${active.memory.slice(0,46)}${active.memory.length>46?'…':''}`:'未填写'}</span></div>
@@ -4775,8 +4876,11 @@ function ReviewLaunchPanel({profiles=[],skillLibrary=[],activeProfileId,setActiv
  *  4. **六个分区只读一份载荷**（`reviewDetailPayload`）：推理过程 / 加载清单 / 提示词 / 模型与参数 /
  *     用量与耗时 / 输出原文；「复制全部」与「导出 JSON / Markdown」渲染的是同一份载荷，
  *     所以界面上看到的与导出文件里写的永远一致（素材正文与图片 base64 都进不来）。
+ *  5. **两次对比是六个分区之外的一块**（[US-107b]）：`parentTraceId` 关联的上一次 vs 本次的
+ *     模型 / 耗时 / 推理（`data/reviewTraceCompare.js` 的产物），只在确有上一次时渲染 ——
+ *     它不进 `payload.sections`，所以六个分区与「复制全部 / 导出」的口径一字不变。
  */
-function ReviewDetailPanel({stream,loaded,prompt,trace,model,modelSource='',params,requests,student,lessonDate,open,onToggle,onStart,onStop}){
+function ReviewDetailPanel({stream,loaded,prompt,trace,compare=null,model,modelSource='',params,requests,student,lessonDate,open,onToggle,onStart,onStop}){
   const running=stream.phase===REVIEW_DETAIL_PHASES.running;
   const phase=stream.phase;
   // 轨迹收束后以它为准（真正发出去的提示词、模型返回的用量与输出原文都在里面）；
@@ -4814,7 +4918,10 @@ function ReviewDetailPanel({stream,loaded,prompt,trace,model,modelSource='',para
   });
   const sectionOf=key=>payload.sections.find(item=>item.key===key)||{};
   const loadedSection=sectionOf('loaded');
-  const promptSection=sectionOf('prompt');
+  // 两次对比（US-107b）：`compare` 是本次轨迹 `parentTraceId` 指到的那条**收束**轨迹；
+  // 本次还没收束就用 `stream` 的流式读数当对照侧（耗时与推理字数照样实时可比）。
+  // 结果为空 = 还没有可对比的上一次 → 这一块整体不渲染（空表不如不出现）。
+  const compareView=reviewTraceCompare({parent:compare,current:trace,live:stream,model,modelSource});  const promptSection=sectionOf('prompt');
   const modelSection=sectionOf('model');
   const usageSection=sectionOf('usage');
   const outputSection=sectionOf('output');
@@ -4966,6 +5073,37 @@ function ReviewDetailPanel({stream,loaded,prompt,trace,model,modelSource='',para
           {(modelSection.params||[]).map(row=><li key={row.key} data-detail-param={row.key}><b>{row.label}</b><span>{row.value}</span></li>)}
         </ul>
       </section>
+
+      {/* 两次对比（US-107b）：换模型 / 重新生成后，新轨迹用 parentTraceId 关联上一次，
+          这一块把两次的模型、耗时与推理并排读出来（不做 diff 视图，见 PRD 开放问题 Q9）。 */}
+      {compareView?<section className="review-detail-compare" data-detail-compare="true" data-compare-parent-trace={compareView.parentTraceId} data-compare-current-trace={compareView.currentTraceId} data-compare-live={compareView.live?'true':'false'} data-compare-model-changed={compareView.modelChanged?'true':'false'}>
+        <div className="review-detail-block-head">
+          <b>{compareView.title}</b>
+          <small data-compare-summary="true">{compareView.summaryText}</small>
+        </div>
+        <p className="review-detail-compare-note" data-compare-note="true">{compareView.note}</p>
+        <table className="review-detail-compare-table">
+          <thead><tr><th>指标</th><th>上一次</th><th>本次</th><th>差值</th></tr></thead>
+          <tbody data-compare-rows="true">
+            {compareView.rows.map(row=><tr key={row.key} data-compare-row={row.key} data-compare-parent={row.parentText} data-compare-current={row.currentText} data-compare-delta={row.deltaText} className={row.changed?'is-changed':''}>
+              <th scope="row">{row.label}</th>
+              <td>{row.parentText}</td>
+              <td>{row.currentText}</td>
+              <td>{row.deltaText||'—'}</td>
+            </tr>)}
+          </tbody>
+        </table>
+        <div className="review-detail-compare-reasoning" data-compare-reasoning="true" data-compare-reasoning-parent-chars={compareView.reasoning.parentChars} data-compare-reasoning-current-chars={compareView.reasoning.currentChars} data-compare-reasoning-prefix={compareView.reasoning.commonPrefixChars} data-compare-reasoning-identical={compareView.reasoning.identical?'true':'false'}>
+          <div className="review-detail-block-head">
+            <b>推理对照</b>
+            <small data-compare-reasoning-text="true">{compareView.reasoning.text}</small>
+          </div>
+          <ul className="review-detail-rows">
+            <li data-compare-reasoning-parent-excerpt="true"><b>上一次开头</b><span>{compareView.reasoning.parentExcerpt||'（没有推理增量）'}</span></li>
+            <li data-compare-reasoning-current-excerpt="true"><b>本次开头</b><span>{compareView.reasoning.currentExcerpt||'（还没有推理增量）'}</span></li>
+          </ul>
+        </div>
+      </section>:null}
 
       <section className="review-detail-section" data-detail-section="usage">
         <div className="review-detail-block-head">

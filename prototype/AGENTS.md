@@ -1666,8 +1666,63 @@ DOM/canvas 部分在 `src/services/artworkWriteBack.js`，编排在 `main.jsx` �
   （US-102 那份脚本里的 `.review-stream-actions` 是 US-103a 重构前的旧选择器，跑之前要换成
   `.review-detail-actions`）；截图 183 / 183b / 184~188 留档。
 
+## 第三步「五维点评」的生成中换模型与两次对比（US-107b / F-REVIEW-MODEL-01）
+
+老师看到正文不对可以**生成中换模型**，也可以重新生成；两种都会产生**新轨迹**，新轨迹用
+`parentTraceId` 关联上一次，详情面板里可以把两次的**模型 / 耗时 / 推理**放在一起看。
+领域规则（对比行、差值文案、推理对照、内存小账本）全在 `src/data/reviewTraceCompare.js`（零依赖纯函数），
+确认文案在 `src/data/reviewModels.js` —— 组件只渲染它们的产物。
+
+- **选择器的三个分支**（`selectReviewModel`）：不在生成中 → 立即生效（US-107a 的老行为）；
+  **生成中** → 出二次确认条（`reviewModelSwitch = { value, targetName, message }`，文案含验收原话
+  「将重新生成，当前正文会被替换」），**确认前一个 state 都不改、当前生成继续跑**；
+  点当前已选中的那一行 → 什么都不做（不出确认条也不重启）。确认走 `confirmReviewModelSwitch`：
+  `applyReviewModelChoice` + `startCloudReview(pending.value)`。
+- **`startCloudReview(overrideChoice)` 的第一个参数**：确认路径把新选择**直接传进来**（state 是异步的，
+  等 `reviewModelChoice` 生效再生成会用到旧模型）。按钮 `onClick` 会把事件对象当第一个参数传进来，
+  所以入口用 `typeof overrideChoice==='string'` 守卫 —— 改这个签名时别把这个守卫删了。
+- **`parentTraceId` 靠两个东西才拿得到**：① `reviewRunRef = { controller, traceId, parentTraceId }` ——
+  **traceId 在开始生成时就定下来**（种子里 `traceId: runTraceId` 交给 `createReviewTrace`），
+  因为收束后的轨迹只在 `onTrace` 才拿得到，而「生成中换模型」要关联的正是还没收束的那一条；
+  ② `reviewTraceArchiveRef` 内存小账本（≤8 条，`archiveReviewTraces` / `findArchivedTrace`）——
+  上一次的轨迹可能已被新一次生成顶掉（此时它是 `aborted` 的那一条，模型 / 耗时 / 推理照样齐全）。
+  两者都只驻留内存、不写 localStorage，换上下文（换班 / 换学员 / 换模式 / 新建草稿）一起清空。
+- **`onTrace` 必须判断「我是不是当前那一代」**：被新一次生成顶掉的旧请求 settle 时，
+  只能把它补进对比区（`reviewRunRef.current?.parentTraceId === next.traceId` 时 `setReviewCompareParent`），
+  **绝不能**写 `reviewTraceRef` / `setReviewTracePanel` —— 否则被中止那一次的耗时与输出会盖住正在跑的这一条。
+- **对比区是六个分区之外的第七块**（`[data-detail-compare]`，在展开的面板主体里）：它**不进**
+  `payload.sections`，所以 `data-detail-sections` 仍是 6、六个分区与「复制全部 / 导出」的口径一字不变；
+  没有可对比的上一次时整块不渲染（空表不如不出现）。探针：`data-compare-parent-trace` /
+  `-current-trace` / `-live` / `-model-changed` / `[data-compare-summary]` / `[data-compare-row="<key>"]`
+  （`-parent` / `-current` / `-delta`）/ `[data-compare-reasoning-*]`。
+  只读调试钩子 `window.__xinlehuiReviewTraces`（已收束轨迹的账本）与 `window.__xinlehuiReviewTrace`
+  同一类，供验证脚本做**独立重算**。
+- **确认条探针**：`[data-review-model-switch]`（待切换到的 id，池路由写 `pool-route`）/ `-name` /
+  `-text` / `-confirm` / `-cancel` / `[data-review-model-switch-hint]`（生成中的提示）/
+  选择器上的 `data-review-model-running`。
+- 验证方式（本轮实测）：Node 直跑 `data/reviewTraceCompare.js` + 文案/轨迹/服务层 **93 项**断言全绿；
+  浏览器（headless Chrome + CDP，替身云端 LLM 支持 abort）**63 项**全绿、0 异常 ——
+  确认前「一个请求都不多发 / 选择不变 / 生成继续」、取消后照样跑完、确认后立即重启（替身收到新模型）、
+  新轨迹 `traceId` 不同且 `parentTraceId` = 上一次（aborted）、对比区 DOM 与 `reviewTraceCompare()`
+  **逐项独立重算一致**、没换模型时写「未换」、390px 面板 / 对比块 / 确认条都不横向滚、换学员后基线清空；
+  回归 US-103a 浏览器 52、US-103b 浏览器 51 全绿；**US-107a 的浏览器套件有 1 项被本故事取代**
+  （「生成中选项不可点（避免误触换模型）」→ 现在是「可点 + 二次确认」），跑那份脚本时会红这一条；
+  截图 189~194 留档。
+
 ## 容易踩的坑
 
+- **`<table>` 会撑宽 grid 父容器**（US-107b 真踩）：`width: 100%` + `table-layout: fixed` + 单元格
+  `overflow-wrap: anywhere` 都不够 —— 表格的 `min-width: auto` 在 Chrome 里给出一个**与内容无关的宽下限**
+  （本轮实测空表也是 880px），而 grid item 的自动最小尺寸会把这个下限传给轨道，于是 390px 下面板
+  `scrollWidth` 溢出 582px（页面不横向滚、面板内部被裁，肉眼容易漏掉）。
+  修法：表格显式 `min-width: 0`。同类：`white-space: nowrap` 的文本片段（本轮推理开头片段）也会贡献
+  min-content 把容器撑到 600px+，窄屏要么允许折行、要么给块级容器 `overflow: hidden`。
+  **验证时量的是 `panel.scrollWidth - panel.clientWidth`**（不是 `document.scrollWidth`）—— 后者是 0 也照样有问题。
+- **`window.__xinlehuiReviewTrace` 在「新一次生成本身」不会清空**（US-107b 真踩）：它是上一次 `onTrace` 写下的
+  收束轨迹，于是脚本里「等本次收束」的判据 `window.__xinlehuiReviewTrace.status!=='running'` 会**立刻返回上一次的结果**
+  —— 本轮两个探针都被它骗过（误判「parentTraceId 是空的」「对比区没渲染」，其实只是读早了）。
+  可靠信号：等 `(window.__xinlehuiReviewTraces||[]).length === N`（账本每次 settle 都会加），
+  或者先记下本次开跑前的 traceId 再比。
 - **写接口抛错时「await 之后就没了」**：`save<X>/create<X>/update<X>` 是「先写本地镜像再推云端」，
   云端不通时 `unwrap` 会 **throw**，于是 `const saved = await create<X>(...)` 后面的每一行都不会执行 ——
   既拿不到返回值，也来不及记住新记录的 id、把 `saved` 并进 state。三条纪律：

@@ -87,6 +87,23 @@ export const REVIEW_MODEL_EMPTY_TEXT = '当前没有可用的点评模型，请�
 export const REVIEW_MODEL_POOL_ROUTE_NOTE = '按模型池优先级与健康状态自动挑一个可用模型，适合课前不想挑模型的场景。';
 
 /**
+ * 生成中换模型的提示与二次确认（[第三步 US-107b]）。
+ * 生成中换模型是**允许**的（老师可能看到正文不对就想换一个），但必须二次确认 ——
+ * 它会中止当前生成、用新模型重新生成，当前正文会被替换。文案的唯一真源在这里：
+ * 确认条、断言与按钮都读它，不要在组件里另写一份（验收原文点名了下面这句话）。
+ */
+export const REVIEW_MODEL_RUNNING_NOTE = '生成中可以换模型：选另一个会先请你确认（将重新生成，当前正文会被替换），确认后立即重启生成。';
+export const REVIEW_MODEL_SWITCH_CONFIRM_ACTION = '确认切换并重新生成';
+export const REVIEW_MODEL_SWITCH_CANCEL_ACTION = '继续当前生成';
+
+/** 二次确认的正文（含验收原话「将重新生成，当前正文会被替换」）。 */
+export function reviewModelSwitchConfirmText({ fromName = '', toName = '' } = {}) {
+  const to = text(toName) || '所选模型';
+  const from = text(fromName);
+  return `${from ? `当前正在用「${from}」生成；切换到「${to}」` : `切换到「${to}」`}将重新生成，当前正文会被替换。确认后立即重启生成，新轨迹会关联上一次，可在「本次点评详情」里对比两次的模型、耗时与推理。`;
+}
+
+/**
  * 种子模型目录（原型阶段的平台侧配置）。
  * 覆盖验收点名的三种不可用原因各一条：
  *  - `glm-4.6v` 健康检查失败（实测调用返回 request_invalid_parameter）；
