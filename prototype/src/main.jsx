@@ -45,7 +45,7 @@ import { ARTWORK_CLEAN_ALGORITHM, createExhibitionFrame, createPortraitPrint, ex
 import { ARTWORK_EDIT_PROTECTIONS, ARTWORK_PREVIEW_SETTLE_MS, ARTWORK_ZOOM_BUTTON_FACTOR, ARTWORK_ZOOM_RANGE, EDIT_PREVIEW_HD_MAX_EDGE, EDIT_PREVIEW_MAX_EDGE, FINE_ROTATION_STEP, artworkEditHistoryState, artworkEditIsDefault, artworkEditSnapshotKey, artworkImageTransform, artworkViewKey, artworkViewSummary, canNudgeArtworkEditRotation, canResetArtworkEdit, canRestoreArtworkFullFrame, canZoomArtworkEdit, createArtworkEdit, createArtworkEditHistory, currentArtworkEdit, fineRotationOf, formatRotationDeg, normalizeArtworkEdit, nudgeArtworkEditRotation, panArtworkEdit, pushArtworkEditHistory, redoArtworkEditHistory, resetArtworkEdit, restoreArtworkFullFrame, rotateArtworkEdit, rotationSummary, undoArtworkEditHistory, wheelZoomFactor, zoomArtworkEdit, zoomLabel } from './data/artworkEdit';
 // 四层地址（原图 / 旋转稿 / 裁剪稿 / 成品图，US-005）：只读层与派生层的清单、地址指纹与写入侧的
 // 「原图只读」守卫都在这里，界面把这份清单显示给老师看（原图不会被任何编辑覆盖）。
-import { ARTWORK_LAYER_KEYS, applyArtworkLayerPatch, artworkLayerEntries, artworkLayerReadyCount, artworkLayerSummary } from './data/artworkLayers';
+import { ARTWORK_LAYER_KEYS, applyArtworkLayerPatch, artworkLayerEntries, artworkLayerReadyCount, artworkLayerSummary, artworkUrlFingerprint } from './data/artworkLayers';
 import { CROP_ASPECT_PRESETS, CROP_BODY_HANDLE, CROP_FREE_ASPECT_ID, CROP_HANDLES, CROP_MIN_RATIO, CROP_SNAP_RATIO, applyCropPreset, cropBoxStyle, cropHandleLabel, cropIsFull, cropRatioText, cropRectOf, cropSizeText, cropSummary, describeCropRules, matchCropPreset, moveCrop, resizeCrop, resolveCropAspect } from './data/artworkCrop';
 import { renderArtworkCrop, renderArtworkRotation, ARTWORK_MANUAL_CROP_ALGORITHM } from './services/artworkEditor';
 import { createEmptyTeacherProfile, loadTeacherProfiles, persistTeacherProfiles } from './data/teacherProfiles';
@@ -60,10 +60,22 @@ import { createEmptyFramingPreset, filterFramingPresetsForViewer, loadFramingPre
 import { deleteRemoteFramingPreset, loadRemoteFramingPresets, saveRemoteFramingPreset } from './services/framingPresetsApi';
 import { DEFAULT_FRAME_SPEC, DATE_FORMATS, DATE_SOURCES, FRAMING_FONT_WHITELIST, SEAL_SHAPES, frameSpecRenderKey, frameSpecView, generateFrameSpec, normalizeFrameSpec, normalizeFrameSpecV2 } from './services/frameSpec';
 import { FRAME_STYLE_COLORS, FRAME_STYLE_MAT_COLORS, FRAME_STYLE_SHAPES, FRAME_STYLE_WIDTHS, applyFrameStyleTweaks, describeFrameStyleSpec, frameStyleTweakCount, frameStyleTweakSummary, normalizeFrameStyleTweaks } from './data/frameStyles';
-import { FRAME_THUMB_CACHE_LIMIT, frameThumbnailKey, renderFrameStyleThumbnail } from './services/frameThumbnails';
+import { FRAME_PREVIEW_LONG_EDGE, FRAME_THUMB_CACHE_LIMIT, frameThumbnailKey, renderFrameStyleThumbnail } from './services/frameThumbnails';
 // 叠加元素的定位与遮挡规则（US-003a/003b/003c）：九宫格枚举、字体白名单、位置中文名、
 // 时间来源与格式、印章形状与「水印遮挡作品主体 15%」的判定全在 overlayLayout.js —— 后台面板只负责渲染控件。
-import { DATE_SOURCE_LABELS, ELEMENT_POSITIONS, CUSTOM_ELEMENT_POSITION, overlayPositionLabel } from './services/overlayLayout';
+// US-007 的老师端面板还从同一份取变量清单（变量替换的唯一真源）与时间元素的解析函数。
+import { CUSTOM_ELEMENT_POSITION, DATE_SOURCE_LABELS, ELEMENT_POSITIONS, OVERLAY_VARIABLES, applyOverlayVariables, overlayPositionLabel, resolveOverlayDateText, resolveElementAnchor } from './services/overlayLayout';
+// 水印 · 落款 · 时间面板（US-007）：老师端「本次选用」的一层补丁、课次上下文默认值、
+// 九宫格拖动微调的换算与面板选项表全在 data/lessonOverlays.js（规则一处定义，界面只渲染控件）。
+import {
+  OVERLAY_ELEMENT_SIZE_OPTIONS, OVERLAY_FONT_SIZE_OPTIONS, OVERLAY_OFFSET_RESET, OVERLAY_OFFSET_RANGE_TEXT,
+  OVERLAY_OPACITY_OPTIONS, OVERLAY_SECTIONS, OVERLAY_SEAL_SHAPE_OPTIONS, OVERLAY_SIGNATURE_MODE_OPTIONS,
+  OVERLAY_TEXT_COLORS, WATERMARK_KINDS, applyOverlayOverrides, buildOverlayOverrides, normalizeOverlayTweaks,
+  overlayDefaultSignatureName, overlayDragIsActive, overlayDragOffsets, overlayElementBlockerText,
+  overlayElementCanDraw, overlayElementDragDirection, overlayEnabledCount, overlayEnabledSummary, overlayInstanceKey,
+  overlayLessonDateValue, overlayOffsetIsZero, overlayOffsetSummary, overlayPercentText, overlayPositionText,
+  overlayTweakCount, overlayTweakSummary
+} from './data/lessonOverlays';
 // 二维码内容由后台配置（US-003c / FR-23）：目标白名单在 data 层，编码器在 services/qrCode.js
 // （byte 模式、版本 1–10、纠错等级 L/M/Q/H，能力已在成品图上按「能被识别器读回」验证过）。
 import { QR_TARGETS, QR_TARGET_DEFAULT, qrTargetRulesText, qrTargetSummary, resolveQrTargetUrl } from './data/qrTargets';
@@ -464,7 +476,34 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
   // 没有微调时 applyFrameStyleTweaks 原样返回模板 spec —— 老模板的渲染一个像素都不变。
   const [frameTweaks,setFrameTweaks]=useState(()=>normalizeFrameStyleTweaks(null));
   const frameTweaksKey=JSON.stringify(normalizeFrameStyleTweaks(frameTweaks));
-  const effectiveFrameSpec=applyFrameStyleTweaks(activeFrame?.spec||DEFAULT_FRAME_SPEC,frameTweaks);
+  const frameStyleSpec=applyFrameStyleTweaks(activeFrame?.spec||DEFAULT_FRAME_SPEC,frameTweaks);
+  // ---- 水印 · 落款 · 时间面板（US-007）---------------------------------------------
+  // 三区（水印 / 落款 / 时间）的输入都写进 `overlayTweaks` 这一层补丁，再叠到模板 spec 上：
+  //   `overlayGroups`（模板收敛后的分组）→ `buildOverlayOverrides`（把改动合并成完整分组）
+  //   → `applyOverlayOverrides`（叠到 spec）→ `effectiveFrameSpec` → 装裱那一段 effect 重画成品图。
+  // 于是**没有「应用」按钮**：改一下参数，右侧成品预览（`media.artwork.framedUrl`）就跟着重画。
+  // 与 US-006 的相框微调同一个口径：不写回模板、不进草稿（US-409 的字段清单是硬约束），
+  // 没有改动时 `applyOverlayOverrides` 原样返回输入 —— 老 v1 模板的渲染逐像素不变。
+  const [overlayTweaks,setOverlayTweaks]=useState(()=>normalizeOverlayTweaks(null));
+  const [overlayDrawerOpen,setOverlayDrawerOpen]=useState(false);
+  const [overlayAssetBusy,setOverlayAssetBusy]=useState('');
+  // 素材上传的错误文案按**哪一支**记（Logo 与签名图共用一套准入规则，但提示要落在出问题的那张卡上）。
+  const [overlayAssetError,setOverlayAssetError]=useState({kind:'',message:''});
+  // 班级反馈没有单幅「当前作品」，面板的成品预览退化为第一幅已上传作品的实时渲染（与 US-006 缩略图同一口径）。
+  const [overlayPreview,setOverlayPreview]=useState('');
+  const [overlayPreviewError,setOverlayPreviewError]=useState('');
+  const overlayLogoInput=useRef(null);
+  const overlaySignatureInput=useRef(null);
+  const frameGroups=normalizeFrameSpecV2(frameStyleSpec);
+  const overlayOverrides=buildOverlayOverrides(frameGroups,overlayTweaks);
+  const effectiveFrameSpec=applyOverlayOverrides(frameStyleSpec,overlayOverrides);
+  // 面板上的每个控件读的都是「模板 + 本次改动」收敛后的分组（与渲染层同一条路径，不另算一份）。
+  const overlayGroups=overlayOverrides?normalizeFrameSpecV2(effectiveFrameSpec):frameGroups;
+  const overlayTweakSummaryText=overlayTweakSummary(overlayTweaks);
+  const overlayTweakCountValue=overlayTweakCount(overlayTweaks);
+  const overlayEnabledText=overlayEnabledSummary(overlayGroups);
+  const overlayEnabledCountValue=overlayEnabledCount(overlayGroups);
+  const overlayPatchKey=overlayInstanceKey(overlayOverrides);
   const frameTweakSummary=frameStyleTweakSummary(frameTweaks);
   const frameTweakCount=frameStyleTweakCount(frameTweaks);
   // 形状 / 材质色 / 框宽 / 卡纸的「现在是什么」：微调控件的高亮与卡片副标题都读它。
@@ -630,6 +669,18 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
   const lessonTopic=resolveSyllabusTopic(findCourseById(courses,activeCourseId),lessonNoValue||0);
   // 展签、海报与成长档案上的日期都取课次日期（补录上节课时不能显示成今天）。
   const lessonDateDots=formatLessonDateDots(lessonDate);
+  // ---- 叠加元素面板的课次上下文（US-007）-------------------------------------------
+  // 「时间默认值 = 本次课次日期」（第一步的课次信息）与「落款默认值 = 当前登录老师姓名」。
+  // 时间元素的 lesson 来源与 {课次日期} 变量读的就是 lessonDateDots（渲染时经 `lessonDate` 入参传入，
+  // 与展签日期 `date` 分开：US-038 会把展签也改成课次日期，在那之前两个入口各管一件事）。
+  const overlayLessonDate=overlayLessonDateValue(lessonDate);
+  const overlaySignatureDefaultName=overlayDefaultSignatureName(currentTeacherName);
+  // 面板上「渲染为 …」这一行的变量上下文（与渲染层同一份替换规则，只是提前给老师看）。
+  const overlayVariableContext={orgName:DEFAULT_ORG_NAME,studentName:selectedStudentLabel==='未选择学员'?'':selectedStudentLabel,workTitle:activeFrame?.plaqueTitle||'',teacherName:currentTeacherName,lessonDate:lessonDateDots};
+  // 二维码目标的占位符取值：归档流程才拿得到 shareToken，面板里没有真值时由 qrTargets.js
+  // 填示例值并标「示例链接」（FR-23 的口径，面板必须显式说明）。
+  const overlayQrContext={orgId:DEFAULT_ORG_ID,courseId:activeCourseId||''};
+  const overlayRenderDateText=resolveOverlayDateText({element:overlayGroups.date,context:{lessonDate:lessonDateDots}});
   // 推荐值 = 该班该课程已归档课次数 + 1（US-403/US-404 的规则）；没手改过就一直跟随。
   useEffect(()=>{
     if(lessonNoDirty) return;
@@ -1034,7 +1085,9 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
     const plaque=framePlaque();
     // 叠加元素的变量上下文（US-003a）：机构名与老师姓名是会话常量，学员名/作品名/课次日期来自展签。
     // 它们会影响renderFramedArtwork的输出，所以必须一起进framedStyle缓存键，否则换学员不会重渲染。
-    const styleKey=JSON.stringify([activeFrameSpecKey,plaque.student,plaque.title,plaque.date,currentTeacherName,DEFAULT_ORG_NAME]);
+    // US-007 起 `lessonDate`（本次课次日期）是时间元素 lesson 来源的正身，同样进键 ——
+    // 少一项的后果是「改了课次日期，成品图上的时间还是旧的那一天」。
+    const styleKey=JSON.stringify([activeFrameSpecKey,plaque.student,plaque.title,plaque.date,lessonDateDots,currentTeacherName,DEFAULT_ORG_NAME]);
     if(media.artwork?.framedStyle===styleKey&&media.artwork?.framedUrl) return;
     let cancelled=false;
     renderFramedArtwork({
@@ -1043,6 +1096,7 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
       student:plaque.student,
       title:plaque.title,
       date:plaque.date,
+      lessonDate:lessonDateDots,
       rotation:0,
       orgName:DEFAULT_ORG_NAME,
       teacherName:currentTeacherName
@@ -1052,7 +1106,7 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
       setFramingState('ready');
     }).catch(()=>{if(!cancelled) setFramingState('error')});
     return()=>{cancelled=true};
-  },[step,media.artwork?.cleanUrl,media.artwork?.cleanAlgorithm,media.artwork?.framedStyle,media.artwork?.framedUrl,activeFrameSpecKey,selectedStudentLabel,currentTeacherName]);
+  },[step,media.artwork?.cleanUrl,media.artwork?.cleanAlgorithm,media.artwork?.framedStyle,media.artwork?.framedUrl,activeFrameSpecKey,selectedStudentLabel,currentTeacherName,lessonDateDots]);
   // ---- 相框样式缩略图（US-006）-----------------------------------------------------
   // 「缩略图用当前作品实时渲染」：个人反馈用画心（裁剪稿）当作品底图；班级反馈没有单幅「当前作品」，
   // 退化为第一幅已上传作品（这条口径写在进度日志里，US-010 的班级批量套用会接手）。
@@ -1102,6 +1156,121 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
     setFrameTweaks(normalizeFrameStyleTweaks(null));
     setToast('已重置相框微调，回到模板本身的样式');
   };
+  // ---- 水印 · 落款 · 时间面板（US-007）的写入与素材上传 -----------------------------
+  // 三区各自的写入都走同一条路：先把「当前分组」（模板 + 本次改动收敛后的值）复制一份，
+  // 再把这次改的字段并进去 —— 于是「只改位置」不会把同组其它字段掉回默认值。
+  const applyWatermarkTweak=(kind,patch)=>setOverlayTweaks(current=>{
+    const next=normalizeOverlayTweaks(current);
+    next.watermark[kind]={...next.watermark[kind],...patch};
+    return next;
+  });
+  const applySignatureTweak=(patch,sealPatch)=>setOverlayTweaks(current=>{
+    const next=normalizeOverlayTweaks(current);
+    const merged={...next.signature,...patch};
+    if(sealPatch) merged.seal={...(next.signature.seal||{}),...sealPatch};
+    next.signature=merged;
+    return next;
+  });
+  const applyDateTweak=(patch)=>setOverlayTweaks(current=>{
+    const next=normalizeOverlayTweaks(current);
+    next.date={...next.date,...patch};
+    return next;
+  });
+  const resetOverlayTweaks=()=>{
+    if(!overlayTweakCountValue) return;
+    setOverlayTweaks(normalizeOverlayTweaks(null));
+    setOverlayAssetError({kind:'',message:''});
+    setToast('已恢复模板本身的叠加元素设置');
+  };
+  // 五支叠加元素的描述表：控件只认它（label / 收敛后的现值 / 本次改过的原值 / 写入函数）。
+  // 「本次改过的原值优先于收敛值」是**受控输入框的硬要求**：只显示收敛值会让数字框没法正常输入
+  // （沿 US-003b 后台面板的口径）；这里多数控件是「档」按钮与下拉，取原值只是为了让读文案与断言一致。
+  const overlayRawValue=(tweak,field,fallback)=>tweak&&tweak[field]!==undefined?tweak[field]:fallback;
+  const overlayElementCards=[
+    {section:'watermark',kind:'logo',label:'机构 Logo',group:overlayGroups.watermark.logo,
+      patch:patch=>applyWatermarkTweak('logo',patch),tweak:overlayTweaks.watermark.logo},
+    {section:'watermark',kind:'text',label:'文字水印',group:overlayGroups.watermark.text,
+      patch:patch=>applyWatermarkTweak('text',patch),tweak:overlayTweaks.watermark.text},
+    {section:'watermark',kind:'qr',label:'二维码',group:overlayGroups.watermark.qr,
+      patch:patch=>applyWatermarkTweak('qr',patch),tweak:overlayTweaks.watermark.qr},
+    {section:'signature',kind:'signature',label:'落款',group:overlayGroups.signature,
+      patch:patch=>applySignatureTweak(patch),tweak:overlayTweaks.signature},
+    {section:'date',kind:'date',label:'时间',group:overlayGroups.date,
+      patch:patch=>applyDateTweak(patch),tweak:overlayTweaks.date}
+  ];
+  const overlayCardOf=(kind)=>overlayElementCards.find(item=>item.kind===kind);
+  // 点击格子即定位：元素当前关着、但开启后确实画得出来（有 Logo / 有内容）时，顺手把它打开 ——
+  // 「点完格子什么都没变」比「多开了一盏灯」更像是坏掉了（画不出来的情况仍只定位不开启，并给出原因）。
+  const selectOverlayPosition=(card,position)=>{
+    const next={...card.group,position};
+    card.patch(card.group.visible!==true&&overlayElementCanDraw(card.kind,next)?{position,visible:true}:{position});
+  };
+  // 上传准入与后台完全同一套（PNG/JPG、≤512×512、≤200KB，超限给出可读文案）：规则在 data 层，
+  // 这里只做「读文件 → 校验 → 写进 spec」的编排。机构 Logo / 手写签名图是机构与老师自己的资产，
+  // 不受「儿童素材不进浏览器存储」那条限制（那条只管课上拍的儿童作品与照片）。
+  const uploadOverlayAsset=async(kind,file)=>{
+    if(!file) return;
+    setOverlayAssetBusy(kind);
+    setOverlayAssetError({kind:'',message:''});
+    try{
+      const result=await readFramingAsset(file);
+      if(!result.ok){setOverlayAssetError({kind,message:result.message});setToast(result.message);return}
+      if(kind==='logo') applyWatermarkTweak('logo',{url:result.asset.url,visible:true});
+      else applySignatureTweak({mode:'image',imageUrl:result.asset.url,visible:true});
+      setToast(`已上传${kind==='logo'?'机构 Logo':'手写签名图'}（${framingAssetSummary(result.asset)}），右侧成品预览已更新`);
+    }finally{setOverlayAssetBusy('')}
+  };
+  const removeOverlayAsset=(kind)=>{
+    setOverlayAssetError({kind:'',message:''});
+    if(kind==='logo') applyWatermarkTweak('logo',{url:'',visible:false});
+    else applySignatureTweak({mode:'text',imageUrl:''});
+    setToast(kind==='logo'?'已移除机构 Logo':'已移除手写签名图，落款回到文字模式');
+  };
+  // 时间来源切到「手动填写」时，手填值默认就是本次课次日期（换来源不丢上下文）；清空则交回老师。
+  const changeDateSource=(source)=>applyDateTweak(source==='manual'
+    ?{source,manualValue:overlayRawValue(overlayTweaks.date,'manualValue',overlayGroups.date.manualValue)||overlayLessonDate}
+    :{source});
+  // 手填日期的输入框是 <input type=date>（只认 YYYY-MM-DD）；spec 里允许写 2026.08.04 这种口径，
+  // 也允许「上周三」这类人类说法（渲染层原样输出）。认不出的值这里显示为空 —— 但「渲染为 …」那一行
+  // 会如实显示真正画上去的文字，老师不会以为它丢了。
+  const manualDateInputValue=(value)=>{
+    const normalized=String(value??'').trim().replace(/[/.]/g,'-');
+    return /^\d{4}-\d{2}-\d{2}$/.test(normalized)?normalized:'';
+  };
+  // 「渲染为 …」：文字类元素用**与绘制层同一个**变量替换 / 时间解析函数，二维码用目标解析（FR-23）。
+  const overlayRenderTextOf=(template)=>applyOverlayVariables(template||'',overlayVariableContext).text;
+  const overlayDateRenderText=overlayRenderDateText?overlayRenderDateText.text:'';
+  // 成品预览跟着**当前模式的对象**走：
+  //   - 个人反馈：`media.artwork.framedUrl` —— 就是右侧作品区那张成品图（同一条渲染流水线，零额外开销）；
+  //   - 班级反馈：没有单幅「当前作品」，退化为第一幅已上传作品的实时渲染（与 US-006 的缩略图同一口径、
+  //     同一个缓存键函数 / 同一个缓存）。个人模式留下的 media 不会串到班级模式 —— 预览看的是本模式的对象。
+  const overlayUsesClassPreview=mode!=='个人反馈';
+  const overlayPreviewSource=overlayUsesClassPreview?(batchUploads.artwork[0]?.url||''):(media.artwork?.cleanUrl||'');
+  const overlayPreviewRef={student:frameThumbStudent,title:frameThumbTitle,date:frameThumbDate,lessonDate:lessonDateDots};
+  const overlayPreviewKey=overlayPreviewSource
+    ?frameThumbnailKey({spec:effectiveFrameSpec,source:overlayPreviewSource,...overlayPreviewRef,orgName:DEFAULT_ORG_NAME,teacherName:currentTeacherName})
+    :'';
+  useEffect(()=>{
+    if(step!==2||!overlayUsesClassPreview||!overlayPreviewSource||artworkEditor.open||!overlayPreviewKey) return undefined;
+    let cancelled=false;
+    const cached=frameThumbCacheRef.current.get(overlayPreviewKey);
+    if(cached){setOverlayPreview(cached);setOverlayPreviewError('');return undefined}
+    (async()=>{
+      try{
+        const url=await renderFrameStyleThumbnail({source:overlayPreviewSource,spec:effectiveFrameSpec,...overlayPreviewRef,orgName:DEFAULT_ORG_NAME,teacherName:currentTeacherName,maxEdge:FRAME_PREVIEW_LONG_EDGE});
+        if(cancelled) return;
+        if(frameThumbCacheRef.current.size<FRAME_THUMB_CACHE_LIMIT) frameThumbCacheRef.current.set(overlayPreviewKey,url);
+        setOverlayPreview(url);
+        setOverlayPreviewError('');
+      }catch(error){if(!cancelled) setOverlayPreviewError(String(error?.message||'预览暂时渲染不出来'))}
+    })();
+    return ()=>{cancelled=true};
+  },[step,overlayUsesClassPreview,overlayPreviewSource,overlayPreviewKey,artworkEditor.open]);
+  // 预览状态：个人模式看成品图（framedUrl → 已就绪，只有画心 → 正在装裱），班级模式看上面那张实时渲染的进展。
+  // 失败要显式（沿 US-006 缩略图的教训）：面板上要说一句，老师才知道是预览坏了而不是自己没设置。
+  const overlayPreviewState=overlayUsesClassPreview
+    ?(overlayPreview?'ready':(overlayPreviewError?'error':(overlayPreviewKey?'pending':'idle')))
+    :(media.artwork?.framedUrl?'ready':(media.artwork?.cleanUrl?'pending':'idle'));
   // 编辑态的实时预览（US-004a）：只画「旋转稿」，低分辨率画布（长边 ≤ EDIT_PREVIEW_MAX_EDGE）才跟手；
   // 编辑期间**不跑**上面那两段重活（裁剪 + 装裱），确认后再跑一次 —— 于是每按一下微调不会重扫一遍像素。
   // 120ms 的合并窗口是为了连点：同一帧内的多次点击只画最后一张。
@@ -2466,6 +2635,219 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
       </div>:null}
     </section>
   );
+  // ---- 水印 · 落款 · 时间面板（US-007）---------------------------------------------
+  // 验收的六件事都落在这块面板上：① 三区（水印：Logo / 文字 / 二维码，落款：姓名 / 寄语 / 签名或印章，
+  // 时间：来源 / 格式 / 位置）；② 三区共用**同一个**九宫格控件 `OverlayPositionPad`（点击格子即定位、
+  // 在格子上拖动即微调偏移）；③ 面板里的每个输入直接写 `overlayTweaks` → `effectiveFrameSpec`，
+  // 所以**没有「应用」按钮**，右侧成品预览当场重画；④ 时间默认取本次课次日期（第一步的课次信息）、
+  // 落款默认取当前登录老师姓名；⑤ Logo 与二维码支持上传 / 选择（校验 PNG/JPG、≤512×512、≤200KB）；
+  // ⑥ 手机端这块面板是底部抽屉（≤800px 的 CSS），九宫格点击区域 ≥44×44px。
+  // 每支元素下面还有一行「渲染为 …」：用的是与绘制层同一份变量替换 / 时间解析 / 二维码目标解析，
+  // 老师不用等到出图才知道写进去的变量会变成什么。
+  // 选项列表：模板里的值不在预设档里时补一条「模板自定义（原值）」，免得下拉显示成空。
+  // 文案由调用方给（字号写 px、比例写百分比，口径不同不能混用同一句）。
+  const overlayOptionList=(options,current,customLabel)=>{
+    const hit=options.some(option=>Math.abs(Number(option.value)-Number(current))<0.0005);
+    if(hit) return options;
+    const value=Number(current);
+    if(!Number.isFinite(value)) return options;
+    return [...options,{id:'custom',label:customLabel?customLabel(value):'模板自定义',value}];
+  };
+  const overlayRatioCustomLabel=(value)=>`模板自定义（短边的 ${overlayPercentText(value)}）`;
+  const overlayFontSizeCustomLabel=(value)=>`模板自定义（${value}px 基准）`;
+  const overlayOpacityCustomLabel=(value)=>`模板自定义（${Math.round(value*100)}%）`;
+  const overlaySwitch=(card)=>(
+    <div className="lesson-overlay-switch" role="group" aria-label={`${card.label}显隐`}>
+      <button type="button" data-overlay-toggle={`${card.kind}:on`} className={card.group.visible===true?'active':''} aria-pressed={card.group.visible===true} onClick={()=>card.patch({visible:true})}>开启</button>
+      <button type="button" data-overlay-toggle={`${card.kind}:off`} className={card.group.visible!==true?'active':''} aria-pressed={card.group.visible!==true} onClick={()=>card.patch({visible:false})}>关闭</button>
+    </div>
+  );
+  const overlayPadControl=(card)=>(
+    <div className="lesson-overlay-pad-row">
+      <OverlayPositionPad label={card.label} field={card.kind} value={card.group.position} offsets={card.group} onSelect={position=>selectOverlayPosition(card,position)} onOffsetChange={offsets=>card.patch(offsets)}/>
+      <div className="lesson-overlay-offset">
+        <b data-overlay-offset={card.kind}>{overlayPositionText(card.group.position)} · {overlayOffsetSummary(card.group)}</b>
+        <button type="button" data-overlay-reset-offset={card.kind} disabled={overlayOffsetIsZero(card.group)} onClick={()=>card.patch(OVERLAY_OFFSET_RESET)}>复位偏移</button>
+        <small>点格子定位；在格子上按住拖动即可微调偏移（{OVERLAY_OFFSET_RANGE_TEXT} 画布短边）。</small>
+      </div>
+    </div>
+  );
+  const overlayRenderLine=(card,text,note)=>(
+    <p className="lesson-overlay-render" data-overlay-render={card.kind}><b>渲染为</b><span>{text||'（当前不会绘制）'}</span>{note?<em>{note}</em>:null}</p>
+  );
+  const overlayBlockedNote=(card)=>{
+    if(card.group.visible!==true) return null;
+    const blocker=overlayElementBlockerText(card.kind,card.group);
+    return blocker?<p className="lesson-overlay-blocked" data-overlay-blocked={card.kind}>{blocker}</p>:null;
+  };
+  const overlayVariables=OVERLAY_VARIABLES.map(name=>`{${name}}`);
+  // 文本类元素的变量占位符提示（FR-19）：点一下把变量插到输入框末尾 —— 提示要能用，不能只是好看。
+  const overlayVariableChips=(card,field,current)=>(
+    <div className="lesson-overlay-variables" data-overlay-variables={card.kind}>
+      <span>支持变量（点一下插入）：</span>
+      {OVERLAY_VARIABLES.map(name=><button key={name} type="button" data-overlay-variable={`${card.kind}:${name}`} title={`渲染时替换成当前${name}`} onClick={()=>card.patch({[field]:`${current||''}{${name}}`})}>{`{${name}}`}</button>)}
+    </div>
+  );
+  const overlayColorSwatches=(card,field,current)=>(
+    <div className="lesson-overlay-colors" role="group" aria-label={`${card.label}颜色`}>
+      {OVERLAY_TEXT_COLORS.map(option=><button key={option.id} type="button" data-overlay-color={`${card.kind}:${option.id}`} className={`frame-style-swatch${String(current||'').toUpperCase()===option.hex.toUpperCase()?' active':''}`} aria-pressed={String(current||'').toUpperCase()===option.hex.toUpperCase()} title={`${option.label} ${option.hex}`} onClick={()=>card.patch({[field]:option.hex})}><i style={{background:option.hex}}/>{option.label}</button>)}
+    </div>
+  );
+  const overlaySizeOptions=(current)=>overlayOptionList(OVERLAY_ELEMENT_SIZE_OPTIONS,current,overlayRatioCustomLabel).map(option=><option key={option.id} value={option.value}>{option.id==='custom'?option.label:`${option.label}（短边的 ${overlayPercentText(option.value)}）`}</option>);
+  const overlayFontSizeOptions=(current)=>overlayOptionList(OVERLAY_FONT_SIZE_OPTIONS,current,overlayFontSizeCustomLabel).map(option=><option key={option.id} value={option.value}>{option.id==='custom'?option.label:`${option.label}（${option.value}px 基准）`}</option>);
+  const overlayOpacityOptions=(current)=>overlayOptionList(OVERLAY_OPACITY_OPTIONS,current,overlayOpacityCustomLabel).map(option=><option key={option.id} value={option.value}>{option.id==='custom'?option.label:option.label}</option>);
+  const overlayAssetInput=(kind,ref)=>(
+    <input ref={ref} type="file" accept="image/png,image/jpeg" hidden data-overlay-file={kind} onChange={event=>{const file=event.target.files&&event.target.files[0];if(event.target)event.target.value='';if(file)uploadOverlayAsset(kind,file)}}/>
+  );
+  const overlayFieldsOf=(card)=>{
+    const group=card.group;
+    if(card.kind==='logo') return <>
+      <div className="lesson-overlay-fields">
+        <label>宽度<select data-overlay-field="logo-width" value={group.widthRatio} onChange={event=>card.patch({widthRatio:Number(event.target.value)})}>{overlaySizeOptions(group.widthRatio)}</select></label>
+        <label>不透明度<select data-overlay-field="logo-opacity" value={group.opacity} onChange={event=>card.patch({opacity:Number(event.target.value)})}>{overlayOpacityOptions(group.opacity)}</select></label>
+      </div>
+      <div className="lesson-overlay-asset">
+        {overlayAssetInput('logo',overlayLogoInput)}
+        <button type="button" data-overlay-action="logo-upload" disabled={overlayAssetBusy==='logo'} onClick={()=>overlayLogoInput.current?.click()}>{overlayAssetBusy==='logo'?'读取中…':(group.url?'重新上传 Logo':'上传 Logo')}</button>
+        {group.url?<img className="framing-asset-thumb" src={group.url} alt="机构 Logo 缩略图"/>:null}
+        {group.url?<button type="button" className="text-link" data-overlay-action="logo-remove" onClick={()=>removeOverlayAsset('logo')}>移除</button>:null}
+        <small className="framing-asset-rules">上传要求：{framingAssetRulesText()}</small>
+      </div>
+      {overlayAssetError.kind==='logo'?<p className="framing-asset-error" data-overlay-asset-error="logo">{overlayAssetError.message}</p>:null}
+      {overlayRenderLine(card,group.url?'机构 Logo 图片（按宽度档等比缩放）':'')}
+    </>;
+    if(card.kind==='text') return <>
+      <div className="lesson-overlay-fields">
+        <label className="wide">文字内容<input data-overlay-field="text-content" value={overlayRawValue(card.tweak,'content',group.content)} maxLength={80} placeholder="例如 {机构名}" onChange={event=>card.patch({content:event.target.value})}/></label>
+        <label>字号<select data-overlay-field="text-font-size" value={group.fontSize} onChange={event=>card.patch({fontSize:Number(event.target.value)})}>{overlayFontSizeOptions(group.fontSize)}</select></label>
+        <label>不透明度<select data-overlay-field="text-opacity" value={group.opacity} onChange={event=>card.patch({opacity:Number(event.target.value)})}>{overlayOpacityOptions(group.opacity)}</select></label>
+      </div>
+      {overlayColorSwatches(card,'color',group.color)}
+      {overlayVariableChips(card,'content',overlayRawValue(card.tweak,'content',group.content))}
+      {overlayRenderLine(card,overlayRenderTextOf(group.content))}
+    </>;
+    if(card.kind==='qr') return <>
+      <div className="lesson-overlay-fields">
+        <label className="wide">二维码目标<select data-overlay-field="qr-target" value={group.target} onChange={event=>card.patch({target:event.target.value})}>{QR_TARGETS.map(target=><option key={target.key} value={target.key}>{target.label}</option>)}</select></label>
+        <label>尺寸<select data-overlay-field="qr-size" value={group.sizeRatio} onChange={event=>card.patch({sizeRatio:Number(event.target.value)})}>{overlaySizeOptions(group.sizeRatio)}</select></label>
+        <label className="wide">说明文字<input data-overlay-field="qr-caption" value={overlayRawValue(card.tweak,'caption',group.caption)} maxLength={40} onChange={event=>card.patch({caption:event.target.value})}/></label>
+      </div>
+      {overlayRenderLine(card,qrTargetSummary(group.target,overlayQrContext))}
+      <p className="lesson-overlay-note">{qrTargetRulesText()}</p>
+    </>;
+    if(card.kind==='signature') return <>
+      <div className="lesson-overlay-fields">
+        <span className="lesson-overlay-label">形式</span>
+        <div className="lesson-overlay-options">{OVERLAY_SIGNATURE_MODE_OPTIONS.map(option=><button key={option.id} type="button" data-overlay-signature-mode={option.id} className={group.mode===option.id?'active':''} aria-pressed={group.mode===option.id} onClick={()=>card.patch({mode:option.id})}>{option.label}</button>)}</div>
+      </div>
+      <div className="lesson-overlay-fields">
+        <label className="wide">姓名 / 落款文字<input data-overlay-field="signature-name" value={overlayRawValue(card.tweak,'teacherName',group.teacherName)} maxLength={40} placeholder={overlaySignatureDefaultName} onChange={event=>card.patch({teacherName:event.target.value})}/></label>
+        <label className="wide">寄语（可空，≤60 字）<input data-overlay-field="signature-message" value={overlayRawValue(card.tweak,'message',group.message)} maxLength={60} placeholder="例如：继续用画笔讲你的故事" onChange={event=>card.patch({message:event.target.value})}/></label>
+      </div>
+      {overlayVariableChips(card,'teacherName',overlayRawValue(card.tweak,'teacherName',group.teacherName))}
+      {group.mode==='image'?<div className="lesson-overlay-asset">
+        {overlayAssetInput('signature',overlaySignatureInput)}
+        <button type="button" data-overlay-action="signature-upload" disabled={overlayAssetBusy==='signature'} onClick={()=>overlaySignatureInput.current?.click()}>{overlayAssetBusy==='signature'?'读取中…':(group.imageUrl?'重新上传签名图':'上传签名图')}</button>
+        {group.imageUrl?<img className="framing-asset-thumb" src={group.imageUrl} alt="手写签名图缩略图"/>:null}
+        {group.imageUrl?<button type="button" className="text-link" data-overlay-action="signature-remove" onClick={()=>removeOverlayAsset('signature')}>移除</button>:null}
+        <label>宽度<select data-overlay-field="signature-width" value={group.imageWidthRatio} onChange={event=>card.patch({imageWidthRatio:Number(event.target.value)})}>{overlaySizeOptions(group.imageWidthRatio)}</select></label>
+        <small className="framing-asset-rules">上传要求：{framingAssetRulesText()}（建议 PNG 透明底的手写签名）</small>
+      </div>:null}
+      {overlayAssetError.kind==='signature'?<p className="framing-asset-error" data-overlay-asset-error="signature">{overlayAssetError.message}</p>:null}
+      <div className="lesson-overlay-fields">
+        <label>字体<select data-overlay-field="signature-font" value={group.fontFamily} onChange={event=>card.patch({fontFamily:event.target.value})}>{FRAMING_FONT_WHITELIST.map(font=><option key={font} value={font}>{font}</option>)}</select></label>
+        <label>字号<select data-overlay-field="signature-font-size" value={group.fontSize} onChange={event=>card.patch({fontSize:Number(event.target.value)})}>{overlayFontSizeOptions(group.fontSize)}</select></label>
+      </div>
+      {overlayColorSwatches(card,'color',group.color)}
+      <div className="lesson-overlay-fields">
+        <span className="lesson-overlay-label">印章</span>
+        <div className="lesson-overlay-options">
+          {/* 印章是落款的一部分：落款关着时印章不会绘制（绘制层只画 visible 的元素），
+              所以「印章开」顺手把落款也打开 —— 否则老师点完看不到任何变化。 */}
+          <button type="button" data-overlay-seal="on" className={group.seal.visible?'active':''} aria-pressed={group.seal.visible} onClick={()=>applySignatureTweak({visible:true},{visible:true})}>印章开</button>
+          <button type="button" data-overlay-seal="off" className={!group.seal.visible?'active':''} aria-pressed={!group.seal.visible} onClick={()=>applySignatureTweak({},{visible:false})}>印章关</button>
+          {OVERLAY_SEAL_SHAPE_OPTIONS.map(option=><button key={option.id} type="button" data-overlay-seal-shape={option.id} className={group.seal.shape===option.id?'active':''} aria-pressed={group.seal.shape===option.id} disabled={!group.seal.visible} onClick={()=>applySignatureTweak({},{shape:option.id})}>{option.label}</button>)}
+        </div>
+        <label className="wide">印章文字<input data-overlay-field="seal-text" value={overlayRawValue(card.tweak.seal,'text',group.seal.text)} maxLength={20} disabled={!group.seal.visible} onChange={event=>applySignatureTweak({},{text:event.target.value})}/></label>
+      </div>
+      {overlayRenderLine(card,group.mode==='image'
+        ?(group.imageUrl?'手写签名图（按宽度档等比缩放）':'')
+        :[overlayRenderTextOf(group.teacherName),overlayRenderTextOf(group.message)].filter(Boolean).join(' · '),
+        group.seal.visible?`印章：${group.seal.text||'—'}（${group.seal.shape==='round'?'圆形':'方形'}）`:'')}
+    </>;
+    return <>
+      <div className="lesson-overlay-fields">
+        <label>来源<select data-overlay-field="date-source" value={group.source} onChange={event=>changeDateSource(event.target.value)}>{DATE_SOURCES.map(source=><option key={source} value={source}>{DATE_SOURCE_LABELS[source]||source}</option>)}</select></label>
+        <label>格式<select data-overlay-field="date-format" value={group.format} onChange={event=>card.patch({format:event.target.value})}>{DATE_FORMATS.map(format=><option key={format} value={format}>{format}</option>)}</select></label>
+        <label className="wide">前缀<input data-overlay-field="date-prefix" value={overlayRawValue(card.tweak,'prefix',group.prefix)} maxLength={20} onChange={event=>card.patch({prefix:event.target.value})}/></label>
+        {group.source==='manual'?<label className="wide">手动日期<input type="date" data-overlay-field="date-manual" value={manualDateInputValue(overlayRawValue(card.tweak,'manualValue',group.manualValue))} onChange={event=>card.patch({manualValue:event.target.value})}/></label>:null}
+        <label>字号<select data-overlay-field="date-font-size" value={group.fontSize} onChange={event=>card.patch({fontSize:Number(event.target.value)})}>{overlayFontSizeOptions(group.fontSize)}</select></label>
+      </div>
+      {overlayColorSwatches(card,'color',group.color)}
+      {overlayRenderLine(card,overlayDateRenderText,overlayLessonDate?`本次课次日期：${overlayLessonDate}`:'')}
+      <p className="lesson-overlay-note">时间默认取本次课次日期（第一步的课次信息，当前：{overlayLessonDate||'未选择'}），可以切换成生成当天或手动填写。</p>
+    </>;
+  };
+  const overlayElementCard=(card)=>(
+    <div key={card.kind} className={`lesson-overlay-element${card.group.visible===true?' is-on':''}`} data-overlay-element={card.kind} data-overlay-element-visible={card.group.visible===true?'true':'false'} data-overlay-position={card.group.position} data-overlay-offset={`${card.group.offsetX},${card.group.offsetY}`}>
+      <div className="lesson-overlay-element-head">
+        <b>{card.label}</b>
+        <em data-overlay-element-state={card.kind}>{card.group.visible===true?'已开启':'未开启'}</em>
+        {overlaySwitch(card)}
+      </div>
+      {overlayPadControl(card)}
+      {overlayBlockedNote(card)}
+      {overlayFieldsOf(card)}
+    </div>
+  );
+  const overlayPanelTrigger=(
+    <button type="button" className="lesson-overlay-trigger" data-overlay-action="open" aria-expanded={overlayDrawerOpen} onClick={()=>setOverlayDrawerOpen(true)}>
+      <Sparkles size={15}/>水印 · 落款 · 时间
+      <em data-overlay-trigger-summary={overlayTweakSummaryText}>{overlayTweakCountValue?`已调整 ${overlayTweakCountValue} 项`:'跟随模板'}</em>
+    </button>
+  );
+  const overlayPreviewSrc=overlayUsesClassPreview?(overlayPreview||''):(media.artwork?.framedUrl||media.artwork?.cleanUrl||media.artwork?.originalUrl||'');
+  const overlayPreviewNote=overlayUsesClassPreview
+    ?(overlayPreview?'用本班第一幅已上传作品实时渲染的成品预览（逐幅套用是后续「批量应用装裱」的范围）。':'上传作品后这里显示实时成品预览。')
+    :(media.artwork?.framedUrl?'本次装裱的成品图：面板里改任何一项，这张图会立刻重画。':'完成装裱后这里显示成品图（当前显示的是待装裱的画心）。');
+  const overlayPanel=(
+    <section className={`lesson-overlay-panel${overlayDrawerOpen?' is-open':''}`} data-overlay-panel="true" data-overlay-open={overlayDrawerOpen?'true':'false'} data-overlay-tweak-count={overlayTweakCountValue} data-overlay-tweak-summary={overlayTweakSummaryText} data-overlay-enabled-count={overlayEnabledCountValue} data-overlay-enabled={overlayEnabledText} data-overlay-spec-fingerprint={artworkUrlFingerprint(activeFrameSpecKey)}>
+      <div className="lesson-overlay-drawer-head">
+        <span className="lesson-overlay-handle" aria-hidden="true"/>
+        <b>水印 · 落款 · 时间</b>
+        <button type="button" data-overlay-action="close" onClick={()=>setOverlayDrawerOpen(false)}>完成</button>
+      </div>
+      <div className="lesson-overlay-head">
+        <b>水印 · 落款 · 时间</b>
+        <em data-overlay-summary={overlayTweakSummaryText}>{overlayTweakSummaryText}</em>
+        <small>三区共用同一个九宫格：点格子定位，在格子上拖动微调偏移。面板里的每个输入都会立刻反映到右侧成品预览，<strong>不需要点「应用」</strong>；调整只作用于本次课次，不写回模板（想长期保留请用「另存为我的模板」）。</small>
+      </div>
+      <div className="lesson-overlay-body">
+        <div className="lesson-overlay-sections">
+          {OVERLAY_SECTIONS.map(section=><article key={section.id} className="lesson-overlay-section" data-overlay-section={section.id}>
+            <header>
+              <b>{section.label}</b>
+              <small>{section.hint}</small>
+            </header>
+            {overlayElementCards.filter(card=>card.section===section.id).map(card=>overlayElementCard(card))}
+          </article>)}
+        </div>
+        <aside className="lesson-overlay-preview" data-overlay-preview-wrap="true">
+          <b>成品预览</b><em className="lesson-overlay-preview-state" data-overlay-preview-state={overlayPreviewState}>{overlayPreviewState==='pending'?'正在渲染…':(overlayPreviewState==='error'?`预览失败：${overlayPreviewError}`:(overlayPreviewState==='ready'?'已就绪':'等待作品'))}</em>
+          {overlayPreviewSrc?<img data-overlay-preview={overlayUsesClassPreview?'rendered':'framed'} src={overlayPreviewSrc} alt="水印 / 落款 / 时间的成品预览（随面板输入实时更新）"/>:<span className="lesson-overlay-preview-empty" data-overlay-preview-state={overlayPreviewState}>上传作品并完成装裱后显示成品预览</span>}
+          <em data-overlay-preview-enabled={overlayEnabledText}>{overlayEnabledText}</em>
+          <small>{overlayPreviewNote}</small>
+          <small data-overlay-preview-variables={overlayVariables.join(' ')}>变量按当前上下文替换：机构名「{overlayVariableContext.orgName||'—'}」· 学员名「{overlayVariableContext.studentName||'—'}」· 老师「{overlayVariableContext.teacherName||'—'}」· 课次日期「{overlayVariableContext.lessonDate||'—'}」</small>
+          <small>落款默认取当前登录老师「{overlaySignatureDefaultName}」；时间默认取本次课次日期「{overlayLessonDate||'未选择'}」。</small>
+        </aside>
+      </div>
+      <div className="lesson-overlay-foot">
+        <em data-overlay-foot-summary={overlayEnabledText}>{overlayEnabledText}</em>
+        <button type="button" data-overlay-action="reset-all" disabled={!overlayTweakCountValue} onClick={resetOverlayTweaks}>全部恢复模板默认</button>
+        <button type="button" className="lesson-overlay-done" data-overlay-action="close" onClick={()=>setOverlayDrawerOpen(false)}>完成</button>
+      </div>
+    </section>
+  );
   const artworkEditorField=(
     <div className={`artwork-editor${artworkEditor.open?' is-open':''}`} data-editor-open={artworkEditor.open?'true':'false'} data-edit-unconfirmed={hasUnconfirmedArtworkEdit()?'true':'false'} data-edit-rotation={artworkEditorShown.rotateDeg} data-edit-fine={artworkEditorFine} data-editor-preview-mode={editorPreviewMode} data-editor-preview-edge={editorPreviewMode==='hd'?EDIT_PREVIEW_HD_MAX_EDGE:EDIT_PREVIEW_MAX_EDGE} data-shown-crop={artworkEditorShown.crop?[artworkEditorShown.crop.x,artworkEditorShown.crop.y,artworkEditorShown.crop.w,artworkEditorShown.crop.h].join(','):'none'} data-shown-zoom={artworkEditorShown.zoom} data-shown-offset={[artworkEditorShown.offsetX,artworkEditorShown.offsetY].join(',')}>
       <div className="artwork-editor-head">
@@ -2558,7 +2940,7 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
       {step===3&&!reviewStream.open?<ReviewLaunchPanel profiles={teacherProfiles} skillLibrary={skillLibrary} activeProfileId={activeProfileId} setActiveProfileId={setActiveProfileId} onStart={startCloudReview} onLocalDraft={fillLocalDraft} draftReady={reviewGenerated} localDraftUsed={localDraftUsed} keywordCount={keywords.length} hasArtwork={Boolean(media.artwork?.cleanUrl||media.artwork?.originalUrl)}/>:null}
       {step===2&&mode==='班级反馈'?<ClassFramingWall artworks={batchUploads.artwork} photos={batchUploads.photo} photoGroups={photoGroups} onRotate={index=>rotateBatchItem('artwork',index)} onRotatePhotoEntry={uploadId=>rotateUploadEntry('photo',uploadId)}/>:null}
       {step===1?<section className="scene-panel"><div className="scene-heading"><span>第一步</span><h2>创建课后反馈信息</h2><p>先确定服务对象，再同步收集本节课素材。素材只在本次操作中保留。</p></div>{draftRestored?<div className="intake-draft-restored"><Clock3 size={14}/><div><b>已恢复上次的课次信息；素材需重新选择</b><small>{draftRestoreDetail}</small></div>{pendingTitles.length?<em>已保留 {pendingTitles.length} 个作品名，「学员作品上传位」里重新选择素材后自动填回</em>:null}<button type="button" className="text-link" onClick={()=>setDraftRestored(false)}>知道了</button></div>:null}<div className="feedback-mode"><button className={mode==='个人反馈'?'selected':''} onClick={()=>selectMode('个人反馈')}>个人反馈<small>为一位孩子完成反馈</small></button><button className={mode==='班级反馈'?'selected':''} onClick={()=>selectMode('班级反馈')}>班级反馈<small>批量处理全班素材</small></button></div>{availableClasses.length?<div className="intake-scope"><span>班级范围</span><div className="intake-scope-switch"><button type="button" className={showAllClasses?'':'active'} onClick={()=>selectClassScope(false)}>我带的班（{myClasses.length}）</button><button type="button" className={showAllClasses?'active':''} onClick={()=>selectClassScope(true)}>全部班级（{availableClasses.length}）</button></div><small>当前登录老师：{currentTeacherName}</small></div>:null}{visibleClasses.length?<div className="task-form"><label>选择班级<select value={selectedClassId} onChange={event=>selectClass(event.target.value)}>{visibleClasses.map(item=><option key={item.id} value={item.id}>{item.name}{item.teacher?`（${item.teacher}）`:''}</option>)}</select></label><label>选择学员<select value={mode==='班级反馈'?'__class__':selectedStudentName} disabled={mode==='班级反馈'} onChange={event=>{setSelectedStudentName(event.target.value);setArchived(false)}}>{mode==='班级反馈'?<option value="__class__">本班全部学员（{classStudents.length}人）</option>:<><option value="">请选择学员</option>{classStudents.map(item=><option key={item.name} value={item.name}>{item.name}</option>)}</>}</select></label>{courseOptions.length?<label>选择课程<select value={activeCourseId} onChange={event=>selectCourse(event.target.value)}>{courseOptions.map(item=><option key={item.courseId} value={item.courseId}>{item.name}{item.courseId===classCourseId?' · 本班课程':''}</option>)}</select></label>:<div className="intake-course-empty"><b>课程库暂时没有可选课程</b><p>{classCourseName?`本班课程「${classCourseName}」不在可选课程里，可能已被停用。`:'课程由机构管理员在「课程库」中维护。'}</p>{role==='admin'?<Button variant="secondary" onClick={()=>navigate('courseLibrary')}>去课程库添加课程</Button>:<small>请联系机构管理员在「课程库」中新增或启用课程。</small>}</div>}{lessonScheduleField}{participantField}{consentNoticeField}{mediaIntakeNotice?<p className="intake-media-notice"><ShieldAlert size={14}/><span>{mediaIntakeNotice}</span></p>:null}</div>:<div className="intake-empty"><Users size={26}/><b>{showAllClasses?'机构里还没有任何班级':'还没有属于你的班级'}</b><p>{showAllClasses?'请先在「学员管理」中新建班级，再回到这里创建课后反馈。':'可以切到「全部班级」确认是否存在其他老师名下的班级，或先去「学员管理」新建班级。'}</p><div className="intake-empty-actions">{showAllClasses?null:<button type="button" className="text-link" onClick={()=>selectClassScope(true)}>查看全部班级</button>}<Button onClick={()=>navigate('classes')}>去学员管理添加班级</Button></div></div>}{mode==='个人反馈'&&selectedClass&&!classStudents.length?<p className="intake-hint">该班级还没有学员，请先在「学员管理」里导入名单，再创建课后反馈。</p>:null}{artworkSlotField}{photoSlotField}{mode==='个人反馈'?<div className="sync-upload"><div className={media.artwork?.url?'has-file':''}><Frame/><b>学员作品 <em>必选</em></b><small>{uploadSummary('artwork')}</small><input ref={artworkInput} type="file" accept="image/jpeg,image/png,image/webp" hidden multiple={mode==='班级反馈'} onChange={e=>readFiles('artwork',e.target.files,e.currentTarget)}/><button onClick={()=>artworkInput.current?.click()}>{media.artwork?.url?'已上传 · 重新选择':'上传作品'}</button></div><div className={media.photo?.url?'has-file':''}><Image/><b>学员照片 <em>选填</em></b><small>{uploadSummary('photo')}</small><input ref={photoInput} type="file" accept="image/jpeg,image/png,image/webp" hidden multiple={mode==='班级反馈'} onChange={e=>readFiles('photo',e.target.files,e.currentTarget)}/><button onClick={()=>photoInput.current?.click()}>{media.photo?.url?'已上传 · 重新选择':'上传照片'}</button></div></div>:null}{lostSessionMedia&&!mediaLostDismissed?<div className="intake-media-lost"><ShieldAlert size={14}/><div><b>上次选择的素材已失效</b><small>作品与课堂照片只在当次会话里有效（只使用会话内 object URL，不写入 localStorage / IndexedDB）。页面刷新或重新进入后，请重新选择原始素材。</small></div><button type="button" className="text-link" onClick={()=>setMediaLostDismissed(true)}>知道了</button></div>:null}<div className="upload-privacy-note"><ShieldCheck size={14}/>{mediaRulesText(UPLOAD_SLOTS_PER_STUDENT)}</div>{intakeReadinessPanel}<div className="scene-actions"><Button variant="secondary" onClick={resetDraft}>新建草稿</Button><Button variant="secondary" icon={Save} disabled={!activeCourseId||lessonSaveState.status==='saving'} onClick={requestLessonSave}>{lessonSaveState.status==='saving'?'保存中…':'保存课次'}</Button><Button icon={ArrowRight} disabled={!intakeReadiness.ok} onClick={()=>go(2)}>进入智能装裱</Button></div></section>:null}
-      {step===2?<section className="scene-panel studio-task"><div className="scene-heading"><span>第二步</span><h2>智能装裱</h2><p>先旋转完整原图并确认方向；确认后自动裁掉纸外的桌面、地面与背景，只保留作品本身。装裱方案（画框、卡纸、展签、日期与署名）由管理员在「装裱设置」中统一维护，这里直接选用。</p></div><div className="media-process"><article><div className={`mini-frame uploaded-art${media.artwork?.framedUrl&&!artworkEditor.open?' framed-preview':''}${artworkEditor.open?' is-editing':''}`}>{media.artwork?.url?<><img src={artworkEditor.open?(editorPreview||media.artwork.originalUrl):(media.artwork.framedUrl||media.artwork.cleanUrl||media.artwork.orientedUrl||media.artwork.originalUrl)} alt={artworkEditor.open?'编辑中的旋转稿预览（低分辨率画布）':media.artwork.framedUrl?`已按「${activeFrame?.name||'默认装裱'}」完成装裱的作品`:media.artwork.cleanUrl?'已裁掉纸外背景、只保留作品本身':'等待确认方向的完整原图'}/>{media.artwork?.framedUrl&&!artworkEditor.open?<span className="framed-badge">{activeFrame?.name||'默认装裱'}</span>:null}{artworkEditor.open?<span className="framed-badge editing-badge">编辑中</span>:null}<div className="frame-rotate-controls" aria-label="旋转作品"><button type="button" title="向左旋转 90°" aria-label="向左旋转作品" disabled={artworkEditor.open&&editorPreviewPending} onClick={()=>quickRotateArtwork(-1)}><RotateCcw size={18}/></button><button type="button" title="向右旋转 90°" aria-label="向右旋转作品" disabled={artworkEditor.open&&editorPreviewPending} onClick={()=>quickRotateArtwork(1)}><RotateCw size={18}/></button></div></>:'✺'}</div><div><b>学员作品</b><p>{artworkEditor.open?(editorPreviewPending?'正在生成低分辨率预览…':'编辑中：调整旋转后点「完成编辑」，再按新的方向重新裁剪与装裱。'):framingState==='processing'?(media.artwork?.cleanUrl?'正在按当前装裱方案合成装裱图…':'正在裁掉纸外的桌面与地面，只保留作品本身…'):media.artwork?.framedUrl?`已装裱：${activeFrame?.name||'默认装裱'}。作品只做等比缩放与居中，不裁切主体、不重绘、不调色。`:media.artwork?.cleanUrl?'已完成作品裁剪，正在生成装裱图…':'当前仅显示完整原图；可以先点「编辑作品」把方向摆正，再开始裁剪与装裱。'}</p>{mode==='个人反馈'?artworkEditorField:null}{!media.artwork?.cleanUrl?<button type="button" className="confirm-artwork-button" onClick={startArtworkCleanup} disabled={framingState==='rotating'||framingState==='processing'}>{framingState==='processing'?'正在裁剪作品…':'方向正确，开始裁剪与装裱'}</button>:null}<span className="frame-choice-hint">相框样式在下方「相框样式」面板里挑（缩略图用这幅作品实时渲染）→</span></div></article><article><div className="photo-card">{media.photo?.url?<><img src={media.photo.url} alt="已自然优化的课堂照片" style={{transform:`rotate(${media.photo.rotation||0}deg)`}}/><button type="button" className="frame-rotate-button photo-rotate-button" onClick={rotatePersonalPhoto}><RefreshCw size={16}/>旋转照片</button></>:<img src={pandaMascot} alt="课堂照片占位预览"/>}</div><div><b>学员照片</b><p>{media.photo?.name||'未上传课堂照片，可返回上一步补充。'}</p></div></article></div>{frameStylePanel}<div className="scene-actions"><Button variant="secondary" onClick={()=>go(1)}>返回创建信息</Button><Button icon={ArrowRight} onClick={()=>go(3)}>进入五维点评</Button></div></section>:null}
+      {step===2?<section className="scene-panel studio-task"><div className="scene-heading"><span>第二步</span><h2>智能装裱</h2><p>先旋转完整原图并确认方向；确认后自动裁掉纸外的桌面、地面与背景，只保留作品本身。装裱方案（画框、卡纸、展签、日期与署名）由管理员在「装裱设置」中统一维护，这里直接选用。</p></div><div className="media-process"><article><div className={`mini-frame uploaded-art${media.artwork?.framedUrl&&!artworkEditor.open?' framed-preview':''}${artworkEditor.open?' is-editing':''}`}>{media.artwork?.url?<><img src={artworkEditor.open?(editorPreview||media.artwork.originalUrl):(media.artwork.framedUrl||media.artwork.cleanUrl||media.artwork.orientedUrl||media.artwork.originalUrl)} alt={artworkEditor.open?'编辑中的旋转稿预览（低分辨率画布）':media.artwork.framedUrl?`已按「${activeFrame?.name||'默认装裱'}」完成装裱的作品`:media.artwork.cleanUrl?'已裁掉纸外背景、只保留作品本身':'等待确认方向的完整原图'}/>{media.artwork?.framedUrl&&!artworkEditor.open?<span className="framed-badge">{activeFrame?.name||'默认装裱'}</span>:null}{artworkEditor.open?<span className="framed-badge editing-badge">编辑中</span>:null}<div className="frame-rotate-controls" aria-label="旋转作品"><button type="button" title="向左旋转 90°" aria-label="向左旋转作品" disabled={artworkEditor.open&&editorPreviewPending} onClick={()=>quickRotateArtwork(-1)}><RotateCcw size={18}/></button><button type="button" title="向右旋转 90°" aria-label="向右旋转作品" disabled={artworkEditor.open&&editorPreviewPending} onClick={()=>quickRotateArtwork(1)}><RotateCw size={18}/></button></div></>:'✺'}</div><div><b>学员作品</b><p>{artworkEditor.open?(editorPreviewPending?'正在生成低分辨率预览…':'编辑中：调整旋转后点「完成编辑」，再按新的方向重新裁剪与装裱。'):framingState==='processing'?(media.artwork?.cleanUrl?'正在按当前装裱方案合成装裱图…':'正在裁掉纸外的桌面与地面，只保留作品本身…'):media.artwork?.framedUrl?`已装裱：${activeFrame?.name||'默认装裱'}。作品只做等比缩放与居中，不裁切主体、不重绘、不调色。`:media.artwork?.cleanUrl?'已完成作品裁剪，正在生成装裱图…':'当前仅显示完整原图；可以先点「编辑作品」把方向摆正，再开始裁剪与装裱。'}</p>{mode==='个人反馈'?artworkEditorField:null}{!media.artwork?.cleanUrl?<button type="button" className="confirm-artwork-button" onClick={startArtworkCleanup} disabled={framingState==='rotating'||framingState==='processing'}>{framingState==='processing'?'正在裁剪作品…':'方向正确，开始裁剪与装裱'}</button>:null}<span className="frame-choice-hint">相框样式在下方「相框样式」面板里挑（缩略图用这幅作品实时渲染）→</span></div></article><article><div className="photo-card">{media.photo?.url?<><img src={media.photo.url} alt="已自然优化的课堂照片" style={{transform:`rotate(${media.photo.rotation||0}deg)`}}/><button type="button" className="frame-rotate-button photo-rotate-button" onClick={rotatePersonalPhoto}><RefreshCw size={16}/>旋转照片</button></>:<img src={pandaMascot} alt="课堂照片占位预览"/>}</div><div><b>学员照片</b><p>{media.photo?.name||'未上传课堂照片，可返回上一步补充。'}</p></div></article></div>{frameStylePanel}{overlayPanelTrigger}{overlayDrawerOpen?<div className="lesson-overlay-scrim" data-overlay-scrim="true" onClick={()=>setOverlayDrawerOpen(false)}/>:null}{overlayPanel}<div className="scene-actions"><Button variant="secondary" onClick={()=>go(1)}>返回创建信息</Button><Button icon={ArrowRight} onClick={()=>go(3)}>进入五维点评</Button></div></section>:null}
       {step===3?<section className="scene-panel review-task-v2"><div className="review-media"><div className="scene-heading"><span>{mode==='班级反馈'?'本班课后素材':'本次课素材'}</span><h2>{mode==='班级反馈'?'周六创意绘画 2 班 · 班级课后反馈':`${selectedStudentLabel}${activeFrame?.plaqueTitle?` · 《${activeFrame.plaqueTitle}》`:''}`}</h2></div><div className={`review-gallery ${mode==='班级反馈'?'class-review-gallery':''}`}>{mode==='班级反馈'?<><ClassMediaMosaic items={classMosaicArtworks} kind="artwork" date={lessonDateDots} onRotate={index=>rotateBatchItem('artwork',index)}/><ClassMediaMosaic items={classMosaicPhotos} kind="photo" groups={photoGroups} date={lessonDateDots} onRotateEntry={uploadId=>rotateUploadEntry('photo',uploadId)}/></>:<><div className={`review-art exhibition-art${media.artwork?.framedUrl?' framed-art':''}`}>{media.artwork?.framedUrl?<div className="framed-art-final"><img src={media.artwork.framedUrl} alt={`${selectedStudentLabel}的作品 · ${activeFrame?.name||'装裱'}`}/>{activeFrame?.name?<span className="framed-badge">{activeFrame.name}</span>:null}</div>:<><div className="artwork-mat">{media.artwork?.url?<img src={media.artwork.cleanUrl||media.artwork.originalUrl||media.artwork.url} alt={`${selectedStudentLabel}的作品`}/>:'✺'}</div><div className="artwork-plaque"><div><b>{selectedStudentLabel}</b><span>{activeFrame?.plaqueTitle?`《${activeFrame.plaqueTitle}》`:''}</span></div><time>创作于 {(activeFrame?.plaqueDate||new Date().toISOString().slice(0,10).replace(/-/g,'.'))}</time></div></>}</div><div className="review-photo portrait-print"><div className="portrait-mat">{media.photo?.url?<img src={media.photo.url} alt="陈一诺课堂照片"/>:<img src={pandaMascot} alt="课堂照片占位"/>}</div><div className="portrait-caption">{selectedStudentLabel} · {(activeFrame?.plaqueDate||new Date().toISOString().slice(0,10).replace(/-/g,'.'))}</div></div></>}</div></div><ReviewKeywordDock visible selected={keywords} onToggle={toggleKeyword} suggested={aiKeywords} suggesting={keywordSuggesting} dirty={keywordDirty} generated={reviewGenerated}/><div className={`coach-review ${mode==='班级反馈'?'class-coach-review':''}`}><div className="scene-heading"><span>第三步</span><h2>{mode==='班级反馈'?'班级课程反馈':'五维点评'}</h2></div><select value={subject} onChange={e=>setSubject(e.target.value)}><option>通用美术</option><option>创意绘画（3-6岁）</option><option>儿童画（6-9岁）</option><option>素描（9-18岁）</option><option>速写（9-18岁）</option><option>水彩 / 水粉（7-18岁）</option><option>国画（6-18岁）</option></select><p className="evidence">{mode==='班级反馈'?'以下内容基于本节课课程设计、班级素材与老师观察生成，老师可编辑确认后发布给家长。':`下列内容由大模型生成：先读懂作品与课堂素材，再结合「${activeProfileLabel}」的人设、已启用技能与长期记忆，按五个维度分别输出评语。老师可逐条修改后再发布。`}</p>{mode==='班级反馈'?<ClassReviewContent subject={subject}/>:<><div className={`review-source ${reviewGenerated?(localDraftUsed?'local':'ai'):'pending'}`}>{reviewGenerated?(localDraftUsed?<><CircleAlert size={14}/><span>当前正文来自<strong>本地草稿模板</strong>（未调用大模型），发布前请老师逐条核对。</span></>:<><Sparkles size={14}/><span>当前正文由大模型「{activeProfileLabel}」依据人设、技能与长期记忆生成，可直接编辑。</span></>):<><Sparkles size={14}/><span>五个维度等待大模型生成：点击上方「开始生成点评」，评语会逐字写入这里。</span></>}{keywordDirty&&reviewGenerated?<em>观察词已调整，建议重新生成</em>:null}</div>{Object.entries(reviews).map(([name,copy])=><article className={`coach-card${copy?'':' is-empty'}`} key={name}><b>{name}{copy?null:<em className="review-pending">待生成</em>}</b><textarea aria-label={name} value={copy} placeholder={REVIEW_DIMENSION_HINTS[name]||''} onChange={event=>setReviews(current=>({...current,[name]:event.target.value}))}/></article>)}</>}<div className="scene-actions"><Button variant="secondary" onClick={()=>go(2)}>返回智能装裱</Button><Button icon={Archive} onClick={archiveRecord}>归档并生成分享</Button></div></div></section>:null}
       {step===4?<section className="share-task scene-panel"><img src={pandaObserve} alt="熊猫成长伙伴"/><div><span>已归档至{selectedStudentLabel}的成长档案</span><h2>这一次的成长，<br/>已经被完整记录。</h2><p>作品、课堂照片与五维点评已经同步保存到本地草稿。</p><div className="share-actions"><Button icon={Archive} onClick={()=>setToast('成长集锦任务已创建，等待服务端接入')}>制作成长集锦</Button><Button variant="secondary" icon={Frame} onClick={()=>setToast('个人作品集任务已创建，等待服务端接入')}>制作作品集</Button></div><div className="scene-actions"><Button variant="secondary" onClick={()=>go(3)}>返回五维点评</Button><Button icon={FileText} onClick={()=>navigate('archives')}>进入成长档案</Button></div></div></section>:null}
     </section></>;
@@ -3402,16 +3784,62 @@ function SkillLibraryPage({skillLibrary=[],setSkillLibrary,teacherProfiles=[],se
 }
 
 /**
- * 叠加元素的位置选择：九宫格按钮。
+ * 叠加元素的位置选择：九宫格按钮（F-FRAME-MARK-02，后台与老师端**共用这一个控件**）。
  * 位置枚举、锚点与中文名全部来自 `services/overlayLayout.js`（与渲染层同一份），
  * 所以这里点出来的位置就是成品图上水印真正落的地方。
+ *
+ * 传入 `onSelect` / `onOffsetChange` 时支持「拖动微调」（US-007 的老师端面板）：
+ *   - 点格子 = 定位（`onSelect(position)`）；
+ *   - 在格子上按住拖动 = 改偏移（`onOffsetChange({offsetX,offsetY})`）——
+ *     换算规则与常量都在 `data/lessonOverlays.js` 的 `overlayDragOffsets`（拖过整块 = 0.3、
+ *     方向取自 `resolveElementAnchor`，所以「往右拖」在成品图上也是往右移）。
+ * 拖动过程中**以按下那一刻的偏移为基准**算总位移（指针来回移动不会累积漂移）；
+ * 位移小于 `OVERLAY_DRAG_THRESHOLD_PX` 时仍算点击，不产生微小偏移。
+ * 后台沿用旧签名（`value` + `onChange`）时行为一字不变：没有 `onOffsetChange` 就没有拖动。
  */
-function OverlayPositionPad({value,onChange,label}){
-  return <div className="overlay-position-pad" role="group" aria-label={label}>
+function OverlayPositionPad({value,onChange,label,field,offsets,onSelect,onOffsetChange}){
+  const padRef=useRef(null);
+  const dragRef=useRef(null);
+  const dragEnabled=typeof onOffsetChange==='function';
+  const select=typeof onSelect==='function'?onSelect:(position=>onChange&&onChange(position));
+  const beginDrag=(position)=>(event)=>{
+    select(position);
+    if(!dragEnabled) return;
+    const rect=padRef.current?.getBoundingClientRect();
+    if(!rect) return;
+    const dir=overlayElementDragDirection(position);
+    dragRef.current={pointerId:event.pointerId,startX:event.clientX,startY:event.clientY,dir,
+      from:{offsetX:Number(offsets?.offsetX)||0,offsetY:Number(offsets?.offsetY)||0},width:rect.width,height:rect.height,moved:false};
+    try{event.currentTarget.setPointerCapture?.(event.pointerId)}catch{/* 老浏览器没有指针捕获：靠容器上的 move 兜底 */}
+  };
+  const moveDrag=(event)=>{
+    const drag=dragRef.current;
+    if(!drag||!dragEnabled) return;
+    const dx=event.clientX-drag.startX;
+    const dy=event.clientY-drag.startY;
+    if(!drag.moved&&!overlayDragIsActive(dx,dy)) return;
+    drag.moved=true;
+    if(event.cancelable) event.preventDefault();
+    onOffsetChange(overlayDragOffsets({from:drag.from,dx,dy,padWidth:drag.width,padHeight:drag.height,dirX:drag.dir.dirX,dirY:drag.dir.dirY}));
+  };
+  const endDrag=()=>{dragRef.current=null};
+  const offsetX=Number(offsets?.offsetX)||0;
+  const offsetY=Number(offsets?.offsetY)||0;
+  const dir=overlayElementDragDirection(value);
+  // 拖动可视化：当前格子里的小圆点按偏移方向移动（±0.5 偏移 → ±14px，超过就夹住）。
+  const dotX=Math.max(-14,Math.min(14,dir.dirX*offsetX*28));
+  const dotY=Math.max(-14,Math.min(14,dir.dirY*offsetY*28));
+  const shifted=Math.abs(offsetX)>0.0005||Math.abs(offsetY)>0.0005;
+  return <div className="overlay-position-pad" ref={padRef} role="group" aria-label={`${label}位置`} data-overlay-pad={field||label} data-overlay-pad-position={value} data-overlay-pad-offset={`${offsetX},${offsetY}`} data-overlay-pad-draggable={dragEnabled?'true':'false'}
+    onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag}>
     {ELEMENT_POSITIONS.filter(position=>position!==CUSTOM_ELEMENT_POSITION).map(position=>
       <button key={position} type="button" className={position===value?'active':''} aria-pressed={position===value}
-        aria-label={`${label}：${overlayPositionLabel(position)}`} title={overlayPositionLabel(position)}
-        onClick={()=>onChange(position)}>{overlayPositionLabel(position)}</button>)}
+        data-overlay-cell={position} data-overlay-cell-active={position===value?'true':'false'}
+        aria-label={`${label}：${overlayPositionLabel(position)}`} title={`${overlayPositionLabel(position)}${dragEnabled?'（按住拖动可微调偏移）':''}`}
+        onPointerDown={beginDrag(position)} onClick={()=>select(position)}>
+        {position===value&&shifted?<i className="overlay-pad-dot" style={{transform:`translate(${dotX}px,${dotY}px)`}}/>:null}
+        {overlayPositionLabel(position)}
+      </button>)}
   </div>;
 }
 

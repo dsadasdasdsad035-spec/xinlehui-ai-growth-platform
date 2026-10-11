@@ -19,6 +19,11 @@ import { artworkUrlFingerprint } from '../data/artworkLayers';
 
 /** 缩略图长边上限（CSS 里的展示宽度更小，留 2 倍给高清屏）。 */
 export const FRAME_THUMBNAIL_LONG_EDGE = 320;
+/**
+ * 老师端「水印 · 落款 · 时间」面板里那张成品预览的长边上限（US-007）。
+ * 比缩略图大一档（看得清水印与落款），但同样只留小图，1800px 的位图用完即弃。
+ */
+export const FRAME_PREVIEW_LONG_EDGE = 480;
 /** 内存里最多留多少张缩略图（小图 ~10–20KB，超上限就不再写缓存，避免长时间会话无限增长）。 */
 export const FRAME_THUMB_CACHE_LIMIT = 96;
 const FRAME_THUMBNAIL_QUALITY = 0.82;
@@ -26,14 +31,17 @@ const FRAME_THUMBNAIL_QUALITY = 0.82;
 /**
  * 缩略图缓存键：spec（渲染视图）+ 作品地址指纹 + 展签变量 + 长边上限。
  * 任何一项变化都必须换键 —— 少一项的后果是「换了一套样式却看到上一套的缩略图」。
+ * `lessonDate`（US-007 起）是渲染入参之一（时间元素的 lesson 来源与 `{课次日期}` 读它），
+ * 会影响输出，所以一并进键；缺省为 undefined（两侧一致即可）。
  */
-export function frameThumbnailKey({ spec, source, student = '', title = '', date = '', orgName = '', teacherName = '', maxEdge = FRAME_THUMBNAIL_LONG_EDGE } = {}) {
+export function frameThumbnailKey({ spec, source, student = '', title = '', date = '', lessonDate, orgName = '', teacherName = '', maxEdge = FRAME_THUMBNAIL_LONG_EDGE } = {}) {
   return JSON.stringify([
     frameSpecRenderKey(spec),
     artworkUrlFingerprint(source),
     student,
     title,
     date,
+    lessonDate === undefined || lessonDate === null ? null : lessonDate,
     orgName,
     teacherName,
     maxEdge
@@ -67,14 +75,16 @@ async function downscaleImageUrl(url, maxEdge) {
 /**
  * 渲染一张样式缩略图：与成品图同一条渲染路径，再缩到长边 ≤ `maxEdge`。
  * 渲染失败（素材读不出来等）会 throw，由调用方决定「这一张显示占位」。
+ * `lessonDate`（US-007）透传给渲染函数：老师端面板的实时预览要按本次课次日期画时间元素。
  */
-export async function renderFrameStyleThumbnail({ source, spec, student = '', title = '', date = '', orgName = '', teacherName = '', maxEdge = FRAME_THUMBNAIL_LONG_EDGE } = {}) {
+export async function renderFrameStyleThumbnail({ source, spec, student = '', title = '', date = '', lessonDate, orgName = '', teacherName = '', maxEdge = FRAME_THUMBNAIL_LONG_EDGE } = {}) {
   const framed = await renderFramedArtwork({
     source,
     spec,
     student,
     title,
     date,
+    lessonDate,
     rotation: 0,
     orgName,
     teacherName

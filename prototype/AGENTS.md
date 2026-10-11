@@ -456,6 +456,51 @@ DSH 的 `browser_*` 工具**没有 selectOption 能力**：`browser_type` 走的
   ③ 想断言「点某个微调后成品图真的变了」，要选一个**与模板当前值不同**的选项 ——
   点成本身已有的颜色时渲染结果不变，等它变化会白等 40 秒。
 
+## 水印 · 落款 · 时间面板（US-007）
+
+老师在第二步调叠加元素的那块面板（`main.jsx` 的 `TeacherFlowV2` 里变量名 `overlayPanel`，
+五张元素卡由 `overlayElementCards` / `overlayElementCard` 渲染）。三块拼图各只有一份真源：
+
+| 关注点 | 位置 | 说明 |
+|---|---|---|
+| 面板规则（本故事的核心） | `data/lessonOverlays.js`（零依赖，可 Node 直跑） | 可改字段白名单 / 归一化 / 补丁合并 / 拖动换算 / 档位选项 / 课次默认值 |
+| 位置枚举、标签、变量替换、时间解析 | `services/overlayLayout.js` | 绘制层与面板读同一份；本故事给它加了时间元素的 `lessonDate` 入口 |
+| 素材上传准入 | `data/framingAssets.js` + `services/framingAssets.js` | 与后台 Logo / 签名图完全同一套（PNG/JPG、≤512×512、≤200KB） |
+
+- **面板调整 = 本次选用的一层补丁**（与 US-006 的相框微调同口径）：不写回模板（模板写权限是 US-031
+  「另存为我的模板」），也不进草稿（US-409 的草稿字段清单是硬约束，加字段就违规）。
+  `effectiveFrameSpec = applyOverlayOverrides(frameStyleSpec, overlayOverrides)`，**没有改动时原样返回输入对象**
+  → 老 v1 模板逐像素不变；有改动时只写 `watermark` / `signature` / `date` 三个分组 + `version`
+  （混写结构在 `normalizeFrameSpecV2` 里合法，v2 分组优先、v1 平面字段兜底）。
+- **「默认值就是对的」的落点**：时间元素 `source: 'lesson'` 读渲染入参 **`lessonDate`**（= 第一步的课次日期，
+  `main.jsx` 传 `lessonDateDots`；`renderFramedArtwork` 的 `lessonDate` 缺省回落 `date`，所以老调用方一字不变）；
+  落款姓名的 spec 默认值就是变量 `{老师姓名}`（渲染时替换成当前登录老师）。面板每支元素都有一行
+  「渲染为 …」，用的是**与绘制层同一份** `applyOverlayVariables` / `resolveOverlayDateText` / `qrTargetSummary`
+  —— 老师不必出图就知道变量会变成什么，浏览器断言也读这一行。
+- **九宫格控件只有一个**：`OverlayPositionPad`（后台「装裱设置」与老师端面板共用）。点格子 = 定位（`onSelect`）；
+  **在格子上按住拖动 = 改偏移**（只在对老师端传 `onOffsetChange` 时启用，后台沿用旧签名时行为一字不变）。
+  拖动换算收在 `overlayDragOffsets`：拖过整块九宫格 = 0.3 偏移、方向取自 `resolveElementAnchor`
+  （偏移正向朝画布内侧，所以贴右的格子往右拖 = 偏移减小）、|偏移| < 0.02 吸附成 0；
+  以**按下那一刻的偏移**为基准算总位移（指针来回移动不漂移），位移 < 3px 仍算点击。
+- **别让「点完格子什么都没变」**：点格子时若该元素关着、且开启后**真画得出来**（`overlayElementCanDraw`），
+  顺手把它打开；画不出来的（没传 Logo / 内容是空的）只定位不开启，并用 `overlayElementBlockerText` 说明原因。
+  「印章开」同理顺手打开落款（印章画在落款里，落款关着时它不会出现）。
+- **实时预览没有「应用」按钮**：任何输入 → `overlayTweaks` → `effectiveFrameSpec` → 第二步装裱那段 effect
+  （键是 `frameSpecRenderKey`）→ `media.artwork.framedUrl` 重画（个人反馈的预览就是这张成品图）；
+  班级反馈没有单幅成品图，退化为「本班第一幅已上传作品」的实时渲染
+  （`FRAME_PREVIEW_LONG_EDGE = 480`，与 US-006 缩略图共用 `frameThumbnailKey` / 同一个缓存 Map，
+  maxEdge 与 lessonDate 都在键里，所以两边的条目不会撞）。
+- **预览失败必须显式**（`overlayPreviewError` → 面板上「预览失败：…」）：本故事真踩过 ——
+  预览渲染里引用了一个拼错的常量（`OVERLAY_PREVIEW_LONG_EDGE` vs 导入的 `FRAME_PREVIEW_LONG_EDGE`），
+  `try/catch` 把 `ReferenceError` 吞掉，界面上只表现为「一直不出图」，控制台干净得像没事。
+- **移动端是底部抽屉**：`.lesson-overlay-trigger`（桌面 `display:none`）打开 `.lesson-overlay-panel`
+  （≤800px 时 `position:fixed` 的 bottom sheet，头/脚 sticky，九宫格 44×44px、按钮一律 ≥44px 高）。
+- **验证要点**：① 拖动断言要**从目标格子中心按下**（按下即定位，方向按那一格算；从 pad 中心按下会选成
+  middle-center，方向自然不同，期望值就不对）；② 期望值在页面内 `await import('/src/data/lessonOverlays.js')`
+  用 `overlayDragOffsets` **独立重算**再比对；③ 「时间来源 = 课次日期」的像素证据：课次日期版与手填日期版
+  在底部条带（y ≥ 1150）的指纹不同、切回课次日期后与前一版**逐字节一致**；④ 断言前先让成品图**稳定**
+  （连续 3 次采样不变）再当基线 —— 否则会拿中间态当基线，得到「复位后与基线不一致」这种假失败。
+
 ## 装裱参数 spec：v1 平面结构 / v2 分组结构
 
 `src/services/frameSpec.js` 同时持有两代结构，动装裱参数前先确认自己在哪一代：
@@ -519,6 +564,10 @@ DSH 的 `browser_*` 工具**没有 selectOption 能力**：`browser_type` 走的
   + `offsetX/offsetY` 比例偏移（-0.5~0.5）；尺寸与位置一律用「相对画布短边的比例」。
 
 ### 叠加元素的定位与变量替换（US-003a）
+
+> **控件也共用**：九宫格定位控件是 `main.jsx` 的 `OverlayPositionPad`（后台装裱设置与老师端
+> 「水印 · 落款 · 时间」面板同一份）。老师端在它之上加了「按住拖动 = 微调偏移」，
+> 换算规则在 `data/lessonOverlays.js` 的 `overlayDragOffsets`（见「水印 · 落款 · 时间面板（US-007）」小节）。
 
 定位 / 偏移 / 尺寸换算 / 变量替换的**唯一真源是 `src/services/overlayLayout.js`**（零依赖纯函数，
 与 `frameShapes.js` 同一口径，可直接 Node 断言）。渲染层、后台九宫格控件（US-007）与批量套用都读它，
@@ -808,6 +857,10 @@ DSH 的 `browser_*` 工具**没有 selectOption 能力**：`browser_type` 走的
   不会编译它，等于没验证。新模块至少要在 `main.jsx` 里接上 state / effect 走一遍。
 - 时间戳用 `??` 而不是 `||` 兜底：显式空串表示「历史数据本来就没有」，不要偷偷填 `now`。
 - 日期一律归一成 `YYYY-MM-DD` 再比较；旧数据里有 `2026.08.04` / ISO 串 / `Date` 混用。
+- **静默的 `try/catch` 会吞掉编程错误**：`catch{/* 渲染失败：保持占位 */}` 这类「容错」写法会让
+  `ReferenceError`（拼错的常量 / 没导入的标识符）表现成「功能一直不出效果」，而控制台一个错都没有。
+  容错的 catch 至少要把失败原因落到界面或 state 上（US-007 的 `overlayPreviewError`），
+  否则调试时只能靠打补丁数 `toDataURL` 才知道「那段代码到底跑没跑」。
 - 旧数据兼容的写法：`normalize<X>(raw)` 永不抛错，缺字段补默认值，**无法映射的原始对象挂到 `legacy` 字段上原样保留**，
   宁可多带一个字段也不要丢数据；不要为了让旧数据「看起来完整」而编造日期或序号。
 

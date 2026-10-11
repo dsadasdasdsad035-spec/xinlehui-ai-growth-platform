@@ -1005,12 +1005,16 @@ function buildFramingLayout({ view, imageWidth = 1, imageHeight = 1, rotation })
  * 由 `orgName` / `student` / `title` / `teacherName` / `date` 拼出来，也可以用 `variables` 直接覆盖
  * （批量套用与另存模板时用得上）。上下文里的空值替换成空串，因此不会把 `{机构名}` 原样印在画面上。
  *
- * 与时间 / 二维码相关的两个可选入参（US-003c）：
+ * 与时间 / 二维码相关的三个可选入参（US-003c / US-007）：
  *   - `today`：时间元素 `source: 'today'` 用哪一天（缺省取当前时刻；测试里固定成某一天才能断言）；
  *   - `qrValues`：二维码目标模板的占位符取值（如归档流程给出的 `{ shareToken }`）；
- *     没给值时 `data/qrTargets.js` 填示例值，并把这条链接标记为「示例」。
+ *     没给值时 `data/qrTargets.js` 填示例值，并把这条链接标记为「示例」；
+ *   - `lessonDate`：**本次课次日期**（老师端第二步「水印 · 落款 · 时间」面板的默认时间来源）。
+ *     `date` 是展签日期（模板的展示口径），课次日期是业务日期，两者不是一回事：
+ *     时间元素 `source: 'lesson'` 与变量 `{课次日期}` 读 `lessonDate`，缺省回落 `date`（老调用方一字不变）。
+ *     US-038 会把展签日期也改成课次日期，在那之前这两个入口保持分开。
  */
-export async function renderFramedArtwork({ source, spec = {}, student = '', title = '', date = '', rotation, orgName = '', teacherName = '', variables = null, today, qrValues = null }) {
+export async function renderFramedArtwork({ source, spec = {}, student = '', title = '', date = '', lessonDate, rotation, orgName = '', teacherName = '', variables = null, today, qrValues = null }) {
   const image = await loadImage(source);
 
   const view = frameSpecRenderView(spec);
@@ -1106,12 +1110,15 @@ export async function renderFramedArtwork({ source, spec = {}, student = '', tit
   // `view.overlays` 只有 v2 spec 才有；v1 平面 spec 是 null，一个像素都不碰。
   if (view.overlays) {
     // 显式传入的 variables 优先（批量套用 / 另存模板的场景），其余从既有入参拼。
+    // 课次日期单独一个入参（US-007）：时间元素的 lesson 来源与 {课次日期} 变量都读它，
+    // 缺省回落展签日期 —— 老调用方（只传 date）的行为因此一字不变。
+    const lessonDateValue = lessonDate === undefined || lessonDate === null ? date : lessonDate;
     const overlayContext = overlayVariableContext({
       orgName,
       studentName: student,
       workTitle: title,
       teacherName,
-      lessonDate: date,
+      lessonDate: lessonDateValue,
       ...(variables && typeof variables === 'object' ? variables : {})
     });
     // 图片类元素（机构 Logo / 手写签名图）先解码再画：解码失败 → 这一张不画（不留占位），其余照画。

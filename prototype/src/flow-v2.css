@@ -404,3 +404,100 @@
 .frame-style-tune-foot button:disabled{opacity:.45;cursor:default}
 .frame-choice-hint{display:block;margin-top:5px;font-size:10px;line-height:1.5;color:#857a64}
 @media(max-width:800px){.frame-style-panel{padding:14px}.frame-style-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.frame-style-group{align-items:flex-start;flex-direction:column;gap:6px}.frame-style-group>span{width:auto}}
+
+/* ---- 水印 · 落款 · 时间面板（[第二步 US-007]）------------------------------------
+   三区（水印 / 落款 / 时间）共用九宫格定位控件（后台那个 OverlayPositionPad，加了拖动微调）。
+   桌面：左侧三区控件 + 右侧成品预览（sticky）；手机（≤800px）：整块面板变成**底部抽屉**，
+   由 `.lesson-overlay-trigger` 打开，九宫格点击区域放大到 44×44px（验收原文）。 */
+.lesson-overlay-trigger{display:none}
+.lesson-overlay-scrim{display:none}
+.lesson-overlay-panel{display:flex;flex-direction:column;gap:12px;margin-top:22px;border:1px solid #eadfbd;border-radius:18px;background:#fffdf7;padding:20px}
+.lesson-overlay-drawer-head{display:none}
+.lesson-overlay-head{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.lesson-overlay-head b{font-size:13px;color:#292720}
+.lesson-overlay-head em{font-style:normal;font-size:10px;font-weight:800;color:#7a5b00;background:#fff2c8;border-radius:999px;padding:3px 10px}
+.lesson-overlay-head small{flex:1 1 100%;font-size:10px;line-height:1.6;color:#857a64}
+.lesson-overlay-body{display:grid;grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);gap:14px;align-items:start}
+.lesson-overlay-sections{display:flex;flex-direction:column;gap:12px;min-width:0}
+.lesson-overlay-section{display:flex;flex-direction:column;gap:10px;border:1px solid #eadfbd;border-radius:14px;background:#fff;padding:12px}
+.lesson-overlay-section>header{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;border-bottom:1px dashed #eadfbd;padding-bottom:8px}
+.lesson-overlay-section>header b{font-size:12px;color:#292720}
+.lesson-overlay-section>header small{font-size:10px;color:#857a64}
+.lesson-overlay-element{display:flex;flex-direction:column;gap:8px;border:1px solid #f0e7cf;border-radius:12px;background:#fffdf7;padding:10px}
+.lesson-overlay-element.is-on{border-color:#e2c46a;background:#fffcf0}
+.lesson-overlay-element-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.lesson-overlay-element-head b{font-size:11px;color:#292720}
+.lesson-overlay-element-head em{font-style:normal;font-size:9px;font-weight:800;border-radius:999px;padding:2px 8px;background:#f1ece0;color:#857a64}
+.lesson-overlay-element.is-on .lesson-overlay-element-head em{background:#edf5e2;color:#4d6b28}
+.lesson-overlay-switch{margin-left:auto;display:flex;gap:4px}
+.lesson-overlay-switch button{border:1px solid #e3d7b5;background:#fff;border-radius:8px;padding:4px 9px;font-size:10px;font-weight:700;color:#716850;cursor:pointer}
+.lesson-overlay-switch button.active{border-color:#c99908;background:#fff5d1;color:#765800}
+.lesson-overlay-pad-row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.lesson-overlay-panel .overlay-position-pad button{position:relative;touch-action:none;user-select:none;-webkit-user-select:none}
+.overlay-pad-dot{position:absolute;top:5px;left:5px;width:6px;height:6px;border-radius:999px;background:#c99908;pointer-events:none}
+.lesson-overlay-offset{display:flex;flex-direction:column;gap:4px;align-items:flex-start;min-width:0;flex:1 1 120px}
+.lesson-overlay-offset b{font-size:10px;font-weight:800;color:#514a38}
+.lesson-overlay-offset button{border:1px solid #e3d7b5;background:#fff;border-radius:8px;padding:4px 9px;font-size:10px;font-weight:700;color:#716850;cursor:pointer}
+.lesson-overlay-offset button:disabled{opacity:.45;cursor:default}
+.lesson-overlay-offset small{font-size:9px;line-height:1.5;color:#8d8471}
+.lesson-overlay-fields{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end}
+.lesson-overlay-fields label{display:flex;flex-direction:row;align-items:center;gap:6px;font-size:10px;color:#716850;text-align:left}
+.lesson-overlay-fields label.wide{flex:1 1 100%}
+.lesson-overlay-fields input,.lesson-overlay-fields select{border:1px solid #e3d7b5;border-radius:8px;padding:5px 8px;font-size:11px;color:#292720;background:#fff;min-height:32px;min-width:0}
+.lesson-overlay-fields input{flex:1 1 140px;max-width:100%}
+.lesson-overlay-label{font-size:10px;color:#716850}
+.lesson-overlay-options{display:flex;flex-wrap:wrap;gap:6px}
+.lesson-overlay-options button{border:1px solid #e3d7b5;background:#fff;border-radius:8px;padding:5px 9px;font-size:10px;font-weight:700;color:#716850;cursor:pointer}
+.lesson-overlay-options button.active{border-color:#c99908;background:#fff5d1;color:#765800}
+.lesson-overlay-options button:disabled{opacity:.5;cursor:default}
+.lesson-overlay-colors{display:flex;flex-wrap:wrap;gap:6px}
+.lesson-overlay-colors button{display:flex;align-items:center;gap:5px;border:1px solid #e3d7b5;background:#fff;border-radius:8px;padding:5px 9px;font-size:10px;font-weight:700;color:#716850;cursor:pointer}
+.lesson-overlay-colors button.active{border-color:#c99908;background:#fff5d1;color:#765800}
+.lesson-overlay-colors button.frame-style-swatch i{width:13px;height:13px;flex:none;border-radius:4px;border:1px solid rgba(0,0,0,.16)}
+.lesson-overlay-variables{display:flex;flex-wrap:wrap;gap:5px;align-items:center;font-size:9px;color:#857a64}
+.lesson-overlay-variables button{border:1px dashed #d8c79a;background:#fffdf3;border-radius:7px;padding:3px 7px;font-size:9px;color:#765800;cursor:pointer}
+.lesson-overlay-asset{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.lesson-overlay-asset>button{border:1px solid #e3d7b5;background:#fff;border-radius:8px;padding:6px 10px;font-size:10px;font-weight:700;color:#716850;cursor:pointer}
+.lesson-overlay-asset>button:disabled{opacity:.5;cursor:default}
+.lesson-overlay-asset label{display:flex;flex-direction:row;align-items:center;gap:6px;font-size:10px;color:#716850}
+.lesson-overlay-asset select{border:1px solid #e3d7b5;border-radius:8px;padding:5px 8px;font-size:11px;color:#292720;background:#fff;min-height:32px}
+.lesson-overlay-render{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;margin:0}
+.lesson-overlay-render b{font-size:9px;font-weight:800;color:#9a6e00;background:#fff2c8;border-radius:999px;padding:2px 8px}
+.lesson-overlay-render span{font-size:10px;color:#292720;word-break:break-all}
+.lesson-overlay-render em{font-style:normal;font-size:9px;color:#857a64}
+.lesson-overlay-blocked{margin:0;font-size:9px;line-height:1.55;color:#9a5520;background:#fdf3e6;border-radius:8px;padding:6px 8px}
+.lesson-overlay-note{margin:0;font-size:9px;line-height:1.55;color:#8d8471}
+.lesson-overlay-preview{display:flex;flex-direction:column;gap:8px;border:1px solid #eadfbd;border-radius:14px;background:#fff;padding:12px;position:sticky;top:12px}
+.lesson-overlay-preview>b{font-size:12px;color:#292720}
+.lesson-overlay-preview img{display:block;width:100%;border-radius:10px;border:1px solid #f0e7cf;background:#fff}
+.lesson-overlay-preview-empty{display:grid;place-items:center;min-height:150px;border:1px dashed #e6d9b8;border-radius:10px;font-size:10px;line-height:1.5;color:#8d8471;text-align:center;padding:12px}
+.lesson-overlay-preview em{font-style:normal;font-size:10px;font-weight:800;color:#4d6b28;background:#edf5e2;border-radius:999px;padding:3px 10px;align-self:flex-start}
+.lesson-overlay-preview small{font-size:9px;line-height:1.6;color:#857a64}
+.lesson-overlay-foot{display:flex;align-items:center;justify-content:space-between;gap:9px;flex-wrap:wrap;border-top:1px dashed #eadfbd;padding-top:11px}
+.lesson-overlay-foot em{font-style:normal;font-size:10px;font-weight:800;color:#4d6b28;background:#edf5e2;border-radius:999px;padding:3px 10px}
+.lesson-overlay-foot button{border:1px solid #e3d7b5;background:#fff;border-radius:9px;padding:7px 12px;font-size:11px;font-weight:700;color:#716850;cursor:pointer}
+.lesson-overlay-foot button:disabled{opacity:.45;cursor:default}
+.lesson-overlay-done{display:none}
+@media(max-width:800px){
+  /* 手机端：面板以底部抽屉呈现，由触发按钮打开；九宫格点击区域 ≥44×44px。 */
+  .lesson-overlay-trigger{display:flex;width:100%;align-items:center;justify-content:center;gap:6px;margin-top:16px;border:1px solid #e3d7b5;border-radius:14px;background:#fff5d1;color:#765800;font-size:12px;font-weight:700;padding:12px;min-height:44px;cursor:pointer}
+  .lesson-overlay-trigger em{font-style:normal;font-size:10px;font-weight:800;opacity:.85}
+  .lesson-overlay-scrim{display:block;position:fixed;inset:0;z-index:71;border:0;background:rgba(41,39,32,.42)}
+  .lesson-overlay-panel{position:fixed;left:0;right:0;bottom:0;z-index:72;max-height:88vh;overflow:auto;margin:0;border-radius:20px 20px 0 0;border-bottom:0;padding:12px 14px 16px;transform:translateY(102%);transition:transform .22s ease;box-shadow:0 -14px 40px rgba(84,64,12,.26)}
+  .lesson-overlay-panel.is-open{transform:translateY(0)}
+  .lesson-overlay-panel .lesson-overlay-drawer-head{display:flex;align-items:center;gap:8px;position:sticky;top:-12px;z-index:2;background:#fffdf7;padding:6px 0 8px;margin:-6px 0 0}
+  .lesson-overlay-handle{width:42px;height:4px;border-radius:999px;background:#e0d3ae;margin-right:2px}
+  .lesson-overlay-drawer-head b{font-size:12px;color:#292720}
+  .lesson-overlay-drawer-head button{margin-left:auto;border:1px solid #e3d7b5;background:#fff;border-radius:9px;padding:8px 14px;font-size:11px;font-weight:700;color:#716850;min-height:44px}
+  .lesson-overlay-head{display:none}
+  .lesson-overlay-body{grid-template-columns:1fr}
+  .lesson-overlay-preview{position:static;order:-1}
+  .lesson-overlay-panel .overlay-position-pad{grid-template-columns:repeat(3,44px)}
+  .lesson-overlay-panel .overlay-position-pad button{width:44px;height:44px;font-size:11px}
+  .lesson-overlay-panel .lesson-overlay-switch button,.lesson-overlay-panel .lesson-overlay-options button,.lesson-overlay-panel .lesson-overlay-colors button,.lesson-overlay-panel .lesson-overlay-variables button{min-height:44px}
+  .lesson-overlay-panel .lesson-overlay-asset>button{min-height:44px}
+  .lesson-overlay-foot{position:sticky;bottom:-16px;background:#fffdf7;padding:10px 0 4px}
+  .lesson-overlay-foot em{display:none}
+  .lesson-overlay-foot button{flex:1 1 auto;min-height:44px}
+  .lesson-overlay-done{display:block}
+}
