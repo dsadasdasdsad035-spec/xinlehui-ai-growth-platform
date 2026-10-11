@@ -206,3 +206,59 @@
 .intake-consent-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .intake-consent-actions small{font-size:10px;line-height:1.65;color:#8a6a20}
 @media(max-width:800px){.intake-consent-head{flex-wrap:wrap}.intake-consent-head button{margin-left:0;min-height:44px}.intake-consent-list{grid-template-columns:1fr}.intake-consent-actions{align-items:stretch;flex-direction:column}.intake-consent-actions button{width:100%;min-height:44px}}
+
+/* ---- 学员乘上传位的折叠分组与录入节奏（US-413）------------------------------------
+   学员数 > ROSTER_GROUP_THRESHOLD（20）时列表按出席状态分组：组头写明本组人数与「还有 N 位未上传」，
+   点一下就折叠/展开。分组判定与派生在 src/data/intakePerformance.js（纯函数），这里只管排版。 */
+.intake-upload-slot-list.grouped{gap:10px}
+.intake-slot-group{display:flex;flex-direction:column;gap:7px}
+.intake-slot-group-head{display:flex;align-items:center;gap:8px;width:100%;border:1px solid #e6d9b8;background:#fff8e2;border-radius:10px;padding:0 12px;min-height:40px;font-size:11px;font-weight:700;color:#5f5745;cursor:pointer;text-align:left}
+.intake-slot-group-head:hover{border-color:#c99908}
+.intake-slot-group-head svg{flex:none;transition:transform .15s ease}
+.intake-slot-group-head svg.closed{transform:rotate(-90deg)}
+.intake-slot-group-head span{font-size:10px;font-weight:400;color:#857a64}
+.intake-slot-group-head em{margin-left:auto;font-style:normal;font-size:10px;color:#a17816}
+.intake-slot-group-head em.done{color:#2f6b45}
+.intake-slot-group-body{display:flex;flex-direction:column;gap:8px}
+.intake-upload-perf{display:flex;align-items:center;gap:7px;flex-wrap:wrap;border-left:3px solid #d5bd71;background:#fff8e2;border-radius:8px;padding:8px 10px;font-size:10px;color:#6f6242}
+.intake-upload-perf.done{border-left-color:#3f8f5f;background:#f2faf4;color:#2f6b45}
+.intake-upload-perf svg{flex:none}
+.intake-upload-perf .intake-upload-pace{font-weight:700}
+.intake-upload-perf em{font-style:normal;color:#a17816}
+.intake-upload-perf.done em{color:#2f6b45}
+
+/* ---- 390px 手机录入页（US-413）-----------------------------------------------------
+   验收：390px 宽度下「学员乘上传位」单手可用、所有可点区域不小于 44x44px、无横向滚动。
+   44px 的唯一真源是 src/data/intakePerformance.js 的 TAP_TARGET_MIN（CSS 不能 import 常量，
+   改一处必须同步另一处）；这里只覆盖 ≤430px，桌面端沿用上面既有的尺寸。 */
+@media(max-width:430px){
+  .feedback-flow-v2{overflow-x:clip;padding-left:10px;padding-right:10px}
+  .feedback-flow-v2 .scene-panel{padding:14px;border-radius:16px}
+  .feedback-flow-v2 .scene-heading h2{font-size:20px;line-height:1.35}
+  /* 所有可点区域不小于 44x44px：按钮 / 下拉 / 输入框 / 文字链 / 图标按钮都算 */
+  .feedback-flow-v2 button,
+  .feedback-flow-v2 select,
+  .feedback-flow-v2 input:not([type=file]),
+  .feedback-flow-v2 [role=button]{min-height:44px;min-width:44px}
+  .feedback-flow-v2 input[type=checkbox]{width:22px;height:22px;min-width:22px}
+  .feedback-flow-v2 .text-link{padding-left:8px;padding-right:8px;justify-content:center}
+  /* 一人一行：信息与操作都占满宽度，单手不用横向找；缩略图放大到看得清 */
+  .intake-upload-slot-list{max-height:none}
+  .intake-upload-items figure{flex-wrap:wrap;row-gap:8px}
+  .intake-upload-items figure>div{width:100%;min-width:0}
+  .intake-upload-items input{width:100%}
+  .intake-upload-items img{width:72px;height:72px}
+  .intake-upload-items figure>button{flex:1}
+  .intake-slot-group-head{width:100%}
+  .intake-upload-perf{align-items:flex-start;flex-direction:column;gap:4px}
+  /* 主操作固定在屏幕底部：滚动到任何位置都能单手够到「保存课次 / 进入智能装裱」。
+     两个次要动作并排、主操作独占一行，操作栏不至于吃掉太多屏幕高度。 */
+  .feedback-flow-v2 .scene-actions{position:sticky;bottom:0;z-index:6;margin-top:14px;padding:10px 0 calc(10px + env(safe-area-inset-bottom,0px));background:linear-gradient(180deg,rgba(255,254,249,0),#fffef9 26%);flex-wrap:wrap;justify-content:stretch}
+  .feedback-flow-v2 .scene-actions button{flex:1 1 auto;min-height:48px}
+  .feedback-flow-v2 .scene-actions button:last-child{flex:1 1 100%}
+  /* toast 让开底部主操作栏：390px 下它会盖住「进入智能装裱」，那一下点击就点不到了 */
+  .toast{left:14px;right:14px;bottom:calc(124px + env(safe-area-inset-bottom,0px));padding:11px 13px;font-size:11px}
+}
+
+/* 缩略图未就绪时的占位（US-413）：淡淡的斜纹，明说「正在生成小图」，而不是一个破图或一堆原图。 */
+.intake-upload-items figure[data-thumb=pending] img{background:repeating-linear-gradient(45deg,#fdf7e6,#fdf7e6 6px,#f7ebc8 6px,#f7ebc8 12px);border-style:dashed;opacity:.8}

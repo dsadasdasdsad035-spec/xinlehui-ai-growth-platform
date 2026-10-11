@@ -82,7 +82,12 @@ import {
 import { evaluateIntake } from './data/lessonReadiness';
 // 家长授权状态（US-411）：第一步的「未完成查看授权」提示与后续转发前置校验共用的唯一来源。
 import { consentSummaryOf, loadConsents } from './data/consent';
-import { downsampleImageFile, resolveMediaTypes, revokeMediaEntries, revokeMediaUrl } from './services/mediaIntake';
+// 录入页移动端与性能（US-413）：缩略图长边上限 / 44px 可点区域 / 20 人以上按出席折叠分组 / 录入用时。
+// 规则与文案是零依赖纯函数（可直接 Node 断言），浏览器侧的执行在 services/mediaIntake。
+import {
+  groupSlotRows, intakePaceSummary, shouldGroupSlotRows, thumbnailPendingLabel
+} from './data/intakePerformance';
+import { createThumbnail, downsampleImageFile, resolveMediaTypes, revokeMediaEntries, revokeMediaUrl, scheduleMediaTask } from './services/mediaIntake';
 import { createLesson, loadRemoteLessons, updateLesson } from './services/lessonApi';
 // 课程库（course）是课题的来源：课次上的 courseId 指向一门课程，课题按课时序号从 syllabus 取。
 import { findCourseById, loadCourses, persistCourses, resolveCourseId, resolveSyllabusTopic, selectableCourses } from './data/courses';
@@ -114,6 +119,10 @@ const roleMeta = {
   parent: { label: '家长', name: '陈一诺妈妈', campus: '家长端' },
   admin: { label: '管理员', name: '平台管理员', campus: '平台总部' }
 };
+
+// 缩略图还没生成好时列表里的占位（US-413）：一个 8x8 的透明 SVG，只有几十字节。
+// **不能**用原图当占位 —— 22 位学员的 3000px 原图一起进列表，解码内存与滚动帧率都会塌。
+const INTAKE_THUMB_PLACEHOLDER = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8'%3E%3C/svg%3E";
 
 const navByRole = {
   // 老师人设与技能库是机构级基础数据，只有管理员能维护；
@@ -321,6 +330,33 @@ function participantKey(item){
   return id||`name:${String(item?.name||'').trim()}`;
 }
 
+/**
+ * 学员乘上传位列表的渲染容器（US-413）。
+ *
+ * 学员数**不超过** ROSTER_GROUP_THRESHOLD（20）时就是一条平铺列表（US-406b 的既有行为）；
+ * 超过时按出席状态折叠分组 —— 组头写明本组人数与「还有 N 位未上传」，老师不用展开就能定位到
+ * 还没录完的那一组，20+ 人的班在手机上也能单手完成录入。
+ * 分组的顺序、每组人数、每组待办数全部来自 `data/intakePerformance.js` 的 `groupSlotRows`（纯函数）。
+ */
+function IntakeSlotGroups({listKey,rows,collapsedKeys,onToggle,renderRow,className=''}){
+  if(!shouldGroupSlotRows(rows.length)) return <div className={`intake-upload-slot-list ${className}`.trim()}>{rows.map(renderRow)}</div>;
+  return <div className={`intake-upload-slot-list grouped ${className}`.trim()} data-slot-groups={listKey}>
+    {groupSlotRows(rows).map(group=>{
+      const key=`${listKey}:${group.key}`;
+      const collapsed=collapsedKeys.includes(key);
+      return <section key={key} className={`intake-slot-group${collapsed?' collapsed':''}`} data-group={group.key}>
+        <button type="button" className="intake-slot-group-head" aria-expanded={!collapsed} onClick={()=>onToggle(key)}>
+          <ChevronDown size={14} className={collapsed?'closed':''}/>
+          <b>{group.label}</b>
+          <span>{group.total} 人</span>
+          {group.pending?<em>还有 {group.pending} 位未上传</em>:<em className="done">已全部上传</em>}
+        </button>
+        {collapsed?null:<div className="intake-slot-group-body">{group.rows.map(renderRow)}</div>}
+      </section>;
+    })}
+  </div>;
+}
+
 function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherProfiles=[],skillLibrary=[],courses=[],lessons=[],setLessons=()=>{},role='teacher'}){
   const management=loadStudentManagement();
   const availableClasses=management.classes||[];
@@ -429,6 +465,15 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
   // 正在「分给多位学员」的那张照片（uploadId）与勾选到的学员 key 集合。
   const [photoAssignId,setPhotoAssignId]=useState('');
   const [photoAssignSelection,setPhotoAssignSelection]=useState([]);
+  // ---- 录入页移动端与性能（US-413）-----------------------------------------------
+  // 上传位列表的折叠分组：学员数 > 20 时按出席状态分组，key 形如「artwork:absent」。
+  const [collapsedSlotGroups,setCollapsedSlotGroups]=useState([]);
+  // 还在空闲时段生成缩略图的张数（列表先生成小图，生成过程不阻塞输入）。
+  const [thumbPendingCount,setThumbPendingCount]=useState(0);
+  // 本次录入的开始时刻：进入流程那一刻。用时不靠定时器刷整页（全页每秒重渲染是性能反模式），
+  // 只在素材发生变化的那些操作里重算一次。
+  const intakeStartedAtRef=useRef(Date.now());
+  const [intakeElapsedSeconds,setIntakeElapsedSeconds]=useState(0);
   const steps=[['创建信息','选择对象并上传素材'],['智能装裱','完成作品与照片的裁剪装裱'],['五维点评','依据素材完成温暖点评'],['归档转发','形成一次完整课后反馈']];
   // 课程下拉的数据源是课程库（停用课程不进可选列表）。班级上的 course 存的是课程名，要经 resolveCourseId 换算。
   const courseOptions=selectableCourses(courses);
@@ -546,6 +591,12 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
     : [];
   // 顶部「还有 N 位学员未上传作品」：只数到场学员（缺课的孩子本来就不该有作品）。
   const missingArtworkCount=participantsMissingUpload(effectiveParticipants,classArtworkItems,'artwork').length;
+  // 录入节奏（US-413）：只算**到场**学员（缺课的孩子不该有作品），完成 = 这位学员已有 ≥1 幅。
+  // 界面上的「已录入 N/M · 用时」就是验收里「18 位学员各 1 幅在 3 分钟内」的那个数字。
+  const artworkPaceTotal=artworkSlotRows.filter(row=>row.attended).length;
+  const artworkPaceDone=artworkSlotRows.filter(row=>row.attended&&row.usage.used>0).length;
+  const artworkPaceText=intakePaceSummary({total:artworkPaceTotal,done:artworkPaceDone,elapsedSeconds:intakeElapsedSeconds});
+  const thumbPendingText=thumbnailPendingLabel(thumbPendingCount);
   // ---- 学员课堂照片上传位（US-009）-------------------------------------------------
   // 照片与作品**分开管理**：作品必选（1–5 幅/人），照片选填（0–10 张/人）。
   // 照片额外支持「一张合影分给多位学员」：条目上带 owners 多人归属（见 data/uploadBinding 的 normalizeOwners）。
@@ -931,6 +982,42 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
     }
     return {files,rejected:screened.rejected,notice:notices.filter(Boolean).join('')};
   };
+  /**
+   * 会话素材的缩略图（US-413）：条目**先**进界面（有 url 就能绑定、能填作品名），
+   * 缩略图挪到空闲时段生成，长边不超过 `THUMBNAIL_MAX_EDGE`（320px）；生成完成后只回填这一条的
+   * `thumbUrl`，列表随即换成小图。生成过程不阻塞输入 —— 输入框、按钮、后续上传都在缩略图之前就已经可用。
+   *
+   * 列表在缩略图就绪前渲染占位图（**不是**原图）：22 位学员同时把 3000px 原图塞进列表会让
+   * 解码内存和滚动帧率一起塌掉，这正是本故事要避免的。生成失败时才退回原图（极少见）。
+   *
+   * `entries[i]` 与 `files[i]` 一一对应（绑定函数按传入顺序产出条目），所以这里按顺序配对。
+   */
+  const scheduleThumbnails=(kind,entries,files)=>{
+    const pairs=(entries||[]).map((entry,index)=>({entry,file:(files||[])[index]})).filter(item=>item.entry&&item.file);
+    if(!pairs.length) return;
+    setThumbPendingCount(current=>current+pairs.length);
+    pairs.forEach(({entry,file})=>{
+      scheduleMediaTask(async()=>{
+        const thumb=await createThumbnail(file);
+        setBatchUploads(current=>{
+          const list=current[kind]||[];
+          // 条目已经被移除 / 换班：这次生成的地址没有归属，直接回收，别留在内存里。
+          if(!list.some(item=>item.uploadId===entry.uploadId)){
+            if(thumb.ok&&thumb.url) revokeMediaUrl(thumb.url);
+            return current;
+          }
+          // 生成失败时退回原图，列表不至于一直停在占位上（正常情况下不会走到这里）。
+          const nextThumb=thumb.ok&&thumb.url?thumb.url:entry.url;
+          return {...current,[kind]:updateUploadEntry(list,entry.uploadId,{thumbUrl:nextThumb})};
+        });
+        setThumbPendingCount(current=>Math.max(0,current-1));
+      });
+    });
+  };
+  /** 记一次录入节奏（US-413）：素材变化时重算用时，不用定时器刷整页。 */
+  const noteIntakeProgress=()=>setIntakeElapsedSeconds(Math.max(0,Math.round((Date.now()-intakeStartedAtRef.current)/1000)));
+  /** 折叠 / 展开某个出席分组（key 形如「artwork:absent」）。 */
+  const toggleSlotGroup=(key)=>setCollapsedSlotGroups(current=>current.includes(key)?current.filter(item=>item!==key):[...current,key]);
   // 课后反馈只收图片：作品与课堂照片。视频已从这条工作流里去掉。
   // binding（可选）把「这份素材属于谁」写到媒体对象上：个人反馈只有一个上传位，
   // 归属是隐式的（= 选中的那位学员），US-406b 要求它就地绑定，而不是等下游去猜。
@@ -1008,6 +1095,9 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
     if(mode==='班级反馈'){
       const binding=bindFilesToParticipants(files,effectiveParticipants,{kind,existing:batchUploads[kind],title:lessonTopic||''});
       setBatchUploads(current=>({...current,[kind]:[...current[kind],...binding.entries]}));
+      // 缩略图在空闲时段生成（US-413）：条目与输入先可用，生成过程不阻塞录入。
+      scheduleThumbnails(kind,binding.entries,files);
+      noteIntakeProgress();
       // 绑定要同时落到 participants 上：展签、成长档案、海报都按 artworkIds 认人。
       if(binding.bound) setParticipants(binding.participants);
       const names={artwork:'学员作品',photo:'课堂照片'};
@@ -1051,6 +1141,9 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
     if(restored.titles.length!==pendingTitles.length) setPendingTitles(restored.titles);
     if(entries.length){
       setBatchUploads(current=>({...current,artwork:[...current.artwork,...entries]}));
+      // 缩略图挪到空闲时段（US-413）：这一行马上就能继续填作品名、继续传下一位学员。
+      scheduleThumbnails('artwork',entries,intake.files);
+      noteIntakeProgress();
       // 绑定同时写回 participant.artworkIds：展签、成长档案、海报都按它认人。
       setParticipants(binding.participants);
     }
@@ -1066,10 +1159,11 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
   };
   /** 逐幅填写作品名：只改这一条，不动绑定与顺序。 */
   const renameArtworkTitle=(uploadId,title)=>setBatchUploads(current=>({...current,artwork:updateUploadEntry(current.artwork,uploadId,{title})}));
-  /** 移除一幅作品：条目与 participant 上的 artworkId 一起摘掉，避免留下悬空引用；object URL 一并回收。 */
+  /** 移除一幅作品：条目与 participant 上的 artworkId 一起摘掉，避免留下悬空引用；两个 object URL 一并回收。 */
   const removeArtwork=(uploadId)=>{
     const target=batchUploads.artwork.find(item=>item.uploadId===uploadId);
     revokeMediaUrl(target?.url);
+    revokeMediaUrl(target?.thumbUrl);
     setBatchUploads(current=>({...current,artwork:removeUploadEntry(current.artwork,uploadId)}));
     setParticipants(current=>detachUploadBinding(current,uploadId,'artwork'));
   };
@@ -1107,6 +1201,7 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
     }
     const next=[...classPhotoItems,...binding.entries];
     setBatchUploads(current=>({...current,photo:next}));
+    scheduleThumbnails('photo',binding.entries,intake.files);
     setParticipants(current=>syncUploadBindings(current,next,'photo'));
     const overflowNote=binding.ignored?`；另有 ${binding.ignored} 张超过每人 ${binding.max} 张上限，已忽略`:'';
     const baseMessage=`已为「${participant.name}」添加 ${binding.entries.length} 张课堂照片（共 ${binding.used+binding.entries.length}/${binding.max} 张）${overflowNote}`;
@@ -1135,16 +1230,18 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
     }
     const next=[...classPhotoItems,...binding.entries];
     setBatchUploads(current=>({...current,photo:next}));
+    scheduleThumbnails('photo',binding.entries,intake.files);
     setParticipants(current=>syncUploadBindings(current,next,'photo'));
     const skippedNote=binding.skipped.length?`；${binding.skipped.join('、')} 已满 10 张，未分到这张合影`:'';
     const baseMessage=`已添加 ${binding.entries.length} 张全班合影，同一张分给 ${binding.owners} 位到场学员${skippedNote}`;
     const message=intake.notice?`${baseMessage}；${intake.notice}`:baseMessage;
     readFile('photo',intake.files[0],{}).finally(()=>setToast(message));
   };
-  /** 移除一张课堂照片：条目与所有归属者的 photoIds 一起摘掉（照片可能是多人共用）；object URL 一并回收。 */
+  /** 移除一张课堂照片：条目与所有归属者的 photoIds 一起摘掉（照片可能是多人共用）；两个 object URL 一并回收。 */
   const removePhoto=(uploadId)=>{
     const target=classPhotoItems.find(item=>item.uploadId===uploadId);
     revokeMediaUrl(target?.url);
+    revokeMediaUrl(target?.thumbUrl);
     const next=removeUploadEntry(classPhotoItems,uploadId);
     setBatchUploads(current=>({...current,photo:next}));
     setParticipants(current=>syncUploadBindings(current,next,'photo'));
@@ -1231,6 +1328,11 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
     setBatchUploads({artwork:[],photo:[]});
     setMediaIntakeNotice('');
     setMediaLostDismissed(false);
+    // 录入节奏与折叠分组也回到初始态（US-413）：新草稿的用时从零开始。
+    intakeStartedAtRef.current=Date.now();
+    setIntakeElapsedSeconds(0);
+    setCollapsedSlotGroups([]);
+    setThumbPendingCount(0);
     setReviews(reviewDefaults);
     setKeywords([]);
     setAiKeywords([]);
@@ -1466,8 +1568,24 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
           ? '本次课次还没有到场的学员：请先在上方标记出席状态，再按学员上传作品。'
           : (missingArtworkCount?`还有 ${missingArtworkCount} 位学员未上传作品`:`本班 ${artworkSlotRows.length} 位到场学员都已有作品`)}
       </p>
-      {artworkSlotRows.length?<div className="intake-upload-slot-list">
-        {artworkSlotRows.map(row=>(
+      {artworkPaceTotal?<div
+        className={`intake-upload-perf${artworkPaceDone>=artworkPaceTotal?' done':''}`}
+        data-intake-pace
+        data-intake-done={artworkPaceDone}
+        data-intake-total={artworkPaceTotal}
+        data-intake-elapsed={intakeElapsedSeconds}
+        data-intake-thumb-pending={thumbPendingCount}
+      >
+        <Clock3 size={13}/>
+        <span className="intake-upload-pace">{artworkPaceText}</span>
+        {thumbPendingText?<em className="intake-thumb-pending">{thumbPendingText}</em>:null}
+      </div>:null}
+      {artworkSlotRows.length?<IntakeSlotGroups
+        listKey="artwork"
+        rows={artworkSlotRows}
+        collapsedKeys={collapsedSlotGroups}
+        onToggle={toggleSlotGroup}
+        renderRow={row=>(
           <div key={row.participant.studentId} className={`intake-upload-slot${row.usage.full?' full':''}${row.attended?'':' absent'}`}>
             <div className="intake-upload-slot-head">
               <label>
@@ -1486,8 +1604,9 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
             </div>
             {row.uploads.length?<div className="intake-upload-items">
               {row.uploads.map((entry,index)=>(
-                <figure key={entry.uploadId}>
-                  <img src={entry.url} alt={`${row.participant.name}的作品`}/>
+                <figure key={entry.uploadId} data-thumb={entry.thumbUrl?'ready':'pending'}>
+                  {/* 列表只渲染缩略图（≤320px，US-413）：生成期间显示占位，绝不把原图塞进列表 */}
+                  <img src={entry.thumbUrl||INTAKE_THUMB_PLACEHOLDER} alt={`${row.participant.name}的作品`}/>
                   <div>
                     <input
                       type="text" value={entry.title||''}
@@ -1504,8 +1623,8 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
               ))}
             </div>:<p className="intake-upload-empty">这位学员还没有上传作品</p>}
           </div>
-        ))}
-      </div>:null}
+        )}
+      />:null}
       <small className="intake-upload-foot">归属在上传那一刻就写进这位学员名下（展签、成长档案、海报都读这份绑定）；改班不会把作品带过去，请在新班级重新上传。</small>
     </div>
   ):null;
@@ -1534,8 +1653,13 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
             ? `还有 ${missingPhotoCount} 位学员未上传课堂照片（选填，可以继续下一步）`
             : `本班 ${photoSlotRows.length} 位到场学员都已有课堂照片（已收录 ${classPhotoItems.length} 张）`)}
       </p>
-      {photoSlotRows.length?<div className="intake-upload-slot-list">
-        {photoSlotRows.map(row=>(
+      {photoSlotRows.length?<IntakeSlotGroups
+        listKey="photo"
+        className="photo-slots-list"
+        rows={photoSlotRows}
+        collapsedKeys={collapsedSlotGroups}
+        onToggle={toggleSlotGroup}
+        renderRow={row=>(
           <div key={participantKey(row.participant)} className={`intake-upload-slot${row.usage.full?' full':''}${row.attended?'':' absent'}`}>
             <div className="intake-upload-slot-head">
               <label>
@@ -1554,8 +1678,8 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
             </div>
             {row.uploads.length?<div className="intake-upload-items photo-items">
               {row.uploads.map(entry=>(
-                <figure key={entry.uploadId}>
-                  <img src={entry.url} alt={`${row.participant.name}的课堂照片`} style={{transform:`rotate(${entry.rotation||0}deg)`}}/>
+                <figure key={entry.uploadId} data-thumb={entry.thumbUrl?'ready':'pending'}>
+                  <img src={entry.thumbUrl||INTAKE_THUMB_PLACEHOLDER} alt={`${row.participant.name}的课堂照片`} style={{transform:`rotate(${entry.rotation||0}deg)`}}/>
                   <div>
                     <small className="photo-name">{entry.name}</small>
                     <small className={entry.owners.length>1?'photo-shared':'photo-owner'}>
@@ -1572,8 +1696,8 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
               ))}
             </div>:<p className="intake-upload-empty">这位学员还没有课堂照片（选填，可留空）</p>}
           </div>
-        ))}
-      </div>:null}
+        )}
+      />:null}
       {unassignedPhotos.length?<div className="intake-photo-orphans">
         <div className="intake-photo-orphans-head">
           <b>还没有归属的照片（{unassignedPhotos.length} 张）</b>

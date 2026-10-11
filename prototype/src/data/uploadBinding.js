@@ -117,6 +117,10 @@ export function createUploadEntry(input = {}) {
     type: String(source.type || '').trim(),
     size: Number(source.size) || 0,
     url: String(source.url || ''),
+    // 会话内缩略图地址（US-413）：长边 ≤320px 的小图，**只给「学员乘上传位」列表预览用**。
+    // 生成是异步的（空闲时段），所以这里允许为空 —— 为空时列表退回显示 url（原图）。
+    // 原图 url 仍在下游（装裱 / 五维点评）使用，缩略图不参与任何渲染之外的环节。
+    thumbUrl: String(source.thumbUrl || ''),
     rotation: Number(source.rotation) || 0,
     // 照片与作品都代表完整画面，默认视作方向正确（老师仍可手动旋转）。
     orientationChecked: source.orientationChecked !== false,

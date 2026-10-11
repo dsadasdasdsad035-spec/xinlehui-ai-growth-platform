@@ -336,6 +336,48 @@ React + Vite 单页原型（`src/main.jsx` 是主入口，另按模块拆出 `sr
   覆盖「个人反馈默认不提示 / 班级反馈 2 位 / 展开只列未授权者 / 入口跳转 / 上传作品后提示仍在且可进入第二步 /
   保存课次照常 / 只剩已授权学员时提示消失 / 390px 单列与 44px 按钮」。
 
+### 录入页移动端与性能（US-413）
+
+规则与派生值在 `src/data/intakePerformance.js`（零依赖纯函数，可直接 Node 断言），
+浏览器侧的执行（解码、canvas、空闲调度）在 `src/services/mediaIntake.js`。四件事各只有一份真源：
+
+| 关注点 | 常量 / 纯函数 | 执行点 |
+|---|---|---|
+| 缩略图长边上限 320px | `THUMBNAIL_MAX_EDGE` / `thumbnailPlan()` | `mediaIntake.createThumbnail()` |
+| 生成不阻塞输入 | — | `mediaIntake.scheduleMediaTask()`（`requestIdleCallback` → `setTimeout` 兜底） |
+| 20 人以上按出席折叠 | `ROSTER_GROUP_THRESHOLD` / `shouldGroupSlotRows()` / `groupSlotRows()` | `main.jsx` 的 `IntakeSlotGroups` |
+| 可点区域 44px | `TAP_TARGET_MIN` | `flow-v2.css` 的 `@media(max-width:430px)` |
+| 18 位 ≤ 3 分钟 | `INTAKE_TARGET_SECONDS` / `intakePaceSummary()` | 第一步的 `.intake-upload-perf`（带 `data-intake-*`） |
+
+- **列表只渲染缩略图，绝不渲染原图**：条目进 state 时 `thumbUrl` 为空，列表先渲染
+  `INTAKE_THUMB_PLACEHOLDER`（8x8 透明 SVG），缩略图生成完再回填 `thumbUrl`。
+  拿原图当占位（哪怕只是「等一会儿」）会把 22 张 3000px 原图同时拉进解码队列，正是本故事要避免的。
+- **缩略图必须异步**：`scheduleThumbnails(kind, entries, files)` 在 `setBatchUploads` **之后**调用，
+  用 `entries[i] ↔ files[i]` 顺序配对（绑定函数按传入顺序产出条目），回调里只用
+  `updateUploadEntry(list, uploadId, {thumbUrl})` **回填这一条**。四处上传入口都要接上：
+  `readFiles`（班级分支）/ `readStudentArtwork` / `readStudentPhoto` / `readSharedPhotos`。
+- **两个 object URL 都要回收**：`revokeMediaEntries` 同时回收 `url` 与 `thumbUrl`；单条移除路径
+  （`removeArtwork` / `removePhoto`）也要各回收一次。缩略图生成完时条目已被移除（换班 / 移除）的，
+  回调里要先把刚生成的地址回收再 return，否则漏一份内存。
+- **`createUploadEntry` 是字段白名单**：新增条目字段（如 `thumbUrl`）必须同时加进它 ——
+  `updateUploadEntry` 内部走 `createUploadEntry` 重建，白名单外的字段会被静默丢掉。
+- **`thumbUrl` 不进持久化**：它不在 `mediaValidation.js` 的 `DRAFT_MEDIA_FIELDS` 里，结构上就进不了草稿；
+  它和 `url` 一样是会话内 object URL，刷新即失效。
+- **分组阈值看「渲染出来的行数」**：`artworkSlotRows` = 到场学员 ∪「有素材却被标成缺课」的学员，
+  所以给缺课学员传过作品后，即使出席人数掉到 20 以下，行数仍可能超过阈值 → 仍然分组
+  （缺课组里的素材因此还能改名/删除，不会消失）。不超过阈值时 `IntakeSlotGroups` 原样平铺（US-406b 行为）。
+- **录入用时不用定时器**：`intakeStartedAtRef`（进入流程那一刻）+ 素材每次变化时 `noteIntakeProgress()`。
+  用 `setInterval` 每秒 `setState` 会让整个第一步（几百个节点）每秒重渲染一次，与性能诉求相反。
+- **390px 的 44px 下限是 CSS 里的兜底**：`@media(max-width:430px)` 对 `.feedback-flow-v2` 下的
+  button / select / input 统一 `min-height:44px;min-width:44px`（checkbox 22px，但它的 `<label>` ≥44px）。
+  CSS 不能 import 常量，**改 `TAP_TARGET_MIN` 必须同步改 `flow-v2.css`**。
+- **底部主操作栏是 sticky，toast 要让开**：`.scene-actions` 在 ≤430px 固定到屏幕底部（两个次要动作并排、
+  主操作独占一行）；`.toast` 同时抬到 `bottom:124px` —— 否则它会盖住「进入智能装裱」并吃掉那一下点击。
+- 验证方式（本轮实测）：Node 直跑 `data/intakePerformance.js` + `uploadBinding` 的 `thumbUrl` 往返共 **81 项**断言；
+  CDP 浏览器 **44 项**断言（22 人班级 → 分组折叠、缩略图 pending→ready 的 MutationObserver 轨迹、
+  22 位学员各 1 幅实测 3 秒 / 界面用时 9 秒、扫描 157 个可点元素的 44px、toast 不遮挡主操作、进入第二步）
+  + 桌面端 3 人回归 **7 项**断言。
+
 ### 浏览器验证原生 `<select>` 的坑（重要）
 
 DSH 的 `browser_*` 工具**没有 selectOption 能力**：`browser_type` 走的是 `locator.fill`
@@ -436,3 +478,16 @@ service 模块也能在 Node 里测：`cloud.database` 是**可写属性**，导
   **mode 不进草稿**（US-409 口径）、纯初始态也不会写草稿，所以脚本要重新点一次「班级反馈」再断言提示，
   不要以为状态会原样回来。
 - 登录页的类名是 `.auth-shell`（不是 `.auth-screen`）。
+- **`Emulation.setDeviceMetricsOverride` 会留在 page target 上**（脚本退出、新开 WebSocket 连同一个 page
+  也还在）：跑手机视口的脚本时**每次开头都显式设置目标视口**，别依赖上一次的状态。反过来，≤820px 时
+  侧边栏是 off-canvas（`transform:translateX(-100%)`，rect 是负数），**登录与侧边栏导航要在桌面视口做完**，
+  再切到 390px 做录入页验收（切视口不会重新挂载组件）。
+- **点击落点要在点击前用 `elementFromPoint` 复核**：`scrollIntoView({block:'center'})` 之后立刻取
+  `getBoundingClientRect()` 再点，会在页面还在滚动 / 列表还在长高时点到别的元素（表现为「点了没反应」，
+  静默失败）。做法：`scrollIntoView` → 等 ~400ms → 重新取 rect → 用 `elementFromPoint` 确认落点是目标
+  （或其后代）→ 再派发鼠标事件，落点不对就重试。
+- **`textContent` 拼接后元素之间没有空格**（间距是 CSS gap 给的）：组头渲染出的是 `出席22 人还有 22 位未上传`，
+  断言用 `/出席\s*22\s*人/` 这类写法，别写 `'出席 22 人'` 的精确匹配。
+- 想证明「异步生成没有阻塞输入」时，可以在页面里装一个 **MutationObserver 记录中间态**
+  （`window.__intakeTrace`：每次 DOM 变化时记下 pending/ready 数量、已上传计数、待生成图片的 naturalWidth），
+  断言「条目与输入已可用、缩略图还没好」这个中间态真实出现过，比固定 sleep 可靠得多。

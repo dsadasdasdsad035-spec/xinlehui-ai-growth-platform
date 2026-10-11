@@ -11,6 +11,7 @@
  *   绝不能让会话素材地址流进持久化数据（持久化走 `buildSessionMediaDraft`）。
  */
 import { MAX_LONG_EDGE, MAX_MEDIA_BYTES, downsamplePlan, mediaTypeOf } from '../data/mediaValidation';
+import { THUMBNAIL_MAX_EDGE, thumbnailPlan } from '../data/intakePerformance';
 
 function canUseDom() {
   return typeof document !== 'undefined'
@@ -125,6 +126,82 @@ export async function downsampleImageFile(file, options = {}) {
   }
 }
 
+/**
+ * 生成列表用的**会话内缩略图**（US-413）：长边不超过 `THUMBNAIL_MAX_EDGE`（320px）的小图地址。
+ *
+ * 与 `downsampleImageFile` 的分工：那个把「超过 3000px 的原图」收敛成可处理的原图，是素材本体；
+ * 这个只做**预览**——列表里渲染小图，原图仍由条目自己的 `url` 承担下游（装裱 / 点评）。
+ * 因此这里总是重画一张小图，即使原图本来就不大。
+ *
+ * `url` 是会话内 object URL：条目被移除 / 换班 / 新建草稿时同样要 `revokeMediaUrl` 回收。
+ * 永不抛错：任何一步失败都返回 `{ok:false}`，界面退回显示原图，不影响录入。
+ */
+export async function createThumbnail(file, options = {}) {
+  const maxEdge = Number(options.maxEdge) > 0 ? Number(options.maxEdge) : THUMBNAIL_MAX_EDGE;
+  const failed = { ok: false, url: '', width: 0, height: 0, maxEdge };
+  if (!file) return failed;
+  // Node / 无 DOM 环境（构建期的任何调用）不生成缩略图，调用方退回原图。
+  if (!canUseDom()) return failed;
+  const probeUrl = URL.createObjectURL(file);
+  try {
+    let image = null;
+    try {
+      image = await loadImageElement(probeUrl);
+    } catch {
+      return failed;
+    }
+    const width = image.naturalWidth || image.width || 0;
+    const height = image.naturalHeight || image.height || 0;
+    if (!(width > 0) || !(height > 0)) return failed;
+    const plan = thumbnailPlan(width, height, maxEdge);
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, plan.width);
+    canvas.height = Math.max(1, plan.height);
+    const context = canvas.getContext('2d');
+    if (!context) return failed;
+    // 只做等比缩放，不裁切、不调色（与装裱渲染、降采样同一条纪律）。
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    // PNG 保留 PNG（作品可能有透明底），其余走 JPEG 质量 0.82：缩略图只用于预览，体积优先。
+    const targetType = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
+    let blob = await canvasToBlob(canvas, targetType, targetType === 'image/png' ? undefined : 0.82);
+    if (!blob && targetType !== 'image/jpeg') blob = await canvasToBlob(canvas, 'image/jpeg', 0.82);
+    if (!blob) return failed;
+    return { ok: true, url: URL.createObjectURL(blob), width: canvas.width, height: canvas.height, maxEdge };
+  } catch {
+    return failed;
+  } finally {
+    URL.revokeObjectURL(probeUrl);
+  }
+}
+
+/**
+ * 把一件「不着急、绝不能卡住输入」的浏览器任务挪到空闲时段执行（US-413）。
+ *
+ * 有 `requestIdleCallback` 就用它（`timeout` 是兜底，保证迟早会跑），没有就退回 `setTimeout(0)`。
+ * 任务内的异常不会冒到调用方（缩略图生成失败不该影响老师录入）。
+ * 返回取消函数：条目已被移除 / 组件卸载时可以放弃这次生成。
+ */
+export function scheduleMediaTask(task, options = {}) {
+  if (typeof task !== 'function') return () => {};
+  const timeout = Number(options.timeout) > 0 ? Number(options.timeout) : 300;
+  let cancelled = false;
+  const run = () => {
+    if (cancelled) return;
+    try {
+      Promise.resolve(task()).catch(() => {});
+    } catch {
+      /* 生成失败不影响录入：界面退回显示原图 */
+    }
+  };
+  const hasIdle = typeof requestIdleCallback === 'function';
+  const handle = hasIdle ? requestIdleCallback(run, { timeout }) : setTimeout(run, 0);
+  return () => {
+    cancelled = true;
+    if (hasIdle && typeof cancelIdleCallback === 'function') cancelIdleCallback(handle);
+    else clearTimeout(handle);
+  };
+}
+
 /** 回收一个会话内 object URL（只回收 blob:，http(s) 地址不属于本次会话，不能动）。 */
 export function revokeMediaUrl(url) {
   try {
@@ -136,9 +213,15 @@ export function revokeMediaUrl(url) {
   }
 }
 
-/** 回收一组素材条目的 object URL（移除条目 / 换班 / 新建草稿时调用）。 */
+/**
+ * 回收一组素材条目的 object URL（移除条目 / 换班 / 新建草稿时调用）。
+ * `url`（原图）与 `thumbUrl`（US-413 的列表缩略图）都要回收 —— 只回收其中一个会漏掉另一份内存。
+ */
 export function revokeMediaEntries(entries = []) {
-  (entries || []).forEach(item => revokeMediaUrl(item?.url));
+  (entries || []).forEach(item => {
+    revokeMediaUrl(item?.url);
+    revokeMediaUrl(item?.thumbUrl);
+  });
 }
 
 /** 会话内素材只允许 object URL：上传前的最后一道守卫（防止把 http/data 地址当作「本次会话素材」）。 */
