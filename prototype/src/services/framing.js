@@ -1,4 +1,5 @@
 import { frameSpecRenderView, clampRatio, FRAME_WIDTH_RATIO_RANGE, MAT_WIDTH_RATIO_RANGE, CORNER_RADIUS_RATIO_RANGE } from './frameSpec';
+import { archShape, archInset, bevelShape, bevelInset, shapeBox, inscribeAspectRect, traceShape } from './frameShapes';
 
 const FRAME_STYLES = {
   '星光展': { outer: '#cfa52e', inner: '#f3ede2', plaque: '#2b271f' },
@@ -449,6 +450,44 @@ function fillFrameShape(ctx, rect, radius, fill) {
   ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
 }
 
+/** 按形状路径填充（拱形 / 斜角用）。 */
+function fillShapePath(ctx, shape, fill) {
+  traceShape(ctx, shape);
+  ctx.fillStyle = fill;
+  ctx.fill();
+}
+
+/**
+ * arch / bevel 的同心几何：外框 → 卡纸 → 卡纸开口，三层都是「外框形状向内缩外层厚度」得到的，
+ * 所以框带处处等宽（斜边的切角长度另有 `CHAMFER_INSET_FACTOR` 修正，见 `frameShapes.js`）。
+ *
+ * 形状不可用（半径 / 开口被收敛到 0，例如画布过扁）时也返回 null，调用方回落到直角路径 —— 宁可画平框，
+ * 也不能画崩或把作品裁掉。
+ */
+function buildShapedGeometry({ shape, frameRect, outer, mat, plaqueHeight }) {
+  // **只有 arch / bevel 走这条路径**：square / rounded 是 US-002a 的既有渲染路径，
+  // 一旦被这里接管就会换形状（踩过的坑：漏了形状判断，`rounded` 与 v1 平面 spec 全被画成斜角）。
+  if (shape !== 'arch' && shape !== 'bevel') return null;
+  const base = shape === 'arch' ? archShape(frameRect) : bevelShape(frameRect);
+  const inset = (current, distance) => (shape === 'arch' ? archInset(current, distance) : bevelInset(current, distance));
+  const matShape = inset(base, outer);
+  const windowShape = inset(matShape, mat);
+  const box = shapeBox(windowShape);
+  if (!(box.width > 0) || !(box.height > 0)) return null;
+  // 拱形的开口必须还剩正半径，否则拱顶已经吃到直边，回落到直角更稳。
+  if (shape === 'arch' && !(windowShape.r > 0)) return null;
+  return {
+    base,
+    matShape,
+    windowShape,
+    // 卡纸内细分隔线画在开口外沿 6px 处（与直角分支的 strokeRect(area-6, +12) 同一个口径）。
+    innerLineShape: inset(windowShape, -6),
+    box,
+    // 展签与直角分支一样占开口底部 96px。
+    artBottom: box.y + box.height - plaqueHeight
+  };
+}
+
 /**
  * 相框的光影：沿 `frame.lighting.angle` 铺一条「高光 → 本色 → 暗部」的线性渐变，
  * 让暖金 / 木质看起来有体积感，而不是一块死色。
@@ -484,8 +523,10 @@ function frameLightingFill(ctx, rect, lighting, baseColor) {
  * 统一由 `frameSpecRenderView()` 取渲染视图：v1 原样返回（老模板逐像素不变，形状按直角、不画光影），
  * v2 映射出平面字段 + shape / cornerRadiusRatio / lighting / matVisible。
  *
- * 本故事（US-002a）落地的形状是 `square`（直角）与 `rounded`（圆角）；
- * `arch` / `bevel` 归 US-002b，在那之前按直角绘制（降级而不是画崩）。
+ * 本故事（US-002a/002b）落地的形状是四种：`square`（直角）、`rounded`（圆角）、
+ * `arch`（顶部半圆拱形）、`bevel`（四角斜切）。
+ * 直角与圆角走既有路径（逐像素不变）；arch / bevel 走「同心内缩 + 形状内最大等比矩形」的路径
+ * （`services/frameShapes.js`）：作品永远不被裁切，形状内剩余部分留给白色作品底。
  *
  * 平面字段（frameSpecRenderView 的产物）：
  *   outer / mat / innerLine / plaqueBg / plaqueText  十六进制颜色（innerLine 可为 null）
@@ -521,6 +562,34 @@ export async function renderFramedArtwork({ source, spec = {}, student = '', tit
     x: frameRect.x + outer, y: frameRect.y + outer,
     width: frameRect.width - outer * 2, height: frameRect.height - outer * 2
   };
+  // 卡纸开口：直角 / 圆角分支的固定作品区就是它的上半部分（扣掉展签）。
+  const windowRect = {
+    x: matRect.x + mat, y: matRect.y + mat,
+    width: matRect.width - mat * 2, height: matRect.height - mat * 2
+  };
+  const area = { x: windowRect.x, y: windowRect.y, width: windowRect.width, height: windowRect.height - plaqueHeight };
+
+  // rotation 显式传入时优先（老师手动旋转）；否则用 spec 里的 artRotateDeg。
+  const deg = Number.isFinite(rotation) ? rotation : (Number(view.artRotateDeg) === 90 ? 90 : 0);
+  const sideways = ((deg % 360) + 360) % 360 % 180 !== 0;
+
+  // arch / bevel：形状不可用时 geometry 为 null，两个分支都回落到直角路径（不画崩）。
+  const geometry = buildShapedGeometry({ shape: view.shape, frameRect, outer, mat, plaqueHeight });
+  const shaped = !!geometry;
+  const shapedArt = shaped
+    ? inscribeAspectRect(geometry.windowShape, {
+      aspect: sideways ? image.naturalHeight / image.naturalWidth : image.naturalWidth / image.naturalHeight,
+      top: geometry.box.y,
+      bottom: geometry.artBottom
+    })
+    : null;
+  // 作品区：直角 / 圆角 = 既有的固定 area；arch / bevel = 形状内放得下的最大等比矩形。
+  const artRect = shapedArt || area;
+  // 展签锚在「作品区下沿」而不是作品自身下沿：与直角分支一致（作品居中时展签仍然贴开口底部）。
+  const artRegionBottom = shaped ? geometry.artBottom : area.y + area.height;
+  const plaqueX = shaped ? geometry.box.x : area.x;
+  const plaqueW = shaped ? geometry.box.width : area.width;
+
   // 圆角半径的三条上限，缺一条就会踩到红线：
   //   ① 越界值收敛到 0~0.5（相对短边）；
   //   ② 不超过外框短边的一半（否则路径自交）；
@@ -536,41 +605,50 @@ export async function renderFramedArtwork({ source, spec = {}, student = '', tit
 
   // 最外圈是展墙，用卡纸色的浅色版本，避免出现纯白死边。
   ctx.fillStyle = matColor; ctx.fillRect(0, 0, width, height);
-  // 相框：显式配了 lighting 就用方向性渐变画高光与暗部，否则是 v1 的实色框。
-  fillFrameShape(ctx, frameRect, outerRadius, view.lighting ? frameLightingFill(ctx, frameRect, view.lighting, outerColor) : outerColor);
-  // 卡纸：与外框同圆角（内圈），保证圆角处不露底、不出现白缝。
-  fillFrameShape(ctx, matRect, matRadius, matColor);
-
-  const area = {
-    x: matRect.x + mat,
-    y: matRect.y + mat,
-    width: matRect.width - mat * 2,
-    height: matRect.height - mat * 2 - plaqueHeight
-  };
+  if (shaped) {
+    // 相框与卡纸：同一形状同心内缩，保证框带（含拱边与斜边）处处等宽。
+    fillShapePath(ctx, geometry.base, view.lighting ? frameLightingFill(ctx, frameRect, view.lighting, outerColor) : outerColor);
+    fillShapePath(ctx, geometry.matShape, matColor);
+  } else {
+    // 相框：显式配了 lighting 就用方向性渐变画高光与暗部，否则是 v1 的实色框。
+    fillFrameShape(ctx, frameRect, outerRadius, view.lighting ? frameLightingFill(ctx, frameRect, view.lighting, outerColor) : outerColor);
+    // 卡纸：与外框同圆角（内圈），保证圆角处不露底、不出现白缝。
+    fillFrameShape(ctx, matRect, matRadius, matColor);
+  }
 
   // 可选：卡纸内的细分隔线，只画线，不遮挡作品。卡纸关掉时不画（线会落在作品边上）。
   if (view.innerLine && mat > 0) {
     ctx.strokeStyle = view.innerLine;
     ctx.lineWidth = 2;
-    ctx.strokeRect(area.x - 6, area.y - 6, area.width + 12, area.height + 12);
+    if (shaped) {
+      traceShape(ctx, geometry.innerLineShape);
+      ctx.stroke();
+    } else {
+      ctx.strokeRect(area.x - 6, area.y - 6, area.width + 12, area.height + 12);
+    }
   }
 
   // 作品底色固定为白，保证透明底 PNG 不会露出墙色。
+  // arch / bevel：白底按形状铺、只铺到展签上沿，形状外的部分一律不碰（不露底、不越界）。
   ctx.fillStyle = '#ffffff';
-  ctx.fillRect(area.x, area.y, area.width, area.height);
+  if (shaped) {
+    ctx.save();
+    traceShape(ctx, geometry.windowShape);
+    ctx.clip();
+    ctx.fillRect(geometry.box.x, geometry.box.y, geometry.box.width, geometry.artBottom - geometry.box.y);
+    ctx.restore();
+  } else {
+    ctx.fillRect(area.x, area.y, area.width, area.height);
+  }
 
-  const ratio = Math.min(area.width / image.naturalWidth, area.height / image.naturalHeight);
+  const ratio = Math.min(artRect.width / image.naturalWidth, artRect.height / image.naturalHeight);
   const renderedWidth = image.naturalWidth * ratio;
   const renderedHeight = image.naturalHeight * ratio;
 
-  // rotation 显式传入时优先（老师手动旋转）；否则用 spec 里的 artRotateDeg。
-  const deg = Number.isFinite(rotation) ? rotation : (Number(view.artRotateDeg) === 90 ? 90 : 0);
-
   ctx.save();
-  ctx.translate(area.x + area.width / 2, area.y + area.height / 2);
+  ctx.translate(artRect.x + artRect.width / 2, artRect.y + artRect.height / 2);
   ctx.rotate((deg * Math.PI) / 180);
-  const sideways = ((deg % 360) + 360) % 360 % 180 !== 0;
-  const scale = sideways ? Math.min(area.width / renderedHeight, area.height / renderedWidth) : 1;
+  const scale = sideways ? Math.min(artRect.width / renderedHeight, artRect.height / renderedWidth) : 1;
   ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(image, -renderedWidth * scale / 2, -renderedHeight * scale / 2, renderedWidth * scale, renderedHeight * scale);
   ctx.restore();
@@ -578,20 +656,22 @@ export async function renderFramedArtwork({ source, spec = {}, student = '', tit
   // 展签：只在有内容时绘制。
   // 必须先把 plaqueBg 铺成一块展签底色再写字——旧实现只画了 2px 分隔线，
   // 于是 plaqueText（多数预设是浅色）直接落在浅色卡纸上，落款几乎看不见。
-  const plaqueTop = area.y + area.height + 10;
+  const plaqueTop = artRegionBottom + 10;
   const line1 = [student, title ? `《${title}》` : ''].filter(Boolean).join('  ·  ');
   const line2 = date ? `创作于 ${date}` : '';
   if (line1 || line2) {
+    if (shaped) { ctx.save(); traceShape(ctx, geometry.windowShape); ctx.clip(); }
     ctx.fillStyle = plaqueBg;
-    ctx.fillRect(area.x, plaqueTop, area.width, plaqueHeight - 10);
+    ctx.fillRect(plaqueX, plaqueTop, plaqueW, plaqueHeight - 10);
     const drawWithSpacing = (text, x, y, font, color) => {
       ctx.font = font; ctx.fillStyle = color; ctx.textBaseline = 'alphabetic';
       if (!letterSpacing) { ctx.fillText(text, x, y); return; }
       let cursor = x;
       for (const char of text) { ctx.fillText(char, cursor, y); cursor += ctx.measureText(char).width + letterSpacing; }
     };
-    if (line1) drawWithSpacing(line1, area.x, plaqueTop + 36, `600 28px ${plaqueFont}`, plaqueText);
-    if (line2) drawWithSpacing(line2, area.x, plaqueTop + 70, `21px ${plaqueFont}`, plaqueText);
+    if (line1) drawWithSpacing(line1, plaqueX, plaqueTop + 36, `600 28px ${plaqueFont}`, plaqueText);
+    if (line2) drawWithSpacing(line2, plaqueX, plaqueTop + 70, `21px ${plaqueFont}`, plaqueText);
+    if (shaped) ctx.restore();
   }
 
   return canvas.toDataURL('image/jpeg', 0.92);

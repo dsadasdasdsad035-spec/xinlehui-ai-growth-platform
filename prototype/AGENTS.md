@@ -433,10 +433,23 @@ DSH 的 `browser_*` 工具**没有 selectOption 能力**：`browser_type` 走的
   v1 平面结构一律 `lighting: null`）。理由：v1 本来不画光影，US-001a 规定「缺失字段回落 v1 行为」；
   若按 DEFAULT 补一份默认光影，一份只写了 `frame.shape` 的 v2 spec 会凭空多出渐变。
   内置 4 套预设与 `DEFAULT_FRAME_SPEC_V2` 都**显式**带 `lighting`，所以它们从 US-002a 起有体积感。
-- **形状**：`square`（直角）与 `rounded`（圆角，半径 = `cornerRadiusRatio × 画布短边`）已实现；
-  `arch` / `bevel` 归 US-002b，在那之前按直角绘制（优雅降级）。圆角半径有三条上限，缺一条就踩红线：
+- **形状**：四种都已实现 —— `square`（直角）、`rounded`（圆角，半径 = `cornerRadiusRatio × 画布短边`）、
+  `arch`（顶部半圆拱形）、`bevel`（四角斜切）。圆角半径有三条上限，缺一条就踩红线：
   ① 收敛到 `0~0.5`；② 不超过外框短边的一半；③ **内圈半径 ≤ 卡纸宽** —— 否则圆角会切进作品窗口，
   等于把孩子的画裁掉四个角。所以「加宽圆角」永远不能改动作画区域。
+- **`arch` / `bevel` 的几何在 `src/services/frameShapes.js`（纯函数、零依赖，可直接 Node 断言），
+  画布只在 `framing.js` 的 `buildShapedGeometry()` 里消费它**：
+  - **只有 `arch` / `bevel` 走形状路径**：`buildShapedGeometry()` 对其它 shape 必须返回 `null`，
+    否则 `square` / `rounded`（以及所有 v1 平面 spec）会被画成别的形状 —— 踩过的坑：漏了这个判断，
+    `rounded` 与 v1 模板全被画成斜角。新增形状时先加判断，再改渲染。
+  - **同心内缩**：外框 → 卡纸 → 开口三层是同一个形状向内缩 `outer` / `outer + mat`，框带才处处等宽。
+    斜角要额外按 `CHAMFER_INSET_FACTOR = 2 - √2` 修正切角长度，否则斜边上的垂直框宽只有直边的 1/√2。
+    `arch` 的半径上限是 `ARCH_MAX_RISE_RATIO = 0.7 × 外框高`（保证拱下仍有直边），
+    `bevel` 的切角是 `BEVEL_CHAMFER_RATIO = 0.09 × 外框短边`；两者都是**渲染层常量**，不进 spec。
+  - **作品只画在形状内的最大等比矩形里**（`inscribeAspectRect(shape, {aspect, top, bottom})`），
+    形状内没被作品占满的部分留给白色作品底 —— 这就是「不露底」；白底按形状 `clip` 后只铺到展签上沿，
+    展签也按形状 `clip` 铺满，所以形状外一个像素都不碰。**不要**把作品矩形直接画到形状的边上
+    （arch 的拱顶会切掉作品四角），也不要拿固定 `area` 去顶形状。
 - **光影**：`frame.lighting = { highlight, shadow, angle }`，`angle` 与 CSS `linear-gradient` 同角度语义
   （0° 朝上、90° 朝右、135° 由左上到右下），渐变起点朝光源 → 135° = 高光在左上、暗部在右下。
   渐变只铺在外框上（卡纸随后画在其内圈），**不覆盖卡纸与作品像素**。
@@ -597,6 +610,15 @@ service 模块也能在 Node 里测：`cloud.database` 是**可写属性**，导
 - **基线要在改动前用「同一张测试图」抓**：先在 HEAD 上跑一遍基线脚本存 JSON，再改代码跑对照。
   踩过的坑：基线脚本与验证脚本各写了一份 `buildTestImage`（一份带深色描边、一份不带），
   源图不同 → 所有基线断言假失败。测试图构造器要**两份脚本逐行一致**（或直接从同一个文件读）。
+- **跨会话的 canvas 渲染不是逐字节可比的**：换一次 page load，抗锯齿 / 光栅化的边界像素就会变 ——
+  实测「同一份代码」两次抓的 v1 基线也能差 18 万像素、JPEG 长度差 3~4KB；`sameTwice` 在同一会话里为
+  true，跨会话就为 false。所以**不要在两次脚本运行之间比 dataURL**。可靠做法（US-002b 起）：
+  把 HEAD 版实现临时复制成同目录的兄弟文件（`git show HEAD:src/services/framing.js >
+  src/services/__legacy_framing.js`，同目录才能解析 `'./frameSpec'`），在**同一次页面加载**里
+  `await import()` 新旧两个模块、对同一张测试图逐字节比，验完删掉临时文件。
+- **证明「输出仍是 JPEG 质量 0.92」比对比表**：canvas → JPEG 的**量化表（DQT）只由质量决定**。
+  解析 dataURL 里的 `0xFFDB` 段，与「把结果重画回 canvas 再 `toDataURL('image/jpeg', q)`」的 DQT 比：
+  q=0.92 时必须逐字节相同，且与 q=0.85 不同（后者证明该判据真的有效）。
 - console 里的既有噪音：本机云端不通的 `net::ERR` / `404`、后台装裱预览 `<img src={preview}>` 初始为 `''`
   触发的 React `An empty string ("") was passed to the src attribute` 警告。这些在 HEAD 上就有，
   过滤时要写清楚「是既有噪音」，不要当成新引入的问题放过去。
