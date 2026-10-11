@@ -6468,7 +6468,8 @@ function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast,recor
         <div className="compliance-block" data-compliance-audit="true" data-audit-log-count={auditStats.total}>
           <h3>审计日志</h3>
           <p className="compliance-note">
-            留痕的两个动作：{AUDIT_ACTION_LABELS[AUDIT_ACTIONS.templateSave]} 与 {AUDIT_ACTION_LABELS[AUDIT_ACTIONS.artworkSave]}；
+            留痕的动作：{AUDIT_ACTION_LABELS[AUDIT_ACTIONS.templateSave]}、{AUDIT_ACTION_LABELS[AUDIT_ACTIONS.artworkSave]}，
+            以及管理端观察词 AI 补充的三条（{AUDIT_ACTION_LABELS[AUDIT_ACTIONS.keywordCandidates]} / {AUDIT_ACTION_LABELS[AUDIT_ACTIONS.keywordAdopt]} / {AUDIT_ACTION_LABELS[AUDIT_ACTIONS.keywordDiscard]}）；
             每条记下操作人 / 学员 id / 时间 / 模板 id。共 {auditStats.total} 条（被拒绝的写入 {auditStats.denied} 条）。
           </p>
           {recentAudit.length?<ul className="compliance-audit">
@@ -6482,6 +6483,9 @@ function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast,recor
               data-audit-entry-missing={auditEntryMissingFields(entry).join(',')}>
               <b>{auditEntryText(entry)}</b>
               <small>{auditTraceText(entry)}</small>
+              {/* detail 是「这一次具体做了什么」：观察词 AI 补充的「采纳了哪些词」就在这一行里
+                  （US-111 验收点名要能从留痕里读出采纳的词）。 */}
+              {entry.detail?<small className="compliance-audit-detail" data-audit-entry-detail={entry.detail}>{entry.detail}</small>:null}
               {entry.outcome==='denied'?<em className="denied">被拒绝</em>:null}
             </li>)}
           </ul>:<p className="persona-empty" data-audit-log-empty="true">{AUDIT_LOG_EMPTY_TEXT}</p>}

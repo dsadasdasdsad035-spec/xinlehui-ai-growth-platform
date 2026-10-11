@@ -1210,6 +1210,10 @@ DOM/canvas 部分在 `src/services/artworkWriteBack.js`，编排在 `main.jsx` �
 - **审计的「四项」不是同一套必填**：另存为我的模板没有学员（`studentId` 空是正常的），
   保存图片必须有学员（`studentId` 是那条成品图的归属）；模板 id 在「保存图片」里是「这次用的哪套」——
   老师没用模板时为空，不算缺。别把四件都写成必填（会把合规记录误判成不完整）。
+  **US-111 起动作从三条扩到六条**（观察词 AI 补充的 `keyword.candidates.generate` / `.adopt` / `.discard`，
+  必填 `actorId / at / templateId`）：`AUDIT_ACTION_REQUIRED` 是每条的必填清单的唯一真源；
+  新动作的 detail 会渲染在管理端「权限与合规 → 审计日志」的第三条 `small` 上（`data-audit-entry-detail`，
+  为「采纳了哪些词」这类「具体做了什么」加的），加动作时顺手确认那里读得出关键内容。
 - **儿童素材的两条防线都在客户端这侧强制**：`childMediaUploadHeaders` 缺「老师身份 + 监护人授权」直接抛错
   （旧写法是一份写死的常量头，谁调都带）；`assertChildMediaStorage` 复核响应里的 `storage`
   —— 落到 `server-local-disk` / 公开地址 / 没登记的落点一律拒绝（服务端 `GET /health` 的 `storage`
@@ -1938,6 +1942,56 @@ US-110b 给同一张页面加了四件事，写侧规则**全部落在** `data/r
   「同一模式两套都配了同一个课程类型（score 相等）→ 谁排第一命中谁」来做，最后真的走一遍
   第一步上传 → 第二步装裱 → 第三步，读 `.review-keyword-template` 的 `data-keyword-template-name`。
   测试**别拿名字当主键**去镜像里找记录：回滚会把名字也退回那一版，按 `templateKey` 找。
+
+## 管理端「作品观察词模板」：用大模型补充观察词（US-111 / FR-147、FR-148）
+
+教研不想一个字一个字想词：模型先给一批**候选**（建议分组 + 词条 + 一句推荐理由），教研在上面挑。
+页面只渲染与调用，判据全在两份零依赖模块里：
+
+| 层 | 文件 | 管什么 |
+|---|---|---|
+| 读侧 | `src/data/reviewKeywordTemplates.js` | 容错 normalize / 老师端匹配 / 本机镜像（US-109） |
+| 写侧（手写维护） | `src/data/reviewKeywordAdmin.js` | 草稿 / 校验 / 版本自增 / 分组词条增删排序（US-110a/b） |
+| 写侧（模型补充） | `src/data/reviewKeywordAi.js` | 上下文与提示词 / 候选解析 / 去重与疑似同义 / 勾选 / 采纳 / 留痕文案 |
+| 服务 | `src/services/reviewKeywordAi.js` | **独立通道**的模型链调用（自己的参数表，不 import `llmReview`） |
+| 界面 | `src/admin/KeywordAiPanel.jsx` | 只渲染与调用；在 `KeywordTemplatesPage` 的编辑区里，按 `draft.templateKey` 重挂载 |
+
+- **独立通道是结构性判据，不是注释**：`services/reviewKeywordAi.js` 自带 `KEYWORD_AI_PARAMS`
+  （`stream + json_object + temperature 0.6`，与点评的 `REVIEW_MODEL_PARAMS` 是两份）与自己的
+  system / user 提示词（`KEYWORD_AI_SYSTEM` / `keywordAiUserPrompt`），**不 import `services/llmReview.js`**、
+  不碰人设 / 技能库 / agent.md / 记忆文件。断言直接盯这两点（无 llmReview import、无 `...REVIEW_MODEL_PARAMS`）。
+- **模型链：文本优先 + 换档必须点名**：`keywordAiModelPlan()` 产出 `chain` = 可用的「文本生成」模型
+  （能力标签 `文本生成`）→ 通用兜底 `REVIEW_MODEL_DEFAULT_ID`。本部署实测只有 `glm-5.3-flash` 可调
+  （`glm-text-max` / `qwen3-vl-plus` 返回 `request_invalid_parameter`），所以真实链是
+  `glm-text-max（model-unavailable）→ glm-5.3-flash`，回执上写「文本通道模型 glm-text-max 在本部署不可用，
+  已自动改用 glm-5.3-flash」。**只有 `keywordAiErrorKind === 'model-unavailable'` 才换档**；
+  网络 / 超时 / 未知错误不换档（交回界面重试或换模型）。明确选了一个模型 = 钉住它（chain 只留一条）。
+- **候选的判据只有一个函数**：`keywordCandidateRows(candidates, { existing })` 同时给出
+  「模板内已有 → 标灰跳过」「候选内重复 → 标灰跳过」「疑似同义 → 只提示、由管理员决定」，
+  行渲染、采纳与断言都读它的产物（归一化复用 `reviewKeywords.js` 的 `normalizeKeywordText()`）。
+  疑似同义：包含关系必提示，否则 bigram Dice ≥ `KEYWORD_AI_SYNONYM_THRESHOLD`（0.6）；
+  调低阈值会把「暖色调 / 冷色调」这类反义词误报 —— Node 夹具里有这两条守卫，改动前先跑它。
+- **采纳写草稿区，不写库**：`keywordCandidateAdopt(draft, rows, selection, { targetGroup })` **只动 `groups`**
+  （分组不存在就建、重复词与每组 40 上限跳过并回报），版本自增仍由 `saveKeywordTemplateRecord()` 在
+  点「保存」时做（验收原文「采纳写入草稿区，确认保存后模板 version 自增」）。
+  **采纳后这批候选会立刻变成「模板内已有」并全部标灰**（面板按当前草稿实时重算）——这是防重复采纳，
+  不是 bug：断言写「可采纳 0 条 + 采纳按钮禁用」，别写死标灰条数。
+- **生成失败不毁上一批候选**：面板把「最近一次成功的候选」（`result`）与「最近一次尝试的回执」（`receipt`）
+  分成两份 state —— 失败只换回执，候选与勾选都留着；手工新增词条在同一个草稿里，完全不受影响。
+  这就是「生成失败时可重试或换模型，且不阻断手工新增词条」的实现点（`data-keyword-ai-receipt` /
+  `data-keyword-ai-retry` / `data-keyword-ai-model-select`）。
+- **三条留痕走同一份审计日志**（`data/auditLog.js`）：`keyword.candidates.generate` / `.adopt` / `.discard`，
+  必填 `actorId / at / templateId`，detail 由 `keywordAiAuditDetail()` 产出（长名单写「…等 N 个」，
+  呼应 240 字上限但不静默截断）。管理端「装裱设置 → 权限与合规 → 审计日志」与面板里的「AI 补充留痕」
+  读的是同一份镜像；失败的那次生成**不留痕**（没有候选就没有「候选」这条留痕，回执上给可读原因）。
+- **验证要点（本故事实测）**：桩必须**同步返回异步生成器**（`for await` 不解 Promise）；抓真实请求用替换
+  `cloud.llm.chat.completions.create`（页面内 `import('/src/cloud.js')` 拿同一模块实例），
+  再与 `KEYWORD_AI_SYSTEM` / `keywordAiUserPrompt(...)` **逐字符**比；「判据对真实输出也生效」用
+  **DOM 行回填 → 纯函数重算 → 逐行比**。注意别拿镜像当参照系：草稿与镜像在「采纳未保存」时是不同的两份，
+  面板的 `existing` 读的是**草稿**。
+- **验证脚本的坑**：`keywordTermAdd(draft, groupIndex)` 是**追加**到这一组末尾，删的时候要删
+  `组序号:原条数` 那个索引；写死 `0:0` 会把这组的第一个真词删掉（本轮真踩，症状是后续独立重算
+  的参照系与面板差一个词）。
 
 ## 容易踩的坑
 

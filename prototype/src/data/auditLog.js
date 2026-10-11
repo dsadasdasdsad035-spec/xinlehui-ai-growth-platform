@@ -12,6 +12,10 @@
  *   - 本机镜像读写（`loadAuditLog` / `persistAuditLog`），云端推送在
  *     `services/auditLogApi.js`（表还没建时只落本机镜像，与装裱模板同一套兜底口径）。
  *
+ * 观察词 AI 补充（[第三步 US-111]）复用这一份日志：`keyword.candidates.generate` /
+ * `.adopt` / `.discard` 三个动作的 detail 里写清「按什么上下文要了多少候选」与「采纳了哪些词」，
+ * 动作键与文案的唯一真源都在这里（`data/reviewKeywordAi.js` 只产出 detail 正文）。
+ *
  * 与 `data/artworkWriteBack.js` 同一套纪律：**零依赖纯函数 + 常量**，可以直接用 Node 跑断言。
  */
 
@@ -21,29 +25,49 @@ export const AUDIT_LOG_STORAGE_KEY = 'xinlehui-audit-log-v1';
 /** 日志上限：本机镜像只留最近 200 条（更早的由云端表负责，本机不无限增长）。 */
 export const AUDIT_LOG_LIMIT = 200;
 
-/** 进日志的动作（AC 点名的两个 + 「越权写入被拒」这条合规事件）。 */
+/**
+ * 进日志的动作（AC 点名的两个 + 「越权写入被拒」这条合规事件
+ * + [第三步 US-111] 观察词 AI 补充的三条：候选 / 采纳 / 丢弃）。
+ */
 export const AUDIT_ACTIONS = {
   templateSave: 'framing.template.save',
   artworkSave: 'framing.artwork.save',
-  templateWriteDenied: 'framing.template.write-denied'
+  templateWriteDenied: 'framing.template.write-denied',
+  keywordCandidates: 'keyword.candidates.generate',
+  keywordAdopt: 'keyword.candidates.adopt',
+  keywordDiscard: 'keyword.candidates.discard'
 };
 
 export const AUDIT_ACTION_LABELS = {
   'framing.template.save': '另存为我的模板',
   'framing.artwork.save': '保存图片（成品图写回档案）',
-  'framing.template.write-denied': '模板写入被拒绝'
+  'framing.template.write-denied': '模板写入被拒绝',
+  'keyword.candidates.generate': 'AI 生成观察词候选',
+  'keyword.candidates.adopt': 'AI 采纳观察词（写入草稿）',
+  'keyword.candidates.discard': 'AI 丢弃观察词候选'
 };
+
+/** 观察词 AI 补充的三个动作（面板上的「AI 补充留痕」按它们筛选，验收原文「候选、采纳与丢弃都留痕」）。 */
+export const KEYWORD_AI_AUDIT_ACTIONS = [
+  'keyword.candidates.generate',
+  'keyword.candidates.adopt',
+  'keyword.candidates.discard'
+];
 
 /**
  * 每个动作的**必填字段**：
  *   - 另存为我的模板：操作人 / 时间 / 模板 id（这条路没有学员，学员 id 留空是正常的）；
- *   - 保存图片：操作人 / 时间 / 学员 id（学员是这条成品图的归属，必须有）。
+ *   - 保存图片：操作人 / 时间 / 学员 id（学员是这条成品图的归属，必须有）；
+ *   - 观察词 AI 三条：操作人 / 时间 / 模板 id（「采纳了哪些词」写在 detail 里，没有学员）。
  * `templateId` 在保存图片里是「这次用的是哪套模板」——老师没用模板时（自定义微调）为空，不算缺。
  */
 export const AUDIT_ACTION_REQUIRED = {
   'framing.template.save': ['actorId', 'at', 'templateId'],
   'framing.artwork.save': ['actorId', 'at', 'studentId'],
-  'framing.template.write-denied': ['actorId', 'at']
+  'framing.template.write-denied': ['actorId', 'at'],
+  'keyword.candidates.generate': ['actorId', 'at', 'templateId'],
+  'keyword.candidates.adopt': ['actorId', 'at', 'templateId'],
+  'keyword.candidates.discard': ['actorId', 'at', 'templateId']
 };
 
 /** PRD 点名的四项溯源字段（面板上给它们一个明确位置，验证脚本点名核对）。 */

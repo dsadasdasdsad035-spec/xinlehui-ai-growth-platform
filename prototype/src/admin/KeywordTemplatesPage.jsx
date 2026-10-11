@@ -71,7 +71,9 @@ import {
 } from '../data/reviewKeywordAdmin';
 import { KEYWORD_TEMPLATE_MODE_LIST, KEYWORD_TEMPLATE_MODES, keywordTemplateCounts } from '../data/reviewKeywordTemplates';
 import { COURSE_AGE_RANGE_OPTIONS } from '../data/courses';
+import { DEFAULT_ORG_ID } from '../data/lessons';
 import { deleteRemoteReviewKeywordTemplate, saveRemoteReviewKeywordTemplate } from '../services/reviewKeywordTemplatesApi';
+import KeywordAiPanel from './KeywordAiPanel';
 
 /** 左列表按适用模式分两栏（个人 / 班级）—— 与老师端「模式不同、词表不同」一一对应。 */
 function modeGroups(records) {
@@ -102,7 +104,13 @@ export default function KeywordTemplatesPage({
   setKeywordTemplates = () => {},
   setToast = () => {},
   adminName = '',
-  courses = []
+  courses = [],
+  // US-111：AI 补充观察词要写审计留痕（读同一份审计日志，与「权限与合规」面板同源），
+  // 还要按模型目录走独立通道的模型链。
+  auditLog = [],
+  recordAudit = () => null,
+  reviewModels = [],
+  orgId = DEFAULT_ORG_ID
 }) {
   // 后台这个会话是「平台管理员」（原型阶段没有账号体系，会话身份串就是操作人 —— 与课次 teacherId 同一口径）。
   const operator = String(adminName || '平台管理员');
@@ -658,6 +666,22 @@ export default function KeywordTemplatesPage({
             </div>)}
             {editGroups.length ? null : <p className="persona-empty">还没有分组。点「新增分组」建第一组。</p>}
           </div>
+
+          {/* AI 补充观察词（US-111）：独立通道生成候选 → 逐条/按分组勾选 → 采纳进**草稿区**。
+              `key` 绑定 templateKey：换一套模板就重挂载，候选与勾选不会串到另一套上。 */}
+          <KeywordAiPanel
+            key={`ai-${draft.templateKey}`}
+            templateKey={draft.templateKey}
+            draft={draft}
+            setDraft={setDraft}
+            groups={editGroups}
+            courseOptions={courseOptions}
+            operator={operator}
+            reviewModels={reviewModels}
+            auditLog={auditLog}
+            recordAudit={recordAudit}
+            setToast={setToast}
+            orgId={orgId}/>
 
           {/* 保存被拦下时把原因**一直摆在界面上**（不只在点了之后才出 toast）：按钮 disabled 的同时说明为什么。 */}
           {gate.ok ? null : <div className="form-error" data-keyword-template-blocked="true" data-keyword-template-block-reason={gate.issue}><CircleAlert size={16}/>保存被拦下：{gate.issue}</div>}
