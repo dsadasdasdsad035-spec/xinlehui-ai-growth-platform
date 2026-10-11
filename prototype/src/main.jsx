@@ -38,11 +38,13 @@ import { loadStudentManagement } from './data/studentManagement';
 import StudentArchiveData from './StudentArchiveData';
 import GrowthArchiveData from './GrowthArchiveData';
 import { requestAiReview, uploadControlledMedia } from './services/reviewApi';
-import { ARTWORK_CLEAN_ALGORITHM, createExhibitionFrame, createPortraitPrint, extractArtworkSurface, measureFramingCoverage, renderFramedArtwork } from './services/framing';
-// 作品编辑器（US-004a）：单幅作品的编辑状态 `artworkEdit` 与撤销栈的唯一真源在 data 层（零依赖、可 Node 断言），
-// 「原图 → 旋转稿」的画布渲染在 services/artworkEditor.js。原图 originalUrl 全程只读，编辑结果单独一份。
+import { ARTWORK_CLEAN_ALGORITHM, createExhibitionFrame, createPortraitPrint, extractArtworkSurfaceDetails, measureFramingCoverage, renderFramedArtwork } from './services/framing';
+// 作品编辑器（US-004a 旋转与撤销重做 / US-004b 裁剪框与比例预设）：单幅作品的编辑状态 `artworkEdit`、
+// 撤销栈与裁剪框几何的唯一真源都在 data 层（零依赖、可 Node 断言），
+// 「原图 → 旋转稿 → 裁剪稿」的画布渲染在 services/artworkEditor.js。原图 originalUrl 全程只读，编辑结果单独一份。
 import { EDIT_PREVIEW_MAX_EDGE, FINE_ROTATION_STEP, artworkEditHistoryState, artworkEditSnapshotKey, canNudgeArtworkEditRotation, createArtworkEdit, createArtworkEditHistory, currentArtworkEdit, fineRotationOf, formatRotationDeg, normalizeArtworkEdit, nudgeArtworkEditRotation, pushArtworkEditHistory, redoArtworkEditHistory, rotateArtworkEdit, rotationSummary, undoArtworkEditHistory } from './data/artworkEdit';
-import { renderArtworkRotation } from './services/artworkEditor';
+import { CROP_ASPECT_PRESETS, CROP_BODY_HANDLE, CROP_FREE_ASPECT_ID, CROP_HANDLES, CROP_MIN_RATIO, CROP_SNAP_RATIO, applyCropPreset, cropBoxStyle, cropHandleLabel, cropIsFull, cropRatioText, cropRectOf, cropSizeText, cropSummary, describeCropRules, matchCropPreset, moveCrop, resizeCrop, resolveCropAspect } from './data/artworkCrop';
+import { renderArtworkCrop, renderArtworkRotation, ARTWORK_MANUAL_CROP_ALGORITHM } from './services/artworkEditor';
 import { createEmptyTeacherProfile, loadTeacherProfiles, persistTeacherProfiles } from './data/teacherProfiles';
 import { deleteRemoteTeacherProfile, loadRemoteTeacherProfiles, saveRemoteTeacherProfile } from './services/teacherProfileApi';
 import { createEmptySkill, loadSkillLibrary, persistSkillLibrary, resolveSkills, skillFromIndexEntry, skillFromPackage } from './data/skillLibrary';
@@ -122,6 +124,11 @@ const REVIEW_DIMENSION_HINTS = {
   内在状态: '等待大模型生成：本次课堂中可观察到的表达与变化，不作心理诊断。',
   家长建议: '等待大模型生成：1—3 条与本次观察有关、家长今晚就能尝试的具体行动。'
 };
+
+// 画心（cleanUrl）可以由两条路径产出：系统识别纸边自动裁剪，或老师手动裁剪（US-004b）。
+// 两条路径共用同一条下游流水线（装裱 / 点评 / 展陈），所以「画心可用」的判据要一起认这两个算法标识。
+const ARTWORK_CLEAN_ALGORITHMS = [ARTWORK_CLEAN_ALGORITHM, ARTWORK_MANUAL_CROP_ALGORITHM];
+const isCleanArtworkReady = (artwork) => Boolean(artwork?.cleanUrl) && ARTWORK_CLEAN_ALGORITHMS.includes(artwork?.cleanAlgorithm);
 
 const PRD = {
   auth: 'PRD-7.1 / F-ID-01', dashboard: 'PRD-5 / F-PORTAL-01', lessons: 'PRD-7 / F-FEEDBACK-01',
@@ -473,14 +480,19 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
   // 只有点击「使用本地草稿」时才为 true：五维点评正文默认必须来自大模型。
   const [localDraftUsed,setLocalDraftUsed]=useState(false);
   const [framingState,setFramingState]=useState('idle');
-  // ---- 作品编辑器（US-004a）-------------------------------------------------------
+  // ---- 作品编辑器（US-004a 旋转 / US-004b 裁剪）-----------------------------------
   // `open` 是编辑态开关；`draft` 是「正在编辑但还没确认」的那一版 artworkEdit（确认前不进 media，
-  // 所以错误操作不会污染已装裱的成品）；`history` 是撤销栈（至少 20 步，快照式，裁剪/缩放接进来时天然一起撤销）。
-  const [artworkEditor,setArtworkEditor]=useState(()=>({open:false,draft:createArtworkEdit(),history:createArtworkEditHistory(createArtworkEdit())}));
+  // 所以错误操作不会污染已装裱的成品）；`history` 是撤销栈（至少 20 步，快照式，裁剪/旋转天然一起撤销）；
+  // `cropAspect` 是当前锁定的比例预设（纯界面态 —— 裁剪框本身就存在 artworkEdit.crop 里，不进这个字段）。
+  const [artworkEditor,setArtworkEditor]=useState(()=>({open:false,draft:createArtworkEdit(),history:createArtworkEditHistory(createArtworkEdit()),cropAspect:''}));
   // 编辑态的低分辨率预览地址（长边 ≤ EDIT_PREVIEW_MAX_EDGE）：编辑时预览的是「旋转稿」，
   // 确认之后才让第二步的重活（自动裁剪 + 装裱）跑一次。
   const [editorPreview,setEditorPreview]=useState('');
   const [editorPreviewPending,setEditorPreviewPending]=useState(false);
+  // 裁剪舞台（US-004b）：预览图的原生尺寸（= 摆正后那张图的像素比例）。尺寸未知时禁用比例预设。
+  const [cropStage,setCropStage]=useState({naturalWidth:0,naturalHeight:0});
+  const cropStageRef=useRef(null);
+  const cropDragRef=useRef(null);
   const artworkEditKey=artworkEditSnapshotKey(media.artwork?.artworkEdit);
   const [reviewState,setReviewState]=useState('idle');
   // 本次点评使用哪个老师人设（人设 + 技能库 + 大模型记忆一起进 system 提示词）。
@@ -924,24 +936,31 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
     title:activeFrame?.plaqueTitle||'',
     date:activeFrame?.plaqueDate||new Date().toISOString().slice(0,10).replace(/-/g,'.')
   });
-  // 第一段：按 artworkEdit 的旋转角先生成「旋转稿」，再从中裁掉纸外的桌面/地面，得到只有作品本身的画心。
-  // 旋转放在提取**之前**：老师把作品摆正之后，裁出来的才是一张正着的画心；原图始终单独保留、只读。
-  // 缓存判据带上 artworkEdit 的快照键（cleanEditKey）：旋转角变了就必须重算，角度没变则一次都不重跑。
+  // 第一段：按 artworkEdit 的旋转角先生成「旋转稿」，再得到只有作品本身的「画心」（cleanUrl）。
+  // 旋转放在裁剪**之前**：老师把作品摆正之后，裁出来的才是一张正着的画心；原图始终单独保留、只读。
+  // 画心分两条路径（US-004b）：老师手动裁剪过（artworkEdit.crop 非空）就用他画的框直接裁；
+  // 没裁剪过才跑系统识别（纸边自动裁剪）。识别到的框会记在 cleanCropRect 上 —— 老师打开编辑器时
+  // 裁剪框以它为初始位置，否则「系统已经裁过」这件事在界面上看不见，第一次拖动画面就会跳。
+  // 缓存判据带上 artworkEdit 的快照键（cleanEditKey）：旋转角或裁剪框变了就必须重算，没变则一次都不重跑。
   useEffect(()=>{
     if(step!==2||!media.artwork?.id||!media.artwork?.processingRequested) return;
-    if(media.artwork?.cleanUrl&&media.artwork?.cleanAlgorithm===ARTWORK_CLEAN_ALGORITHM&&media.artwork?.cleanEditKey===artworkEditKey) return;
+    if(isCleanArtworkReady(media.artwork)&&media.artwork?.cleanEditKey===artworkEditKey) return;
     let cancelled=false;
     setFramingState('processing');
-    const rotation=normalizeArtworkEdit(media.artwork.artworkEdit).rotateDeg;
+    const edit=normalizeArtworkEdit(media.artwork.artworkEdit);
     (async()=>{
       // 旋转角为 0 时 renderArtworkRotation 原样返回原图地址（不重新编码），所以老流程逐字节不变。
-      const orientedUrl=await renderArtworkRotation({source:media.artwork.originalUrl,rotation});
-      const cleanUrl=await extractArtworkSurface({source:orientedUrl,rotation:0});
-      return {orientedUrl,cleanUrl};
-    })().then(({orientedUrl,cleanUrl})=>{
+      const orientedUrl=await renderArtworkRotation({source:media.artwork.originalUrl,rotation:edit.rotateDeg});
+      if(edit.crop){
+        const manual=await renderArtworkCrop({source:orientedUrl,crop:edit.crop});
+        return {orientedUrl,cleanUrl:manual.url,cleanAlgorithm:ARTWORK_MANUAL_CROP_ALGORITHM,cleanCropRect:manual.crop};
+      }
+      const auto=await extractArtworkSurfaceDetails({source:orientedUrl,rotation:0});
+      return {orientedUrl,cleanUrl:auto.url,cleanAlgorithm:ARTWORK_CLEAN_ALGORITHM,cleanCropRect:auto.crop};
+    })().then(({orientedUrl,cleanUrl,cleanAlgorithm,cleanCropRect})=>{
       if(cancelled||!cleanUrl) return;
       // 原图、旋转稿和画心永远分开保存，任何结果都不能覆盖原图地址。
-      setMedia(current=>({...current,artwork:{...current.artwork,orientedUrl,cleanUrl,cleanAlgorithm:ARTWORK_CLEAN_ALGORITHM,cleanEditKey:artworkEditKey,framedUrl:null,framedStyle:''}}));
+      setMedia(current=>({...current,artwork:{...current.artwork,orientedUrl,cleanUrl,cleanAlgorithm,cleanCropRect,cleanEditKey:artworkEditKey,framedUrl:null,framedStyle:''}}));
     }).catch(()=>{if(!cancelled) setFramingState('error')});
     return()=>{cancelled=true};
   },[step,media.artwork?.id,media.artwork?.processingRequested,artworkEditKey,media.artwork?.cleanUrl,media.artwork?.cleanAlgorithm,media.artwork?.cleanEditKey]);
@@ -949,7 +968,7 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
   // 结果存进 framedUrl，step 2 的预览与 step 3 的展陈都直接读它 —— 这就是「框实时渲染到作品上」。
   const activeFrameSpecKey=activeFrame?.id||'default';
   useEffect(()=>{
-    if(step!==2||!media.artwork?.cleanUrl||media.artwork?.cleanAlgorithm!==ARTWORK_CLEAN_ALGORITHM) return;
+    if(step!==2||!media.artwork?.cleanUrl||!ARTWORK_CLEAN_ALGORITHMS.includes(media.artwork?.cleanAlgorithm)) return;
     const plaque=framePlaque();
     // 叠加元素的变量上下文（US-003a）：机构名与老师姓名是会话常量，学员名/作品名/课次日期来自展签。
     // 它们会影响renderFramedArtwork的输出，所以必须一起进framedStyle缓存键，否则换学员不会重渲染。
@@ -975,7 +994,9 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
   // 编辑态的实时预览（US-004a）：只画「旋转稿」，低分辨率画布（长边 ≤ EDIT_PREVIEW_MAX_EDGE）才跟手；
   // 编辑期间**不跑**上面那两段重活（裁剪 + 装裱），确认后再跑一次 —— 于是每按一下微调不会重扫一遍像素。
   // 120ms 的合并窗口是为了连点：同一帧内的多次点击只画最后一张。
-  const editorDraftKey=artworkEditSnapshotKey(artworkEditor.draft);
+  // 依赖只有**旋转角**（不是整份草稿）：US-004b 拖动裁剪框时草稿一直在变，但旋转稿没有变化，
+  // 若跟着整份快照键重画，每移动一格都会重编码一张 900px 的图（裁剪框会拖得一顿一顿）。
+  const editorRotationKey=normalizeArtworkEdit(artworkEditor.draft).rotateDeg;
   useEffect(()=>{
     if(!artworkEditor.open){setEditorPreview('');setEditorPreviewPending(false);return undefined;}
     const source=media.artwork?.originalUrl;
@@ -989,7 +1010,7 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
         .finally(()=>{if(!cancelled)setEditorPreviewPending(false)});
     },120);
     return()=>{cancelled=true;clearTimeout(timer)};
-  },[artworkEditor.open,editorDraftKey,media.artwork?.id,media.artwork?.originalUrl]);
+  },[artworkEditor.open,editorRotationKey,media.artwork?.id,media.artwork?.originalUrl]);
   useEffect(()=>{
     if(step!==2||!media.photo?.url||media.photo?.portraitReady) return;
     let cancelled=false;
@@ -1448,7 +1469,8 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
   // 原图 originalUrl 全程只读（不覆盖、不重编码）。
   /** 退出编辑器并清空草稿与撤销栈：换班 / 新建草稿 / 重新上传 / 移除作品时调用（别把上一幅的历史带过去）。 */
   const closeArtworkEditor=()=>{
-    setArtworkEditor({open:false,draft:createArtworkEdit(),history:createArtworkEditHistory(createArtworkEdit())});
+    setArtworkEditor({open:false,draft:createArtworkEdit(),history:createArtworkEditHistory(createArtworkEdit()),cropAspect:''});
+    setCropStage({naturalWidth:0,naturalHeight:0});
     setEditorPreview('');
     setEditorPreviewPending(false);
   };
@@ -1456,7 +1478,8 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
     const artwork=media.artwork;
     if(!artwork?.originalUrl){setToast('请先上传学员作品，再进入编辑。');return;}
     const seed=normalizeArtworkEdit(artwork.artworkEdit);
-    setArtworkEditor({open:true,draft:seed,history:createArtworkEditHistory(seed,{label:'打开编辑器'})});
+    // cropAspect 留空 = 「跟随框自动匹配」：打开时不强行锁定比例，界面上高亮真正对得上的那一颗。
+    setArtworkEditor({open:true,draft:seed,history:createArtworkEditHistory(seed,{label:'打开编辑器'}),cropAspect:''});
   };
   // 统一的「提交一步编辑」入口：更新草稿 + 压入撤销栈（label 就是这一步在撤销按钮上的说明）。
   const applyArtworkEditStep=(next,label)=>setArtworkEditor(current=>{
@@ -1489,7 +1512,7 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
     if(artworkEditor.open){rotateArtworkEditor(direction);return;}
     const seed=normalizeArtworkEdit(media.artwork.artworkEdit);
     const next=rotateArtworkEdit(seed,direction>0?1:-1);
-    setArtworkEditor({open:true,draft:next,history:pushArtworkEditHistory(createArtworkEditHistory(seed),next,direction>0?'向右旋转 90°':'向左旋转 90°')});
+    setArtworkEditor({open:true,draft:next,history:pushArtworkEditHistory(createArtworkEditHistory(seed),next,direction>0?'向右旋转 90°':'向左旋转 90°'),cropAspect:''});
   };
   // 「完成编辑」：把草稿写进 artworkEdit，并作废下游的裁剪稿/成品图（angle 变了就必须重算）。
   // 编辑与已确认的方向一致时不做无用功 —— 直接关掉编辑态，不动已装裱的成品。
@@ -1971,14 +1994,113 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
   const artworkEditorShown=artworkEditor.open?artworkEditor.draft:normalizeArtworkEdit(media.artwork?.artworkEdit);
   const artworkEditorState=artworkEditHistoryState(artworkEditor.history);
   const artworkEditorFine=fineRotationOf(artworkEditorShown.rotateDeg);
+  // ---- 裁剪框（US-004b）---------------------------------------------------------------
+  // 归一化裁剪框 ↔ 屏幕坐标的换算只有一处：**裁剪舞台**（图片的渲染盒）就是坐标系，
+  // 于是「拖动位移 ÷ 舞台尺寸」就是归一化位移，与图片分辨率、缩放、窗口大小都无关。
+  // 八点几何、比例换算、最小 10%、四边吸附、越界回弹全部在 data/artworkCrop.js 的纯函数里（可 Node 断言）。
+  const cropImageAspect=cropStage.naturalWidth>0?cropStage.naturalWidth/Math.max(1,cropStage.naturalHeight):1;
+  /** 此刻显示在舞台上的裁剪框：草稿里有手动裁剪就用它；没有（= 沿用系统识别）就用识别到的那一版。 */
+  const cropShownRect=cropRectOf(artworkEditorShown.crop||media.artwork?.cleanCropRect);
+  const cropAspectId=artworkEditor.cropAspect||matchCropPreset(artworkEditorShown.crop,cropImageAspect);
+  const cropLockedRatio=artworkEditor.cropAspect?resolveCropAspect(artworkEditor.cropAspect,cropImageAspect):null;
+  const cropSizeLabel=cropSizeText(cropShownRect);
+  const cropRatioLabel=cropRatioText(cropShownRect,cropImageAspect);
+  const cropRectAttr=[cropShownRect.x,cropShownRect.y,cropShownRect.w,cropShownRect.h].map(item=>Number(item.toFixed(4))).join(',');
+  /** 拖动过程中只改草稿、**不进撤销栈**：每一步都压栈会把 40 步的上限在一秒内用光。 */
+  const setArtworkCropDraft=(nextCrop)=>setArtworkEditor(current=>{
+    if(!current.open) return current;
+    return {...current,draft:normalizeArtworkEdit({...current.draft,crop:nextCrop})};
+  });
+  const beginCropDrag=(event,handle)=>{
+    if(!artworkEditor.open) return;
+    const stage=cropStageRef.current;
+    if(!stage) return;
+    const box=stage.getBoundingClientRect();
+    if(!box.width||!box.height) return;
+    event.preventDefault();
+    // 指针捕获：拖到舞台外面（甚至拖出窗口）也不丢事件，松手一定能收尾。
+    try{event.currentTarget.setPointerCapture(event.pointerId)}catch{}
+    cropDragRef.current={
+      handle,
+      pointerId:event.pointerId,
+      startX:event.clientX,
+      startY:event.clientY,
+      width:box.width,
+      height:box.height,
+      base:cropShownRect,
+      aspect:cropLockedRatio,
+      imageAspect:cropImageAspect,
+      moved:false
+    };
+    // 还没显式选过比例时，一动手就按「自由裁剪」记：否则高亮会随着框子对上了某个比例而自己跳。
+    if(!artworkEditor.cropAspect) setArtworkEditor(current=>({...current,cropAspect:CROP_FREE_ASPECT_ID}));
+  };
+  const moveCropDrag=(event)=>{
+    const drag=cropDragRef.current;
+    if(!drag||event.pointerId!==drag.pointerId) return;
+    const offsetX=event.clientX-drag.startX;
+    const offsetY=event.clientY-drag.startY;
+    // 2px 抖动阈值：手一抖就压一步撤销栈的话，「撤销」会按很多次才看得出变化。
+    if(!drag.moved&&Math.abs(offsetX)<2&&Math.abs(offsetY)<2) return;
+    event.preventDefault();
+    drag.moved=true;
+    const dx=offsetX/drag.width;
+    const dy=offsetY/drag.height;
+    const options={minRatio:CROP_MIN_RATIO,snapRatio:CROP_SNAP_RATIO,aspectRatio:drag.aspect,imageAspect:drag.imageAspect};
+    setArtworkCropDraft(drag.handle===CROP_BODY_HANDLE
+      ? moveCrop(drag.base,dx,dy,options)
+      : resizeCrop(drag.base,drag.handle,dx,dy,options));
+  };
+  const endCropDrag=(event)=>{
+    const drag=cropDragRef.current;
+    if(!drag||(event&&event.pointerId!==drag.pointerId)) return;
+    cropDragRef.current=null;
+    if(!drag.moved) return;
+    // 松手才把这一步压进撤销栈（与旋转/微调一样：一步 = 一次可撤销的操作，label 说明做了什么）。
+    setArtworkEditor(current=>{
+      if(!current.open) return current;
+      const label=drag.handle===CROP_BODY_HANDLE?'移动裁剪框':`调整裁剪框 · ${cropHandleLabel(drag.handle)}`;
+      return {...current,history:pushArtworkEditHistory(current.history,current.draft,label)};
+    });
+  };
+  const chooseCropPreset=(presetId)=>{
+    const id=CROP_ASPECT_PRESETS.some(item=>item.id===presetId)?presetId:CROP_FREE_ASPECT_ID;
+    const name=CROP_ASPECT_PRESETS.find(item=>item.id===id)?.label||'自由';
+    setArtworkEditor(current=>{
+      if(!current.open) return current;
+      const base=cropRectOf(current.draft.crop||media.artwork?.cleanCropRect);
+      const edit=normalizeArtworkEdit({...current.draft,crop:applyCropPreset(base,id,cropImageAspect)});
+      return {...current,draft:edit,cropAspect:id,history:pushArtworkEditHistory(current.history,edit,`裁剪比例 ${name}`)};
+    });
+  };
   const artworkEditorField=(
     <div className={`artwork-editor${artworkEditor.open?' is-open':''}`} data-editor-open={artworkEditor.open?'true':'false'} data-edit-rotation={artworkEditorShown.rotateDeg} data-edit-fine={artworkEditorFine}>
       <div className="artwork-editor-head">
         <b>作品编辑器</b>
         <em data-edit-summary={rotationSummary(artworkEditorShown)}>{rotationSummary(artworkEditorShown)}</em>
-        <small>{artworkEditor.open?'编辑中：预览为低分辨率旋转稿，点「完成编辑」后再按新方向重新裁剪与装裱。':'旋转结果写入独立的 artworkEdit，原图 originalUrl 全程只读、不会被覆盖。'}</small>
+        <em className="artwork-editor-crop-badge" data-edit-crop={cropSummary(artworkEditorShown.crop,cropImageAspect)} data-crop-summary={cropSummary(artworkEditorShown.crop,cropImageAspect)}>{cropSummary(artworkEditorShown.crop,cropImageAspect)}</em>
+        <small>{artworkEditor.open?'编辑中：预览为低分辨率旋转稿，点「完成编辑」后再按新方向重新裁剪与装裱。':'旋转与裁剪结果写入独立的 artworkEdit，原图 originalUrl 全程只读、不会被覆盖。'}</small>
       </div>
       {artworkEditor.open?<>
+        <div className="artwork-crop">
+          <div className="artwork-editor-row">
+            <span>裁剪框</span>
+            <em className="artwork-crop-readout" data-crop-size={cropSizeLabel}>{cropSizeLabel}{cropRatioLabel?` · ${cropRatioLabel}`:''}</em>
+            {cropIsFull(cropShownRect)?<small data-crop-full="true">当前是完整画面（框外会被裁掉，框即保留区域）</small>:null}
+          </div>
+          <div className="artwork-crop-presets" role="group" aria-label="裁剪比例预设">
+            {CROP_ASPECT_PRESETS.map(preset=><button key={preset.id} type="button" data-crop-preset={preset.id} className={cropAspectId===preset.id?'active':''} aria-pressed={cropAspectId===preset.id} disabled={preset.id!==CROP_FREE_ASPECT_ID&&!cropStage.naturalWidth} onClick={()=>chooseCropPreset(preset.id)}>{preset.label}</button>)}
+          </div>
+          <div className="artwork-crop-stage" ref={cropStageRef} data-crop-stage="true" data-crop-image-aspect={Number(cropImageAspect.toFixed(4))} data-crop-locked={cropLockedRatio?Number(cropLockedRatio.toFixed(4)):''} onPointerMove={moveCropDrag} onPointerUp={endCropDrag} onPointerCancel={endCropDrag}>
+            <img src={editorPreview||media.artwork?.originalUrl} alt="裁剪预览（摆正后的低分辨率旋转稿）" draggable={false} onLoad={(event)=>{const image=event.currentTarget;setCropStage(current=>current.naturalWidth===image.naturalWidth&&current.naturalHeight===image.naturalHeight?current:{naturalWidth:image.naturalWidth,naturalHeight:image.naturalHeight});}}/>
+            <div className={`artwork-crop-box${cropIsFull(cropShownRect)?' is-full':''}`} style={cropBoxStyle(cropShownRect)} data-crop-rect={cropRectAttr}>
+              <span className="artwork-crop-move" data-crop-handle={CROP_BODY_HANDLE} title="拖动整框（越界会回弹）" onPointerDown={(event)=>beginCropDrag(event,CROP_BODY_HANDLE)}/>
+              {CROP_HANDLES.map(handle=><span key={handle} className={`artwork-crop-handle is-${handle}`} data-crop-handle={handle} title={`拖动${cropHandleLabel(handle)}`} onPointerDown={(event)=>beginCropDrag(event,handle)}/>)}
+              <b className="artwork-crop-size" data-crop-size-label={cropSizeLabel}>{cropSizeLabel}</b>
+            </div>
+          </div>
+          <small className="artwork-crop-hint">{describeCropRules()}{editorPreviewPending?'（旋转稿正在生成，稍等片刻）':''}</small>
+        </div>
         <div className="artwork-editor-row">
           <span>旋转</span>
           <button type="button" data-edit-action="rotate-left" title="向左旋转 90°" disabled={editorPreviewPending} onClick={()=>rotateArtworkEditor(-1)}><RotateCcw size={15}/>左旋 90°</button>
@@ -2001,8 +2123,8 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
           <button type="button" className="artwork-editor-cancel" data-edit-action="cancel" onClick={cancelArtworkEdit}>放弃本次编辑</button>
           <button type="button" className="artwork-editor-confirm" data-edit-action="confirm" disabled={editorPreviewPending} onClick={confirmArtworkEdit}>{editorPreviewPending?'正在生成预览…':'完成编辑，重新裁剪与装裱'}</button>
         </div>
-        <p className="artwork-editor-note">编辑只改这一幅作品的旋转参数（写入 <code>artworkEdit</code>），不写入装裱模板，也不会覆盖原图。</p>
-      </>:<button type="button" className="artwork-editor-entry" data-edit-action="open" disabled={!media.artwork?.originalUrl} onClick={openArtworkEditor}><WandSparkles size={15}/>编辑作品（旋转 / 微调 / 撤销重做）</button>}
+        <p className="artwork-editor-note">编辑只改这一幅作品的旋转与裁剪参数（写入 <code>artworkEdit</code>），不写入装裱模板，也不会覆盖原图。</p>
+      </>:<button type="button" className="artwork-editor-entry" data-edit-action="open" disabled={!media.artwork?.originalUrl} onClick={openArtworkEditor}><WandSparkles size={15}/>编辑作品（旋转 / 微调 / 裁剪 / 撤销重做）</button>}
     </div>
   );
   return <><PageHeader title="课后反馈" desc="每一个环节都可随时进入，当前进度会同步保留。" prd="课后反馈工作流"/>

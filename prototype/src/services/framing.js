@@ -64,7 +64,7 @@ export const ARTWORK_CLEAN_ALGORITHM = 'artwork-crop-v5';
 /** 中性色判定阈值：三通道极差。白纸/灰墙/木桌都是低极差，孩子的笔触是高极差。 */
 const NEUTRAL_SPREAD = 46;
 /** 提取结果的输出上限（长边像素）。只影响预览与 AI 输入，原图始终单独保留。 */
-const CLEAN_MAX_EDGE = 2600;
+export const CLEAN_MAX_EDGE = 2600;
 
 const clampNumber = (value, lo, hi) => Math.min(hi, Math.max(lo, value));
 
@@ -150,8 +150,23 @@ function growQuad(quad, margin) {
  *
  * 流程：降采样 → 自适应阈值找纸 → 网格桥接把被笔触切碎的纸连成一体 → 取最大连通域
  * → 用 x±y 极值求纸的四角 → 四角外推安全边 → 四边形内像素原样保留、四边形外填白 → 裁到四边形外接矩形。
+ *
+ * `extractArtworkSurface`（返回地址）与 `extractArtworkSurfaceDetails`（返回地址 + 识别到的裁剪框）
+ * 的分工：老师端编辑器（US-004b）要拿这个框当裁剪框的初始位置，否则「系统已经裁过了」这件事
+ * 在界面上看不见，老师第一次拖动裁剪框画面就会跳。渲染路径只有一份，两个入口共用。
+ *
+ * @returns {Promise<string>} 画心地址（老口径，调用方不需要知道裁剪框时用它）
  */
 export async function extractArtworkSurface({ source, rotation = 0 }) {
+  const details = await extractArtworkSurfaceDetails({ source, rotation });
+  return details.url;
+}
+
+/**
+ * @returns {Promise<{url:string, crop:{x:number,y:number,w:number,h:number}|null, source?:object}>}
+ *   `crop` 是**归一化**（0–1，相对摆正后的整幅画面）的裁剪框；回退「不裁剪」时为 null。
+ */
+export async function extractArtworkSurfaceDetails({ source, rotation = 0 }) {
   const orientedSource = await rotateArtworkOriginal({ source, rotation });
   const image = await loadImage(orientedSource);
   const width = image.naturalWidth;
@@ -170,7 +185,7 @@ export async function extractArtworkSurface({ source, rotation = 0 }) {
     const ctx = canvas.getContext('2d');
     ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
-    return canvas.toDataURL('image/jpeg', 0.93);
+    return { url: canvas.toDataURL('image/jpeg', 0.93), crop: null, source: { width, height } };
   };
 
   // 分析画布：宽 1000 足够定位纸边，逐像素计算量却只有原图的 1/10。
@@ -279,7 +294,17 @@ export async function extractArtworkSurface({ source, rotation = 0 }) {
     }
   }
   resultContext.putImageData(cleanPixels, 0, 0);
-  return result.toDataURL('image/jpeg', 0.94);
+  // 归一化裁剪框（相对摆正后的整幅画面）：老师端的裁剪框以它为初始位置（US-004b）。
+  return {
+    url: result.toDataURL('image/jpeg', 0.94),
+    crop: {
+      x: clampNumber(cropX / width, 0, 1),
+      y: clampNumber(cropY / height, 0, 1),
+      w: clampNumber(cropWidth / width, 0, 1),
+      h: clampNumber(cropHeight / height, 0, 1)
+    },
+    source: { width, height, cropX, cropY, cropWidth, cropHeight, outWidth, outHeight }
+  };
 }
 
 /**

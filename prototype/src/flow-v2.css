@@ -292,4 +292,51 @@
 .artwork-editor-note code{background:#fff2c8;border-radius:4px;padding:1px 4px;font-size:10px}
 /* 编辑中的角标与「已装裱」角标区分开：一眼能看出现在看的是旋转稿，不是成品图 */
 .framed-badge.editing-badge{background:#b98a0b}
-@media(max-width:800px){.artwork-editor-row>span{width:100%}.artwork-editor-actions button{flex:1 1 auto}}
+/* ---- 裁剪框（US-004b）------------------------------------------------------------------
+   舞台 = 图片渲染盒（inline-block + 图片自身尺寸），所以归一化裁剪框可以直接用百分比定位，
+   不需要在 JS 里算像素。框外压暗用 box-shadow 的「超大外阴影」实现，一处搞定四边。 */
+.artwork-crop{display:flex;flex-direction:column;gap:8px}
+.artwork-editor-crop-badge{background:#e8f0dd;color:#4d6b28}
+.artwork-crop-readout{font-style:normal;font-size:10px;font-weight:800;color:#4d6b28;background:#edf5e2;border-radius:999px;padding:2px 9px}
+.artwork-crop-presets{display:flex;flex-wrap:wrap;gap:6px}
+.artwork-crop-presets button{border:1px solid #e3d7b5;background:#fff;border-radius:999px;padding:6px 11px;font-size:10px;font-weight:800;color:#4c4536;cursor:pointer}
+.artwork-crop-presets button:hover:not(:disabled){border-color:#c99908;color:#7a5b00}
+.artwork-crop-presets button.active{border-color:#2d2921;background:#2d2921;color:#fff9e8}
+.artwork-crop-presets button:disabled{opacity:.45;cursor:not-allowed}
+.artwork-crop-stage{position:relative;display:inline-block;max-width:100%;align-self:flex-start;border-radius:10px;background:#2b271f;overflow:hidden;touch-action:none;-webkit-user-select:none;user-select:none;cursor:crosshair}
+.artwork-crop-stage>img{display:block;max-width:100%;max-height:320px;width:auto;height:auto;-webkit-user-drag:none}
+.artwork-crop-box{position:absolute;box-sizing:border-box;border:1px solid #fff8e2;box-shadow:0 0 0 9999px rgba(24,20,12,.52);z-index:1}
+.artwork-crop-box.is-full{box-shadow:0 0 0 9999px rgba(24,20,12,.26)}
+.artwork-crop-move{position:absolute;inset:0;cursor:move}
+/* 把手的方块要**落在框内**（只允许越界 1px）：舞台是 overflow:hidden，伸到外面的部分会被裁掉、
+   也收不到点击 —— 裁剪框正好贴着画布边时（很常见），外侧的把手就抓不住了。 */
+.artwork-crop-handle{position:absolute;width:14px;height:14px;border:1px solid #fff8e2;background:#c99908;border-radius:3px;z-index:2;box-shadow:0 1px 2px rgba(0,0,0,.35)}
+.artwork-crop-handle.is-nw{left:-1px;top:-1px;cursor:nwse-resize}
+.artwork-crop-handle.is-n{left:calc(50% - 7px);top:-1px;cursor:ns-resize}
+.artwork-crop-handle.is-ne{right:-1px;top:-1px;cursor:nesw-resize}
+.artwork-crop-handle.is-e{right:-1px;top:calc(50% - 7px);cursor:ew-resize}
+.artwork-crop-handle.is-se{right:-1px;bottom:-1px;cursor:nwse-resize}
+.artwork-crop-handle.is-s{left:calc(50% - 7px);bottom:-1px;cursor:ns-resize}
+.artwork-crop-handle.is-sw{left:-1px;bottom:-1px;cursor:nesw-resize}
+.artwork-crop-handle.is-w{left:-1px;top:calc(50% - 7px);cursor:ew-resize}
+/* 框很扁/很窄时，中间那四个把手会盖住角把手（都落在角上）。角把手的 z-index 要高一层：
+   重叠时「抓角」优先 —— 否则把框拖到最小之后连角都抓不回来（本轮真踩了）。 */
+.artwork-crop-handle.is-nw,.artwork-crop-handle.is-ne,.artwork-crop-handle.is-se,.artwork-crop-handle.is-sw{z-index:3}
+.artwork-crop-size{position:absolute;left:50%;bottom:6px;transform:translateX(-50%);pointer-events:none;background:rgba(24,20,12,.68);color:#fff8e2;font-size:10px;font-weight:800;border-radius:999px;padding:2px 8px;white-space:nowrap}
+.artwork-crop-hint{font-size:10px;line-height:1.6;color:#857a64}
+@media(max-width:800px){.artwork-editor-row>span{width:100%}.artwork-editor-actions button{flex:1 1 auto}
+  /* 触摸端的把手要做大（手指按不住 14px），但**不能走 44px 的全局兜底**：把手是 span 不是 button，
+     这里显式给 24px 并把可视方块用内阴影画小一点。 */
+  .artwork-crop-handle{width:24px;height:24px;border-radius:6px}
+  .artwork-crop-handle.is-nw{left:-2px;top:-2px}
+  .artwork-crop-handle.is-n{left:calc(50% - 12px);top:-2px}
+  .artwork-crop-handle.is-ne{right:-2px;top:-2px}
+  .artwork-crop-handle.is-e{right:-2px;top:calc(50% - 12px)}
+  .artwork-crop-handle.is-se{right:-2px;bottom:-2px}
+  .artwork-crop-handle.is-s{left:calc(50% - 12px);bottom:-2px}
+  .artwork-crop-handle.is-sw{left:-2px;bottom:-2px}
+  .artwork-crop-handle.is-w{left:-2px;top:calc(50% - 12px)}
+  .artwork-crop-stage>img{max-height:260px}
+  /* 触摸端把手变大（24px）后，框内的尺寸标签一定会被中间那三个把手压住：
+     移动端直接不画它 —— 尺寸在上方的「裁剪框 62% × 78% · ≈1:1」读数是同一份数据。 */
+  .artwork-crop-size{display:none}}
