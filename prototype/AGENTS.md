@@ -133,6 +133,18 @@ React + Vite 单页原型（`src/main.jsx` 是主入口，另按模块拆出 `sr
 - 展签日期一律用 `formatLessonDateDots(lessonDate)`（`data/lessons.js`）取课次日期：
   写死 `2026.08.11` 或用 `new Date()` 会让补录的上节课显示成今天。展签上的作品名在 US-406a 阶段默认取本次课题
   （`lessonTopic`），US-406b 起由老师逐幅填写。
+- **展签日期只有两个来源，缺一不可**（[第二步到第一步联通] US-014）：**值** = 本次课次日期
+  `lesson.lessonDate`（`main.jsx` 的 `plaqueDateText = formatOverlayDate(lessonDateDots, …)`，**没有
+  `new Date()` 兜底** —— 课次日期为空时干脆不印日期行），**写法与位置** = 模板的
+  `spec.plaque.dateFormat`（`DATE_FORMATS` 三选一，由 `frameSpecRenderView()` 暴露成 `plaqueDateFormat`）
+  + `spec.plaque.position`。装裱模板（含云表 `plaque_date` 列）**结构上不再承载日期值**：
+  `normalizeFramingPreset` 会把老记录的 `plaqueDate` 剔除，界面与面板都没有日期值输入框。
+  改这一层要三处一起动，少一处的表现是「日期还是旧的写法 / 还是归档当天」：
+  ① `frameSpecRenderView` 带上 `plaqueDateFormat`（顺带进渲染缓存键，少了会串图）；
+  ② 所有渲染入口传 `date: formatOverlayDate(lessonDateDots, plaqueDateFormat)`
+  （单幅 / 批量 / 相框缩略图 / 后台预览 / 第三步那份回落到 DOM 的展签文字）；
+  ③ `data/framingPanel.js` 的覆盖矩阵与后台「展签」分组各补一个 `plaque.dateFormat` 控件，
+  否则 `framingPanelMissingFields()` 当场变红。
 - 上传后的提示语要说清绑定结果（几份已绑定 / 几份未绑定）：`readFiles()` 里 `readFile()` 是**异步**的，
   它成功/失败后还会再弹一条 toast，所以绑定提示必须放在 `readFile(...).finally(...)` 里最后说，
   否则老师只看到「已在本地预览」，看不到「有 1 份没绑定」。
@@ -625,7 +637,7 @@ DOM/canvas 部分在 `src/services/artworkWriteBack.js`，编排在 `main.jsx` �
   按「这一幅的底图 + 参数 + 姓名」重算一次，与写回记录的地址指纹**逐字符比**；再做一个反证——
   换成下一位学员的姓名重算，结果必须**不同**（否则「名字根本没起作用」也会通过）。
   参数从应用 state 里的模板取（fiber 探针只读，云端模板与内置模板都覆盖得到），
-  与 `framePlaque()` 的 `activeFrame.plaqueDate || 今天` 同一口径。
+  展签日期与单幅口径一致（`framePlaque()` 的 `date`，US-014 起 = 课次日期按模板格式渲染）。
 - 装裱墙每行都落了只读属性：`data-artwork-framed`（`none|batch|single|stale`）、
   `-writeback-student` / `-title` / `-batch` / `-fingerprint` / `-key`（记录里的键）/
   `-plan-key`（当前的每幅键）/ `-fresh` —— 「为什么判成 stale」在 DOM 里就能看出来。

@@ -16,6 +16,13 @@ import { renderFramedArtwork } from './framing';
 /** 占位作品的像素尺寸（遮挡统计与预览共用；改它等于改所有面板断言的坐标系）。 */
 export const FRAME_PREVIEW_ARTWORK_SIZE = { width: 900, height: 680 };
 
+/**
+ * 预览用的**示例课次日期**（US-014 起展签日期取 `lesson.lessonDate`，后台没有真实课次上下文）。
+ * 面板上看到的仍是「创作于 + 某种格式」：格式来自模板（`spec.plaque.dateFormat`），值用这份固定的
+ * 示例日期 —— **不要用 `new Date()`**，否则同一份模板在不同日子预览出不同的图。
+ */
+export const FRAME_PREVIEW_LESSON_DATE = '2026.08.11';
+
 let placeholderCache = '';
 
 /** 占位作品：只在后台设置页使用，不参与任何真实渲染。 */

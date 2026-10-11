@@ -24,7 +24,7 @@
 export const FRAMING_PANEL_GROUPS = [
   { id: 'frame', label: '相框', hint: '形状、框宽、材质色与光影；材质色同时决定框的底色。' },
   { id: 'mat', label: '卡纸', hint: '卡纸开关、颜色、宽度与细分隔线；关掉卡纸时作品区会占满开口。' },
-  { id: 'plaque', label: '展签', hint: '展签开关、位置、底色与文字样式；位置只认上 / 下两条边（作品区一直在中间）。' },
+  { id: 'plaque', label: '展签', hint: '展签开关、位置、日期格式、底色与文字样式；位置只认上 / 下两条边（作品区一直在中间），日期值取本次课次日期（lesson.lessonDate），模板只配格式。' },
   { id: 'watermark', label: '水印', hint: '机构 Logo、文字水印与二维码，位置走九宫格 + 短边比例。' },
   { id: 'signature', label: '落款', hint: '文字落款 / 手写签名图 + 可选印章。' },
   { id: 'date', label: '时间', hint: '来源 / 格式 / 前缀与样式，默认取本次课次日期。' }
@@ -60,6 +60,7 @@ export const FRAMING_PANEL_FIELDS = [
   // —— 展签 ——
   { group: 'plaque', path: 'plaque.visible', label: '展签开关', control: 'toggle' },
   { group: 'plaque', path: 'plaque.position', label: '展签位置', control: 'select' },
+  { group: 'plaque', path: 'plaque.dateFormat', label: '展签日期格式', control: 'select' },
   { group: 'plaque', path: 'plaque.bg', label: '展签底色', control: 'color' },
   { group: 'plaque', path: 'plaque.text', label: '展签文字色', control: 'color' },
   { group: 'plaque', path: 'plaque.fontFamily', label: '展签字体', control: 'select' },

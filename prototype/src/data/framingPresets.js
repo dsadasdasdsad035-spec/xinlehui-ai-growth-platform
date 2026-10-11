@@ -33,8 +33,14 @@ export function normalizeFrameScope(value) {
 export function normalizeFramingPreset(raw) {
   const input = raw && typeof raw === 'object' ? raw : {};
   const scope = normalizeFrameScope(input.scope);
+  // `plaqueDate`（云表 `plaque_date`）是**历史字段**：它曾经承载一个具体日期值
+  // （甚至默认写今天），于是补录上节课时展签会写成归档当天 —— US-014 联通后日期值一律取
+  // `lesson.lessonDate`，模板只保留「格式（`spec.plaque.dateFormat`）+ 位置（`spec.plaque.position`）」。
+  // 这里**结构上剔除**旧字段：读到老镜像 / 老云端行也不会有人再拿它当日期渲染。
+  const { plaqueDate: legacyPlaqueDate, ...rest } = input;
+  void legacyPlaqueDate;
   return {
-    ...input,
+    ...rest,
     scope,
     // 平台模板没有归属人（PRD：平台模板 owner_key 为空），读到脏值就清掉；
     // org / teacher 两层的 ownerKey 原样保留，由 presetVisibleTo 判断可见性。
@@ -132,7 +138,7 @@ export const seedFramingPresets = [
     id: 'frame-starlight', name: '星光展',
     description: '暖金外框配米白卡纸，深色展签。适合色彩明亮的作品，展陈感强。',
     spec: builtinSpec({ outer: '#cfa52e', mat: '#f3ede2', plaqueBg: '#2b271f', plaqueText: '#fbf8f2', atmosphere: '暖金收边，米白承托，像一次小小的颁奖。', rationale: '金色外框呼应作品的明亮色，米白卡纸避免抢色。' }),
-    plaqueStudent: '', plaqueDate: '', plaqueTitle: '', enabled: true, builtin: true, scope: 'platform', ownerKey: '', sortOrder: 1,
+    plaqueStudent: '', plaqueTitle: '', enabled: true, builtin: true, scope: 'platform', ownerKey: '', sortOrder: 1,
     // 出厂的默认模板（US-011b）：管理员没改过之前，老师端「没命中课程绑定」时就用它。
     // 它也是「被引用的模板只能停用、不能删除」的现成例子（删它会被拦下）。
     isDefault: true
@@ -141,13 +147,13 @@ export const seedFramingPresets = [
     id: 'frame-oak', name: '自然原木',
     description: '原木棕外框配米白卡纸。温度自然，能托住任意色域的作品。',
     spec: builtinSpec({ outer: '#8d6439', mat: '#f3ede2', plaqueBg: '#3e3022', plaqueText: '#fbf8f2', atmosphere: '原木温度，像把作品放回一张安静的桌子。', rationale: '木质棕与米白同属暖调，不与孩子的用色冲突。' }),
-    plaqueStudent: '', plaqueDate: '', plaqueTitle: '', enabled: true, builtin: true, scope: 'platform', ownerKey: '', sortOrder: 2
+    plaqueStudent: '', plaqueTitle: '', enabled: true, builtin: true, scope: 'platform', ownerKey: '', sortOrder: 2
   },
   {
     id: 'frame-ink', name: '东方雅境',
     description: '墨色极简外框配纸色卡纸，气息安静克制。',
     spec: builtinSpec({ outer: '#27241f', mat: '#eee8dd', plaqueBg: '#27241f', plaqueText: '#eee8dd', atmosphere: '墨色极简，纸色留白，气息安静。', rationale: '深墨外框压住画面，纸色卡纸保留东方留白。' }),
-    plaqueStudent: '', plaqueDate: '', plaqueTitle: '', enabled: true, builtin: true, scope: 'platform', ownerKey: '', sortOrder: 3
+    plaqueStudent: '', plaqueTitle: '', enabled: true, builtin: true, scope: 'platform', ownerKey: '', sortOrder: 3
   },
   {
     id: 'frame-ai-shuimo', name: '新中式水墨',
@@ -159,49 +165,49 @@ export const seedFramingPresets = [
       atmosphere: '细墨线轻收四周，米色卡纸如宣纸留白，童趣水彩在一片静气中安然呼吸。',
       rationale: '墨线收束，米色承托童趣，留白透气，静而不冷。'
     }),
-    plaqueStudent: '', plaqueDate: '', plaqueTitle: '', enabled: true, builtin: false, scope: 'platform', ownerKey: '', sortOrder: 4
+    plaqueStudent: '', plaqueTitle: '', enabled: true, builtin: false, scope: 'platform', ownerKey: '', sortOrder: 4
   },
   {
     id: 'frame-dark-brown', name: '深棕展框',
     description: '深棕外框配米白卡纸。沉稳的木质调，适合色彩浓郁或偏暖的作品。',
     spec: styleSpec('dark-brown', { mat: '#F3EDE2', matWidthRatio: 0.0647, plaqueBg: '#2F2419', plaqueText: '#FBF8F2', atmosphere: '深棕沉下来，把亮度都留给孩子的画。', rationale: '深棕比纯黑温和，配米白卡纸不压画面。' }),
-    plaqueStudent: '', plaqueDate: '', plaqueTitle: '', enabled: true, builtin: true, scope: 'platform', ownerKey: '', sortOrder: 5
+    plaqueStudent: '', plaqueTitle: '', enabled: true, builtin: true, scope: 'platform', ownerKey: '', sortOrder: 5
   },
   {
     id: 'frame-wood-rounded', name: '原木圆角',
     description: '原木色圆角外框配米白卡纸。四角柔和，手作感强，适合低龄孩子的作品。',
     spec: styleSpec('natural-wood', { shape: 'rounded', cornerRadiusRatio: 0.22, mat: '#F3EDE2', matWidthRatio: 0.0647, plaqueBg: '#3E3022', plaqueText: '#FBF8F2', atmosphere: '圆润的木色像一本摊开的绘本。', rationale: '圆角与木质色共同降低「被评判」的紧张感。' }),
-    plaqueStudent: '', plaqueDate: '', plaqueTitle: '', enabled: true, builtin: true, scope: 'platform', ownerKey: '', sortOrder: 6
+    plaqueStudent: '', plaqueTitle: '', enabled: true, builtin: true, scope: 'platform', ownerKey: '', sortOrder: 6
   },
   {
     id: 'frame-cream-rounded', name: '米白圆角',
     description: '米白圆角外框配浅灰卡纸。安静轻盈，适合线条与留白较多的作品。',
     spec: styleSpec('cream', { shape: 'rounded', cornerRadiusRatio: 0.22, mat: '#E4E0D8', matWidthRatio: 0.072, plaqueBg: '#3E3A33', plaqueText: '#FBF8F2', atmosphere: '米白的圆角把画面轻轻托起来。', rationale: '浅色外框在浅色墙面上仍然有边界，靠圆角与卡纸层次分开。' }),
-    plaqueStudent: '', plaqueDate: '', plaqueTitle: '', enabled: true, builtin: true, scope: 'platform', ownerKey: '', sortOrder: 7
+    plaqueStudent: '', plaqueTitle: '', enabled: true, builtin: true, scope: 'platform', ownerKey: '', sortOrder: 7
   },
   {
     id: 'frame-wood-arch', name: '原木拱形',
     description: '原木色拱形外框配米白卡纸。顶部半圆，像一扇小窗。',
     spec: styleSpec('natural-wood', { shape: 'arch', mat: '#F3EDE2', matWidthRatio: 0.0647, plaqueBg: '#3E3022', plaqueText: '#FBF8F2', atmosphere: '拱顶让小画也有展陈感。', rationale: '拱形把视线收向画面中心，木色保持温度。' }),
-    plaqueStudent: '', plaqueDate: '', plaqueTitle: '', enabled: true, builtin: true, scope: 'platform', ownerKey: '', sortOrder: 8
+    plaqueStudent: '', plaqueTitle: '', enabled: true, builtin: true, scope: 'platform', ownerKey: '', sortOrder: 8
   },
   {
     id: 'frame-gold-arch', name: '暖金拱形',
     description: '暖金拱形外框配米白卡纸。展陈感最强的一套，适合结课与画展。',
     spec: styleSpec('warm-gold', { shape: 'arch', mat: '#F3EDE2', matWidthRatio: 0.0647, plaqueBg: '#2B271F', plaqueText: '#FBF8F2', atmosphere: '拱顶配暖金，像一次小小的颁奖典礼。', rationale: '金色与拱形一起给作品仪式感，米白卡纸避免抢色。' }),
-    plaqueStudent: '', plaqueDate: '', plaqueTitle: '', enabled: true, builtin: true, scope: 'platform', ownerKey: '', sortOrder: 9
+    plaqueStudent: '', plaqueTitle: '', enabled: true, builtin: true, scope: 'platform', ownerKey: '', sortOrder: 9
   },
   {
     id: 'frame-ink-bevel', name: '墨黑斜角',
     description: '墨黑斜角外框配纸色卡纸。利落克制，适合现代感强的作品。',
     spec: styleSpec('ink', { shape: 'bevel', mat: '#EEE8DD', matWidthRatio: 0.0647, innerLine: '#8C8578', plaqueBg: '#2A2724', plaqueText: '#EEE8DD', atmosphere: '斜切的黑框像一枚印章。', rationale: '斜角比直角更利落，纸色卡纸留住手作的温度。' }),
-    plaqueStudent: '', plaqueDate: '', plaqueTitle: '', enabled: true, builtin: true, scope: 'platform', ownerKey: '', sortOrder: 10
+    plaqueStudent: '', plaqueTitle: '', enabled: true, builtin: true, scope: 'platform', ownerKey: '', sortOrder: 10
   },
   {
     id: 'frame-warm-thin', name: '暖黄细边',
     description: '暖黄细外框配米白卡纸。几乎只是一圈线，把舞台完全留给作品。',
     spec: styleSpec('warm-yellow', { outerWidthRatio: 0.014, mat: '#F3EDE2', matWidthRatio: 0.08, plaqueBg: '#3E3A33', plaqueText: '#FBF8F2', atmosphere: '一圈细暖黄，像给画描了一根亮边。', rationale: '细边不抢画面，暖黄呼应儿童作品里常见的黄。' }),
-    plaqueStudent: '', plaqueDate: '', plaqueTitle: '', enabled: true, builtin: true, scope: 'platform', ownerKey: '', sortOrder: 11
+    plaqueStudent: '', plaqueTitle: '', enabled: true, builtin: true, scope: 'platform', ownerKey: '', sortOrder: 11
   }
 ];
 
@@ -332,6 +338,7 @@ export function persistFramingPresets(presets) {
 //   1. **保存下来的是一份 spec，不是「当前选用」的一层补丁**。来源是 `frameSpecRenderView()`
 //      给出的渲染视图（= 渲染层真正读到的那几个字段），所以「老师看到的样子」与「存下来的样子」
 //      由同一条路径保证一致，且**结构上不可能带上对单幅作品的编辑**（artworkEdit：旋转 / 裁剪 / 缩放）。
+//      展签日期也一样：渲染视图里只有**格式**（`plaqueDateFormat`），没有日期值。
 //   2. **只有本人写、本人删**：`framePresetEditableBy` 是界面与（将来）接口共用的写权限判据，
 //      平台与机构模板在老师端不显示编辑入口，也不接受写入。
 //   3. 删除**只影响可选列表**：成品图是保存 / 归档时写下的独立副本（作品位与档案记录各一份），
@@ -425,7 +432,10 @@ export function framePresetSpecFromRenderView(view) {
       text: source.plaqueText,
       fontFamily: source.plaqueFontFamily,
       letterSpacing: source.plaqueLetterSpacing,
-      position: 'bottom'
+      position: 'bottom',
+      // 展签日期的**格式**跟着渲染视图存下来（US-014）：日期值不存进模板 ——
+      // 它永远取本次课次日期（`lesson.lessonDate`）。
+      dateFormat: source.plaqueDateFormat
     },
     // 水印 / 落款 / 时间三组**总是写进模板**（验收原文点名了这三项）。渲染视图里没有它们时
     // （v1 老模板不画任何叠加元素）写一份 `visible: false` 的最小占位 —— 「整组缺省」与
@@ -485,7 +495,6 @@ export function buildTeacherFramingPreset({ name, description = '', spec = null,
     description: String(description ?? '').replace(/\s+/g, ' ').trim().slice(0, FRAMING_PRESET_DESCRIPTION_MAX),
     spec,
     plaqueStudent: '',
-    plaqueDate: '',
     plaqueTitle: '',
     enabled: true,
     builtin: false,
@@ -521,7 +530,6 @@ export function createEmptyFramingPreset(options = {}) {
     description: '',
     spec: null,
     plaqueStudent: '',
-    plaqueDate: new Date().toISOString().slice(0, 10).replace(/-/g, '.'),
     plaqueTitle: '',
     enabled: true,
     builtin: false,
@@ -565,7 +573,6 @@ export const FRAMING_PRESET_FIELD_LABELS = {
   enabled: '启停',
   spec: '装裱参数',
   plaqueStudent: '展签人名',
-  plaqueDate: '展签日期',
   plaqueTitle: '作品名',
   sortOrder: '排序',
   boundCourseTypes: '课程绑定',

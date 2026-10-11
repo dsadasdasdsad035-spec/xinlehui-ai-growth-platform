@@ -7,6 +7,7 @@ import {
   OVERLAY_FONT_WHITELIST,
   DATE_SOURCES,
   DATE_FORMATS,
+  DATE_FORMAT_DEFAULT,
   SIGNATURE_MODES,
   SEAL_SHAPES
 } from './overlayLayout';
@@ -179,7 +180,10 @@ export const DEFAULT_FRAME_SPEC_V2 = {
     lighting: { highlight: '#E8C766', shadow: '#8A6B1C', angle: 135 }
   },
   mat: { visible: true, color: '#F3EDE2', widthRatio: 0.0647, innerLine: null },
-  plaque: { visible: true, bg: '#2B271F', text: '#FBF8F2', fontFamily: 'serif', letterSpacing: 1, position: 'bottom' },
+  // `dateFormat` 是展签日期的**显示格式**（[第二步到第一步联通] US-014）：日期值本身永远来自
+  // 本次课次日期（`lesson.lessonDate`），模板只决定「怎么写」；位置由 `position` 决定
+  // （日期行画在展签带里，跟着展签带一起贴上 / 贴下）。
+  plaque: { visible: true, bg: '#2B271F', text: '#FBF8F2', fontFamily: 'serif', letterSpacing: 1, position: 'bottom', dateFormat: 'YYYY.MM.DD' },
   watermark: {
     logo: { visible: false, url: '', position: 'bottom-right', offsetX: 0.03, offsetY: 0.03, widthRatio: 0.1, opacity: 0.85 },
     text: {
@@ -300,7 +304,10 @@ export function normalizeFrameSpecV2(raw) {
       text: hex(plaque.text ?? source.plaqueText, base.plaque.text),
       fontFamily: normalizeOverlayFont(plaque.fontFamily ?? legacyFont, base.plaque.fontFamily),
       letterSpacing: clamp(plaque.letterSpacing ?? source.plaqueLetterSpacing, 0, 8, base.plaque.letterSpacing),
-      position: oneOf(plaque.position, PLAQUE_POSITIONS, base.plaque.position)
+      position: oneOf(plaque.position, PLAQUE_POSITIONS, base.plaque.position),
+      // 展签日期的**格式**（不是日期值）：US-014 起模板不再承载具体日期，
+      // 日期值一律取 `lesson.lessonDate`；非法 / 缺失格式回落 `YYYY.MM.DD`（= 升级前的长相）。
+      dateFormat: oneOf(plaque.dateFormat, DATE_FORMATS, base.plaque.dateFormat)
     },
     watermark: {
       logo: {
@@ -428,11 +435,14 @@ const hasExplicitFrameLighting = (spec) => isPlainObject(group(group(spec).frame
  *      两套只有水印位置不同的模板不会共用同一份画展缓存。
  *   4. 展签也一样：`plaqueVisible` / `plaquePosition`（US-011a）由 `buildFramingLayout` 消费 ——
  *      关掉展签时那条带子整条还给作品区，位置为 `top` 时带子挪到开口顶部（作品区跟着下移）。
+ *      `plaqueDateFormat`（US-014）是展签日期的**显示格式**：日期值由调用方从
+ *      `lesson.lessonDate` 取（唯一来源），模板只负责格式与位置。v1 平面 spec 没有这一项，
+ *      回落 `YYYY.MM.DD`（= 升级前「创作于 2026.08.11」的长相）。
  */
 export function frameSpecRenderView(spec) {
   const flat = frameSpecView(spec);
   if (!isFrameSpecV2(spec)) {
-    return { ...flat, shape: 'square', cornerRadiusRatio: 0, lighting: null, matVisible: true, plaqueVisible: true, plaquePosition: 'bottom', overlays: null };
+    return { ...flat, shape: 'square', cornerRadiusRatio: 0, lighting: null, matVisible: true, plaqueVisible: true, plaquePosition: 'bottom', plaqueDateFormat: DATE_FORMAT_DEFAULT, overlays: null };
   }
   const v2 = normalizeFrameSpecV2(spec);
   return {
@@ -445,6 +455,8 @@ export function frameSpecRenderView(spec) {
     // 回落「显示 + 贴底」—— 与升级前逐像素一致。
     plaqueVisible: v2.plaque.visible,
     plaquePosition: v2.plaque.position,
+    // 展签日期的显示格式（US-014）：日期值不在这里，调用方从 `lesson.lessonDate` 取。
+    plaqueDateFormat: v2.plaque.dateFormat,
     overlays: {
       watermark: {
         logo: { ...v2.watermark.logo },
@@ -512,7 +524,7 @@ const SPEC_USER_V2 = (description) => `装裱需求：${description || '安静�
     "lighting": { "highlight": "受光面 #RRGGBB", "shadow": "暗部 #RRGGBB", "angle": "光照角度 0-360" }
   },
   "mat": { "visible": true/false, "color": "卡纸颜色 #RRGGBB", "widthRatio": "卡纸宽度比例 0.02-0.12", "innerLine": "卡纸细分隔线 #RRGGBB 或 null" },
-  "plaque": { "visible": true/false, "position": "bottom | top", "bg": "展签底色 #RRGGBB", "text": "展签文字色 #RRGGBB", "fontFamily": "serif / sans-serif / Songti SC / STSong / Kaiti SC / STKaiti / Noto Serif SC", "letterSpacing": "0-8 之间的数字" },
+  "plaque": { "visible": true/false, "position": "bottom | top", "dateFormat": "展签日期的显示格式 YYYY.MM.DD | YYYY-MM-DD | YYYY年MM月DD日（日期值本身取本次课次日期，不要在这里编造日期）", "bg": "展签底色 #RRGGBB", "text": "展签文字色 #RRGGBB", "fontFamily": "serif / sans-serif / Songti SC / STSong / Kaiti SC / STKaiti / Noto Serif SC", "letterSpacing": "0-8 之间的数字" },
   "watermark": {
     "logo": { "visible": true/false, "position": "九宫格位置（必填）", "widthRatio": "0.02-0.4", "opacity": "0-1" },
     "text": { "visible": true/false, "content": "水印文字（可用 {机构名} 占位符）", "position": "九宫格位置（必填）", "fontFamily": "同上字体白名单", "fontSize": "8-200", "color": "#RRGGBB", "opacity": "0-1", "rotateDeg": "-180-180" },
@@ -581,6 +593,7 @@ export const FRAME_SPEC_GENERATION_FIELDS = [
   { path: 'frame.shape', label: '形状', suggest: true },
   { path: 'frame.texture', label: '纹理', suggest: false },
   { path: 'plaque.position', label: '展签位置', suggest: true },
+  { path: 'plaque.dateFormat', label: '展签日期格式', suggest: false },
   { path: 'plaque.fontFamily', label: '展签字体', suggest: false },
   { path: 'watermark.logo.position', label: '机构 Logo 位置', suggest: true },
   { path: 'watermark.text.position', label: '文字水印位置', suggest: true },

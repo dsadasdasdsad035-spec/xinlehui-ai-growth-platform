@@ -36,13 +36,14 @@ export function assertFramingPresetWrite(preset, viewer = {}) {
 function rowToPreset(row) {
   const source = row && typeof row === 'object' ? row : {};
   // 老记录没有 scope 列 → normalizeFramingPreset 按 platform 读取（US-001b 的兼容要求）。
+  // 云端的 `plaque_date` 列是历史字段（曾经存一个具体日期），US-014 起**不再读它**：
+  // 展签日期的值取 `lesson.lessonDate`，模板只保留格式（`spec.plaque.dateFormat`）与位置。
   return normalizeFramingPreset({
     id: source.preset_key,
     name: source.name || '未命名装裱',
     description: source.description || '',
     spec: source.spec && typeof source.spec === 'object' ? source.spec : null,
     plaqueStudent: source.plaque_student || '',
-    plaqueDate: source.plaque_date || '',
     plaqueTitle: source.plaque_title || '',
     enabled: source.enabled !== false,
     builtin: source.builtin === true,
@@ -67,7 +68,9 @@ function presetToRow(preset) {
     description: item.description || '',
     spec: item.spec || null,
     plaque_student: item.plaqueStudent || '',
-    plaque_date: item.plaqueDate || '',
+    // 历史列：**不再承载日期值**（US-014 后日期一律取 lesson.lessonDate）。
+    // 保留这一列并写空串，是为了「云表补上 scope 等新列、写入重新可用」时顺手把老数据清干净。
+    plaque_date: '',
     plaque_title: item.plaqueTitle || '',
     enabled: item.enabled !== false,
     builtin: item.builtin === true,
