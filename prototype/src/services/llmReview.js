@@ -3,6 +3,18 @@ import { resolveSkills } from '../data/skillLibrary';
 // 提示词模块化（US-101）：system 提示词由有名字、有版本、有来源的模块拼成，
 // 「加载了哪些提示词」的展示与轨迹留档都读模块清单（模块名/顺序的唯一真源在 data 层）。
 import { composePromptModules, PROMPT_MODULE_IDS, PROMPT_MODULE_ORDER_FALLBACK } from '../data/promptModules';
+// 推理轨迹（US-102）：一次生成的全部关键信息（模型/耗时/用量/加载清单/提示词/推理/输出原文/状态）。
+// 采集在**内存里**完成，提交云端由调用方在归档那一刻做（`services/reviewTraceApi.js`）。
+import {
+  REVIEW_TRACE_STATUS,
+  buildReviewTraceAttachments,
+  createReviewTrace,
+  finishReviewTrace,
+  markReviewTraceContentStart,
+  markReviewTraceFirstToken,
+  reviewTraceErrorOf,
+  startReviewTrace
+} from '../data/reviewTrace';
 
 // 云端流式点评：把人设 + 技能库 + 大模型记忆拼进 system 提示词，
 // 把作品/照片作为 image_url 传给视觉模型。
@@ -161,42 +173,99 @@ export function readableFromRawJson(raw) {
  * @param {string} [options.keywordScope] 候选词的口径名称，默认「作品观察词」
  * @param {(full:string, chunk:string)=>void} [options.onReasoning] 思考链增量
  * @param {(full:string, chunk:string)=>void} [options.onContent] 正文增量
- * @returns {Promise<{reviews:object,evidence:string[],keywords:string[],reasoning:string,usage:object|null}>}
+ * @param {object} [options.trace] 轨迹种子（谁 / 哪节课 / 上一代轨迹 / 附件引用），缺省也能生成
+ * @param {(trace:object)=>void} [options.onTrace] 轨迹收束回调：成功 / 失败 / 中止都恰好调一次
+ * @returns {Promise<{reviews:object,evidence:string[],keywords:string[],reasoning:string,usage:object|null,raw:string,trace:object}>}
  */
-export async function streamArtworkReview({ profile, skillLibrary, subject, studentName, keywords, teacherObservation, artworkDataUrl, photoDataUrl, keywordCandidates, keywordScope, onReasoning, onContent, signal }) {
-  const messages = [
-    { role: 'system', content: buildPersonaSystemPrompt(profile, { subject, skillLibrary, keywordCandidates, keywordScope }) },
-    { role: 'user', content: buildUserContent({ subject, studentName, keywords, teacherObservation, artworkDataUrl, photoDataUrl }) }
-  ];
+export async function streamArtworkReview({ profile, skillLibrary, subject, studentName, keywords, teacherObservation, artworkDataUrl, photoDataUrl, keywordCandidates, keywordScope, onReasoning, onContent, signal, trace: traceSeed, onTrace }) {
+  // US-101 起 system 由模块拼成；这里同时拿到模块清单（轨迹的「加载了哪些提示词」）。
+  const prompt = buildPersonaPrompt(profile, { subject, skillLibrary, keywordCandidates, keywordScope });
+  const userContent = buildUserContent({ subject, studentName, keywords, teacherObservation, artworkDataUrl, photoDataUrl });
+  const images = traceSeed?.images || {};
+  const attachments = buildReviewTraceAttachments([
+    { kind: 'artwork', role: '主要美术能力依据', fileId: images.artwork?.id, name: images.artwork?.name, mime: images.artwork?.mime, content: artworkDataUrl },
+    { kind: 'photo', role: '课堂观察素材', fileId: images.photo?.id, name: images.photo?.name, mime: images.photo?.mime, content: photoDataUrl }
+  ]);
+  // 轨迹：**只驻留内存**（调用方拿到 `onTrace` 的结果之后才可能在归档时提交云端）。
+  // 图片只进 attachments 的「引用 + hash」（`buildReviewTraceAttachments`），正文一个字都不进轨迹。
+  let trace = createReviewTrace({
+    ...(traceSeed && typeof traceSeed === 'object' ? traceSeed : {}),
+    model: REVIEW_MODEL,
+    system: prompt.system,
+    user: String(userContent[0]?.text || ''),
+    modules: prompt.modules,
+    attachments
+  });
 
   let content = '';
   let reasoning = '';
   let usage = null;
 
-  for await (const chunk of cloud.llm.chat.completions.create({
-    model: REVIEW_MODEL,
-    messages,
-    stream: true,
-    response_format: { type: 'json_object' },
-    stream_options: { include_usage: true },
-    reasoning_effort: REVIEW_REASONING_EFFORT,
-    temperature: 0.4,
-    signal
-  })) {
-    const delta = chunk.choices?.[0]?.delta;
-    if (delta?.reasoning_content) {
-      reasoning += delta.reasoning_content;
-      onReasoning?.(reasoning, delta.reasoning_content);
+  // 排队结束（请求真正开始）：此后到首字之间就是「首字延迟」，到收束就是「总耗时」。
+  trace = startReviewTrace(trace);
+  try {
+    for await (const chunk of cloud.llm.chat.completions.create({
+      model: REVIEW_MODEL,
+      messages: [
+        { role: 'system', content: prompt.system },
+        { role: 'user', content: userContent }
+      ],
+      stream: true,
+      response_format: { type: 'json_object' },
+      stream_options: { include_usage: true },
+      reasoning_effort: REVIEW_REASONING_EFFORT,
+      temperature: 0.4,
+      signal
+    })) {
+      const at = new Date().toISOString();
+      const delta = chunk.choices?.[0]?.delta;
+      if (delta?.reasoning_content) {
+        trace = markReviewTraceFirstToken(trace, at);
+        reasoning += delta.reasoning_content;
+        onReasoning?.(reasoning, delta.reasoning_content);
+      }
+      if (delta?.content) {
+        trace = markReviewTraceFirstToken(trace, at);
+        trace = markReviewTraceContentStart(trace, at);
+        content += delta.content;
+        onContent?.(content, delta.content);
+      }
+      if (chunk.usage) usage = chunk.usage;
     }
-    if (delta?.content) {
-      content += delta.content;
-      onContent?.(content, delta.content);
-    }
-    if (chunk.usage) usage = chunk.usage;
+  } catch (error) {
+    // 失败或老师中止同样留档：推理增量与已拿到的正文原样保存，状态写 failed / aborted。
+    const aborted = Boolean(signal?.aborted) || error?.name === 'AbortError';
+    const settled = finishReviewTrace(trace, {
+      status: aborted ? REVIEW_TRACE_STATUS.aborted : REVIEW_TRACE_STATUS.failed,
+      reasoning,
+      outputRaw: content,
+      usage: usage || undefined,
+      error: reviewTraceErrorOf(error, describeReviewError(error), aborted ? 'aborted' : 'stream-error')
+    });
+    onTrace?.(settled);
+    throw error;
   }
 
-  const parsed = parseReviewJson(content);
-  return { ...parsed, reasoning, usage };
+  let parsed = null;
+  try {
+    parsed = parseReviewJson(content);
+  } catch (error) {
+    // 流正常结束但模型输出解析不了：同样是「失败留档」，错误码点明是输出不合法，
+    // 文案用可读的说明（原始 SyntaxError 的英文信息对老师没有意义）。
+    const settled = finishReviewTrace(trace, {
+      status: REVIEW_TRACE_STATUS.failed,
+      reasoning,
+      outputRaw: content,
+      usage: usage || undefined,
+      error: reviewTraceErrorOf(error, '模型返回的内容不是合法 JSON，无法解析，请重试。', 'invalid-output')
+    });
+    onTrace?.(settled);
+    throw error;
+  }
+
+  const settled = finishReviewTrace(trace, { status: REVIEW_TRACE_STATUS.success, reasoning, outputRaw: content, usage: usage || undefined });
+  onTrace?.(settled);
+  return { ...parsed, reasoning, usage, raw: content, trace: settled };
 }
 
 /** 把云端错误码翻译成老师能看懂的话。 */

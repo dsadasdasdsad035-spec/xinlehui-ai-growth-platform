@@ -1266,6 +1266,59 @@ DOM/canvas 部分在 `src/services/artworkWriteBack.js`，编排在 `main.jsx` �
 - 验证方式（本轮实测）：改造**前**先抓一份 13 组输入的 system 快照，改造后逐字符比对 +
   `streamArtworkReview` 真发的 `messages[0].content` 比对；Node **172 项** + 浏览器 **15 项**断言全绿。
 
+## 第三步「五维点评」的推理轨迹 reviewTrace（US-102 / F-REVIEW-TRACE-01）
+
+一次点评生成的全部关键信息结构化留档（模型与参数、加载清单、提示词、推理过程、输出原文、
+耗时与用量、状态与错误）。唯一真源是 `src/data/reviewTrace.js`（**零依赖**，可 Node 直跑），
+云端表读写是 `src/services/reviewTraceApi.js`（表名 `review_traces`，`trace_key` 幂等），
+采集点在 `src/services/llmReview.js` 的 `streamArtworkReview`，提交点在 `main.jsx` 的
+`commitReviewTrace`（**归档那一刻**才调用）。
+
+- 字段（`REVIEW_TRACE_FIELDS` 白名单构造）：`traceId / parentTraceId / task / taskLabel /
+  studentId / lessonId / model / timing / usage / loaded / prompts / reasoning / output /
+  status / statusLabel / error / createdAt / archivedAt / recordId`。
+  `recordId` 是归档时写进去的关联（哪条成长档案用了这次生成），生成期是空串。
+- **timing 记的是三个独立时长**（PRD FR-104）：`firstTokenMs`（首字延迟）、`thinkingMs`
+  （思考耗时 = 首字 → 正文开始）、`totalMs`（总耗时 = 入队 → 收束），外加五个时刻与
+  `queueMs`（排队 = 入队 → 请求开始）。**别把「已用时」当成 totalMs** —— 那是界面秒表，
+  轨迹要的是可复现的实测值，断言用 `>= 延迟量` 的口径（真实网络下不能写死等值）。
+- **usage 是四项 tokens + 单次成本估算**：`REVIEW_MODEL_PRICES` 是单价的唯一真源，
+  reasoning tokens 按输出价计；未登记的模型用 `REVIEW_MODEL_FALLBACK_PRICE` 并标 `priced:false`。
+  **没有 token 时 `cost` 是 `null`，不要编造 0 元账单**；已有 `cost` 的旧记录不被重算
+  （历史账单口径不覆盖）。
+- **图片只记引用与 hash**：`buildReviewTraceAttachment` 从真正发给模型的 data URL 算出
+  `bytes` + FNV-1a 8 位 `hash`（与 `artworkUrlFingerprint` 同一算法，但**不 import** 它 ——
+  data 模块保持零依赖），条目里只有「附件序号 / 类型 / 角色 / 文件 id / 文件名 / mime /
+  字节数 / hash」。`reviewTraceMediaViolations()` 是守卫（落盘前 `sanitizeReviewTrace` 复核），
+  它只点名**值真的像素材正文**的 `dataUrl / base64 / content` 字段 ——
+  提示词模块的 `content` 是合法字段（US-101），按键名点名会把 14 个模块全误判成违规。
+- **失败与中止同样留档**：`status` 三种结局 `success / failed / aborted`，`reasoning` 与
+  `output.raw` 保存**中止前已经拿到的部分**（不是丢掉）。错误码口径见 `reviewTraceErrorOf`：
+  业务码（`error.code` / `error.error.code`）优先，没有就用调用方给的 fallback
+  （流异常 `stream-error`、解析失败 `invalid-output`、老师中止 `aborted`）——
+  **不要**让错误码退化成 JS 的 `Error`。
+- **轨迹的生命周期只有一条**（`createReviewTrace → startReviewTrace → markReviewTraceFirstToken
+  → markReviewTraceContentStart → finishReviewTrace`），全在 `streamArtworkReview` 里，
+  收束（成功 / 失败 / 中止 / 解析失败四条路径）走同一个 `finishReviewTrace` 并**恰好调一次**
+  `onTrace`。调用方不要再造第二份轨迹，也不要自己拼 timing。
+  `startReviewTrace` 在**开始迭代流之前**调用（请求真正开始的时刻），四个 mark 函数是
+  幂等的「只记第一次」。
+- **生成期只驻留内存**（US-102 的隐私口径）：轨迹进 `main.jsx` 的 `reviewTraceRef`
+  （以及只读调试钩子 `window.__xinlehuiReviewTrace`，与 `__xinlehuiFeedbackMode` 同类），
+  归档时才 `persistReviewTrace`（本机镜像 `xinlehui-review-traces-v1`，上限 200 条）
+  + `saveRemoteReviewTrace`（云端 `review_traces` 表还没建时会被拒，只影响跨设备可见）。
+  **换班 / 换学员 / 换模式 / 新建草稿必须 `clearReviewTrace()`** —— 留着上一位学员的轨迹，
+  下一次归档会把别人家的点评详情一起交上去（与 `currentRecordId` 同一套清理纪律）。
+- `parentTraceId` 由调用方给：重新生成时传上一次的 `traceId`，于是「成功 → 中止 → 失败」
+  是一条可追的链（US-107b 的两次对比读它）。
+- 验证方式（本轮实测）：Node 直跑 `data/reviewTrace.js` **114 项** + 服务层（替身云模型，
+  覆盖成功 / 失败 / 中止 / 解析失败 + 云端行列映射与落库前隐私复核）**70 项**；
+  用 `git show HEAD:...llmReview.js` 取改动前的入口跑 **58 项**提示词逐字符回归；
+  浏览器 **61 项**（headless Chrome + CDP：登录 → 上传真实 PNG → 裁剪装裱 → 第三步，
+  用同一个 ESM 单例替换 `cloud.llm.chat.completions.create`，断言「生成后未落盘 →
+  归档后镜像里有轨迹且带 recordId」、重新生成的 parentTraceId 链、中止 / 失败两种收束）；
+  截图 157 / 158 留档。
+
 ## 容易踩的坑
 
 - **写接口抛错时「await 之后就没了」**：`save<X>/create<X>/update<X>` 是「先写本地镜像再推云端」，
@@ -1342,7 +1395,17 @@ service 模块也能在 Node 里测：`cloud.database` 是**可写属性**，导
 
 - 选文件：`DOM.getDocument` → `DOM.querySelector` 拿 nodeId → `DOM.setFileInputFiles({nodeId, files:[绝对路径]})`，
   它会真实派发 `input` / `change`，React 的 `onChange` 正常触发（这是 Playwright 内部用的同一条通道）。
-  隐藏的 `hidden` input 也能直接设。
+  隐藏的 `hidden` input 也能直接设。更短的等价写法：`Runtime.evaluate`（`returnByValue:false`）拿到
+  元素的 `objectId` 直接 `DOM.setFileInputFiles({objectId, files})`，省掉 `getDocument` / `querySelector` 两步。
+- **Ralph 迭代里 `agent.browsers` 不可用**（子代理环境直接报 "Browser is not available in subagent"），
+  所以浏览器验收一律走这一节的「自控 headless Chrome + 手写 CDP」。本机 `node` v20.20 **加
+  `--experimental-websocket` 就有全局 `WebSocket`**（v22 不用加），Chrome 二进制可以直接用
+  puppeteer 的缓存：`~/.cache/puppeteer/chrome/mac_arm-*/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`
+  （不必装 puppeteer 包；`chrome-headless-shell` 也在同一层缓存里）。
+- **React 的 onClick 用 `el.click()` 就能触发**（headless 下实测可靠）：`Runtime.evaluate` 里
+  `[...document.querySelectorAll(sel)].find(...).click()`，比 `Input.dispatchMouseEvent` 少踩
+  「元素在视口外 / 点击落点被遮挡」两个坑。文本匹配要分清包含与精确：侧边栏 `课后反馈工作台`
+  以 `课后反馈` 开头，导航必须用 `textContent.trim()===目标` 的精确匹配。
 - 点击：`Input.dispatchMouseEvent`（mousePressed + mouseReleased，坐标取 `getBoundingClientRect()` 中心）。
   `el.click()` 也行，但前者更接近真实用户。
 - `<input type=date>` 的键盘输入：**段顺序是 locale 决定的**，本机 zh-CN 下是 YYYY/MM/DD；
