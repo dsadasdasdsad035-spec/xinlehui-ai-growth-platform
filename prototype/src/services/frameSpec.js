@@ -3,6 +3,7 @@ import {
   ELEMENT_POSITIONS,
   clampOverlayOffset,
   normalizeOverlayFont,
+  overlayPositionLabel,
   OVERLAY_FONT_WHITELIST,
   DATE_SOURCES,
   DATE_FORMATS,
@@ -10,6 +11,7 @@ import {
   SEAL_SHAPES
 } from './overlayLayout';
 import { FRAMING_ASSET_DATA_URL_MAX_CHARS } from '../data/framingAssets';
+import { frameShapeLabel } from '../data/frameStyles';
 import { normalizeQrTarget } from '../data/qrTargets';
 
 // 装裱方案由大模型「设计参数」，再由前端 canvas「精确绘制」。
@@ -465,53 +467,247 @@ export function frameSpecRenderKey(spec) {
   return JSON.stringify(frameSpecRenderView(spec));
 }
 
-const SPEC_SYSTEM = `你是一位展览级装裱设计师。你把老师用自然语言描述的装裱需求，翻译成可由 canvas 精确绘制的几何与色彩参数。
+// ---------------------------------------------------------------------------
+// 大模型入口（[第二步 US-011c]）：自然语言 → **v2** 装裱参数
+//
+// 老入口（US-001 时期）只让模型吐 v1 平面字段，形状与水印位置这些 v2 新字段在界面上只能手点。
+// 现在提示词直接要求 v2 分组结构 ——「形状建议」（`frame.shape`）与「水印位置建议」
+// （`watermark.text.position` / `watermark.logo.position`）是硬要求，其余 v2 分组一并给。
+//
+// 三条口径：
+//   1. 提示词只描述参数与枚举取值（形状四选一、位置走九宫格）；模型**不产图片地址**
+//      （Logo / 签名图是管理员上传的素材），也不允许出现相框外的桌面 / 墙面 / 手。
+//   2. 输出一律过 `normalizeFrameSpecV2`：未知形状、越界比例、非法位置、脏类型逐字段回落默认，
+//      **永不抛错**；`generateFrameSpecV2` 返回信封而不是抛异常 —— 生成失败（云端不通 / 模型没吐
+//      JSON）只是 `ok: false` + 一句可读的话，草稿的 spec 一个字不动，「保存到云端」也不被阻塞。
+//   3. `mergeGeneratedFrameSpec` 把生成结果并进当前 spec 时**保留素材地址**（Logo / 签名图）：
+//      「先生成参数、再上传 Logo」是最自然的操作顺序，不能因为生成把上传结果冲掉。
+//
+// 回执（`report`）是给管理员看的：建议清单（形状 + 六类位置）说明模型给到了哪些 v2 字段，
+// 收敛清单说明模型给的哪些枚举值不合法、被收敛成了什么 —— 界面上与浏览器断言读同一份。
+// ---------------------------------------------------------------------------
+
+const SPEC_SYSTEM_V2 = `你是一位展览级装裱设计师。你把老师用自然语言描述的装裱需求，翻译成可由 canvas 精确绘制的几何与色彩参数（v2 分组结构）。
 
 规则：
-- 只输出纯色几何构成，不使用任何位图素材、纹理图片、渐变以外的复杂效果。
+- 只输出纯色几何构成，不使用任何位图素材：机构 Logo、手写签名图由管理员另行上传，禁止编造图片地址。
+- 不要出现相框外的桌面、墙面、影子、手。
 - 配色要能托住儿童画：孩子的作品是主角，装裱只负责收边与承托，不能抢色。
-- 不要出现相框外的桌面、墙面、影子、手、水印或文字覆盖。
+- 必须给出**形状建议**：frame.shape 从 square（直角）/ rounded（圆角）/ arch（顶部半圆拱形）/ bevel（四角斜切）中选一个。
+- 必须给出**水印位置建议**：watermark.text.position（文字水印）与 watermark.logo.position（机构 Logo）都要给，
+  位置只能是九宫格之一：top-left / top-center / top-right / middle-left / middle-center / middle-right / bottom-left / bottom-center / bottom-right。
+- 建议显示的水印 / 落款 / 时间要把 visible 写成 true；不显示的元素写 visible: false（此时位置可以省略）。
 - 只输出一个 JSON 对象，不要 Markdown、不要代码块、不要解释文字。`;
 
-const SPEC_USER = (description) => `装裱需求：${description || '安静克制的儿童作品展览装裱，暖白卡纸，浅木外框。'}
+const SPEC_USER_V2 = (description) => `装裱需求：${description || '安静克制的儿童作品展览装裱，暖白卡纸，浅木外框。'}
 
-请输出这个 JSON 对象（字段含义见括号）：
+请输出这个 JSON 对象（括号里是字段含义与取值范围）：
 {
-  "outer": "外框颜色，#RRGGBB",
-  "outerWidthRatio": "外框宽度占画布短边的比例，0.012-0.06 之间的小数",
-  "mat": "卡纸颜色，#RRGGBB",
-  "matWidthRatio": "卡纸宽度占画布短边的比例，0.02-0.12 之间的小数",
-  "innerLine": "卡纸内细分隔线颜色 #RRGGBB，或 null 表示不要",
-  "plaqueBg": "展签底色 #RRGGBB",
-  "plaqueText": "展签文字色 #RRGGBB",
-  "plaqueFontFamily": "字体族，只能从 serif / sans-serif / Songti SC / Kaiti SC / Noto Serif SC 中选一个",
-  "plaqueLetterSpacing": "展签字距，0-8 之间的数字",
-  "artRotateDeg": "作品是否旋转，只能是 0 或 90",
+  "canvas": { "background": "画布底色 #RRGGBB" },
+  "frame": {
+    "shape": "square | rounded | arch | bevel（形状建议，必填）",
+    "color": "外框材质色 #RRGGBB",
+    "widthRatio": "外框宽度占画布短边的比例，0.012-0.06 之间的小数",
+    "cornerRadiusRatio": "圆角半径占画布短边的比例，0-0.5；shape 不是 rounded 时写 0",
+    "lighting": { "highlight": "受光面 #RRGGBB", "shadow": "暗部 #RRGGBB", "angle": "光照角度 0-360" }
+  },
+  "mat": { "visible": true/false, "color": "卡纸颜色 #RRGGBB", "widthRatio": "卡纸宽度比例 0.02-0.12", "innerLine": "卡纸细分隔线 #RRGGBB 或 null" },
+  "plaque": { "visible": true/false, "position": "bottom | top", "bg": "展签底色 #RRGGBB", "text": "展签文字色 #RRGGBB", "fontFamily": "serif / sans-serif / Songti SC / STSong / Kaiti SC / STKaiti / Noto Serif SC", "letterSpacing": "0-8 之间的数字" },
+  "watermark": {
+    "logo": { "visible": true/false, "position": "九宫格位置（必填）", "widthRatio": "0.02-0.4", "opacity": "0-1" },
+    "text": { "visible": true/false, "content": "水印文字（可用 {机构名} 占位符）", "position": "九宫格位置（必填）", "fontFamily": "同上字体白名单", "fontSize": "8-200", "color": "#RRGGBB", "opacity": "0-1", "rotateDeg": "-180-180" },
+    "qr": { "visible": true/false, "position": "九宫格位置", "sizeRatio": "0.03-0.25" }
+  },
+  "signature": { "visible": true/false, "mode": "text | image", "position": "九宫格位置", "fontFamily": "同上字体白名单", "fontSize": "8-200", "color": "#RRGGBB" },
+  "date": { "visible": true/false, "source": "lesson | today | manual", "format": "YYYY.MM.DD | YYYY-MM-DD | YYYY年MM月DD日", "prefix": "日期前缀", "position": "九宫格位置", "fontSize": "8-200", "color": "#RRGGBB" },
   "atmosphere": "一句话描述这个装裱的氛围，不超过 40 字",
-  "rationale": "为什么这样配色，不超过 40 字"
+  "rationale": "为什么这样配色与定位，不超过 40 字"
 }`;
 
-/** 调用大模型把自然语言需求翻译成装裱参数。 */
-export async function generateFrameSpec(description, { signal } = {}) {
-  let text = '';
-  for await (const chunk of cloud.llm.chat.completions.create({
-    model: SPEC_MODEL,
-    messages: [
-      { role: 'system', content: SPEC_SYSTEM },
-      { role: 'user', content: SPEC_USER(description) }
-    ],
-    stream: true,
-    response_format: { type: 'json_object' },
-    temperature: 0.5,
-    signal
-  })) {
-    const delta = chunk.choices?.[0]?.delta;
-    if (delta?.content) text += delta.content;
-  }
+const readPath = (value, path) => String(path ?? '')
+  .split('.')
+  .reduce((acc, key) => (acc && typeof acc === 'object' ? acc[key] : undefined), value);
 
-  const cleaned = String(text || '').trim().replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
-  const start = cleaned.indexOf('{');
-  const end = cleaned.lastIndexOf('}');
-  if (start < 0 || end <= start) throw new Error('模型没有返回可用的装裱参数。');
-  return normalizeFrameSpec(JSON.parse(cleaned.slice(start, end + 1)));
+/**
+ * 从模型返回的文本里掐出第一个**括号配平**的 JSON 对象。
+ *
+ * 比「第一个 `{` 到最后一个 `}`」稳：模型在 JSON 前后各写一句解释（解释里又带一个 `}`）时，
+ * 后者会把两段拼成一个非法 JSON。字符串里的括号与转义引号要跳过，否则 `{"content":"{机构名}"}`
+ * 会在第一个 `}` 就提前收尾。
+ */
+export function extractFrameSpecJsonText(text) {
+  const raw = String(text ?? '');
+  const start = raw.indexOf('{');
+  if (start < 0) return '';
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < raw.length; index += 1) {
+    const char = raw[index];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') { inString = true; continue; }
+    if (char === '{') depth += 1;
+    else if (char === '}') {
+      depth -= 1;
+      if (depth === 0) return raw.slice(start, index + 1);
+    }
+  }
+  return '';
+}
+
+/**
+ * 模型输出 → JSON 对象。完全取不出可解析对象时返回 `null`（调用方给可读文案），**不抛错**：
+ * 解析失败是模型的问题，不该变成页面上的一个异常。
+ */
+export function parseFrameSpecModelOutput(text) {
+  const jsonText = extractFrameSpecJsonText(text);
+  if (!jsonText) return null;
+  try {
+    const parsed = JSON.parse(jsonText);
+    return isPlainObject(parsed) ? parsed : null;
+  } catch { return null; }
+}
+
+/**
+ * 生成回执关注的字段（点分路径 + 中文名）。`suggest: true` 的就是界面上的**建议清单** ——
+ * 形状与水印位置是 US-011c 验收点名的两项，其余位置/字体/来源/格式是同一批枚举参数的收敛点名。
+ */
+export const FRAME_SPEC_GENERATION_FIELDS = [
+  { path: 'frame.shape', label: '形状', suggest: true },
+  { path: 'frame.texture', label: '纹理', suggest: false },
+  { path: 'plaque.position', label: '展签位置', suggest: true },
+  { path: 'plaque.fontFamily', label: '展签字体', suggest: false },
+  { path: 'watermark.logo.position', label: '机构 Logo 位置', suggest: true },
+  { path: 'watermark.text.position', label: '文字水印位置', suggest: true },
+  { path: 'watermark.text.fontFamily', label: '文字水印字体', suggest: false },
+  { path: 'watermark.qr.position', label: '二维码位置', suggest: true },
+  { path: 'watermark.qr.target', label: '二维码目标', suggest: false },
+  { path: 'signature.mode', label: '落款形式', suggest: false },
+  { path: 'signature.position', label: '落款位置', suggest: true },
+  { path: 'signature.fontFamily', label: '落款字体', suggest: false },
+  { path: 'signature.seal.shape', label: '印章形状', suggest: false },
+  { path: 'date.source', label: '时间来源', suggest: false },
+  { path: 'date.format', label: '时间格式', suggest: false },
+  { path: 'date.position', label: '时间位置', suggest: true }
+];
+
+const PLAQUE_POSITION_LABELS = { bottom: '贴在作品区下方', top: '贴在作品区上方' };
+
+/** 枚举值的中文展示名：形状与九宫格位置走各自的**真源标签**，其余原样显示。 */
+export function frameSpecFieldValueLabel(path, value) {
+  const raw = String(value ?? '');
+  if (path === 'frame.shape') return frameShapeLabel(raw) || raw;
+  if (path === 'plaque.position') return PLAQUE_POSITION_LABELS[raw] || raw;
+  if (path.endsWith('.position')) return overlayPositionLabel(raw);
+  return raw;
+}
+
+/**
+ * 生成回执：`{ suggestions, converged }`。
+ *
+ * - `suggestions`：**实际生效**的 v2 字段值（形状 + 六类位置）——说「填充到了 v2 新字段」要有据可查，
+ *   所以读的是收敛后的 spec，而不是模型的原始 JSON（模型给了非法形状时这里显示的是收敛结果）。
+ * - `converged`：模型给了、但因非法被收敛掉的枚举值（原值 → 生效值）。只点名枚举类路径：
+ *   数字类的「0.0412 → 0.0412」之类的比对只会产生噪声。
+ */
+export function frameSpecGenerationReport(rawJson, spec) {
+  const v2 = normalizeFrameSpecV2(spec);
+  const suggestions = FRAME_SPEC_GENERATION_FIELDS
+    .filter((entry) => entry.suggest)
+    .map((entry) => {
+      const value = String(readPath(v2, entry.path) ?? '');
+      return { path: entry.path, label: entry.label, value, text: frameSpecFieldValueLabel(entry.path, value) };
+    });
+  const converged = FRAME_SPEC_GENERATION_FIELDS
+    .map((entry) => {
+      const given = readPath(rawJson, entry.path);
+      if (typeof given !== 'string') return null;
+      const trimmed = given.trim();
+      const applied = String(readPath(v2, entry.path) ?? '');
+      if (!trimmed || trimmed === applied) return null;
+      return {
+        path: entry.path,
+        label: entry.label,
+        from: trimmed,
+        to: applied,
+        text: frameSpecFieldValueLabel(entry.path, applied)
+      };
+    })
+    .filter(Boolean);
+  return { suggestions, converged };
+}
+
+/**
+ * 把生成结果并进当前 spec：模型产出的分组覆盖旧的，**素材地址保留**（Logo / 签名图是上传来的）。
+ * 顺带修一个「模式与素材打架」的边界：模型建议 `image` 落款模式但模板上没有任何签名图时回落文字模式 ——
+ * 否则落款整块在成品图上直接消失（`planOverlaySignature` 对「图片模式 + 空地址」返回 null）。
+ */
+export function mergeGeneratedFrameSpec(current, generated) {
+  const next = normalizeFrameSpecV2(generated);
+  const logoUrl = next.watermark.logo.url || imageUrl(readPath(current, 'watermark.logo.url'));
+  const signatureImage = next.signature.imageUrl || imageUrl(readPath(current, 'signature.imageUrl'));
+  return normalizeFrameSpecV2({
+    ...next,
+    watermark: { ...next.watermark, logo: { ...next.watermark.logo, url: logoUrl } },
+    signature: {
+      ...next.signature,
+      imageUrl: signatureImage,
+      mode: next.signature.mode === 'image' && !signatureImage ? 'text' : next.signature.mode
+    }
+  });
+}
+
+/**
+ * 调用大模型把自然语言需求翻译成 **v2** 装裱参数（形状建议 + 水印位置建议是硬要求）。
+ *
+ * 返回信封 `{ ok, model, spec, raw, report, message }`：
+ * - `ok: true` 时 `spec` 是收敛后的 v2 结构，`report` 是建议 / 收敛清单；
+ * - `ok: false` 时 `spec` 为 `null`、`message` 是一句可读的话（云端不通 / 模型没吐 JSON 对象）。
+ * **任何失败都不抛错**：生成只是一次参数填充，草稿与「保存到云端」都不受它影响。
+ */
+export async function generateFrameSpecV2(description, { signal } = {}) {
+  let text = '';
+  try {
+    for await (const chunk of cloud.llm.chat.completions.create({
+      model: SPEC_MODEL,
+      messages: [
+        { role: 'system', content: SPEC_SYSTEM_V2 },
+        { role: 'user', content: SPEC_USER_V2(description) }
+      ],
+      stream: true,
+      response_format: { type: 'json_object' },
+      temperature: 0.5,
+      signal
+    })) {
+      const delta = chunk.choices?.[0]?.delta;
+      if (delta?.content) text += delta.content;
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      model: SPEC_MODEL,
+      spec: null,
+      raw: null,
+      report: null,
+      message: `装裱参数生成失败：${error?.message || '模型服务暂时不可用'}；可稍后重试，或直接用下面的参数面板手动调整。`
+    };
+  }
+  const raw = parseFrameSpecModelOutput(text);
+  if (!raw) {
+    return {
+      ok: false,
+      model: SPEC_MODEL,
+      spec: null,
+      raw: null,
+      report: null,
+      message: '模型没有返回可解析的装裱参数（不是一个 JSON 对象），请调整描述后重试。'
+    };
+  }
+  const spec = normalizeFrameSpecV2(raw);
+  return { ok: true, model: SPEC_MODEL, spec, raw, report: frameSpecGenerationReport(raw, spec), message: '' };
 }

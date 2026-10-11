@@ -1084,6 +1084,37 @@ DOM/canvas 部分在 `src/services/artworkWriteBack.js`，编排在 `main.jsx` �
   ② 管理端列表行不能用 `.frame-preset-row` / `.frame-preset-notice` 这些**老师端已有**的类名
   （flow-v2.css 里那套是「我的模板」的绿色样式，会串味）—— 管理端统一用 `frame-library-*`。
 
+## 大模型入口：自然语言 → v2 装裱参数（US-011c / FR-36）
+
+后台「装裱设置」的「由大模型生成装裱参数」入口在 `services/frameSpec.js`，三个函数就是全部接线：
+
+| 函数 | 职责 |
+|---|---|
+| `generateFrameSpecV2(description, {signal})` | 调模型。**返回信封** `{ok, model, spec, raw, report, message}`，不抛错 |
+| `frameSpecGenerationReport(rawJson, spec)` | 回执：`suggestions`（形状 + 六类位置）与 `converged`（被收敛的非法枚举值） |
+| `mergeGeneratedFrameSpec(current, generated)` | 把生成结果并进当前 spec：模型分组覆盖旧的，**素材地址（Logo / 签名图）保留** |
+
+- **提示词就是要求的实现点**：`SPEC_SYSTEM_V2` / `SPEC_USER_V2` 明确要求「形状建议」（`frame.shape`，
+  四选一）与「水印位置建议」（`watermark.text.position` / `watermark.logo.position`，九宫格），
+  并以 v2 分组结构给出 JSON 骨架。以后验收点名的字段 = 改这两份提示词。
+- **输出一律过 `normalizeFrameSpecV2`，永不抛错**：未知形状 / 越界比例 / 非法九宫格 / 白名单外字体 /
+  外链二维码目标逐字段回落默认。解析也容错：`extractFrameSpecJsonText` 做**括号配平**扫描
+  （不要用「第一个 `{` 到最后一个 `}`」——模型在 JSON 前后各写一句解释时会把两段拼成非法 JSON），
+  `parseFrameSpecModelOutput` 解析失败返回 `null`，由 `generateFrameSpecV2` 转成 `ok:false` + 可读文案。
+- **失败不阻塞保存**：`ok:false` 时 `spec` 为 `null`，面板只渲染一句红字回执并保持草稿原样；
+  「保存到云端」的可用性与生成状态无关（生成只是一次参数填充，不是保存的前置条件）。
+- **回执读的是「收敛后的生效值」而不是模型原值**：非法形状 `star` 在建议清单里显示 `square`（直角），
+  而 `converged` 那一行才写明「模型给 star」。界面上的 `data-frame-suggestion="<路径>"` /
+  `data-frame-converged="<路径>"` 就是断言的钩子。
+- **素材保留 + 模式回落**（`mergeGeneratedFrameSpec`）：模型产不出图片地址，所以生成前上传的
+  Logo / 签名图必须留住；模型建议 `image` 落款模式但模板上没有任何签名图时**回落文字模式** ——
+  `planOverlaySignature` 对「图片模式 + 空地址」返回 `null`，不回落的话落款整块会从成品图上消失。
+- **换模板要清回执**：回执描述的是「刚才那一份草稿」，`editingId` 变化（同一个 effect 里
+  `setDraft` + `setGenerationReport(null)`）时要一起清掉，否则会显示上一套模板的生成结果。
+- **本机开发环境里云端 LLM 是通的**（与 `database` 写不进去相反，2026-10-11 实测真实模型返回了
+  arch + 水印位置且 0 处收敛）：生成类功能的验证可以装**透传替身**
+  （记录 payload 后 `original.call(completions, payload)`），既抓提示词参数又让真实模型跑完整条链路。
+
 ## 容易踩的坑
 
 - **写接口抛错时「await 之后就没了」**：`save<X>/create<X>/update<X>` 是「先写本地镜像再推云端」，
@@ -1447,3 +1478,26 @@ service 模块也能在 Node 里测：`cloud.database` 是**可写属性**，导
 - 面板自身的窄屏断言要**只量面板**：管理端整页在 390px 下本来就可能横向滚动（列表侧的既有行为），
   所以判据写成 `panel.scrollWidth <= panel.clientWidth + 1` + 面板内控件 ≥44px（复选框的 44px 落在 label 上，
   别把 checkbox 自己拉成方块）。
+
+### 验证「大模型入口」类功能（US-011c 起）
+
+- **替身必须是异步生成器（或透传）**：`for await (const chunk of cloud.llm.chat.completions.create(...))`
+  **不会**把 Promise 解包再迭代 —— `async () => (async function*(){...})()` 立刻报
+  「return value is not async iterable」（本轮真踩）。两种正确写法：
+  ① 纯替身 `function stub(payload) { return streamOf(text); }`（同步返回异步生成器）；
+  ② 透传替身 `function passthrough(payload) { window.__calls.push(payload); return original.call(completions, payload); }`
+  —— 后者能同时拿到「提示词里到底写了什么」和「真实模型的输出」（本机 LLM 是通的，见上）。
+- **「生成结束了」的判据要三条一起看**：`window.__calls.length` 增加 + 回执属性达到目标值 +
+  按钮文案不再是「大模型正在设计…」。只等回执属性会读到**上一次**的回执（同一个元素，
+  属性早就等于目标值 → 立即为真 → 读到旧的 message/spec）。
+- **「生成结果填进了 v2 字段」分三层证**：① 回执里的 `data-frame-suggestion` 值（形状 + 六类位置）；
+  ② 面板控件（`[data-frame-param="frame.shape"]` 的 `value`、`[data-overlay-pad="文字水印"]` 的
+  `data-overlay-pad-position`）跟着变；③ **落库 spec 的独立重算预览与面板 `<img>` 比字节**
+  （`renderFramePreview({spec: loadFramingPresets() 里那条的 spec, …})`，沿 US-011a 的口径）——
+  第 ③ 条才证明生成结果真的驱动了成品图那一支渲染。
+- **非法输出要断言「三件事同时成立」**：收敛后的控件值 = 默认值（`frame.shape` → `square`）、
+  回执点名 `converged` 项（原值 + 生效值）、页面异常数组**长度不变**（`Runtime.exceptionThrown`
+  与 `console.error` 都没新增），再加上「保存到云端」仍可点且落库成功。
+- **`normalizeFrameSpecV2` 之类的收敛器要单独喂一份「全非法」夹具**：形状 `star`、九宫格
+  `middle-centre`、白名单外字体、外链二维码目标、`visible: 'yes'`、越界比例一起上，
+  断言逐字段落到默认值且**不抛错** —— 界面上的「一句可读文案」不能替代这一层。

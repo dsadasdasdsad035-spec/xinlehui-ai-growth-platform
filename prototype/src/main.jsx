@@ -60,7 +60,9 @@ import { MARKETPLACE_SYNCED_AT, indexStats, marketCategories, searchMarket, sear
 // 老师端的「默认选哪一套」与管理端的「删除只允许停用」读的是同一批纯函数。
 import { FRAMING_PRESET_COURSE_BINDING_NOTE, FRAMING_PRESET_DEFAULT_NOTE, FRAMING_PRESET_DELETE_NOTE, FRAMING_PRESET_HISTORY_EMPTY, bindFramingPresetCourse, buildTeacherFramingPreset, createEmptyFramingPreset, defaultFramingPreset, editableFramingPresets, filterFramingPresetsForViewer, framePresetEditableBy, framingPresetChangeSummary, framingPresetCourseConflicts, framingPresetDeleteVerdict, framingPresetHistory, framingPresetHistoryText, framingPresetNameIssue, framingPresetResolveText, framePresetScopeLabel, framePresetSpecFromRenderView, framePresetSpecGroupLabels, framingPresetUpdateText, framingPresetUsage, framingPresetUsageText, loadFramingPresets, mergeRemoteFramingPresets, missingBuiltinFramingPresets, moveFramingPreset, restoreMissingBuiltinFramingPresets, normalizeFramingPreset, persistFramingPresets, renameFramingPreset, resolveFramingPresetForCourse, selectableFramingPresets, setDefaultFramingPreset, sortFramingPresets, stampFramingPresetUpdate } from './data/framingPresets';
 import { deleteRemoteFramingPreset, loadRemoteFramingPresets, saveRemoteFramingPreset } from './services/framingPresetsApi';
-import { DEFAULT_FRAME_SPEC, DATE_FORMATS, DATE_SOURCES, FRAMING_FONT_WHITELIST, SEAL_SHAPES, frameSpecRenderKey, frameSpecRenderView, frameSpecView, generateFrameSpec, normalizeFrameSpec, normalizeFrameSpecV2 } from './services/frameSpec';
+// 装裱 spec 与「自然语言 → v2 参数」的大模型入口（US-011c）：提示词要形状建议 + 水印位置建议，
+// 输出一律过 normalizeFrameSpecV2 收敛（非法值回落默认、永不抛错），生成失败也只是 ok:false 的信封。
+import { DEFAULT_FRAME_SPEC, DATE_FORMATS, DATE_SOURCES, FRAMING_FONT_WHITELIST, SEAL_SHAPES, frameSpecRenderKey, frameSpecRenderView, frameSpecView, generateFrameSpecV2, mergeGeneratedFrameSpec, normalizeFrameSpecV2 } from './services/frameSpec';
 import { FRAME_STYLE_COLORS, FRAME_STYLE_DEFAULT_CORNER_RADIUS, FRAME_STYLE_MAT_COLORS, FRAME_STYLE_MIN_VISIBLE_CORNER_RADIUS, FRAME_STYLE_SHAPES, FRAME_STYLE_WIDTHS, applyFrameStyleTweaks, describeFrameStyleSpec, frameStyleTweakCount, frameStyleTweakSummary, normalizeFrameStyleTweaks } from './data/frameStyles';
 // 后台装裱参数面板的领域规则（[第二步 US-011a]）：覆盖矩阵（v2 的每个叶子参数 → 控件）、
 // 覆盖率判据与「只写一组 + version」的写入口径。零依赖，Node 与浏览器跑同一份。
@@ -4596,6 +4598,9 @@ function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast,recor
   // 种子数据与本机老镜像里的行还没有这些字段，直接读到 undefined 会炸掉整页。
   const draftV2=normalizeFramingPreset(draft);
   const [generating,setGenerating]=useState(false);
+  // 生成回执（US-011c）：建议清单（形状 + 六类位置）+ 被收敛的非法枚举值 + 模型名。
+  // `ok: false` 时只有 message（云端不通 / 模型没吐 JSON）—— 草稿的 spec 一个字不动、保存不被阻塞。
+  const [generationReport,setGenerationReport]=useState(null);
   const [preview,setPreview]=useState('');
   const [saving,setSaving]=useState(false);
   // 水印（US-003b）：Logo 上传的忙碌态 / 上传校验的错误文案 / 已保存 Logo 的复核结果 / 遮挡统计。
@@ -4609,7 +4614,8 @@ function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast,recor
   const [coverage,setCoverage]=useState(null);
   const logoInput=useRef(null);
   const signatureInput=useRef(null);
-  useEffect(()=>{setDraft(editing?{...editing}:null)},[editingId,framingPresets.length]);
+  // 换模板 = 换草稿：生成回执也一起清掉（它描述的是刚才那一份草稿的建议），否则会显示上一套模板的生成结果。
+  useEffect(()=>{setDraft(editing?{...editing}:null);setGenerationReport(null)},[editingId,framingPresets.length]);
   useEffect(()=>{if(!draft)return undefined;let active=true;renderFramePreview({spec:draft.spec||DEFAULT_FRAME_SPEC,student:draft.plaqueStudent||'陈一诺',title:draft.plaqueTitle||'向着光的花',date:draft.plaqueDate||'2026.08.11',orgName:DEFAULT_ORG_NAME,teacherName:roleMeta.teacher.name}).then(url=>{if(active)setPreview(url)}).catch(()=>{if(active)setPreview('')});return()=>{active=false}},[draft?.spec,draft?.plaqueStudent,draft?.plaqueTitle,draft?.plaqueDate]);
   const patch=(key,value)=>setDraft(current=>current?{...current,[key]:value}:current);
   // 面板只认识 v1 平面字段，这里统一取视图：老预设（v1）原样、v2 预设映射成平面值。
@@ -4754,10 +4760,22 @@ function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast,recor
     if(!draft) return;
     setGenerating(true);
     try{
-      const spec=await generateFrameSpec(draft.description);
-      patch('spec',spec);
-      setToast('大模型已生成装裱参数，右侧预览可确认效果');
-    }catch(error){ setToast(error.message||'装裱参数生成失败，请调整描述后重试。'); }
+      const result=await generateFrameSpecV2(draft.description);
+      if(!result.ok){
+        setGenerationReport({ok:false,model:result.model,message:result.message});
+        setToast(result.message);
+        return;
+      }
+      // 生成结果并进草稿：模型产出的 v2 分组覆盖旧的，Logo / 签名图这类上传素材保留
+      // （mergeGeneratedFrameSpec 里处理，否则「先生成再上传」的顺序会让 Logo 白传）。
+      setDraft(current=>current?{...current,spec:mergeGeneratedFrameSpec(current.spec,result.spec)}:current);
+      setGenerationReport({ok:true,model:result.model,...result.report});
+      setToast('大模型已生成 v2 装裱参数（含形状与水印位置建议），右侧预览可确认效果');
+    }catch(error){
+      // 服务层返回信封、不抛错；这里只兜住编程性错误，同样不阻断保存。
+      setGenerationReport({ok:false,model:'',message:error.message||'装裱参数生成失败，请调整描述后重试。'});
+      setToast(error.message||'装裱参数生成失败，请调整描述后重试。');
+    }
     finally{ setGenerating(false); }
   };
   // ---- 保存（「保存到云端」）------------------------------------------------------------
@@ -4953,11 +4971,28 @@ function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast,recor
             <label>展签日期<input value={draft.plaqueDate||''} placeholder="例如 2026.08.11" onChange={event=>patch('plaqueDate',event.target.value)}/></label>
             <label>作品名<input value={draft.plaqueTitle||''} placeholder="留空则不显示作品名" onChange={event=>patch('plaqueTitle',event.target.value)}/></label>
           </div>
-          <label className="persona-field">装裱需求描述（自然语言）<textarea rows={3} value={draft.description||''} onChange={event=>patch('description',event.target.value)} placeholder="例如：新中式水墨风，墨色细外框 + 米色纸纹卡纸，落款用深墨色小字，整体安静克制，适合水彩作品。"/></label>
+          <label className="persona-field">装裱需求描述（自然语言）<textarea rows={3} data-frame-description="1" value={draft.description||''} onChange={event=>patch('description',event.target.value)} placeholder="例如：新中式水墨风，墨色细外框 + 米色纸纹卡纸，落款用深墨色小字，整体安静克制，适合水彩作品。"/><small>生成结果会填进 v2 参数（形状建议、水印位置建议至少都有），非法输出由 normalizeFrameSpecV2 收敛成默认值，不影响保存。</small></label>
           <div className="framing-generate">
             <Button icon={Sparkles} onClick={generate} disabled={generating||!draft.description}>{generating?'大模型正在设计…':'由大模型生成装裱参数'}</Button>
             <label className="framing-enable"><input type="checkbox" checked={draft.enabled!==false} onChange={event=>patch('enabled',event.target.checked)}/> 在老师端可选</label>
           </div>
+          {/* 生成回执（US-011c）：模型给到的 v2 建议（形状 + 六类位置，读的是**收敛后**的生效值）
+              与被收敛掉的非法枚举值。失败（云端不通 / 模型没吐 JSON）在这里给一句可读的话，
+              草稿的 spec 不动、「保存到云端」也不受阻塞。 */}
+          {generationReport?<div className={`framing-generation-report${generationReport.ok?'':' is-error'}`}
+            data-frame-generation-report={generationReport.ok?'ok':'error'} data-frame-generation-model={generationReport.model||''}
+            data-frame-suggestion-count={generationReport.ok?generationReport.suggestions.length:0}
+            data-frame-converged-count={generationReport.ok?generationReport.converged.length:0}>
+            {generationReport.ok?<>
+              <b data-frame-generation-title="1">本次生成已应用到参数面板（模型 {generationReport.model}）：</b>
+              <ul className="framing-generation-suggestions">{generationReport.suggestions.map(item=>
+                <li key={item.path} data-frame-suggestion={item.path} data-frame-suggestion-value={item.value}>{item.label}：{item.text}</li>)}</ul>
+              {generationReport.converged.length?<p className="framing-generation-converged" data-frame-converged-count={generationReport.converged.length}>
+                模型输出有 {generationReport.converged.length} 处非法值，已按规则收敛：
+                {generationReport.converged.map(item=><em key={item.path} data-frame-converged={item.path}>{item.label}「{item.from}」→「{item.text}」</em>)}
+              </p>:null}
+            </>:<p data-frame-generation-message="1">{generationReport.message}</p>}
+          </div>:null}
           {/* 参数区（US-011a）：相框 / 卡纸 / 展签 / 水印 / 落款 / 时间六组。
               左侧每一个控件都带 `data-frame-param="<spec 路径>"`，右侧是实时预览 ——
               预览走的就是成品图那一支渲染函数（services/framePreview.js），改一个字段立刻重画一次。 */}
