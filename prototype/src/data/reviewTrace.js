@@ -70,6 +70,10 @@ export const REVIEW_TRACE_FIELDS = [
   'studentId',
   'lessonId',
   'model',
+  // 模型来源（US-107a 第 5 条）：'teacher-pick' = 老师指定，'pool-route' = 由模型池自动路由。
+  // 只存原始值（不存中文标签）：标签口径在 `data/reviewModels.js` 的
+  // REVIEW_MODEL_SOURCE_LABELS 里，界面与导出按同一份渲染。
+  'modelSource',
   'timing',
   'usage',
   'loaded',
@@ -103,9 +107,18 @@ export const REVIEW_TRACE_USAGE_FIELDS = ['promptTokens', 'completionTokens', 'r
 /**
  * 模型单价表（**单次成本估算的唯一真源**）：按每千 tokens 计价，reasoning tokens 按输出价计。
  * 原型阶段没有真实账单口径，这里的数字是「参考价」，`estimateReviewCost` 会如实标 `label`。
+ *
+ * US-107a 起这张表同时喂**点评模型选择器**（`data/reviewModels.js` 的
+ * `reviewModelPriceText()` 从它取「单价」那一列）—— 一个模型两个价会让人不信，
+ * 所以新增模型时只改这一处，不要在选择器的种子里再抄一遍。
  */
 export const REVIEW_MODEL_PRICES = {
-  'glm-5.3-flash': { inputPer1k: 0.0015, outputPer1k: 0.006, currency: 'CNY', label: '参考价' }
+  'glm-5.3-flash': { inputPer1k: 0.0015, outputPer1k: 0.006, currency: 'CNY', label: '参考价' },
+  'glm-4.6v': { inputPer1k: 0.0012, outputPer1k: 0.0048, currency: 'CNY', label: '参考价' },
+  'qwen3-vl-plus': { inputPer1k: 0.0024, outputPer1k: 0.0096, currency: 'CNY', label: '参考价' },
+  'doubao-seed-1.6-vision': { inputPer1k: 0.0008, outputPer1k: 0.002, currency: 'CNY', label: '参考价' },
+  'gpt-5-vision': { inputPer1k: 0.01, outputPer1k: 0.03, currency: 'CNY', label: '参考价' },
+  'glm-text-max': { inputPer1k: 0.001, outputPer1k: 0.003, currency: 'CNY', label: '参考价' }
 };
 
 /** 表里没有的模型用这份兜底价（`priced: false`，界面上说明是估值）。 */
@@ -375,6 +388,9 @@ export function createReviewTrace(seed = {}) {
     studentId: str(source.studentId),
     lessonId: str(source.lessonId),
     model: str(source.model),
+    // 模型来源（US-107a）：认不出的值一律存空串 —— 历史轨迹没有这个字段时读出来是空的，
+    // 「不知道来源」比「编一个 teacher-pick」诚实（与 task 的原样保留同一条纪律）。
+    modelSource: str(source.modelSource),
     timing: normalizeTiming({ ...(source.timing || {}), queuedAt: (source.timing && source.timing.queuedAt) || str(source.queuedAt) || now }),
     usage: normalizeUsage(source.usage),
     loaded: {

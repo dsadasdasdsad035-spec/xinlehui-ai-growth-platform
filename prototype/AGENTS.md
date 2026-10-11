@@ -1616,6 +1616,56 @@ DOM/canvas 部分在 `src/services/artworkWriteBack.js`，编排在 `main.jsx` �
   390px 不横向溢出且下拉 ≥44px；另回归 US-106a 浏览器 65 项、US-044 浏览器 41 项全绿；
   截图 179~182 留档。
 
+## 第三步「五维点评」的模型选择器与模型来源标注（US-107a / F-REVIEW-MODEL-01）
+
+「这次点评能用哪些模型、每个模型长什么样、为什么用不了、这次到底用了哪个」的**唯一真源**是
+`src/data/reviewModels.js`（零依赖纯函数，可 Node 直跑）。选项行、不可选原因、池路由命中、
+老师的个人默认与轨迹里的来源标注都来自它 —— 界面只渲染 `reviewModelResolve()` 的产物
+（`options` / `poolRow` / `modelId` / `source` / `choice`），**不要在组件里再过滤或排序一遍**。
+
+- **模型 id 只有一处写死**：`REVIEW_MODEL_DEFAULT_ID`（= `services/llmReview.js` 的 `REVIEW_MODEL`，
+  那边是从它导出的）。新增模型只改模型目录的种子 + `data/reviewTrace.js` 的 `REVIEW_MODEL_PRICES`
+  （单价表同时喂成本估算与选择器里的「单价」那一列 —— 一个模型两个价会让人不信）。
+- **可选性判据只有一个函数**（`reviewModelAvailability`）：判定顺序 = 视觉理解已启用 → 机构已授权点评
+  （`reviewEnabled` 为假，或 `orgId` 非空且与登录机构不一致）→ 健康检查 → 额度。同一模型只报第一个原因，
+  行上的原因文案读 `REVIEW_MODEL_REASON_LABELS`（健康检查失败 / 未授权 / 额度不足）。
+- **「只列出视觉理解已启用的模型」是硬过滤，「授权 / 健康 / 额度」是置灰原因**（两条验收原话的调和）：
+  `reviewModelOptions()` 的 `rows` 里**没有**非视觉模型（它们在 `excluded` 里，界面用一行脚注说明个数与原因），
+  而视觉模型里不可用的那条**留在列表里置灰并写明原因** —— 悄悄消失会让老师不知道为什么用不了。
+  `selectable` 子集正好等于「视觉 + 已授权 + 健康 + 额度足」，断言比的就是它。
+- **池路由是选择器里的第一行**（伪 id `pool-route`，不是真实模型 id，绝不发给云端）：
+  命中规则 = 可选模型里按 `poolPriority` 升序（行里必须带 `poolPriority`，否则排序退化成按 id）。
+  老师选过「自动路由」也**显式存空串**（不是删条目）：两者行为一致，但语义上要能区分「选过」与「没选过」。
+- **老师选的模型可能已经失效**（健康检查刚失败 / 额度用尽）：`reviewModelResolve()` 回落到池路由，
+  并把「原模型 + 原因」写进 `note`，界面另有回落提示条；选择器的**选中态读 `plan.choice`**（本次实际会用的那个），
+  不能读老师在 state 里的原始选择 —— 否则高亮会落在一条置灰的行上。
+- **来源标注进轨迹**：`REVIEW_TRACE_FIELDS` 新增 `modelSource`（`teacher-pick` / `pool-route`，
+  仅原始值，中文说法在 `REVIEW_MODEL_SOURCE_LABELS`）。`streamArtworkReview({ model, modelSource })`
+  把选中的模型用于**真实请求**并原样写进轨迹；不传时模型回落到 `REVIEW_MODEL`、来源是空串（不编造）。
+  详情面板的 `meta.modelSource(Label)`、`meta.modelText`（`模型 X · 模型池自动路由`）与 Markdown 导出的
+  「模型来源」一行都读同一份标签表；折叠态摘要的 `reviewDetailSummary({ model, modelSource })`
+  不传来源时与改造前逐字符一致。
+- **落地与读取**：云端 `provider_models` / `review_model_preferences` 两张表**还没建**
+  （写入会被 PostgREST 拒掉，与 `audit_logs` / `review_traces` 一样），现状是「本机镜像为准」：
+  `services/reviewModelsApi.js` 只负责「云端通了就用云端的」，个人默认的合并方向是**本机镜像优先**，
+  App 侧 `persistReviewModelDefaults` 的 effect 负责落盘（键 `xinlehui-review-model-default-v1`）。
+- **验收探针**：`[data-review-model-picker]`（`-resolved` / `-source` / `-choice`）、
+  逐行 `[data-review-model-option]`（`-selectable` / `-reason` / `-health` / `-price` / `-p95` /
+  `-provider` / `-version` / `-caps`）、`[data-review-model-summary]`、`[data-review-model-plan]`、
+  `[data-review-model-fallback]`、`[data-review-model-excluded]`、`[data-review-model-selected]`；
+  详情面板新增 `[data-detail-model-source]`。新增读数请沿用这套命名。
+- 验证方式（本轮实测）：Node 直跑 `data/reviewModels.js` + 轨迹/面板/服务层 **104 项**断言全绿
+  （选项过滤与顺序、三种原因、判定优先级、池路由命中与回落、个人默认、单价覆盖、
+  `modelSource` 进白名单与真发请求用的是选中模型）；回归 US-102 数据 114 / 服务 70 / 回归 58、
+  US-103a 数据（2 项旧断言在 HEAD 上同样失败）、US-103b 数据 26、US-105 数据 53、US-106a 数据 153、
+  US-106b 数据 109 全绿；浏览器（headless Chrome + CDP，替身云端 LLM）**39 项**全绿、0 异常 ——
+  选项与纯函数**独立重算逐项一致**、置灰行真的点不动、指定模型 → 刷新后仍默认选中、
+  选「自动路由」也记住（存空串）、两条路径各生成一次（替身收到的模型 + `window.__xinlehuiReviewTrace.modelSource`
+  分别是 `teacher-pick` / `pool-route`）、面板「模型来源」分区与折叠态摘要都写得出来、存着的默认失效时回落池路由、
+  390px 不横向溢出且行高 ≥44px；另回归 US-103a 浏览器 52、US-103b 浏览器 51、US-102 浏览器 61 全绿
+  （US-102 那份脚本里的 `.review-stream-actions` 是 US-103a 重构前的旧选择器，跑之前要换成
+  `.review-detail-actions`）；截图 183 / 183b / 184~188 留档。
+
 ## 容易踩的坑
 
 - **写接口抛错时「await 之后就没了」**：`save<X>/create<X>/update<X>` 是「先写本地镜像再推云端」，

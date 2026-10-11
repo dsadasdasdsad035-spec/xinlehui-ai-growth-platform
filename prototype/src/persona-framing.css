@@ -61,6 +61,38 @@
 .persona-loaded { margin-top: 14px; display: grid; gap: 8px; }
 .persona-loaded > div { display: flex; gap: 10px; align-items: baseline; font-size: 13px; }
 .persona-loaded b { flex: none; width: 68px; color: var(--muted); font-weight: 500; font-size: 12px; }
+
+/* 点评模型选择器（US-107a）：每行 = 名称 / 供应商 · 版本 / 能力标签 · 单价 · P95 · 健康状态；
+   不可用的行置灰不可点（原因行内写明），池路由是列表第一行。 */
+.review-model-picker { margin-top: 14px; padding: 12px 14px 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.review-model-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.review-model-head b { font-size: 13px; }
+.review-model-head small { color: var(--muted); font-size: 12px; }
+.review-model-note { margin: 6px 0 10px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.review-model-list { display: grid; gap: 8px; }
+.review-model-option { display: flex; gap: 10px; align-items: flex-start; width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); font: inherit; color: var(--ink); text-align: left; cursor: pointer; }
+.review-model-option:hover { border-color: var(--blue); }
+.review-model-option.is-selected { border-color: var(--blue); background: var(--blue-50); }
+.review-model-option.is-disabled { cursor: not-allowed; opacity: .72; background: var(--soft); border-style: dashed; }
+.review-model-option.is-disabled:hover { border-color: var(--border); }
+.review-model-radio { flex: none; color: var(--blue); font-size: 12px; line-height: 1.5; }
+.review-model-body { display: grid; gap: 4px; min-width: 0; }
+.review-model-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.review-model-title b { font-size: 13px; }
+.review-model-title em { font-style: normal; color: var(--muted); font-size: 12px; }
+.review-model-meta { display: flex; flex-wrap: wrap; gap: 6px 10px; }
+.review-model-meta i { font-style: normal; color: var(--muted); font-size: 12px; }
+.review-model-meta i.review-model-health.ok { color: #1f7a45; }
+.review-model-meta i.review-model-health.bad { color: var(--coral); }
+.review-model-reason { color: var(--coral); font-size: 12px; line-height: 1.5; }
+.review-model-excluded { margin: 8px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.review-model-plan { display: flex; align-items: flex-start; gap: 6px; margin: 10px 0 0; font-size: 12px; line-height: 1.6; color: var(--ink); }
+.review-model-plan svg { flex: none; margin-top: 2px; color: var(--blue); }
+.review-model-fallback { margin: 6px 0 0; color: #8a5a00; font-size: 12px; line-height: 1.5; }
+@media (max-width: 430px) {
+  .review-model-head { flex-direction: column; align-items: flex-start; gap: 2px; }
+  .review-model-option { padding: 12px; }
+}
 .persona-skill-tags { flex-wrap: wrap; display: flex; gap: 6px; }
 .persona-skill-tags em { font-style: normal; background: var(--blue-50); color: var(--blue); border-radius: 999px; padding: 3px 10px; font-size: 12px; }
 .review-launch-actions { margin-top: 16px; display: flex; align-items: center; gap: 12px; }

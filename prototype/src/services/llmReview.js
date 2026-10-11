@@ -20,16 +20,20 @@ import {
   startReviewTrace
 } from '../data/reviewTrace';
 
-// 云端流式点评：把人设 + 技能库 + 大模型记忆拼进 system 提示词，
-// 把作品/照片作为 image_url 传给视觉模型。
-//
-// 两个硬约束（均已实测确认）：
-//  1. stream 必须为 true —— 非流式会被 SDK 直接拒绝（request_stream_required）。
-//  2. messages[0] 必须是 system，否则调用失败。
-//
-// glm-5.3-flash 是实测可用的视觉模型；目录里的 glm-4.6v 虽然列出但调用返回
-// request_invalid_parameter，不要回退到它。
-export const REVIEW_MODEL = 'glm-5.3-flash';
+import { REVIEW_MODEL_DEFAULT_ID, REVIEW_MODEL_SOURCES } from '../data/reviewModels';
+
+/**
+ * 云端流式点评：把人设 + 技能库 + 大模型记忆拼进 system 提示词，
+ * 把作品/照片作为 image_url 传给视觉模型。
+ *
+ * 两个硬约束（均已实测确认）：
+ *  1. stream 必须为 true —— 非流式会被 SDK 直接拒绝（request_stream_required）。
+ *  2. messages[0] 必须是 system，否则调用失败。
+ *
+ * glm-5.3-flash 是实测可用的视觉模型；目录里的 glm-4.6v 虽然列出但调用返回
+ * request_invalid_parameter，不要回退到它（US-107a 起它在模型目录里被标成「健康检查失败」）。
+ */
+export const REVIEW_MODEL = REVIEW_MODEL_DEFAULT_ID;
 
 // 实测三档（同一提示词 + 同一张作品图）：
 //   不设置      约 60s，思考链很长，稳定
@@ -261,11 +265,18 @@ export function readableFromRawJson(raw) {
  * @param {string} [options.keywordScope] 候选词的口径名称，默认「作品观察词」
  * @param {(full:string, chunk:string)=>void} [options.onReasoning] 思考链增量
  * @param {(full:string, chunk:string)=>void} [options.onContent] 正文增量
+ * @param {string} [options.model] 本次用哪个视觉模型（US-107a：老师指定或模型池路由命中的 id）；
+ *   缺省沿用 `REVIEW_MODEL`（老调用方一字不变）。
+ * @param {string} [options.modelSource] 模型来源标注（'teacher-pick' / 'pool-route'，US-107a 第 5 条）：
+ *   原样写进轨迹的 `modelSource`；不传就是空串（不编造来源）。
  * @param {object} [options.trace] 轨迹种子（谁 / 哪节课 / 上一代轨迹 / 附件引用），缺省也能生成
  * @param {(trace:object)=>void} [options.onTrace] 轨迹收束回调：成功 / 失败 / 中止都恰好调一次
  * @returns {Promise<{reviews:object,evidence:string[],keywords:string[],reasoning:string,usage:object|null,raw:string,trace:object}>}
  */
-export async function streamArtworkReview({ profile, skillLibrary, subject, studentName, keywords, teacherObservation, artworkDataUrl, photoDataUrl, keywordCandidates, keywordScope, agentMd, agentFiles, onReasoning, onContent, signal, trace: traceSeed, onTrace }) {
+export async function streamArtworkReview({ profile, skillLibrary, subject, studentName, keywords, teacherObservation, artworkDataUrl, photoDataUrl, keywordCandidates, keywordScope, agentMd, agentFiles, model, modelSource, onReasoning, onContent, signal, trace: traceSeed, onTrace }) {
+  // 模型与来源：老师的选择（或模型池路由的结果）由调用方给，缺省回落实测可用的默认模型。
+  const requestModel = String(model || '').trim() || REVIEW_MODEL;
+  const requestModelSource = String(modelSource || '').trim();
   // US-101 起 system 由模块拼成；这里同时拿到模块清单（轨迹的「加载了哪些提示词」）。
   // 提示词与附件清单走 `buildReviewPromptBundle` —— 详情面板（US-103b）读的是同一份产物。
   const images = traceSeed?.images || {};
@@ -293,7 +304,9 @@ export async function streamArtworkReview({ profile, skillLibrary, subject, stud
   // 调用方给了 `agentFiles` 就用它的产物，否则沿用轨迹种子里带的那一份（两条路径同一形状）。
   let trace = createReviewTrace({
     ...(traceSeed && typeof traceSeed === 'object' ? traceSeed : {}),
-    model: REVIEW_MODEL,
+    model: requestModel,
+    // 来源标注（US-107a）：由模型池自动路由时是 'pool-route'，老师在选择器里点的是 'teacher-pick'。
+    modelSource: requestModelSource,
     system: prompt.system,
     user: String(userContent[0]?.text || ''),
     modules: prompt.modules,
@@ -310,7 +323,7 @@ export async function streamArtworkReview({ profile, skillLibrary, subject, stud
   trace = startReviewTrace(trace);
   try {
     for await (const chunk of cloud.llm.chat.completions.create({
-      model: REVIEW_MODEL,
+      model: requestModel,
       messages: [
         { role: 'system', content: prompt.system },
         { role: 'user', content: userContent }

@@ -18,6 +18,9 @@ import { reviewTraceMediaViolations, reviewTraceSecondsText } from './reviewTrac
 // 逐项技能清单（US-104）：技能行的构造器与「一项都没启用」的文案来自技能库那一份唯一真源，
 // 面板与导出都渲染它的产物（`skillLoadout()` 的 rows），不在这里另写一套。
 import { SKILL_EMPTY_TEXT, SKILL_LOAD_REASON_KEYS, skillLoadRow } from './skillLibrary';
+// 模型来源的中文说法（US-107a）：`pool-route` / `teacher-pick` 的标签只在模型目录那一份里写，
+// 折叠态摘要、面板「模型与参数」分区与导出都读它（轨迹里只存原始值，见 data/reviewTrace.js）。
+import { REVIEW_MODEL_SOURCE_LABELS } from './reviewModels';
 // agent.md / 记忆文件清单（US-105）：行文案与版本口径同样来自那一份唯一真源
 // （`agentFileLoadout()` 的 rows），面板、导出与断言读同一份。
 import {
@@ -395,14 +398,16 @@ export function reviewDetailLoadedText(loaded) {
  *  - 已生成：`共 19.8 秒 · 思考 1200 字 · 正文 5/5 维 · 620 字`
  *  - 失败 / 停止：保留已用时与增量读数，另接失败原因 / 停止文案
  * 前面两段固定是「加载了什么」与「模型」，与 PRD 的示例口径一致。
+ * `modelSource` 是模型来源（US-107a：`pool-route` / `teacher-pick`），给了就接在模型后面
+ * （例如 `模型 glm-5.3-flash · 模型池自动路由`）；不传时摘要与改造前逐字符一致。
  */
-export function reviewDetailSummary({ loaded = null, model = '', phase = REVIEW_DETAIL_PHASES.idle, elapsedMs = 0, reasoningChars = 0, content = '', message = '' } = {}) {
+export function reviewDetailSummary({ loaded = null, model = '', modelSource = '', phase = REVIEW_DETAIL_PHASES.idle, elapsedMs = 0, reasoningChars = 0, content = '', message = '' } = {}) {
   const running = phase === REVIEW_DETAIL_PHASES.running;
   const progress = reviewContentProgress(content);
   const chunks = [];
   const loadedText = reviewDetailLoadedText(loaded);
   if (loadedText) chunks.push(loadedText);
-  if (model) chunks.push(`模型 ${model}`);
+  if (model) chunks.push(reviewModelMetaText({ model, modelSource }));
   if (running) chunks.push(`已用时 ${reviewDetailElapsedText(elapsedMs)}`);
   else if (phase !== REVIEW_DETAIL_PHASES.idle) chunks.push(`共 ${reviewDetailElapsedText(elapsedMs)}`);
   const reasoningCount = Math.max(0, num(reasoningChars));
@@ -411,6 +416,18 @@ export function reviewDetailSummary({ loaded = null, model = '', phase = REVIEW_
   if (phase === REVIEW_DETAIL_PHASES.error && message) chunks.push(`生成失败：${message}`);
   if (phase === REVIEW_DETAIL_PHASES.stopped) chunks.push(message || '已停止生成');
   return chunks.join(' · ');
+}
+
+/**
+ * 「模型」那一段的文本（US-107a）：`模型 glm-5.3-flash · 模型池自动路由`。
+ * 来源标签只在 `data/reviewModels.js` 里写一份；没有来源（历史轨迹 / 老调用方）时
+ * 只有 `模型 <id>` —— 与改造前逐字符一致。
+ */
+export function reviewModelMetaText({ model = '', modelSource = '' } = {}) {
+  const id = str(model);
+  if (!id) return '';
+  const label = REVIEW_MODEL_SOURCE_LABELS[str(modelSource)] || '';
+  return label ? `模型 ${id} · ${label}` : `模型 ${id}`;
 }
 
 /** 展开态「推理过程」为空时的占位文案（生成中与生成后两种口径）。 */
@@ -702,6 +719,10 @@ export function reviewDetailPayload(input = {}) {
       status: reviewDetailPhaseLabel(phase),
       phase,
       model: str(source.model),
+      // 模型来源（US-107a）：原始值 + 中文说法一起进载荷 —— 面板与两种导出都读它。
+      modelSource: str(source.modelSource),
+      modelSourceLabel: REVIEW_MODEL_SOURCE_LABELS[str(source.modelSource)] || '',
+      modelText: reviewModelMetaText({ model: source.model, modelSource: source.modelSource }),
       traceId: str(source.traceId),
       requests: num(source.requests),
       error: str(source.message) ? { message: str(source.message) } : null
@@ -751,6 +772,8 @@ export function reviewDetailPayload(input = {}) {
         key: 'model',
         title: reviewDetailSectionTitle('model'),
         model: str(source.model),
+        modelSource: str(source.modelSource),
+        modelSourceLabel: REVIEW_MODEL_SOURCE_LABELS[str(source.modelSource)] || '',
         params
       },
       {
@@ -805,6 +828,7 @@ export function reviewDetailMarkdown(payload) {
     ['课次日期', meta.lesson],
     ['状态', meta.status],
     ['模型', meta.model],
+    ['模型来源', meta.modelSourceLabel],
     ['轨迹 id', meta.traceId],
     ['导出时间', source.exportedAt]
   ];
@@ -857,6 +881,7 @@ export function reviewDetailMarkdown(payload) {
       lines.push('');
     } else if (key === 'model') {
       if (section.model) lines.push(`- 模型：${section.model}`);
+      if (section.modelSourceLabel) lines.push(`- 模型来源：${section.modelSourceLabel}${section.modelSource ? `（${section.modelSource}）` : ''}`);
       (section.params || []).forEach((row) => lines.push(`- ${row.label}：${row.value}`));
       lines.push('');
     } else if (key === 'usage') {
