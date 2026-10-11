@@ -1438,6 +1438,66 @@ DOM/canvas 部分在 `src/services/artworkWriteBack.js`，编排在 `main.jsx` �
   → 生成 → 5 行清单 / 4+1 计数 / 停用原因 / 片段与 system 逐字符同源 / 轨迹同一份 / 缺 id 点名 /
   全部取消勾选后的空态 / 390px / 0 异常），截图 170~172 留档。
 
+## 第三步「五维点评」的 agent.md 与记忆文件加载规则（US-105 / F-REVIEW-PROMPT-02）
+
+「这次点评加载了哪些 agent.md 与记忆文件、为什么、截断在哪」的**唯一真源**是
+`src/data/agentFiles.js`（零依赖，可 Node 直跑）。它**同时**产出：① 按固定顺序的九步加载记录 `steps`、
+② 逐文件清单 `rows`（全部候选 + 未加载原因 + 进入提示词的正文 `body`）、③ 两段正文
+`agentMdContent`（→ `agent_md` 模块）与 `memoryContent`（→ `memory` 模块）、④ 预算与截断读数、
+⑤ `versionSet` / `loadoutHash`（版本指纹）。提示词、面板清单、轨迹留档、断言读的都是它，
+**不要在任何一处再按 `enabled` / scope 过滤一遍**。
+
+- 加载顺序（`AGENT_FILE_LOAD_ORDER`，九步，顺序一字不改）：平台 agent.md → 机构 agent.md →
+  老师 agent.md → **技能模块** → 学员记忆 → 班级记忆 → 机构记忆 → 观察词模板候选 → 写作要求与输出格式。
+  后三步不加载文件，只登记「这一步归属哪个提示词模块」（`module` / `modules`，断言盯着它们必须
+  登记在 `data/promptModules.js` 的 `PROMPT_MODULE_DEFS` 里，且相对顺序是 `PROMPT_MODULE_IDS` 的子序列）。
+- 生效范围：`scopeRef` 为空 = **层级通用**（该层级下任何课次都加载）；否则必须精确命中上下文
+  （机构 / 老师 / 班级 / 学员的 **id 或姓名**；学员层级另认 `student-<姓名>` 这种派生 id 形态，
+  与 `data/lessons.js` 的 `makeStudentId()` 同一口径）。认不出范围的脏数据**一律不命中**
+  （宁可少加载，也不能把别的机构的记忆塞进提示词）。平台级永远命中；`scopeRef` 不参与平台级判定。
+- 同层级排序（可复现的判据，`compareAgentFiles`）：**相关度（精确命中 > 层级通用）→ 最近更新 → 排序号 → id**；
+  每层最多 `AGENT_FILE_MAX_PER_LEVEL`（5）个，超出的标「超出同层级上限」。
+- 总量上限 `AGENT_FILE_CHAR_LIMIT`（8000 字符，覆盖 agent.md + 记忆文件的**正文之和**，不含文件之间的
+  分隔空行）：**按加载顺序分配预算** —— 排在后面的文件先被截断，甚至整份丢弃（`over-budget`）。
+  截断位置的口径：`row.truncatedAt` = 该文件真正进提示词的字符数；`truncation.at` / `summary.truncatedAt`
+  = 全部文件进提示词的总字符数（在这之后的正文都没进去）。
+- 每个**已加载**文件带 `version` / `chars`（替换后的正文长度）/ `includedChars` / `hash`
+  （**原始正文**的 sha256 前 16 位）/ `renderedHash`（替换后正文的 sha256 前 16 位）。
+  sha256 是本模块内的纯 JS 实现（`sha256Hex`，UTF-8 + 代理对与 Node `crypto` 逐字符一致）——
+  data 层不引入依赖，所以没有用 `crypto.subtle`（它是异步的，拼提示词是同步的）。
+- 变量替换（`renderAgentFileContent`）覆盖 `{学员名} {班级名} {老师姓名} {课次日期}`，
+  口径与「水印落款」的变量替换一致：**未命中的变量保留原文**（`agentFileVariableWarnings` 给告警），
+  命中但没值替换成空串。替换后的正文才是 `body`（面板上看到的就是它）。
+- **停用 / 删除的文件不进新轨迹，历史轨迹仍可复现**：只有 `included` 的行带 `body`；
+  停用 / 超限的行在面板清单里说明原因（没有 version / chars / hash / body）。
+  轨迹（`reviewTrace.loaded.files` + `loaded.agentFiles` 摘要）落档后，`agentFileTraceReplay(trace)`
+  **只读轨迹**就能还原当时的正文 —— 文件后来被改 / 被停用 / 被删都不影响审计复现。
+- 调用点（`main.jsx` 的 `startCloudReview`）：一次 `agentFileLoadout({ files: loadAgentFiles(), context })`
+  同时喂 `buildPersonaPrompt`（`extra.agentFiles`）与 `reviewDetailLoaded({ agentFiles })`，
+  并把 `agentFileLoad.files` / `.summary` 放进轨迹种子。文件库**每次生成都重读**，所以管理端改完文件
+  下一次生成就生效（不需要刷新页面）。
+- 提示词口径：`agent_md` 模块 = `【agent.md】\n` + 三层正文（`\n\n` 拼接）；`memory` 模块 =
+  `【长期记忆（本班本阶段，点评时必须结合并回访）】\n` + 三类记忆正文。**本次一个记忆文件都没加载到时
+  才回落** `profile.memory`（人设里那段旧「大模型记忆」），没传 `agentFiles` 时行为与改造前逐字符一致
+  （`extra.agentMd` 仍是 `agent_md` 的旧入口）。
+- 面板读数（验收探针）：`data-detail-agentfiles`（+ `-included` / `-total` / `-limit` / `-per-level` /
+  `-chars` / `-truncated` / `-truncated-at` / `-loadout-hash`）、`data-detail-agentfiles-note`（九步顺序 +
+  预算 + 截断位置）、每行 `data-detail-agentfile`（= 文件 id）/ `-included` / `-reason`
+  （`included | truncated | disabled | per-level-cap | over-budget | empty`）/ `-scope` / `-version` /
+  `-chars` / `-included-chars` / `-hash` / `-truncated(-at)`，行内文案 `data-detail-agentfile-state` /
+  `-detail`，正文在 `data-detail-agentfile-text`。
+- 行内文案（`stateText` / `bodyNote`）在 `data/reviewDetailPanel.js` 里生成，**不要在 JSX 里现场拼**：
+  嵌套模板字符串写在 JSX 表达式里会被解析器拒掉（US-105 真踩，构建报
+  `Expected } but found )`，指针落在 `</small>` 上，看不出是模板字符串的问题）。
+- 验证方式（本轮实测）：Node 直跑 `data/agentFiles.js` + 轨迹 + 面板/导出 **53 项**全绿
+  （sha256 与 Node crypto 对齐 / 九步顺序与提示词模块序列一致 / 范围与排序 / 每层 5 个 /
+  8000 字预算与截断位置 / 变量替换 / 同样版本同样提示词 / 停用与历史复现）；
+  与 HEAD 版 `llmReview.js` 比对 **6 组**输入 system 逐字符一致；
+  回归 US-104 数据 26 / 提示词 43、US-103b 数据 26 / 服务 16 全绿（US-103a 的「零依赖」那条是既有失效）；
+  浏览器 **41 项**（headless Chrome + CDP，替身替换云端 LLM：生成 → 六行清单 / 两段正文与 system 同源 /
+  轨迹留档 + 复现 / 同样版本两次生成逐字符相同 / 停用一个文件 + 塞 9000 字记忆后截断在 8000 字且停用文件
+  不进新轨迹 / 390px / 0 异常），截图 173~175 留档。
+
 ## 容易踩的坑
 
 - **写接口抛错时「await 之后就没了」**：`save<X>/create<X>/update<X>` 是「先写本地镜像再推云端」，

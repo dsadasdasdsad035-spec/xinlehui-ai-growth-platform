@@ -16,6 +16,9 @@
  *     调用方（`main.jsx`）在**归档那一刻**才提交，未归档的轨迹不落盘。
  *  4. **失败与中止同样留档**：`status` 为 `failed` / `aborted` 时 `error` 里带错误码与可读文案，
  *     `reasoning` / `output.raw` 保留中止前已经拿到的部分（不是丢掉）。
+ *  5. **agent.md 与记忆文件逐文件留档**（US-105）：`loaded.files` 是逐文件行（只有真正进入提示词的
+ *     行带 `body` 正文，版本 / 字符数 / sha256 前 16 位齐全），`loaded.agentFiles` 是预算与截断摘要。
+ *     停用 / 删除文件的内容不进新轨迹，历史轨迹靠 `agentFileTraceReplay()` 复现当时的正文。
  *
  * 与 `data/auditLog.js` 同一套纪律：**零依赖纯函数 + 常量**，不 import 任何模块、不碰 DOM，
  * 可以直接用 Node 跑断言。
@@ -267,6 +270,71 @@ const normalizeModules = (list) => (Array.isArray(list) ? list : []).map((module
   };
 });
 
+/**
+ * agent.md / 记忆文件的逐文件行（US-105）：**只有真正进入提示词的行带正文**（`body`），
+ * 停用 / 超限的文件只留在面板清单里说明原因 —— 于是「文件被停用后不再出现在新轨迹里」
+ * 与「历史轨迹仍能复现当时的正文」同时成立（`data/agentFiles.js` 的 `agentFileTraceReplay`）。
+ * 字段名用 `body` 而不是 `content`：`content` 是提示词模块的合法字段，
+ * 而素材守卫（`reviewTraceMediaViolations`）会按键名核对这一类字段。
+ */
+const normalizeLoadedFiles = (list) => (Array.isArray(list) ? list : []).map((entry) => {
+  const source = entry && typeof entry === 'object' ? entry : {};
+  const included = source.included === undefined ? Boolean(source.body) : Boolean(source.included);
+  return {
+    fileId: str(source.fileId || source.id),
+    kind: str(source.kind),
+    scope: str(source.scope),
+    scopeRef: str(source.scopeRef),
+    name: str(source.name),
+    version: str(source.version),
+    chars: count(source.chars),
+    includedChars: count(source.includedChars),
+    hash: str(source.hash),
+    renderedHash: str(source.renderedHash),
+    included,
+    truncated: Boolean(source.truncated),
+    truncatedAt: count(source.truncatedAt),
+    reasonKey: str(source.reasonKey),
+    body: included && typeof source.body === 'string' ? source.body : ''
+  };
+});
+
+/** 轨迹里的加载摘要（不带正文）：预算、上限、截断位置与文件版本指纹。 */
+const normalizeLoadedAgentFiles = (raw) => {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const source = raw;
+  const truncation = source.truncation && typeof source.truncation === 'object' ? source.truncation : {};
+  return {
+    version: count(source.version),
+    loadOrder: (Array.isArray(source.loadOrder) ? source.loadOrder : []).map((item) => str(item)).filter(Boolean),
+    limit: count(source.limit),
+    perLevel: count(source.perLevel),
+    chars: count(source.chars),
+    fullChars: count(source.fullChars),
+    includedFiles: count(source.includedFiles),
+    candidateFiles: count(source.candidateFiles),
+    disabledFiles: count(source.disabledFiles),
+    truncated: Boolean(source.truncated),
+    truncatedAt: count(source.truncatedAt),
+    droppedChars: count(source.droppedChars),
+    loadoutHash: str(source.loadoutHash),
+    versionSet: (Array.isArray(source.versionSet) ? source.versionSet : []).map((item) => str(item)).filter(Boolean),
+    context: source.context && typeof source.context === 'object' ? { ...source.context } : {},
+    truncation: {
+      limit: count(truncation.limit),
+      at: count(truncation.at),
+      droppedChars: count(truncation.droppedChars),
+      files: (Array.isArray(truncation.files) ? truncation.files : []).map((item) => ({
+        fileId: str(item?.fileId),
+        kind: str(item?.kind),
+        truncatedAt: count(item?.truncatedAt),
+        chars: count(item?.chars),
+        includedChars: count(item?.includedChars)
+      }))
+    }
+  };
+};
+
 const normalizeAttachments = (list) => (Array.isArray(list) ? list : []).map((entry) => {
   const source = entry && typeof entry === 'object' ? entry : {};
   return {
@@ -309,7 +377,12 @@ export function createReviewTrace(seed = {}) {
     model: str(source.model),
     timing: normalizeTiming({ ...(source.timing || {}), queuedAt: (source.timing && source.timing.queuedAt) || str(source.queuedAt) || now }),
     usage: normalizeUsage(source.usage),
-    loaded: { modules: normalizeModules(source.modules || (source.loaded && source.loaded.modules)) },
+    loaded: {
+      modules: normalizeModules(source.modules || (source.loaded && source.loaded.modules)),
+      // agent.md 与记忆文件的加载结果（US-105）：逐文件行（只有加载了的带正文）+ 预算摘要。
+      files: normalizeLoadedFiles(source.files || (source.loaded && source.loaded.files)),
+      agentFiles: normalizeLoadedAgentFiles(source.agentFiles || (source.loaded && source.loaded.agentFiles))
+    },
     prompts: {
       system: str(source.system || (source.prompts && source.prompts.system)),
       user: str(source.user || (source.prompts && source.prompts.user)),

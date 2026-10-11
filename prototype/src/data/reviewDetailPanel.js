@@ -18,6 +18,15 @@ import { reviewTraceMediaViolations, reviewTraceSecondsText } from './reviewTrac
 // 逐项技能清单（US-104）：技能行的构造器与「一项都没启用」的文案来自技能库那一份唯一真源，
 // 面板与导出都渲染它的产物（`skillLoadout()` 的 rows），不在这里另写一套。
 import { SKILL_EMPTY_TEXT, SKILL_LOAD_REASON_KEYS, skillLoadRow } from './skillLibrary';
+// agent.md / 记忆文件清单（US-105）：行文案与版本口径同样来自那一份唯一真源
+// （`agentFileLoadout()` 的 rows），面板、导出与断言读同一份。
+import {
+  AGENT_FILE_CHAR_LIMIT,
+  AGENT_FILE_KIND_LABELS,
+  AGENT_FILE_SCOPE_LABELS,
+  agentFileSummaryText,
+  agentFileVersionText
+} from './agentFiles';
 
 /** 面板阶段（与 `main.jsx` 的 `reviewStream.phase`、`reviewTrace` 的状态同一套词汇）。 */
 export const REVIEW_DETAIL_PHASES = {
@@ -119,16 +128,111 @@ export function reviewDetailSkillRows(skills) {
 }
 
 /**
+ * agent.md / 记忆文件的逐项清单（US-105）：`agentFiles` 传 `agentFileLoadout()` 的产物时用它的 `rows`；
+ * 传已经归一好的行数组（轨迹留档 / 断言夹具）时按同一形状读出。
+ * 只有**已加载**的行写版本 / 字符数 / hash（与技能清单同一条纪律：没加载的数字与「没进去」矛盾）。
+ */
+export function reviewDetailAgentFileRows(agentFiles) {
+  const rows = Array.isArray(agentFiles)
+    ? agentFiles
+    : (agentFiles && typeof agentFiles === 'object' && Array.isArray(agentFiles.rows) ? agentFiles.rows : []);
+  return rows.filter(Boolean).map((entry) => {
+    const source = entry && typeof entry === 'object' ? entry : {};
+    const kind = str(source.kind);
+    const included = Boolean(source.included);
+    const chars = Math.max(0, num(source.chars));
+    const includedChars = Math.max(0, num(source.includedChars));
+    const truncated = Boolean(source.truncated);
+    const kindLabel = str(source.kindLabel) || AGENT_FILE_KIND_LABELS[kind] || 'agent 文件';
+    const scopeLabel = str(source.scopeLabel) || AGENT_FILE_SCOPE_LABELS[str(source.scope)] || '';
+    const versionText = str(source.versionText) || agentFileVersionText(source);
+    const hash = str(source.hash);
+    const name = str(source.name) || str(source.fileId) || '未命名文件';
+    const reason = str(source.reason);
+    const detail = included
+      ? [
+        kindLabel,
+        scopeLabel,
+        versionText,
+        truncated ? `${includedChars}/${chars} 字（截断）` : `${chars} 字`,
+        hash ? `sha256 ${hash}` : ''
+      ].filter(Boolean).join(' · ')
+      : kindLabel;
+    const truncatedText = truncated ? `；已按总上限截断在 ${Math.max(0, num(source.truncatedAt))} 字` : '';
+    return {
+      fileId: str(source.fileId || source.id),
+      kind,
+      kindLabel,
+      scope: str(source.scope),
+      scopeLabel,
+      name,
+      version: included ? str(source.version) : '',
+      versionText,
+      chars,
+      includedChars,
+      hash,
+      included,
+      truncated,
+      truncatedAt: Math.max(0, num(source.truncatedAt)),
+      reasonKey: str(source.reasonKey) || (included ? 'included' : ''),
+      reason,
+      // 正文只在已加载的行上（停用 / 超限的文件不进新轨迹，也不给面板正文）。
+      body: included && typeof source.body === 'string' ? source.body : '',
+      // 两段行内文案也在这里定好：面板不自己拼字符串（含嵌套模板字符串，JSX 里写会打断解析）。
+      stateText: included ? `[已加载]${truncated ? ` 已按总上限截断在 ${Math.max(0, num(source.truncatedAt))} 字` : ''}` : `[未加载] ${reason}`,
+      bodyNote: included
+        ? `该文件进入提示词的正文（版本 ${versionText}${truncatedText}）：`
+        : `未进入本次提示词：${reason}。停用或超限的正文不写进新轨迹，历史轨迹仍可用当时的留档复现。`,
+      detail,
+      text: `${included ? '[已加载]' : '[未加载]'} ${name}${detail ? ` · ${detail}` : ''}${!included && reason ? ` —— ${reason}` : ''}`
+    };
+  });
+}
+
+/**
+ * 加载预算的读数（US-105）：文件总量上限、截断位置与「同样版本 → 同样提示词」的指纹。
+ * 优先读 `agentFileLoadout()` 的 `summary`，没有时按同一份字段读（轨迹里的摘要是同一形状）。
+ */
+export function reviewDetailAgentFileSummary(agentFiles) {
+  const source = agentFiles && typeof agentFiles === 'object' && !Array.isArray(agentFiles) ? agentFiles : {};
+  const summary = source.summary && typeof source.summary === 'object' ? source.summary : source;
+  const limit = num(summary.limit) ?? AGENT_FILE_CHAR_LIMIT;
+  const truncated = Boolean(summary.truncated);
+  const loadOrder = (Array.isArray(summary.loadOrder) ? summary.loadOrder : []).map((item) => str(item)).filter(Boolean);
+  // 顺序文案优先用人类可读的标签（轨迹里的摘要是同一形状；只有 key 时回落 key）。
+  const loadOrderLabels = (Array.isArray(summary.loadOrderLabels) ? summary.loadOrderLabels : []).map((item) => str(item)).filter(Boolean);
+  return {
+    loadOrder,
+    loadOrderLabels: loadOrderLabels.length ? loadOrderLabels : loadOrder,
+    limit,
+    perLevel: num(summary.perLevel) ?? 0,
+    chars: num(summary.chars) ?? 0,
+    fullChars: num(summary.fullChars) ?? 0,
+    includedFiles: num(summary.includedFiles) ?? 0,
+    truncated,
+    truncatedAt: num(summary.truncatedAt) ?? 0,
+    droppedChars: num(summary.droppedChars) ?? 0,
+    loadoutHash: str(summary.loadoutHash),
+    versionSet: (Array.isArray(summary.versionSet) ? summary.versionSet : []).map((item) => str(item)).filter(Boolean),
+    truncation: summary.truncation && typeof summary.truncation === 'object' ? summary.truncation : null,
+    text: agentFileSummaryText(source.counts ? source : summary)
+  };
+}
+
+/**
  * 折叠态摘要里的「加载了什么」：本次真正进入 system 提示词的东西。
  * 输入就是提示词拼装处用的那几份数据（模块清单来自 `buildPersonaPrompt().modules`）：
- *  - `modules` —— 提示词模块清单（agent.md 与观察词模板的 version / chars 从里面取）
+ *  - `modules` —— 提示词模块清单（观察词模板的 version / chars 从里面取）
  *  - `skills` —— **技能加载清单**（US-104：`skillLoadout()` 的产物；也接受已解析的技能数组）
- *  - `memory` —— 长期记忆正文（当前一位老师是一段记忆，US-105 起是文件列表）
+ *  - `agentFiles` —— **agent 文件加载清单**（US-105：`agentFileLoadout()` 的产物；也接受行数组）：
+ *    `agent_md` 与 `memory` 两项的计数 / 字符数 / 逐项清单都读它（只传 `memory` 字符串时走旧口径）
+ *  - `memory` —— 长期记忆正文（旧口径的一位老师一段记忆；传了 `agentFiles` 就由记忆文件接管）
  *  - `keywordTerms` / `keywordGroups` —— 观察词模板的词条数与分组数
- * 返回 `{ items, counts }`：`items` 是全量清单（每项带 `included` 与没加载的原因，
- * US-103b 的加载清单直接渲染它；`skills` 那一项另带逐项 `rows`），`counts` 是面板与断言用的计数。
+ * 返回 `{ items, counts, agentFiles }`：`items` 是全量清单（每项带 `included` 与没加载的原因，
+ * US-103b 的加载清单直接渲染它；`skills` 与 `agent_md` / `memory` 三项另带逐项 `rows`），
+ * `counts` 是面板与断言用的计数，`agentFiles` 是逐项行 + 预算读数的挂载点（导出与断言读它）。
  */
-export function reviewDetailLoaded({ modules = [], skills = [], memory = '', keywordTerms = 0, keywordGroups = 0 } = {}) {
+export function reviewDetailLoaded({ modules = [], skills = [], memory = '', agentFiles = null, keywordTerms = 0, keywordGroups = 0 } = {}) {
   const moduleList = (Array.isArray(modules) ? modules : []).map((module) => {
     const source = module && typeof module === 'object' ? module : {};
     const content = str(source.content);
@@ -145,18 +249,38 @@ export function reviewDetailLoaded({ modules = [], skills = [], memory = '', key
   const keywordModule = moduleList.find((module) => module.id === 'keyword_candidates') || null;
   const skillRows = reviewDetailSkillRows(skills);
   const includedSkills = skillRows.filter((row) => row.included);
-  const memoryFiles = str(memory).trim() ? 1 : 0;
+  const agentFileRows = reviewDetailAgentFileRows(agentFiles);
+  const agentMdRows = agentFileRows.filter((row) => row.kind === 'agent-md');
+  const memoryRows = agentFileRows.filter((row) => row.kind === 'memory');
+  const loadedAgentMd = agentMdRows.filter((row) => row.included);
+  const loadedMemory = memoryRows.filter((row) => row.included);
+  const legacyMemoryChars = str(memory).length;
+  const memoryFiles = memoryRows.length ? loadedMemory.length : (legacyMemoryChars ? 1 : 0);
   const includedModules = moduleList.filter((module) => module.included).length;
   const items = [
-    {
-      key: 'agent_md',
-      label: 'agent.md',
-      kind: 'file',
-      version: agentModule?.version || '',
-      chars: agentModule?.chars || 0,
-      included: Boolean(agentModule?.included),
-      reason: agentModule?.included ? '' : '本次没有加载 agent.md'
-    },
+    agentMdRows.length
+      ? {
+        key: 'agent_md',
+        label: 'agent.md',
+        kind: 'file',
+        version: loadedAgentMd.length === 1 ? loadedAgentMd[0].versionText : (loadedAgentMd.length ? `${loadedAgentMd.length} 个文件` : ''),
+        chars: loadedAgentMd.reduce((sum, row) => sum + row.includedChars, 0),
+        count: loadedAgentMd.length,
+        total: agentMdRows.length,
+        included: loadedAgentMd.length > 0,
+        reason: loadedAgentMd.length ? '' : '本次没有加载 agent.md',
+        // 逐项文件行（US-105）：三层 agent.md 一条一行（含未加载原因）。
+        rows: agentMdRows
+      }
+      : {
+        key: 'agent_md',
+        label: 'agent.md',
+        kind: 'file',
+        version: agentModule?.version || '',
+        chars: agentModule?.chars || 0,
+        included: Boolean(agentModule?.included),
+        reason: agentModule?.included ? '' : '本次没有加载 agent.md'
+      },
     {
       key: 'skills',
       label: '技能',
@@ -169,15 +293,29 @@ export function reviewDetailLoaded({ modules = [], skills = [], memory = '', key
       // 逐项技能行（US-104）：全部技能 + 是否加载 + 没加载的原因 + 进入提示词的原文片段。
       rows: skillRows
     },
-    {
-      key: 'memory',
-      label: '记忆文件',
-      kind: 'files',
-      count: memoryFiles,
-      chars: str(memory).length,
-      included: memoryFiles > 0,
-      reason: memoryFiles ? '' : '本次没有可加载的长期记忆'
-    },
+    memoryRows.length
+      ? {
+        key: 'memory',
+        label: '记忆文件',
+        kind: 'files',
+        count: loadedMemory.length,
+        total: memoryRows.length,
+        chars: loadedMemory.reduce((sum, row) => sum + row.includedChars, 0),
+        included: loadedMemory.length > 0,
+        // 候选里有、但一个都没加载上（全被停用 / 超限）：点名「没有可加载的」，不是空白。
+        reason: loadedMemory.length ? '' : '本次没有可加载的记忆文件',
+        // 逐项记忆文件行（US-105）：学员 > 班级 > 机构 一条一行（含未加载原因）。
+        rows: memoryRows
+      }
+      : {
+        key: 'memory',
+        label: '记忆文件',
+        kind: 'files',
+        count: memoryFiles,
+        chars: legacyMemoryChars,
+        included: memoryFiles > 0,
+        reason: memoryFiles ? '' : '本次没有可加载的长期记忆'
+      },
     {
       key: 'keyword_template',
       label: '观察词模板',
@@ -208,10 +346,22 @@ export function reviewDetailLoaded({ modules = [], skills = [], memory = '', key
       skills: includedSkills.length,
       skillTotal: skillRows.length,
       memoryFiles,
+      memoryTotal: memoryRows.length,
+      agentFiles: agentFileRows.length,
+      agentMdFiles: loadedAgentMd.length,
+      agentMdTotal: agentMdRows.length,
       keywordTerms: num(keywordTerms),
       keywordGroups: num(keywordGroups),
       chars: items.find((item) => item.key === 'modules')?.chars || 0
-    }
+    },
+    // agent 文件的逐项行 + 预算读数（US-105）：导出载荷、面板与断言读同一份。
+    agentFiles: agentFileRows.length
+      ? {
+        rows: agentFileRows,
+        summary: reviewDetailAgentFileSummary(agentFiles),
+        note: agentFileSummaryText(agentFiles)
+      }
+      : { rows: [], summary: reviewDetailAgentFileSummary(null), note: '' }
   };
 }
 
@@ -534,6 +684,10 @@ export function reviewDetailPayload(input = {}) {
   // 逐项技能清单（US-104）：来自 `reviewDetailLoaded()` 的那一份（`skillLoadout()` 的唯一产物）。
   const skillRows = reviewDetailSkillRows(reviewDetailLoadedItem(source.loaded, 'skills')?.rows || []);
   const skillsIncluded = skillRows.filter((row) => row.included).length;
+  // 逐项 agent 文件清单（US-105）：三层 agent.md + 学员 / 班级 / 机构记忆（含未加载原因与正文）。
+  const agentFileRows = reviewDetailAgentFileRows(source.loaded?.agentFiles);
+  const agentFileIncludedRows = agentFileRows.filter((row) => row.included);
+  const agentFileSummary = reviewDetailAgentFileSummary(source.loaded?.agentFiles);
   const attachments = reviewDetailAttachmentRows(prompt);
   const params = reviewDetailParamRows(source.params);
   const usage = reviewDetailUsageRows(source.usage, source.timing);
@@ -571,6 +725,14 @@ export function reviewDetailPayload(input = {}) {
         skillsTotal: skillRows.length,
         skillsEmpty: skillsIncluded === 0,
         skillsNote: skillsIncluded === 0 ? SKILL_EMPTY_TEXT : '',
+        // 逐项 agent 文件清单（US-105）：加载顺序 / 生效范围 / 上限 / 截断位置 + 每个文件的正文。
+        agentFiles: agentFileRows,
+        agentFilesIncluded: agentFileIncludedRows.length,
+        agentFilesTotal: agentFileRows.length,
+        agentFilesNote: agentFileRows.length
+          ? `加载顺序：${agentFileSummary.loadOrderLabels.join(' → ')}；${agentFileSummary.text}`
+          : '',
+        agentFilesSummary: agentFileSummary,
         included: loadedRows.filter((row) => row.included).length,
         total: loadedRows.length,
         modulesIncluded: moduleRows.filter((row) => row.included).length,
@@ -658,6 +820,21 @@ export function reviewDetailMarkdown(payload) {
       lines.push(reviewDetailFence(section.text || '（本次没有推理增量）'), '');
     } else if (key === 'loaded') {
       (section.rows || []).forEach((row) => lines.push(`- ${row.text}`));
+      const agentFileRows = Array.isArray(section.agentFiles) ? section.agentFiles : [];
+      if (agentFileRows.length) {
+        const included = section.agentFilesIncluded ?? agentFileRows.filter((row) => row.included).length;
+        lines.push('', `### agent.md 与记忆文件（${included}/${section.agentFilesTotal ?? agentFileRows.length} 个已加载）`, '');
+        if (section.agentFilesNote) lines.push(`- ${section.agentFilesNote}`);
+        // 逐项：谁加载了、什么版本、多少字、内容 hash；未加载的写明原因。
+        agentFileRows.forEach((row) => lines.push(`- ${row.text}`));
+        const bodyRows = agentFileRows.filter((row) => row.included && row.body);
+        if (bodyRows.length) {
+          lines.push('', '#### 进入提示词的正文（替换变量后，逐文件）', '');
+          bodyRows.forEach((row) => {
+            lines.push(`##### ${row.name}（${row.versionText}${row.truncated ? `，截断在 ${row.truncatedAt} 字` : ''}）`, '', reviewDetailFence(row.body), '');
+          });
+        }
+      }
       const skillRows = Array.isArray(section.skills) ? section.skills : [];
       if (skillRows.length) {
         const included = section.skillsIncluded ?? skillRows.filter((row) => row.included).length;

@@ -53,6 +53,9 @@ import { renderArtworkCrop, renderArtworkRotation, ARTWORK_MANUAL_CROP_ALGORITHM
 import { createEmptyTeacherProfile, loadTeacherProfiles, persistTeacherProfiles } from './data/teacherProfiles';
 import { deleteRemoteTeacherProfile, loadRemoteTeacherProfiles, saveRemoteTeacherProfile } from './services/teacherProfileApi';
 import { createEmptySkill, loadSkillLibrary, persistSkillLibrary, resolveSkills, skillFromIndexEntry, skillFromPackage, skillLoadout } from './data/skillLibrary';
+// agent.md 与记忆文件库（US-105）：加载顺序 / 生效范围 / 每层上限 / 8000 字符预算 / 变量替换 /
+// 版本与内容 hash 的唯一真源（零依赖、可 Node 断言）；提示词、面板清单与轨迹留档读同一份产物。
+import { agentFileLoadout, loadAgentFiles } from './data/agentFiles';
 import { deleteRemoteSkill, loadRemoteSkillLibrary, saveRemoteSkill } from './services/skillLibraryApi';
 import { archiveSkillPackage, readSkillPackage } from './services/skillPackage';
 import { MARKETPLACE_SYNCED_AT, indexStats, marketCategories, searchMarket, searchSkillIndex } from './data/skillMarketplace';
@@ -2385,10 +2388,30 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
     // 技能加载清单（US-104）：**同一次计算**既拼出提示词里的【已启用技能】段落，
     // 又给出逐项技能清单（名称/分类/来源/版本/字符数 + 是否加载 + 没加载的原因 + 原文片段）。
     const skillLoad=skillLoadout({skillKeys:activeProfile?.skillKeys,library:skillLibrary,legacySkills:activeProfile?.skills});
-    const promptPreview=buildPersonaPrompt(activeProfile,{subject,skillLibrary,keywordCandidates,keywordScope,skillLoadout:skillLoad});
+    // agent.md 与记忆文件的加载规则（US-105）：按固定顺序加载三层 agent.md 与三类记忆文件
+    // （学员 > 班级 > 机构），按 studentId / classId / orgId 匹配生效范围，逐层最多 5 个，
+    // 总量上限 8000 字符、超限按优先级截断；正文里的 {学员名} {班级名} {老师姓名} {课次日期}
+    // 在这里替换成真实值。**同一次计算**既给提示词两段正文，又给面板清单与轨迹留档。
+    const agentFileLoad=agentFileLoadout({
+      files:loadAgentFiles(),
+      context:{
+        orgId:DEFAULT_ORG_ID,
+        orgName:DEFAULT_ORG_NAME,
+        teacherId:activeProfile?.id||'',
+        teacherName:activeProfile?.name||currentTeacherName,
+        classId:selectedClass?.id||'',
+        className:selectedClass?.name||'',
+        studentId:selectedParticipant?.studentId||'',
+        // 「未选择学员」是界面的占位文案，不是学员名 —— 不把它当成变量值写进记忆文件。
+        studentName:selectedStudentLabel==='未选择学员'?'':selectedStudentLabel,
+        lessonDate:lessonDateDots
+      }
+    });
+    const promptPreview=buildPersonaPrompt(activeProfile,{subject,skillLibrary,keywordCandidates,keywordScope,skillLoadout:skillLoad,agentFiles:agentFileLoad});
     setReviewLoaded(reviewDetailLoaded({
       modules:promptPreview.modules,
       skills:skillLoad,
+      agentFiles:agentFileLoad,
       memory:activeProfile?.memory||'',
       keywordGroups:Object.keys(keywordCategoriesFor(mode)).length,
       keywordTerms:keywordOptionsFor(mode).length
@@ -2401,13 +2424,16 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
     setReviewPrompt(null);
     setReviewTracePanel(null);
     // 轨迹种子：谁（学员 id）/ 哪节课 / 上一代轨迹（重新生成时用 parentTraceId 关联）/
-    // 附件引用（文件 id 与文件名，图片正文由 llmReview 侧只取 hash）。
+    // 附件引用（文件 id 与文件名，图片正文由 llmReview 侧只取 hash）/
+    // agent 文件（US-105：逐文件行 + 预算摘要；只有真正进提示词的行带正文）。
     const traceSeed={
       task:REVIEW_TRACE_TASKS.artworkReview,
       studentId:selectedParticipant?.studentId||'',
       lessonId:currentLessonId,
       parentTraceId:reviewTraceRef.current?.traceId||'',
       queuedAt:new Date().toISOString(),
+      files:agentFileLoad.files,
+      agentFiles:agentFileLoad.summary,
       images:{
         artwork:{id:media.artwork?.id,name:media.artwork?.name,mime:media.artwork?.type},
         photo:{id:media.photo?.id,name:media.photo?.name,mime:media.photo?.type}
@@ -2429,6 +2455,7 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
         photoDataUrl,
         keywordCandidates,
         keywordScope,
+        agentFiles:agentFileLoad,
         images:traceSeed.images
       }));
       const result=await streamArtworkReview({
@@ -2442,6 +2469,7 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
         photoDataUrl,
         keywordCandidates,
         keywordScope,
+        agentFiles:agentFileLoad,
         signal:controller.signal,
         trace:traceSeed,
         onTrace:(next)=>{
@@ -4751,6 +4779,28 @@ function ReviewDetailPanel({stream,loaded,prompt,trace,model,params,requests,stu
                 <div className="review-detail-skill-body">
                   <small>{row.included?'该技能进入提示词的原文片段（与 system 提示词里的【已启用技能】段落逐字符一致）：':'该技能未进入本次提示词；下面是它若启用会写入的原文片段：'}</small>
                   <pre data-detail-skill-excerpt="true">{row.excerpt}</pre>
+                </div>
+              </details>
+            </li>)}
+          </ul>
+        </div>:null}
+        {(loadedSection.agentFiles||[]).length?<div className="review-detail-agentfiles" data-detail-agentfiles="true" data-detail-agentfiles-included={loadedSection.agentFilesIncluded||0} data-detail-agentfiles-total={loadedSection.agentFilesTotal||0} data-detail-agentfiles-limit={loadedSection.agentFilesSummary?.limit||0} data-detail-agentfiles-per-level={loadedSection.agentFilesSummary?.perLevel||0} data-detail-agentfiles-chars={loadedSection.agentFilesSummary?.chars||0} data-detail-agentfiles-truncated={loadedSection.agentFilesSummary?.truncated?'true':'false'} data-detail-agentfiles-truncated-at={loadedSection.agentFilesSummary?.truncatedAt||0} data-detail-agentfiles-loadout-hash={loadedSection.agentFilesSummary?.loadoutHash||''}>
+          <div className="review-detail-block-head">
+            <b>agent.md 与记忆文件</b>
+            <small>{loadedSection.agentFilesIncluded||0}/{loadedSection.agentFilesTotal||0} 个已加载 · 点开单项可看进入提示词的正文（变量已替换）</small>
+          </div>
+          {loadedSection.agentFilesNote?<p className="review-detail-agentfiles-note" data-detail-agentfiles-note="true">{loadedSection.agentFilesNote}</p>:null}
+          <ul>
+            {(loadedSection.agentFiles||[]).map(row=><li key={row.fileId||row.name} className={row.included?'':'is-off'} data-detail-agentfile={row.fileId||row.name} data-detail-agentfile-included={row.included?'true':'false'} data-detail-agentfile-reason={row.reasonKey} data-detail-agentfile-scope={row.scope} data-detail-agentfile-version={row.version} data-detail-agentfile-chars={row.chars} data-detail-agentfile-included-chars={row.includedChars} data-detail-agentfile-hash={row.hash} data-detail-agentfile-truncated={row.truncated?'true':'false'} data-detail-agentfile-truncated-at={row.truncatedAt}>
+              <details>
+                <summary>
+                  <b>{row.name}</b>
+                  <span data-detail-agentfile-detail="true">{row.detail}</span>
+                  <em data-detail-agentfile-state="true">{row.stateText}</em>
+                </summary>
+                <div className="review-detail-agentfile-body">
+                  <small data-detail-agentfile-body="true">{row.bodyNote}</small>
+                  {row.included&&row.body?<pre data-detail-agentfile-text="true">{row.body}</pre>:null}
                 </div>
               </details>
             </li>)}

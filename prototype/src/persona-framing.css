@@ -129,6 +129,23 @@
 .review-detail-skill-body small { display: block; margin-bottom: 4px; color: var(--muted); font-size: 11px; }
 .review-detail-skill-body pre { max-height: 200px; }
 .review-detail-skills-empty { margin: 8px 0 0; font-size: 12px; color: #8a5a00; }
+/* agent.md 与记忆文件清单（US-105）：逐项一行（名称 / 类型 · 范围 · 版本 · 字符数 · sha256），
+   点开看**变量替换后**的正文（截断的那一项写明截断位置）。与技能清单同一套排版。 */
+.review-detail-agentfiles { margin-top: 10px; }
+.review-detail-agentfiles > ul { margin: 8px 0 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+.review-detail-agentfiles li { border: 1px solid var(--border); border-radius: 8px; padding: 4px 8px; font-size: 12px; }
+.review-detail-agentfiles li.is-off { background: var(--soft); }
+.review-detail-agentfiles summary { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 10px; cursor: pointer; }
+.review-detail-agentfiles summary b { flex: none; }
+.review-detail-agentfiles li.is-off summary b { color: var(--muted); }
+/* 细节列与技能清单同一条纪律：`flex: 1 1 auto; min-width: 0` + 逐字换行，390px 下不撑横滚。 */
+.review-detail-agentfiles summary span { flex: 1 1 auto; min-width: 0; color: var(--muted); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.review-detail-agentfiles summary em { flex: 0 1 auto; min-width: 0; margin-left: auto; font-style: normal; text-align: right; color: var(--blue); }
+.review-detail-agentfiles li.is-off summary em { color: #8a5a00; }
+.review-detail-agentfile-body { margin-top: 6px; }
+.review-detail-agentfile-body small { display: block; margin-bottom: 4px; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.review-detail-agentfile-body pre { max-height: 220px; }
+.review-detail-agentfiles-note { margin: 8px 0 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
 .review-detail-prompt { display: grid; gap: 8px; }
 .review-detail-prompt > b { font-size: 12px; color: var(--muted); }
 .review-detail-prompt li { font-size: 12px; color: var(--muted); }

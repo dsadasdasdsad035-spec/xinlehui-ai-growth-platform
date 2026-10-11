@@ -90,16 +90,26 @@ function personaModuleContents(profile, extra, scope) {
     library: extra.skillLibrary || [],
     legacySkills: profile.skills
   });
+  // agent.md 与记忆文件（US-105）：加载规则（顺序 / 生效范围 / 每层上限 / 8000 字符预算 /
+  // 变量替换）全在 `data/agentFiles.js` 的 `agentFileLoadout()` 里，这里只把它的两段正文接上：
+  // agent.md 三层 → `agent_md` 模块，记忆文件（学员 > 班级 > 机构）→ `memory` 模块。
+  // 传了 `agentFiles` 就以它为准（记忆文件库是新的记忆载体）；本次一个记忆文件都没加载到
+  // 才回落到 `profile.memory`，没传 `agentFiles` 时沿用 `extra.agentMd` 与 `profile.memory`
+  // （老调用方 / 回归夹具逐字符不变）。
+  const agentFiles = extra.agentFiles && typeof extra.agentFiles === 'object' ? extra.agentFiles : null;
+  const agentMdBody = agentFiles ? String(agentFiles.agentMdContent || '') : String(extra.agentMd || '');
+  const memoryBody = agentFiles
+    ? (String(agentFiles.memoryContent || '') || String(profile.memory || ''))
+    : String(profile.memory || '');
   const identity = [profile.name, profile.roleLabel, profile.campus].filter(Boolean).join(' · ');
   return {
     identity: `你是${identity || '一位美术老师'}${profile.years ? `，教龄 ${profile.years} 年` : ''}。`,
     beliefs: profile.beliefs ? `【教学信念】\n${profile.beliefs}` : undefined,
     tone: profile.tone ? `【说话风格】\n${profile.tone}` : undefined,
     boundaries: profile.boundaries ? `【安全与伦理边界】\n${profile.boundaries}` : undefined,
-    // agent.md 的加载规则与版本化属 US-105；本故事只提供入口（不传就完全不出现）。
-    agent_md: extra.agentMd ? `【agent.md】\n${extra.agentMd}` : undefined,
+    agent_md: agentMdBody.trim() ? `【agent.md】\n${agentMdBody}` : undefined,
     skills: loadout.content || undefined,
-    memory: profile.memory ? `【长期记忆（本班本阶段，点评时必须结合并回访）】\n${profile.memory}` : undefined,
+    memory: memoryBody.trim() ? `【长期记忆（本班本阶段，点评时必须结合并回访）】\n${memoryBody}` : undefined,
     task: `【本次任务】\n先看清上传的作品与素材里真实存在什么，再生成五维点评草稿，供老师审阅后编辑发布。`,
     // 观察词由模型自己挑：老师不勾选时也要能选出贴合画面的词。
     // 候选清单与前端面板共用同一份目录（src/data/reviewKeywords.js），
@@ -121,6 +131,12 @@ function personaModuleContents(profile, extra, scope) {
  * `extra.skillLoadout` 可注入 `data/skillLibrary.js` 的 `skillLoadout()` 产物
  * （US-104：详情面板把同一份产物同时用于【已启用技能】段落与逐项技能清单）——
  * 不传时本函数按同一份输入自己算一次，结果逐字符相同。
+ *
+ * `extra.agentFiles` 可注入 `data/agentFiles.js` 的 `agentFileLoadout()` 产物
+ * （US-105：三层 agent.md 进 `agent_md`、记忆文件进 `memory`，加载顺序 / 生效范围 /
+ * 8000 字符预算 / 变量替换都在那一份里算好）。传了就以它为准；本次一个记忆文件都没有时，
+ * `memory` 模块回落到 `profile.memory`。不传时行为与改造前逐字符一致
+ * （`extra.agentMd` 仍是 `agent_md` 模块的旧入口）。
  */
 export function buildPersonaPrompt(profile, extra = {}) {
   const scope = extra.keywordScope || '作品观察词';
@@ -155,9 +171,11 @@ export function buildReviewPromptBundle({
   photoDataUrl,
   keywordCandidates,
   keywordScope,
+  agentMd,
+  agentFiles,
   images
 } = {}) {
-  const prompt = buildPersonaPrompt(profile, { subject, skillLibrary, keywordCandidates, keywordScope });
+  const prompt = buildPersonaPrompt(profile, { subject, skillLibrary, keywordCandidates, keywordScope, agentMd, agentFiles });
   const userContent = buildUserContent({ subject, studentName, keywords, teacherObservation, artworkDataUrl, photoDataUrl });
   const media = images && typeof images === 'object' ? images : {};
   const attachments = buildReviewTraceAttachments([
@@ -247,7 +265,7 @@ export function readableFromRawJson(raw) {
  * @param {(trace:object)=>void} [options.onTrace] 轨迹收束回调：成功 / 失败 / 中止都恰好调一次
  * @returns {Promise<{reviews:object,evidence:string[],keywords:string[],reasoning:string,usage:object|null,raw:string,trace:object}>}
  */
-export async function streamArtworkReview({ profile, skillLibrary, subject, studentName, keywords, teacherObservation, artworkDataUrl, photoDataUrl, keywordCandidates, keywordScope, onReasoning, onContent, signal, trace: traceSeed, onTrace }) {
+export async function streamArtworkReview({ profile, skillLibrary, subject, studentName, keywords, teacherObservation, artworkDataUrl, photoDataUrl, keywordCandidates, keywordScope, agentMd, agentFiles, onReasoning, onContent, signal, trace: traceSeed, onTrace }) {
   // US-101 起 system 由模块拼成；这里同时拿到模块清单（轨迹的「加载了哪些提示词」）。
   // 提示词与附件清单走 `buildReviewPromptBundle` —— 详情面板（US-103b）读的是同一份产物。
   const images = traceSeed?.images || {};
@@ -262,6 +280,8 @@ export async function streamArtworkReview({ profile, skillLibrary, subject, stud
     photoDataUrl,
     keywordCandidates,
     keywordScope,
+    agentMd,
+    agentFiles,
     images
   });
   const prompt = { system: bundle.system, modules: bundle.modules };
@@ -269,12 +289,16 @@ export async function streamArtworkReview({ profile, skillLibrary, subject, stud
   const attachments = bundle.attachments;
   // 轨迹：**只驻留内存**（调用方拿到 `onTrace` 的结果之后才可能在归档时提交云端）。
   // 图片只进 attachments 的「引用 + hash」（`buildReviewTraceAttachments`），正文一个字都不进轨迹。
+  // agent.md 与记忆文件（US-105）只把**逐文件行与预算摘要**写进轨迹（行里有正文，供审计复现）；
+  // 调用方给了 `agentFiles` 就用它的产物，否则沿用轨迹种子里带的那一份（两条路径同一形状）。
   let trace = createReviewTrace({
     ...(traceSeed && typeof traceSeed === 'object' ? traceSeed : {}),
     model: REVIEW_MODEL,
     system: prompt.system,
     user: String(userContent[0]?.text || ''),
     modules: prompt.modules,
+    files: (agentFiles && agentFiles.files) || (traceSeed && traceSeed.files) || undefined,
+    agentFiles: (agentFiles && agentFiles.summary) || (traceSeed && traceSeed.agentFiles) || undefined,
     attachments
   });
 
