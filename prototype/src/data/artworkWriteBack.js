@@ -98,6 +98,9 @@ export const ARTWORK_WRITE_BACK_FIELDS = [
   // 班级反馈的批量装裱据此判定「这幅作品有没有被单独调整过」——
   // 有 batchId 的记录只可能来自批量，没有的只可能来自老师对单幅作品的保存。
   'batchId',
+  // 这张成品图是用哪一套装裱模板生成的（US-011b）：后台删除模板前的「历史成品引用」判据。
+  // 成品图本身是独立副本，模板删了也不影响它 —— 这里只用于统计引用范围。
+  'presetId',
   'renderKey'
 ];
 
@@ -194,6 +197,8 @@ export function buildArtworkWriteBack(input = {}) {
     title: str(source.title),
     // 批量装裱的批次 id（US-010）：空串 = 老师单独保存的这一幅。
     batchId: str(source.batchId),
+    // 生成这张图用的模板 id（US-011b）：空串 = 老师当时没用模板（或旧记录没记）。
+    presetId: str(source.presetId),
     renderKey: str(source.renderKey)
   };
   return record;

@@ -645,3 +645,5 @@
   .batch-framing-confirm-actions button{min-height:44px;flex:1 1 auto}
   .batch-framing-failures li button{min-height:44px}
 }
+/* 默认选中说明（[第二步 US-011b]）：按课程绑定 → 默认模板 → 第一套。只在「跟随默认」时出现。 */
+.frame-style-resolve{margin:0;border-radius:10px;background:#eef5ff;border:1px solid #cfe0fb;color:#20456f;font-size:10px;line-height:1.6;padding:7px 10px}

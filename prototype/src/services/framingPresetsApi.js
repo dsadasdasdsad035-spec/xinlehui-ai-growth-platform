@@ -22,7 +22,13 @@ function rowToPreset(row) {
     scope: source.scope,
     ownerKey: source.owner_key,
     sortOrder: Number.isFinite(source.sort_order) ? source.sort_order : 90,
-    updatedAt: source.updated_at || ''
+    updatedAt: source.updated_at || '',
+    // US-011b 的四列（默认标记 / 课程绑定 / 更新人 / 变更历史）。
+    // 云端表还没有这几列时读到的是 undefined → normalizeFramingPreset 收敛成安全值。
+    isDefault: source.is_default === true,
+    boundCourseTypes: source.bound_course_types,
+    updatedBy: source.updated_by || '',
+    history: source.history
   });
 }
 
@@ -40,7 +46,13 @@ function presetToRow(preset) {
     builtin: item.builtin === true,
     scope: item.scope,
     owner_key: item.ownerKey || '',
-    sort_order: Number.isFinite(item.sortOrder) ? item.sortOrder : 90
+    sort_order: Number.isFinite(item.sortOrder) ? item.sortOrder : 90,
+    // US-011b：默认标记 / 课程绑定 / 更新人 / 变更历史（云表补列后即可同步；
+    // 缺列时 PostgREST 会整条拒掉 400，调用方按「已保存到本机」处理）。
+    is_default: item.isDefault === true,
+    bound_course_types: item.boundCourseTypes,
+    updated_by: item.updatedBy || '',
+    history: item.history
   };
 }
 

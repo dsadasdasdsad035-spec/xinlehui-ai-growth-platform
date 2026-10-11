@@ -586,3 +586,57 @@ p.framing-coverage-bad { margin: 0; padding: 10px 18px; font-size: 12px; line-he
   border-color: #292720;
 }
 .feedback-flow-v2 .review-keyword-groups button.active .ai-mark { background: #f7c515; color: #3a2d00; }
+
+/* ==========================================================================
+   装裱模板的库级设置（[第二步 US-011b]）
+   左列表：每行 =「选中」按钮 + 上移 / 下移 / 启停三件操作（排序与启停点一下就生效）；
+   右侧编辑区顶部：默认标记 / 老师端可选 / 最后变更、引用范围、按课程绑定、变更历史、
+   删除门槛（被引用的模板只允许停用）。类名统一 `frame-library-*` / `frame-preset-admin*`，
+   避免和老师端「我的模板」那套 `frame-preset-row`（flow-v2.css）撞车。
+   ========================================================================== */
+.frame-library-row { display: flex; align-items: stretch; gap: 6px; margin-bottom: 8px; }
+.frame-library-row .frame-library-pick { flex: 1; min-width: 0; width: auto; margin-bottom: 0; }
+.frame-library-row.active .frame-library-pick { border-color: var(--blue); background: var(--blue-50); }
+.frame-library-default { font-style: normal; flex: none; font-size: 10px; font-weight: 800; color: #7a5b00; background: #fff2c8; border-radius: 999px; padding: 2px 8px; white-space: nowrap; }
+.frame-library-ops { display: flex; flex-direction: column; gap: 4px; flex: none; }
+.frame-library-ops button { width: auto; margin: 0; padding: 4px 7px; min-width: 34px; font-size: 10px; justify-content: center; }
+.frame-library-ops button:disabled { opacity: .4; cursor: default; }
+.frame-library-restore { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; border: 1px dashed #e6d9b8; border-radius: 10px; padding: 8px 10px; background: #fffdf7; font-size: 10px; line-height: 1.6; color: #7d7050; }
+.frame-library-restore button { border: 1px solid #e3d7b5; background: #fff; border-radius: 8px; padding: 6px 10px; font-size: 10px; font-weight: 700; color: #716850; cursor: pointer; }
+.frame-preset-admin { display: flex; flex-direction: column; gap: 10px; border: 1px solid #e6d9b8; border-radius: 14px; background: #fffdf7; padding: 12px; margin-bottom: 14px; }
+.frame-preset-admin-row { display: flex; gap: 16px; flex-wrap: wrap; }
+.frame-preset-admin-item { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; font-size: 10px; line-height: 1.5; color: #514a38; }
+.frame-preset-admin-item b { font-size: 11px; color: #292720; }
+.frame-preset-admin-item span { font-weight: 700; }
+.frame-preset-admin-item button { border: 1px solid #e3d7b5; background: #fff; border-radius: 8px; padding: 5px 9px; font-size: 10px; font-weight: 700; color: #716850; cursor: pointer; }
+.frame-preset-usage { margin: 0; font-size: 10px; line-height: 1.6; color: #7d7050; background: #f7f2e4; border-radius: 9px; padding: 6px 9px; }
+.frame-preset-courses { display: flex; flex-direction: column; gap: 8px; }
+.frame-preset-courses-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.frame-preset-courses-head b { font-size: 11px; color: #292720; }
+.frame-preset-courses-head small { flex: 1 1 100%; font-size: 10px; line-height: 1.6; color: #857a64; }
+.frame-preset-course-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.frame-preset-course-list label { display: flex; align-items: center; gap: 6px; min-height: 34px; border: 1px solid #e3d7b5; border-radius: 9px; background: #fff; padding: 6px 9px; font-size: 10px; font-weight: 700; color: #514a38; cursor: pointer; }
+.frame-preset-course-list label.is-bound { border-color: #c99908; background: #fff5d1; color: #765800; }
+.frame-preset-course-list label em { font-style: normal; font-size: 9px; font-weight: 800; color: #4d6b28; background: #edf5e2; border-radius: 999px; padding: 1px 6px; }
+.frame-preset-course-list label em.is-warn { color: #8a5a00; background: #fff3cf; }
+.frame-preset-history summary { font-size: 11px; font-weight: 700; color: #514a38; cursor: pointer; }
+.frame-preset-history ol { margin: 8px 0 0; padding-left: 18px; }
+.frame-preset-history li { font-size: 10px; line-height: 1.75; color: #7d7050; }
+.frame-preset-admin-notice { margin: 0; font-size: 10px; line-height: 1.65; font-weight: 700; border-radius: 9px; padding: 7px 10px; }
+.frame-preset-admin-notice.blocked { color: #8a2f20; background: #fdece7; }
+.frame-preset-admin-notice.confirm { color: #7a5b00; background: #fff3cf; }
+.frame-library-confirm-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.frame-library-confirm-actions button { border: 1px solid #e3d7b5; background: #fff; border-radius: 8px; padding: 6px 11px; font-size: 11px; font-weight: 700; color: #716850; cursor: pointer; }
+.frame-library-confirm-actions button.danger-text { color: #a33326; border-color: #f0d2cb; }
+.frame-library-note { margin: 0; font-size: 10px; line-height: 1.6; color: #857a64; }
+@media (max-width: 900px) {
+  .frame-library-row { flex-direction: column; }
+  .frame-library-ops { flex-direction: row; }
+  .frame-library-ops button { min-height: 44px; }
+  .frame-preset-admin { padding: 10px; }
+  .frame-preset-admin-row { flex-direction: column; gap: 8px; }
+  /* 窄屏可点区域 ≥44px：库级设置里的文字按钮也要抬到 44px（复选框的 44px 落在 label 上）。 */
+  .frame-preset-admin-item button { min-height: 44px; padding: 10px 12px; }
+  .frame-library-confirm-actions button { min-height: 44px; }
+  .frame-preset-course-list label { min-height: 44px; }
+}

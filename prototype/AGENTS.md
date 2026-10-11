@@ -1041,6 +1041,49 @@ DOM/canvas 部分在 `src/services/artworkWriteBack.js`，编排在 `main.jsx` �
 - `Button`（`src/ui.jsx`）现在会 `...rest` 透传额外属性 —— 面板用它给按钮挂 `data-frame-param`
   （上传类参数的控件就是按钮）。老调用方不传就一个属性都不多。
 
+## 装裱模板库：默认 / 按课程绑定 / 启停排序 / 引用范围与变更历史（US-011b）
+
+模板的**库级设置**在管理端「装裱设置」：左列表每行 =「选中」按钮 + 上移 / 下移 / 启停（`data-frame-library-*`），
+右侧编辑区顶部是 `[data-frame-preset-admin]` 块（默认模板 / 老师端可选 / 最后变更 / 引用范围 /
+按课程绑定 / 变更历史 / 删除门槛）。领域规则全在零依赖 `data/framingPresets.js`：
+
+| 字段 | 含义 | 写入口径 |
+|---|---|---|
+| `isDefault` | 默认模板（同一时间只有一套；无绑定课程时老师端用它） | `setDefaultFramingPreset(list, id)`（传空 id = 取消） |
+| `boundCourseTypes` | 这套模板绑定到哪些**课程**（课程 id 或课程名都收） | `bindFramingPresetCourse(preset, courseId, bound, {by, at, detail})` |
+| `sortOrder` | 列表顺序（管理端上移 / 下移 = 整份重排 1..n ×10） | `moveFramingPreset(list, id, delta)` |
+| `updatedBy` / `updatedAt` / `history` | 谁在什么时候改了什么 | **唯一写入口 `stampFramingPresetUpdate(preset, {by, at, action, detail})`** |
+
+- **老师端默认选中 = 三级回落**：`resolveFramingPresetForCourse(presets, { courseId, courseName })`
+  → ① 启用中且 `boundCourseTypes` 命中这门课（`source: 'course'`）→ ② `isDefault` 且启用中（`'default'`）
+  → ③ 排序第一套（`'first'`）→ ④ `'empty'`。**入参要传「可见全量」而不是筛过 enabled 的列表**，
+  否则解析看不到「按课程绑定的那套已被停用」，界面上就无法说明原因（停用 = 不算命中，回落默认模板，
+  并把 `disabledBindingName` 带出去）。老师端面板上的只读属性：`data-frame-resolve-source` /
+  `data-frame-resolved-id` / `data-frame-default-id` / `data-frame-manual-pick`，说明文字在
+  `[data-frame-resolve-text]`（文案由 `framingPresetResolveText` 统一生成）。
+- **老师手动选过就以老师为准**：`frame` 为空串才是「跟随默认」，`framePickedManually` 记下手动选择；
+  换课程 / 换班（`[activeCourseId, selectedClassId]` 的 effect）会清掉跟随状态，按新课程重新解析。
+- **删除规则 = 引用范围说了算**（`framingPresetUsage` + `framingPresetDeleteVerdict`）：引用有三个来源 ——
+  ① 是默认模板；② 被 N 门课程绑定；③ **历史成品引用**（成品图写回记录里的 `presetId`，见
+  `data/artworkWriteBack.js` 的 `ARTWORK_WRITE_BACK_FIELDS`；单幅保存与批量装裱写回时都会落这个字段）。
+  被引用 → 只允许停用（拒绝文案必须点名「只能停用」）；没被引用 → 二次确认后才删，确认文案里也要写影响范围。
+- **内置样式库可增删改**：新增样式只填参数（参数面板 + 保存到云端），删除用「删除门槛」那套规则。
+  删掉的内置样式靠 `knownBuiltinIds` 快照区分「管理员删掉的」（不补回来）与「版本升级新增的」（自动补进）：
+  主键 `xinlehui-framing-presets-v1` **始终保持裸数组**（外部读取方的既有假设不变，改成对象会静默打断
+  `JSON.parse(...).find(...)` 的读法），快照另存 `xinlehui-framing-presets-meta-v1`。
+  「恢复内置样式库」用 `restoreMissingBuiltinFramingPresets(list)`，**补回来的排在列表最后**
+  （列表顺序是管理员维护的，别插回中间）。
+- **合并方向：`mergeRemoteFramingPresets(remote, local)` 是「本机镜像优先」**（US-011b 起，之前是云端优先）。
+  理由：云端 `framing_presets` 表还缺 `scope` / `owner_key` / `is_default` / `bound_course_types` 列，
+  任何一条带新列的 row 会被 PostgREST **整条拒掉**（实测 400 `DATABASE_PGRST204`）→ 模板的写入只在
+  **本机镜像**里真正落地，云端那 4 条是 2026-10-09 的旧记录。若让云端优先，管理员刚设好的
+  「默认模板 / 课程绑定 / 启停 / 排序」会在下一次进入时被旧记录顶掉。云端只补「本机没有、且不是
+  『本机删掉的内置样式』」的 id。等云表补上这些列、写入能成功后，把方向翻回云端优先即可（改一处）。
+- **写这个页面时的两个坑**：① 编辑草稿读新字段前先过 `normalizeFramingPreset(draft)`（种子数据 / 老镜像
+  里没有 `boundCourseTypes` 等字段，`draft.boundCourseTypes.length` 会直接炸掉整页）；
+  ② 管理端列表行不能用 `.frame-preset-row` / `.frame-preset-notice` 这些**老师端已有**的类名
+  （flow-v2.css 里那套是「我的模板」的绿色样式，会串味）—— 管理端统一用 `frame-library-*`。
+
 ## 容易踩的坑
 
 - **写接口抛错时「await 之后就没了」**：`save<X>/create<X>/update<X>` 是「先写本地镜像再推云端」，
@@ -1075,11 +1118,11 @@ DOM/canvas 部分在 `src/services/artworkWriteBack.js`，编排在 `main.jsx` �
   打印出的 `exports` 列表里有它，Node 也能 import。**换一个名字立刻就好**（本故事改成
   `framingPresetNameIssue`）。遇到这种「导出明明在、构建说没有」的情况，别去改导出语法，
   先换标识符名再验一次。
-- **验证「后台改模板 → 老师端生效」时要挑一套不在本机云端表里的模板**：本机云端
-  `framing_presets` 表存着最早的 4 套（`frame-starlight / frame-oak / frame-ink / frame-ai-shuimo`），
-  它们是**真源**且本机写不回去，登录老师端时会把后台刚改的本机值顶掉（表现：后台明明保存成功、
-  老师端却还是旧值）。要验证改动生效，改**其余 7 套**里的任意一套（如「深棕展框」），
-  或在老师端点一下那套样式再断言。
+- **装裱模板的合并方向已翻转（US-011b 起）**：`mergeRemoteFramingPresets(remote, local)` 是
+  **本机镜像优先**，云端只补「本机没有的 id」。原因是云表缺 `scope` / `owner_key` / `is_default` /
+  `bound_course_types` 列、带新列的写入会被整条拒掉（400 `DATABASE_PGRST204`），模板改动只在本机落地。
+  所以后台改模板 → 老师端看得见（刷新也在）；反过来说，**想让改动同步到别的设备目前做不到**，
+  这是云表补列之前的口径。旧写法（「要挑一套不在云端表里的模板」）已不成立。
 - 旧数据兼容的写法：`normalize<X>(raw)` 永不抛错，缺字段补默认值，**无法映射的原始对象挂到 `legacy` 字段上原样保留**，
   宁可多带一个字段也不要丢数据；不要为了让旧数据「看起来完整」而编造日期或序号。
 

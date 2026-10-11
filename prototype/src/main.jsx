@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
-  Archive, ArrowLeft, ArrowRight, Bell, BookOpen, Boxes, Check, ChevronDown,
+  Archive, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bell, BookOpen, Boxes, Check, ChevronDown,
   CircleAlert, CircleCheck, Clock3, Download, FileText, Film, FolderOpen, Frame,
   GraduationCap, Image, Landmark, LayoutDashboard, LogOut, Menu, MessageSquareText, MoreHorizontal,
   Package, PanelLeftClose, Plus, RefreshCw, RotateCcw, RotateCw, Save, Search, Settings, ShieldAlert, ShieldCheck, Sparkles,
@@ -56,7 +56,9 @@ import { archiveSkillPackage, readSkillPackage } from './services/skillPackage';
 import { MARKETPLACE_SYNCED_AT, indexStats, marketCategories, searchMarket, searchSkillIndex } from './data/skillMarketplace';
 // 装裱模板分三层（platform / org / teacher，US-001b）：scope + ownerKey 决定归属，
 // 老师端只显示自己可见的模板（filterFramingPresetsForViewer），管理端读全量。
-import { createEmptyFramingPreset, editableFramingPresets, filterFramingPresetsForViewer, framePresetEditableBy, framingPresetNameIssue, framePresetScopeLabel, framePresetSpecFromRenderView, framePresetSpecGroupLabels, FRAMING_PRESET_DELETE_NOTE, buildTeacherFramingPreset, loadFramingPresets, mergeMissingFramingPresets, normalizeFramingPreset, persistFramingPresets, renameFramingPreset } from './data/framingPresets';
+// US-011b 的默认模板 / 按课程绑定 / 引用范围 / 变更历史也都在这份零依赖模块里 ——
+// 老师端的「默认选哪一套」与管理端的「删除只允许停用」读的是同一批纯函数。
+import { FRAMING_PRESET_COURSE_BINDING_NOTE, FRAMING_PRESET_DEFAULT_NOTE, FRAMING_PRESET_DELETE_NOTE, FRAMING_PRESET_HISTORY_EMPTY, bindFramingPresetCourse, buildTeacherFramingPreset, createEmptyFramingPreset, defaultFramingPreset, editableFramingPresets, filterFramingPresetsForViewer, framePresetEditableBy, framingPresetChangeSummary, framingPresetCourseConflicts, framingPresetDeleteVerdict, framingPresetHistory, framingPresetHistoryText, framingPresetNameIssue, framingPresetResolveText, framePresetScopeLabel, framePresetSpecFromRenderView, framePresetSpecGroupLabels, framingPresetUpdateText, framingPresetUsage, framingPresetUsageText, loadFramingPresets, mergeRemoteFramingPresets, missingBuiltinFramingPresets, moveFramingPreset, restoreMissingBuiltinFramingPresets, normalizeFramingPreset, persistFramingPresets, renameFramingPreset, resolveFramingPresetForCourse, selectableFramingPresets, setDefaultFramingPreset, sortFramingPresets, stampFramingPresetUpdate } from './data/framingPresets';
 import { deleteRemoteFramingPreset, loadRemoteFramingPresets, saveRemoteFramingPreset } from './services/framingPresetsApi';
 import { DEFAULT_FRAME_SPEC, DATE_FORMATS, DATE_SOURCES, FRAMING_FONT_WHITELIST, SEAL_SHAPES, frameSpecRenderKey, frameSpecRenderView, frameSpecView, generateFrameSpec, normalizeFrameSpec, normalizeFrameSpecV2 } from './services/frameSpec';
 import { FRAME_STYLE_COLORS, FRAME_STYLE_DEFAULT_CORNER_RADIUS, FRAME_STYLE_MAT_COLORS, FRAME_STYLE_MIN_VISIBLE_CORNER_RADIUS, FRAME_STYLE_SHAPES, FRAME_STYLE_WIDTHS, applyFrameStyleTweaks, describeFrameStyleSpec, frameStyleTweakCount, frameStyleTweakSummary, normalizeFrameStyleTweaks } from './data/frameStyles';
@@ -270,10 +272,11 @@ function App(){
   // 所以不能并进上面那组「登录前就跑、只跑一次」的 effect。
   useEffect(()=>{let active=true;
     const viewer=role==='admin'?null:{role:'teacher',teacherName:roleMeta.teacher.name,orgId:DEFAULT_ORG_ID};
-    // 补齐「云端还不知道的模板」（US-006）：云端是真源，但云端表里可能没有新内置样式
-    // （本机的云端表缺 owner_key 列、写不进去，只存着最早 4 套）。只补 id 缺失的条目，
-    // 兜底来源是本机镜像 ∪ 内置样式库 —— 于是管理端在本机停用过的模板仍然按停用生效。
-    loadRemoteFramingPresets(viewer).then(remote=>{if(active&&remote.length)setFramingPresets(current=>mergeMissingFramingPresets(remote,current.length?current:loadFramingPresets()))}).catch(()=>{});
+    // 合并方向见 `mergeRemoteFramingPresets` 的注释（US-011b 起**本机镜像优先**）：
+    // 云端 framing_presets 表还缺 scope / owner_key / is_default / bound_course_types 这些列，
+    // 带新列的写入会被整条拒掉，所以模板的改动目前只在本机镜像里真正落地；
+    // 云端仍负责补进「本机没有的 id」（多设备 / 后台直接写库）。
+    loadRemoteFramingPresets(viewer).then(remote=>{if(active&&remote.length)setFramingPresets(current=>mergeRemoteFramingPresets(remote,current.length?current:loadFramingPresets()))}).catch(()=>{});
     return()=>{active=false};
   },[auth,role]);
   const navigate=(p)=>{setPage(p);setMobileNav(false);window.scrollTo(0,0)};
@@ -483,15 +486,41 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
   // 提示条会说明上次进行到第几步，避免老师以为「流程跳回去了」。
   const [step,setStep]=useState(()=>resolveRestoredStep(initialDraft));
   // 上次是个人还是班级反馈不额外持久化，由 participants 的不变量推导（多于一位 = 班级反馈）。
+  // 课程下拉的数据源是课程库（停用课程不进可选列表）。班级上的 course 存的是课程名，要经 resolveCourseId 换算。
+  // 这一段（课程选择）刻意放在「选用哪套装裱模板」之前：装裱模板的默认选中要按**本次课程**解析
+  // （US-011b 的按课程绑定），所以 activeCourseId 必须先算出来。
+  const courseOptions=selectableCourses(courses);
+  const classCourseId=resolveCourseId(courses,selectedClass?.course);
+  const classCourseName=String(selectedClass?.course||'').trim();
+  const [selectedCourseId,setSelectedCourseId]=useState(()=>String(initialDraft?.courseId||''));
+  // 选中的课程被停用或不在课程库里时，回落到本班课程，再回落到第一门可选课程。
+  const activeCourseId=courseOptions.some(item=>item.courseId===selectedCourseId)
+    ? selectedCourseId
+    : (courseOptions.some(item=>item.courseId===classCourseId)?classCourseId:courseOptions[0]?.courseId||'');
   const [mode,setMode]=useState(()=>draftMode(initialDraft));
-  // frame 存的是云端装裱预设的 id，不再是写死的样式名。
+  // frame 存的是云端装裱预设的 id（老师手动选用过的那一套），空串 = 跟随解析出来的默认模板。
   const [frame,setFrame]=useState('');
+  // 老师有没有**手动**选过样式（US-011b）：手动选过就以老师的选择为准，
+  // 「默认选中说明」条只在跟随默认时出现；换课程时回到跟随默认（解析按课程重新算）。
+  const [framePickedManually,setFramePickedManually]=useState(false);
   // 老师端只显示自己可见的模板（US-001b）：平台模板 + 本机构模板 + 自己的个人模板，
   // 别人的个人模板看不到。本机兜底数据（云端不通时 state 就是 localStorage 镜像）也必须过这道过滤，
   // 否则换一个老师登录会看到上一位老师的个人模板。
+  // 顺序也用 `sortFramingPresets`（管理员在后台调过的排序就是老师看到的顺序）。
   const teacherFrameViewer={role:'teacher',teacherName:currentTeacherName,orgId:DEFAULT_ORG_ID};
-  const enabledFrames=filterFramingPresetsForViewer(framingPresets,teacherFrameViewer).filter(item=>item.enabled!==false);
-  const activeFrame=enabledFrames.find(item=>item.id===frame)||enabledFrames[0]||null;
+  const visibleFrames=filterFramingPresetsForViewer(framingPresets,teacherFrameViewer);
+  const enabledFrames=selectableFramingPresets(visibleFrames);
+  // 默认选谁（US-011b）：按课程绑定 → 默认模板 → 第一套；老师手动点过卡片就以老师的选择为准
+  // （`frame` 为空串时才是「跟随默认」，换课程会把跟随重置，见下面的 effect）。
+  // 入参用**可见全量**（`visibleFrames`）而不是筛过的 `enabledFrames`：解析要能看到
+  // 「按课程绑定的那套已被停用」，才能把原因说清楚（停用的模板不算命中，回落默认模板）。
+  const frameResolution=resolveFramingPresetForCourse(visibleFrames,{
+    courseId:activeCourseId,
+    courseName:courseOptions.find(item=>item.courseId===activeCourseId)?.name||''
+  });
+  const resolvedFrame=frameResolution.preset;
+  const frameResolveText=framingPresetResolveText(frameResolution);
+  const activeFrame=enabledFrames.find(item=>item.id===frame)||resolvedFrame||null;
   const activeFrameId=activeFrame?.id||'';
   // ---- 我的模板（US-009）-----------------------------------------------------------
   // 老师端「另存为我的模板」的重命名 / 删除只对自己的个人模板开放：系统（平台）与机构模板
@@ -638,7 +667,12 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
   const [activeProfileId,setActiveProfileId]=useState('');
   const [reviewStream,setReviewStream]=useState({open:false,phase:'idle',reasoning:'',content:'',message:'',elapsed:0});
   const reviewAbort=useRef(null);
+  // 把「解析出来的默认模板」固化进 frame：面板与后续所有消费点读的都是 activeFrameId 一个来源。
+  // `frame` 为空串时才是「跟随默认」——老师手动点过卡片就不会被默认值顶掉。
   useEffect(()=>{if(!frame&&activeFrameId)setFrame(activeFrameId)},[frame,activeFrameId]);
+  // 换课程（或换班导致课程变）以后，重新按**这门课**解析默认模板（US-011b 的按课程绑定）：
+  // 老师上一次手动选的那一套不再适用，清掉 frame 让它回落到新课程的绑定 / 默认模板。
+  useEffect(()=>{setFrame('');setFramePickedManually(false)},[activeCourseId,selectedClassId]);
   useEffect(()=>{if(!activeProfileId&&teacherProfiles[0])setActiveProfileId(teacherProfiles[0].id)},[activeProfileId,teacherProfiles]);
   useEffect(()=>{if(reviewStream.phase!=='running')return undefined;const timer=setInterval(()=>setReviewStream(current=>current.phase==='running'?{...current,elapsed:current.elapsed+1}:current),1000);return()=>clearInterval(timer)},[reviewStream.phase]);
   const [reviewGenerated,setReviewGenerated]=useState(false);
@@ -663,15 +697,7 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
   const intakeStartedAtRef=useRef(Date.now());
   const [intakeElapsedSeconds,setIntakeElapsedSeconds]=useState(0);
   const steps=[['创建信息','选择对象并上传素材'],['智能装裱','完成作品与照片的裁剪装裱'],['五维点评','依据素材完成温暖点评'],['归档转发','形成一次完整课后反馈']];
-  // 课程下拉的数据源是课程库（停用课程不进可选列表）。班级上的 course 存的是课程名，要经 resolveCourseId 换算。
-  const courseOptions=selectableCourses(courses);
-  const classCourseId=resolveCourseId(courses,selectedClass?.course);
-  const classCourseName=String(selectedClass?.course||'').trim();
-  const [selectedCourseId,setSelectedCourseId]=useState(()=>String(initialDraft?.courseId||''));
-  // 选中的课程被停用或不在课程库里时，回落到本班课程，再回落到第一门可选课程。
-  const activeCourseId=courseOptions.some(item=>item.courseId===selectedCourseId)
-    ? selectedCourseId
-    : (courseOptions.some(item=>item.courseId===classCourseId)?classCourseId:courseOptions[0]?.courseId||'');
+  // 课程下拉与本次课程的解析在组件顶部（装裱模板的默认选中要按课程解析，见 frameResolution）。
   // 推荐课时序号 = 该班该课程已归档课次数 + 1（见 prd-lesson-intake US-403/US-404）；课题取分课时课题，取不到回落默认课题。
   const archivedLessonCount=selectedClass&&activeCourseId
     ? lessons.filter(item=>item.classId===selectedClass.id&&item.courseId===activeCourseId&&item.status==='archived').length
@@ -1220,10 +1246,12 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
     return ()=>{cancelled=true};
   },[step,frameThumbSource,frameThumbPlanKey,frameTweaksKey,activeFrameId,frameThumbStudent,frameThumbTitle,frameThumbDate,currentTeacherName,artworkEditor.open]);
   // 切换款式：换 id 并把本次微调清掉（微调属于「那一套」的调整，带到下一套只会让人以为模板坏了）。
+  // 这是老师**手动**的选择：记下来，不再被「按课程绑定的默认模板」顶掉。
   const selectFrameStyle=(id)=>{
     if(id===activeFrameId) return;
     if(frameTweakCount){setFrameTweaks(normalizeFrameStyleTweaks(null));setToast('已切换款式，本次微调已重置')}
     setFrame(id);
+    setFramePickedManually(true);
   };
   const setFrameTweak=(patch)=>setFrameTweaks(current=>normalizeFrameStyleTweaks({...normalizeFrameStyleTweaks(current),...patch}));
   const resetFrameTweaks=()=>{
@@ -1248,6 +1276,7 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
     setFrameTweaks(normalizeFrameStyleTweaks(null));
     setOverlayTweaks(normalizeOverlayTweaks(null));
     setFrame(preset.id);
+    setFramePickedManually(true);
     setMyTemplateForm({name:'',description:''});
     setMyTemplateNotice(`已保存我的模板「${preset.name}」：含 ${framePresetSpecGroupLabels(spec).join(' · ')}，不含对单幅作品的旋转与裁剪。`);
     setMyTemplateSaving(true);
@@ -1277,7 +1306,7 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
     // 删除只从可选列表里移除：成品图是保存 / 归档时写下的独立副本，模板没了也不会改动它。
     setFramingPresets(framingPresets.filter(item=>item.id!==preset.id));
     if(renamingPresetId===preset.id) setRenamingPresetId('');
-    if(activeFrameId===preset.id) setFrame('');
+    if(activeFrameId===preset.id){setFrame('');setFramePickedManually(false)}
     setMyTemplateNotice(`已删除我的模板「${preset.name}」。${FRAMING_PRESET_DELETE_NOTE}`);
     try{ await deleteRemoteFramingPreset(preset.id); setToast(`已删除我的模板「${preset.name}」`); }
     catch{ setToast('已从本机删除；云端删除未成功。'); }
@@ -2735,12 +2764,16 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
     background:desc.matVisible?desc.matHex:'#FFFFFF'
   });
   const frameStylePanel=(
-    <section className="frame-style-panel" data-frame-style-panel="true" data-frame-active={activeFrameId} data-frame-style-count={enabledFrames.length} data-frame-tweak-count={frameTweakCount} data-frame-tweaks={frameTweakSummary} data-frame-thumb-ready={enabledFrames.filter(item=>frameThumbs[item.id]).length} data-frame-thumb-pending={enabledFrames.filter(item=>!frameThumbs[item.id]).length}>
+    <section className="frame-style-panel" data-frame-style-panel="true" data-frame-active={activeFrameId} data-frame-style-count={enabledFrames.length} data-frame-tweak-count={frameTweakCount} data-frame-tweaks={frameTweakSummary} data-frame-thumb-ready={enabledFrames.filter(item=>frameThumbs[item.id]).length} data-frame-thumb-pending={enabledFrames.filter(item=>!frameThumbs[item.id]).length}
+      data-frame-resolve-source={frameResolution.source} data-frame-resolved-id={resolvedFrame?.id||''} data-frame-default-id={(defaultFramingPreset(visibleFrames)?.id)||''} data-frame-manual-pick={framePickedManually?'true':'false'}>
       <div className="frame-style-head">
         <b>相框样式</b>
         <em className="frame-style-active" data-frame-active-summary={`${activeFrame?.name||'默认装裱'}${frameTweakCount?` · ${frameTweakSummary}`:''}`}>当前：{activeFrame?.name||'默认装裱'}{frameTweakCount?` · ${frameTweakSummary}`:''}</em>
         <small>{enabledFrames.length?`共 ${enabledFrames.length} 套可选；缩略图用当前作品实时渲染。切换样式只重绘装裱，不会重新裁剪作品。`:'正在读取装裱设置…'}</small>
       </div>
+      {/* 默认选中说明（US-011b）：按课程绑定 → 默认模板 → 第一套。老师手动点过卡片就不再多说
+          （那是老师自己的选择，不是「默认选中」）。 */}
+      {enabledFrames.length&&frameResolveText&&!framePickedManually?<p className="frame-style-resolve" data-frame-resolve-text={frameResolveText}>{frameResolveText}</p>:null}
       {enabledFrames.length?<div className="frame-style-grid" role="radiogroup" aria-label="相框样式">
         {enabledFrames.map(preset=>{
           const isActive=preset.id===activeFrameId;
@@ -3131,6 +3164,8 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
         studentId:writeBackStudentId,
         studentName:plaque.student,
         title:plaque.title,
+        // 这套成品图用的是哪套装裱模板（US-011b）：后台删除模板前的「历史成品引用」判据。
+        presetId:activeFrame?.id||'',
         renderKey:writeBackKey
       });
       const problem=artworkWriteBackProblem(record);
@@ -3358,6 +3393,8 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
       studentId:variables.studentId,
       studentName:variables.studentName,
       title:variables.title,
+      // 这套成品图用的是哪套装裱模板（US-011b）：后台删除模板前的「历史成品引用」判据。
+      presetId:batchFramingPreset?.id||'',
       // 批次 id：客户端据此区分「批量装裱的成品图」与「老师单独保存的成品图」，
       // 下一次批量才能只对「已单独调整过」的那些先做二次确认。
       batchId,
@@ -4541,10 +4578,23 @@ function OverlayPositionPad({value,onChange,label,field,offsets,onSelect,onOffse
   </div>;
 }
 
-function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast}){
-  const [editingId,setEditingId]=useState(framingPresets[0]?.id||'');
-  const editing=framingPresets.find(item=>item.id===editingId)||framingPresets[0]||null;
+function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast,records=[],courses=[]}){
+  // 后台每一次变更的操作人（原型阶段没有账号体系，会话身份串就是操作人 —— 与课次 teacherId 同一口径）。
+  const adminName=roleMeta.admin.name;
+  // 排序的唯一来源（`sortOrder`）：列表、上移 / 下移、老师端的网格读的都是它。
+  const library=sortFramingPresets(framingPresets);
+  const defaultPreset=defaultFramingPreset(library);
+  const courseOptions=selectableCourses(courses);
+  const missingBuiltins=missingBuiltinFramingPresets(library);
+  const [editingId,setEditingId]=useState(library[0]?.id||'');
+  const editing=library.find(item=>item.id===editingId)||library[0]||null;
   const [draft,setDraft]=useState(()=>editing?{...editing}:null);
+  // 删除的影响范围 / 拒绝原因（US-011b：被引用的模板只允许停用）与「待二次确认的删除」。
+  const [deleteNotice,setDeleteNotice]=useState('');
+  const [confirmDeleteId,setConfirmDeleteId]=useState('');
+  // 草稿读 US-011b 的四个字段（isDefault / boundCourseTypes / updatedBy / history）之前先过一遍收敛：
+  // 种子数据与本机老镜像里的行还没有这些字段，直接读到 undefined 会炸掉整页。
+  const draftV2=normalizeFramingPreset(draft);
   const [generating,setGenerating]=useState(false);
   const [preview,setPreview]=useState('');
   const [saving,setSaving]=useState(false);
@@ -4710,41 +4760,192 @@ function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast}){
     }catch(error){ setToast(error.message||'装裱参数生成失败，请调整描述后重试。'); }
     finally{ setGenerating(false); }
   };
+  // ---- 保存（「保存到云端」）------------------------------------------------------------
+  // 保存 = 把草稿写回模板库：这一次变更同样记进 updated_by / updated_at / 变更历史
+  // （US-011b 的「模板变更记录」），并把改动内容写进历史行的 detail。
   const commit=async(next)=>{
-    const list=framingPresets.some(item=>item.id===next.id)?framingPresets.map(item=>item.id===next.id?next:item):[...framingPresets,next];
+    const summary=framingPresetChangeSummary(editing,next);
+    const stamped=stampFramingPresetUpdate(next,{by:adminName,action:'保存参数',detail:summary.join(' · ')});
+    const list=library.some(item=>item.id===stamped.id)?library.map(item=>item.id===stamped.id?stamped:item):[...library,stamped];
     setFramingPresets(list);
+    setDraft({...stamped});
     setSaving(true);
-    try{ await saveRemoteFramingPreset(next); setToast(`装裱「${next.name}」已保存，老师端即可选用`); }
-    catch{ setToast('已保存到本地；云端暂未连通，稍后可重试。'); }
+    try{
+      await saveRemoteFramingPreset(stamped);
+      setToast(`装裱「${stamped.name}」已保存，老师端即可选用${summary.length?`（本次改动：${summary.join(' · ')}）`:''}`);
+    }
+    catch{ setToast('已保存到本机；云端暂未连通，稍后可重试。'); }
     finally{ setSaving(false); }
   };
-  const remove=async(id)=>{
-    const target=framingPresets.find(item=>item.id===id);
-    if(target?.builtin){setToast('内置装裱不可删除，可先停用');return;}
-    const list=framingPresets.filter(item=>item.id!==id);
-    setFramingPresets(list); setEditingId(list[0]?.id||'');
-    try{ await deleteRemoteFramingPreset(id); setToast('装裱已删除'); }catch{ setToast('已从本地移除，云端删除未成功。'); }
+  // ---- 模板库的立即生效动作（US-011b）：默认 / 启停 / 课程绑定 / 排序 ----------------
+  // 这四件事不经过「保存到云端」那一按钮（点一下就该生效），但仍然走同一条写入口径：
+  // 过 `stampFramingPresetUpdate` 记 updated_by / updated_at / 变更历史，再把**这次真的变了**
+  // 的那几条推云端。编辑草稿里对应字段也同步过去（老师写了一半的名称 / 描述不能被这些点击冲掉）。
+  const commitLibrary=async(next,{message=''}={})=>{
+    const before=new Map(library.map(item=>[item.id,item]));
+    const changed=next.filter(item=>before.get(item.id)?.updatedAt!==item.updatedAt);
+    setFramingPresets(next);
+    if(message) setToast(message);
+    if(!changed.length) return;
+    try{ for(const item of changed) await saveRemoteFramingPreset(item); }
+    catch{ setToast('已保存在本机；云端暂未连通，稍后可重试。'); }
+  };
+  // 只把这几个字段同步进编辑草稿（别整条覆盖：草稿承载着还没保存的改名 / 改描述）。
+  const syncDraft=(stored)=>setDraft(current=>{
+    if(!current||current.id!==stored.id) return current;
+    const merged={...current};
+    ['isDefault','enabled','boundCourseTypes','sortOrder','updatedBy','updatedAt','history'].forEach(key=>{merged[key]=stored[key]});
+    return merged;
+  });
+  const replaceInLibrary=(preset)=>library.map(item=>item.id===preset.id?preset:item);
+  const setAsDefault=(preset)=>{
+    const next=setDefaultFramingPreset(library,preset?.id||'',{by:adminName});
+    const stamped=next.find(item=>item.id===preset?.id);
+    if(stamped) syncDraft(stamped);
+    void commitLibrary(next,{message:preset?`已把「${preset.name}」设为默认模板：老师端没命中课程绑定时默认选中它`:'已取消默认模板'});
+  };
+  const clearDefault=()=>{
+    const next=setDefaultFramingPreset(library,'',{by:adminName});
+    const hit=next.find(item=>item.id===draft?.id);
+    if(hit) syncDraft(hit);
+    void commitLibrary(next,{message:'已取消默认模板：老师端会回落到排序里的第一套'});
+  };
+  const toggleEnabled=(preset)=>{
+    if(!preset) return;
+    const on=preset.enabled===false;
+    const stamped=stampFramingPresetUpdate({...preset,enabled:on},{by:adminName,action:on?'启用模板':'停用模板'});
+    syncDraft(stamped);
+    void commitLibrary(replaceInLibrary(stamped),{message:on?`「${preset.name}」已启用，老师端即可选用`:`「${preset.name}」已停用：老师端不再出现，已产出的成品图不受影响`});
+  };
+  const toggleCourseBinding=(preset,courseId,courseName)=>{
+    if(!preset) return;
+    const bound=!(preset.boundCourseTypes||[]).includes(courseId);
+    const stamped=bindFramingPresetCourse(preset,courseId,bound,{by:adminName,detail:courseName});
+    syncDraft(stamped);
+    void commitLibrary(replaceInLibrary(stamped),{
+      message:bound?`已把「${preset.name}」绑定到「${courseName}」：这门课进入智能装裱时默认选中它`:`已解绑「${courseName}」：这门课改回默认模板`
+    });
+  };
+  const move=(preset,delta)=>{
+    if(!preset) return;
+    const next=moveFramingPreset(library,preset.id,delta,{by:adminName});
+    const hit=next.find(item=>item.id===preset.id);
+    if(hit) syncDraft(hit);
+    void commitLibrary(next,{message:`已调整「${preset.name}」的顺序：老师端样式网格按这个顺序排`});
+  };
+  const restoreBuiltins=()=>{
+    // 恢复的内置样式排在最后（列表顺序是管理员维护的，别插回中间打乱它）。
+    void commitLibrary(restoreMissingBuiltinFramingPresets(library),{message:`已恢复 ${missingBuiltins.length} 套内置样式，排在列表最后`});
+  };
+  // ---- 删除（US-011b）：先算引用范围，被引用的只允许停用 ------------------------------
+  const requestRemove=(preset)=>{
+    if(!preset) return;
+    const verdict=framingPresetDeleteVerdict(preset,framingPresetUsage(preset,{presets:library,records}));
+    setDeleteNotice(verdict.message);
+    if(!verdict.allowed){ setConfirmDeleteId(''); setToast(verdict.message); return; }
+    setConfirmDeleteId(preset.id);
+  };
+  const remove=async()=>{
+    const target=library.find(item=>item.id===confirmDeleteId);
+    if(!target) return;
+    const next=library.filter(item=>item.id!==target.id);
+    setConfirmDeleteId('');
+    setDeleteNotice('');
+    setFramingPresets(next);
+    setEditingId(next[0]?.id||'');
+    setDraft(next[0]?{...next[0]}:null);
+    try{ await deleteRemoteFramingPreset(target.id); setToast(`装裱「${target.name}」已删除`); }
+    catch{ setToast('已从本机移除，云端删除未成功。'); }
   };
 
   return <>
-    <PageHeader title="装裱设置" desc="后台维护装裱方案，可用自然语言让大模型生成配色与框宽参数，老师端直接选用。" prd="PRD-11 / F-FRAME-ADM-01"
-      actions={<Button icon={Plus} onClick={()=>{const next=createEmptyFramingPreset();setFramingPresets([...framingPresets,next]);setEditingId(next.id);}}>新增装裱</Button>}/>
+    <PageHeader title="装裱设置" desc="后台维护装裱方案：新增一套样式只需填参数（不用改代码），可以设为默认模板、按课程绑定、启停与排序；被引用的模板只允许停用。" prd="PRD-11 / F-FRAME-ADM-01"
+      actions={<Button icon={Plus} onClick={()=>{const next=createEmptyFramingPreset({by:adminName});setFramingPresets([...library,next]);setEditingId(next.id);setDeleteNotice('');setConfirmDeleteId('');}}>新增装裱</Button>}/>
     <div className="split-page framing-settings">
       <div className="panel persona-list">
-        <div className="panel-head"><h2>装裱方案</h2><small>{framingPresets.length} 套</small></div>
-        {framingPresets.map(preset=><button key={preset.id} className={preset.id===editingId?'active':''} onClick={()=>setEditingId(preset.id)}>
-          <span className="frame-dot" style={{background:frameSpecView(preset.spec).outer||'#cfa52e'}}/>
-          <div><b>{preset.name}</b><small>{preset.spec?.atmosphere||preset.description||'未生成参数'}</small></div>
-          <em>{preset.builtin?'内置':preset.enabled===false?'已停用':'启用中'}</em>
-        </button>)}
+        <div className="panel-head"><h2>装裱方案</h2><small data-frame-library-count={library.length}>{library.length} 套 · 默认 {defaultPreset?.name||'未设置'} · 可选 {selectableFramingPresets(library).length}</small></div>
+        {library.map((preset,index)=><div key={preset.id} className={`frame-library-row${preset.id===editingId?' active':''}`}
+          data-frame-library-row={preset.id}
+          data-frame-preset-default={preset.isDefault===true?'true':'false'}
+          data-frame-preset-enabled={preset.enabled===false?'false':'true'}
+          data-frame-preset-scope={preset.scope||'platform'}
+          data-frame-preset-order={index+1}>
+          <button type="button" className="frame-library-pick" data-frame-library-pick={preset.id} onClick={()=>{setEditingId(preset.id);setDeleteNotice('');setConfirmDeleteId('')}}>
+            <span className="frame-dot" style={{background:frameSpecView(preset.spec).outer||'#cfa52e'}}/>
+            <div><b>{preset.name}</b><small>{preset.spec?.atmosphere||preset.description||'未生成参数'}</small></div>
+            {preset.isDefault===true?<em className="frame-library-default" data-frame-default-badge="true">默认</em>:null}
+            <em>{preset.builtin?'内置':preset.enabled===false?'已停用':'启用中'}</em>
+          </button>
+          <div className="frame-library-ops">
+            <button type="button" title="上移" disabled={index===0} data-frame-move-up={preset.id} onClick={()=>move(preset,-1)}><ArrowUp size={13}/></button>
+            <button type="button" title="下移" disabled={index===library.length-1} data-frame-move-down={preset.id} onClick={()=>move(preset,1)}><ArrowDown size={13}/></button>
+            <button type="button" title={preset.enabled===false?'启用':'停用'} data-frame-enable-toggle={preset.id} onClick={()=>toggleEnabled(preset)}>{preset.enabled===false?'启用':'停用'}</button>
+          </div>
+        </div>)}
+        {library.length?null:<p className="persona-empty">装裱方案还是空的：点右上角「新增装裱」建第一套（只填参数，不用改代码）。</p>}
+        {missingBuiltins.length?<div className="frame-library-restore" data-frame-missing-builtins={missingBuiltins.length}>
+          <span>内置样式库缺 {missingBuiltins.length} 套（{missingBuiltins.map(item=>item.name).join('、')}）</span>
+          <button type="button" className="text-link" data-frame-restore-builtins={missingBuiltins.length} onClick={restoreBuiltins}>恢复内置样式库</button>
+        </div>:null}
+        <p className="persona-empty">删掉的内置样式不会自己回来（列表以本机镜像为准）；停用的模板不出现在老师端，历史成品图不受影响。</p>
       </div>
       <div className="panel persona-editor">
         {draft?<>
           <div className="panel-head"><div><h2>{draft.name||'未命名装裱'}</h2><p>描述需求 → 大模型给出参数 → 老师端按参数精确绘制。</p></div>
             <div className="row-actions">
               <button className="text-link" disabled={saving} onClick={()=>commit(draft)}>{saving?'保存中…':'保存到云端'}</button>
-              <button className="icon-btn danger-text" title="删除" onClick={()=>remove(draft.id)}><Trash2 size={16}/></button>
+              <button className="icon-btn danger-text" title="删除" data-frame-delete={draft.id} onClick={()=>requestRemove(draft)}><Trash2 size={16}/></button>
             </div>
+          </div>
+          {/* 模板的库级设置（US-011b）：默认标记 / 启停 / 最后变更 / 按课程绑定 / 变更历史 /
+              引用范围与删除门槛。这几项点一下就生效（不经过「保存到云端」），
+              但仍然走同一条变更记录口径。 */}
+          <div className="frame-preset-admin" data-frame-preset-admin={draft.id}>
+            <div className="frame-preset-admin-row">
+              <div className="frame-preset-admin-item">
+                <b>默认模板</b>
+                <span data-frame-default-state={draftV2.isDefault?'default':'none'}>{draftV2.isDefault?'当前默认模板':'不是默认模板'}</span>
+                {draftV2.isDefault
+                  ?<button type="button" className="text-link" data-frame-default-clear="1" onClick={clearDefault}>取消默认</button>
+                  :<button type="button" className="text-link" data-frame-default-set="1" onClick={()=>setAsDefault(draftV2)}>设为默认模板</button>}
+              </div>
+              <div className="frame-preset-admin-item">
+                <b>老师端可选</b>
+                <span data-frame-enabled-state={draftV2.enabled===false?'disabled':'enabled'}>{draftV2.enabled===false?'已停用':'启用中'}</span>
+                <button type="button" className="text-link" data-frame-enabled-toggle-editor="1" onClick={()=>toggleEnabled(draftV2)}>{draftV2.enabled===false?'启用':'停用'}</button>
+              </div>
+              <div className="frame-preset-admin-item">
+                <b>最后变更</b>
+                <span data-frame-preset-updated={framingPresetUpdateText(draftV2)||'none'}>{framingPresetUpdateText(draftV2)||'还没有变更记录'}</span>
+              </div>
+            </div>
+            <p className="frame-preset-usage" data-frame-preset-usage={framingPresetUsage(draftV2,{presets:library,records}).referenced?'referenced':'none'}>
+              {framingPresetUsageText(draftV2,framingPresetUsage(draftV2,{presets:library,records}))}
+            </p>
+            <div className="frame-preset-courses" data-frame-preset-courses={draftV2.boundCourseTypes.length}>
+              <div className="frame-preset-courses-head"><b>按课程绑定</b><small>{FRAMING_PRESET_COURSE_BINDING_NOTE}</small></div>
+              {courseOptions.length?<div className="frame-preset-course-list">{courseOptions.map(course=>{
+                const bound=draftV2.boundCourseTypes.includes(course.courseId);
+                const conflicts=bound?[]:framingPresetCourseConflicts(library,course.courseId,{exceptId:draftV2.id});
+                return <label key={course.courseId} className={bound?'is-bound':''} data-frame-course-row={course.courseId} data-frame-course-bound={bound?'true':'false'}>
+                  <input type="checkbox" data-frame-bind-course={course.courseId} checked={bound} onChange={()=>toggleCourseBinding(draftV2,course.courseId,course.name)}/>
+                  <span>{course.name}</span>
+                  {bound?<em data-frame-course-bound-badge="1">已绑定本模板</em>:conflicts.length?<em className="is-warn" data-frame-course-conflict={conflicts[0].id}>已绑定「{conflicts[0].name}」</em>:null}
+                </label>;
+              })}</div>:<p className="persona-empty">课程库还没有可选课程，先去「课程库」建课。</p>}
+            </div>
+            <details className="frame-preset-history" data-frame-preset-history={framingPresetHistory(draftV2).length}>
+              <summary data-frame-history-count={framingPresetHistory(draftV2).length}>变更历史（{framingPresetHistory(draftV2).length} 条）</summary>
+              {framingPresetHistory(draftV2).length
+                ?<ol>{framingPresetHistory(draftV2).map((entry,index)=><li key={`${entry.at}-${index}`} data-frame-history-entry={entry.action}>{framingPresetHistoryText(entry)}</li>)}</ol>
+                :<p className="persona-empty">{FRAMING_PRESET_HISTORY_EMPTY}</p>}
+            </details>
+            {deleteNotice?<p className={confirmDeleteId?'frame-preset-admin-notice confirm':'frame-preset-admin-notice blocked'} data-frame-delete-notice={confirmDeleteId?'confirm':'blocked'}>{deleteNotice}</p>:null}
+            {confirmDeleteId?<div className="frame-library-confirm-actions">
+              <button type="button" className="text-link danger-text" data-frame-delete-confirm="1" onClick={()=>remove()}>确认删除</button>
+              <button type="button" className="text-link" data-frame-delete-cancel="1" onClick={()=>{setConfirmDeleteId('');setDeleteNotice('')}}>取消</button>
+            </div>:null}
+            <p className="frame-library-note" data-frame-default-note="1">{FRAMING_PRESET_DEFAULT_NOTE}</p>
           </div>
           <div className="form-grid compact">
             <label>名称<input value={draft.name||''} onChange={event=>patch('name',event.target.value)}/></label>
