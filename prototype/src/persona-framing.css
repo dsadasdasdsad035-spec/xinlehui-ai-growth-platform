@@ -756,3 +756,78 @@ p.framing-coverage-bad { margin: 0; padding: 10px 18px; font-size: 12px; line-he
 .frame-library-readonly { font-style: normal; flex: none; font-size: 10px; font-weight: 800; color: #7d7050; background: #f2ecdc; border-radius: 999px; padding: 2px 8px; white-space: nowrap; }
 .frame-preset-readonly { margin: 0 0 12px; font-size: 10px; line-height: 1.65; font-weight: 700; color: #8a6100; background: #fff3cf; border-radius: 9px; padding: 7px 10px; }
 .frame-preset-audit { margin: 8px 0 0; font-size: 10px; line-height: 1.65; color: #1b7f34; background: #eef7ec; border-radius: 9px; padding: 7px 10px; }
+
+/* ── 管理端「Agent 指令与记忆」（US-106a）─────────────────────────────────
+   左列表按「类型 × 生效范围」分组，右侧 Markdown 编辑 + 预览 + 版本历史。
+   窄屏下编辑器两栏堆叠；组内说明与版本行都按「细节列 min-width: 0」的既有纪律防横滚。 */
+.agent-files-order { margin: 0 0 14px; padding: 10px 13px; border-radius: 12px; background: #f7f2e4; display: flex; gap: 10px; align-items: baseline; font-size: 11px; line-height: 1.7; color: #514a38; }
+.agent-files-order b { flex: none; font-size: 11px; color: #8a6100; }
+.agent-files-order span { min-width: 0; overflow-wrap: anywhere; }
+.agent-files-page { align-items: start; }
+.agent-files-page > .persona-list,
+.agent-files-page > .persona-editor { min-width: 0; }
+.agent-file-groups { max-height: 78vh; overflow: auto; }
+.agent-file-group { margin-bottom: 14px; }
+.agent-file-group-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 0 2px; }
+.agent-file-group-head b { font-size: 12px; color: var(--navy); }
+.agent-file-group-head small { font-size: 10px; color: var(--muted); white-space: nowrap; }
+.agent-file-group-note { margin: 2px 2px 8px; font-size: 10px; line-height: 1.6; color: var(--muted); }
+.agent-file-chip { flex: none; width: 46px; text-align: center; font-size: 10px; font-weight: 800; color: #1b7f34; background: #eef7ec; border-radius: 999px; padding: 3px 0; }
+.agent-file-chip.is-off { color: #8a2f20; background: #fdece7; }
+.agent-file-facts { display: flex; flex-direction: column; gap: 3px; margin: 0 0 12px; padding: 9px 11px; border-radius: 10px; background: var(--soft); font-size: 10.5px; line-height: 1.6; color: #514a38; }
+.agent-file-editor { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; align-items: start; }
+.agent-file-md { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.agent-file-md-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.agent-file-md-head b { font-size: 12px; color: var(--navy); }
+.agent-file-md-head small { font-size: 10px; color: var(--muted); text-align: right; }
+.agent-file-md textarea { width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.7; color: var(--ink); resize: vertical; }
+.agent-file-md textarea:focus { outline: none; border-color: var(--blue); }
+.agent-file-vars { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 10.5px; color: var(--muted); }
+.agent-file-vars button { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px; }
+.agent-file-preview { border: 1px dashed var(--border); border-radius: 10px; padding: 10px 12px; background: #fffdf8; font-size: 12px; line-height: 1.8; max-height: 420px; overflow: auto; }
+.agent-file-preview .md-paragraph { margin: 0 0 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.agent-file-preview .md-heading { margin: 10px 0 6px; font-weight: 800; color: var(--navy); }
+.agent-file-preview .md-h1 { font-size: 15px; }
+.agent-file-preview .md-h2 { font-size: 14px; }
+.agent-file-preview .md-h3 { font-size: 13px; }
+.agent-file-preview .md-h4, .agent-file-preview .md-h5, .agent-file-preview .md-h6 { font-size: 12px; }
+.agent-file-preview ul, .agent-file-preview ol { margin: 0 0 8px; padding-left: 20px; }
+.agent-file-preview li { margin-bottom: 2px; overflow-wrap: anywhere; }
+.agent-file-preview blockquote { margin: 0 0 8px; padding: 4px 10px; border-left: 3px solid #e3d7b5; background: #f7f2e4; color: #514a38; }
+.agent-file-preview pre { margin: 0 0 8px; padding: 8px 10px; border-radius: 8px; background: #f3f4f6; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+.agent-file-preview hr { border: 0; border-top: 1px solid var(--border); margin: 10px 0; }
+.agent-file-preview code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; background: #f3f4f6; border-radius: 4px; padding: 1px 4px; }
+.agent-file-editor-notes { margin-top: 10px; display: flex; flex-direction: column; gap: 4px; }
+.agent-file-editor-notes p { margin: 0; font-size: 10.5px; line-height: 1.65; color: var(--muted); }
+.agent-file-editor-notes p.is-warn { color: #8a6100; background: #fff3cf; border-radius: 9px; padding: 7px 10px; font-weight: 700; }
+.agent-file-history { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 14px; }
+.agent-file-history h3 { font-size: 13px; margin: 0; }
+.agent-file-history ol { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.agent-file-history li { border: 1px solid var(--border); border-radius: 10px; padding: 9px 11px; min-width: 0; }
+.agent-file-history li[data-agent-file-version-current="true"] { border-color: var(--blue); background: var(--blue-50); }
+.agent-file-version-head { display: flex; align-items: center; gap: 8px; }
+.agent-file-version-head b { font-size: 12px; color: var(--navy); }
+.agent-file-version-head span { font-size: 10.5px; color: var(--muted); }
+.agent-file-version-head em { font-style: normal; font-size: 10px; font-weight: 800; color: #1b7f34; background: #eef7ec; border-radius: 999px; padding: 2px 8px; }
+.agent-file-version-head em.muted { color: #8a2f20; background: #fdece7; }
+.agent-file-history li small { display: block; margin-top: 3px; font-size: 10.5px; color: var(--muted); overflow-wrap: anywhere; }
+.agent-file-version-meta { margin-top: 3px; font-size: 10px; color: #857a64; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+.agent-file-history .row-actions { margin-top: 6px; display: flex; gap: 12px; align-items: center; }
+.agent-file-diff { margin-top: 12px; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
+.agent-file-diff h3 { font-size: 12px; margin: 0; }
+.agent-file-diff-lines { list-style: none; margin: 8px 0 0; padding: 0; max-height: 320px; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; line-height: 1.6; }
+.agent-file-diff-lines li { display: flex; gap: 8px; min-width: 0; }
+.agent-file-diff-lines li .diff-mark { flex: none; width: 10px; color: var(--muted); }
+.agent-file-diff-lines li code { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.agent-file-diff-lines li.diff-add { background: #eef7ec; color: #1b7f34; }
+.agent-file-diff-lines li.diff-remove { background: #fdece7; color: #8a2f20; }
+@media (max-width: 900px) {
+  .agent-file-editor { grid-template-columns: 1fr; }
+  .agent-file-groups { max-height: none; }
+}
+@media (max-width: 430px) {
+  .agent-files-page button, .agent-files-page select, .agent-files-page input, .agent-file-vars button { min-height: 44px; min-width: 44px; }
+}
+/* 列表行：名称允许折行（中文名长），右侧只放短时间 —— 一整串「谁 · 什么时候」会把名字挤成竖排。 */
+.agent-file-groups button b { line-height: 1.35; overflow-wrap: anywhere; }
+.agent-file-groups button em { font-variant-numeric: tabular-nums; }

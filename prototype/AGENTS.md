@@ -1498,6 +1498,66 @@ DOM/canvas 部分在 `src/services/artworkWriteBack.js`，编排在 `main.jsx` �
   轨迹留档 + 复现 / 同样版本两次生成逐字符相同 / 停用一个文件 + 塞 9000 字记忆后截断在 8000 字且停用文件
   不进新轨迹 / 390px / 0 异常），截图 173~175 留档。
 
+## 管理端「Agent 指令与记忆」：CRUD 与版本（US-106a / F-REVIEW-PROMPT-02）
+
+页面 = `src/admin/AgentFilesPage.jsx`（左列表按「类型 × 生效范围」六组 + 右侧 Markdown 编辑 / 预览 /
+版本历史）。领域规则**只有一个写侧真源** `src/data/agentFileAdmin.js`（零依赖，可 Node 直跑），
+读侧仍是 `src/data/agentFiles.js`（顺序 / 匹配 / 预算 / 变量替换 / normalize）。
+接线与其他管理端页一样是**三处**（`navByRole.admin` 里 key = `agentFiles`、`ADMIN_ONLY_PAGES`、
+`PageRouter.map`），另外 `PageRouter` 的 props 里多了 `agentFiles / setAgentFiles / adminName`。
+
+- **每一次写入都是一版**：新建写 v1，保存 / 启停 / 复制为副本 / 回滚都 `+1` 并留一版**带正文的快照**
+  与一条变更历史。理由不是「形式统一」，而是**停用一份 agent.md 与改它的正文同样影响下一次点评**，
+  轨迹里的版本指纹（`versionSet` / `loadoutHash`）要能区分「停用前 / 停用后」。
+  代价是重复点「保存」也会 +1 —— 验收原文就是「每保存一次 version 自增」，别自作聪明地跳过。
+- **`stampAgentFileVersion()` 是 `version` / `versions` / `history` / `updatedBy` / `updatedAt` 的唯一写入口**：
+  页面里手改这四个字段必然与快照漂移。同一版本号再写一次是**覆盖**该快照（种子里补出来的占位不会重复），
+  快照的 `chars` / `hash` 由正文现算 —— 正文是唯一真源，不信存下来的数字。
+- **「保存」的基准必须是上一次落盘的那一条，不是已经改过的草稿**：`saveAgentFileRecord(record, patch)`
+  里的「改动：…」是 `record` 与 `patch` 比出来的。传草稿进去会永远得到「正文未改动」（本故事真踩，
+  浏览器断言当场抓出来：v2 的正文确实变了、历史却写「正文未改动」）。页面里的写法是
+  `saveAgentFileRecord(isNew ? draft : editing, 草稿字段, { by, at })`。
+- **回滚产生新版本、永不改写历史**（与 US-053 的观察词模板同一口径）：回滚到 v3 = 「v3 的正文 + 新的版本号」，
+  `versions` 里 v1..vN 一条不删；认不出的版本号 → 原样返回，一个字段都不动。
+- **老数据（没有 `versions`）也要能查看 / 对比 / 回滚**：`agentFileVersions()` 按当前正文补一份**当前版本**
+  的快照（标 `initial`，只写事实：正文 + 版本号 + 已有的 `updatedAt`），但**不补还没保存的新草稿**（v0）——
+  界面据空数组显示「保存后才有版本历史」。
+- **`normalizeAgentFile()` 现在带 `updatedBy / versions / history`**（读侧一律带上，老师端只读
+  id/kind/scope/name/version/enabled/content，多出来的字段是惰性的）；脏数据（`versions: 'nope'`、
+  `history: [null]`、空条目）一律读成空数组 / 丢弃，历史与快照都有上限（30 / 50，超出丢最旧的）。
+- **合并方向：本机镜像优先**（`mergeAgentFiles(remote, local)`）。云端 `agent_files` 表还没建、
+  或表里缺 `versions / history / updated_by` 列时，带新列的整条写入会被 PostgREST 拒掉，
+  改动只在本机镜像里落地 —— 让云端顶掉本机会把刚存的版本历史弄丢（与 US-011b 的 framing_presets 同一条教训）。
+  云端只补「本机没有的 id」。
+- **Markdown 预览不引第三方库、也不产出 HTML 字符串**：`src/data/markdown.js`（零依赖）把正文解析成
+  **结构化块**（heading / paragraph / list / ordered / quote / code / hr，行内只认 `**加粗**` 与 `` `代码` ``），
+  页面用 React 渲染这些块 —— 不需要 `dangerouslySetInnerHTML`，正文里写 `<script>` 也只是一段文字。
+  段落保留换行（`text` 里带 `\n` + 预览 `white-space: pre-wrap`），中文排版才不会被合并成一行。
+- **验收探针**（浏览器断言读这些，不要按文案猜）：页面 `.agent-files-page`（`data-agent-file-current` /
+  `-current-version` / `-dirty` / `-unsaved`）；分组 `data-agent-file-group`（`agent-md:platform` …
+  `memory:org`，另有 `other` 兜底组）/ `-group-count`；列表行 `data-agent-file-id` / `-row-version` /
+  `-row-enabled` / `-row-updated`；编辑 `data-agent-file-editor` / `-chars` / `-stats` /
+  `-variable-count` / `-variable`（插变量按钮）/ `-unknown-variables` / `-over-budget`；
+  动作 `data-agent-file-save` / `-toggle` / `-duplicate` / `-compare=` / `-rollback=`；
+  版本行 `data-agent-file-version-row`（= `vN`）/ `-version-action`（`initial|create|save|enable|disable|copy|rollback`）/
+  `-version-current` / `-version-chars` / `-version-hash`；对比 `data-agent-file-diff` / `-diff-summary` /
+  `data-agent-file-diff-line`（`same|add|remove`）；引用范围 `data-agent-file-reference`（历史轨迹条数）。
+- **「保存」按钮在云端推送期间是 `disabled`**（`saving`），而本机镜像那一条**更早**落地 ——
+  验证脚本不能在「本机镜像已经有新版本」的瞬间就点第二次保存（点击会被丢掉，本故事真踩）。
+  正确写法：等 `[data-agent-file-save]` 回到可用（`await settle()`）再继续，并用
+  `data-agent-file-current-version` 断言编辑器的版本，而不是只读 localStorage。
+- **已知边界**：云端 `agent_files` 表未建立（写入只落本机镜像，跨设备可见待云表）；
+  父需求 US-106 里的「平台 / 机构 / 老师三层的写权限矩阵」没有落在本故事（`prd.json` 的 US-106a
+  验收没有这一条），要收紧时在 `data/agentFileAdmin.js` 里加一个 `agentFileWriteIssue(record, viewer)`
+  纯函数，界面与服务层读同一份（照 `data/framingPermissions.js` 的形状）。
+- 验证方式（本轮实测）：Node 直跑 `agentFileAdmin.js` + `markdown.js` **153 项**断言全绿；
+  回归 US-105 数据 53 / US-104 数据 26 / US-103b 数据 26 + 服务 16 / US-102 提示词 58 全绿；
+  浏览器（headless Chrome + CDP）**65 项**全绿、页面 0 未捕获异常 / 0 console error ——
+  六组分组与份数、新建 → v1、编辑 → v2（改动清单与快照 hash）、预览与字符数实时、变量插入与未知占位符告警、
+  v1↔草稿逐行 diff 与独立重算一致、回滚 → 新版本 + 历史不删、启停 → v4 且老师端不再加载、
+  复制为副本（新 id / 名称去重）、刷新后仍在、删除的引用范围提示、老数据补当前快照、390px 单列与 44px；
+  截图 176~178 留档。
+
 ## 容易踩的坑
 
 - **写接口抛错时「await 之后就没了」**：`save<X>/create<X>/update<X>` 是「先写本地镜像再推云端」，

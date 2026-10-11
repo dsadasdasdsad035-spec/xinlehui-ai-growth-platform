@@ -22,6 +22,10 @@
  *     （`body`），停用与超限的文件只留在清单里说明原因；`agentFileTraceReplay(trace)`
  *     只读轨迹里的那份正文，不碰文件库 —— 文件后来被改 / 被删都不影响审计复现。
  *
+ * 本模块只负责**读**（顺序 / 匹配 / 预算 / 变量替换 / normalize）。管理端怎么改这一份库
+ * （版本自增、快照、变更历史、复制、回滚）在 `data/agentFileAdmin.js` —— 页面不许自己动
+ * `version` / `versions` / `history` / `updatedBy` 这几个字段，那是那一个模块的唯一写入口。
+ *
  * 与 `data/skillLibrary.js` 同一套纪律：**零依赖纯函数 + 常量**（不 import 任何模块、不碰 DOM、
  * 不读 localStorage 之外的浏览器 API），可以直接用 Node 跑断言（见 prototype/AGENTS.md）。
  */
@@ -89,6 +93,13 @@ export const AGENT_FILE_CHAR_LIMIT = 8000;
 
 /** 进入 system 提示词的两段正文之间的分隔符（与提示词模块之间同一套：空行）。 */
 export const AGENT_FILE_BLOCK_SEPARATOR = '\n\n';
+
+/**
+ * 版本快照与变更历史的上限（管理端 US-106a 与 normalize 共用，超出丢最旧的）：
+ * 最新一版永远在（每保存一次都会 append 一份快照），旧版被挤掉时历史仍留一条文字记录。
+ */
+export const AGENT_FILE_VERSIONS_LIMIT = 30;
+export const AGENT_FILE_HISTORY_LIMIT = 50;
 
 /** 四个变量占位符（PRD US-105 点名的四个）与上下文字段名的对应关系。 */
 export const AGENT_FILE_VARIABLE_KEYS = {
@@ -285,8 +296,60 @@ export function createEmptyAgentFile(input = {}) {
 }
 
 /**
+ * 一条**版本快照**的容错读入（US-106a 的版本历史：查看 / 对比 / 回滚都读它）。
+ * 快照带正文，所以「回滚到任一版本」不需要任何额外来源；`chars` / `hash` 由正文现算，
+ * 脏数据里写的数字不作数（正文是唯一真源）。
+ */
+export function normalizeAgentFileVersionEntry(raw) {
+  const source = raw && typeof raw === 'object' ? raw : {};
+  const content = source.content === null || source.content === undefined ? '' : String(source.content);
+  return {
+    version: str(source.version),
+    content,
+    chars: content.length,
+    hash: agentFileHash(content),
+    enabled: source.enabled !== false,
+    at: str(source.at),
+    by: str(source.by),
+    action: str(source.action),
+    note: str(source.note)
+  };
+}
+
+/** 版本快照列表（按写入顺序，最多 AGENT_FILE_VERSIONS_LIMIT 条；认不出内容的条目丢弃）。 */
+export function normalizeAgentFileVersions(raw) {
+  const list = Array.isArray(raw) ? raw : [];
+  return list.map(normalizeAgentFileVersionEntry)
+    .filter((entry) => entry.version || entry.content)
+    .slice(-AGENT_FILE_VERSIONS_LIMIT);
+}
+
+/** 一条变更记录（与装裱模板同一套形状：谁在什么时候做了什么）。 */
+export function normalizeAgentFileHistoryEntry(raw) {
+  const source = raw && typeof raw === 'object' ? raw : {};
+  return {
+    at: str(source.at),
+    by: str(source.by),
+    action: str(source.action),
+    detail: str(source.detail)
+  };
+}
+
+/** 变更历史（最多 AGENT_FILE_HISTORY_LIMIT 条；空条目 —— 脏数据 —— 直接丢掉）。 */
+export function normalizeAgentFileHistory(raw) {
+  const list = Array.isArray(raw) ? raw : [];
+  return list.map(normalizeAgentFileHistoryEntry)
+    .filter((entry) => entry.at || entry.by || entry.action || entry.detail)
+    .slice(-AGENT_FILE_HISTORY_LIMIT);
+}
+
+/**
  * 容错读入：**永不抛错**。认不出 `kind` / `scope` 的文件按「平台 agent.md」读出（不会静默消失，
  * 也不会被当成记忆文件加载进别的层级）；`content` 一律转成字符串。
+ *
+ * `updatedBy` / `versions` / `history` 是 US-106a（管理端编辑器）用到的字段：
+ * 读侧一律带上（老师端只读 id/kind/scope/name/version/enabled/content，多出来的字段是惰性的），
+ * 写侧（怎么自增版本、快照记什么）在 `data/agentFileAdmin.js` 里，**不要**在页面里手改这三个字段。
  */
 export function normalizeAgentFile(raw) {
   const source = raw && typeof raw === 'object' ? raw : {};
@@ -302,7 +365,10 @@ export function normalizeAgentFile(raw) {
     enabled: source.enabled !== false,
     sortOrder: Number.isFinite(Number(source.sortOrder)) ? Number(source.sortOrder) : 90,
     updatedAt: str(source.updatedAt),
+    updatedBy: str(source.updatedBy),
     content: source.content === null || source.content === undefined ? '' : String(source.content),
+    versions: normalizeAgentFileVersions(source.versions),
+    history: normalizeAgentFileHistory(source.history),
     // 认不出的原始字段原样留着（US-106 的编辑器与回滚要用），不进任何加载判定。
     legacy: source.legacy && typeof source.legacy === 'object' ? source.legacy : undefined
   };

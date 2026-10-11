@@ -55,7 +55,11 @@ import { deleteRemoteTeacherProfile, loadRemoteTeacherProfiles, saveRemoteTeache
 import { createEmptySkill, loadSkillLibrary, persistSkillLibrary, resolveSkills, skillFromIndexEntry, skillFromPackage, skillLoadout } from './data/skillLibrary';
 // agent.md 与记忆文件库（US-105）：加载顺序 / 生效范围 / 每层上限 / 8000 字符预算 / 变量替换 /
 // 版本与内容 hash 的唯一真源（零依赖、可 Node 断言）；提示词、面板清单与轨迹留档读同一份产物。
-import { agentFileLoadout, loadAgentFiles } from './data/agentFiles';
+import { agentFileLoadout, loadAgentFiles, persistAgentFiles } from './data/agentFiles';
+// 管理端「Agent 指令与记忆」（US-106a）：版本自增 / 版本快照 / 变更历史 / 分组 / 复制 / 回滚 / 对比
+// 的唯一真源（零依赖、可 Node 断言）；页面只渲染与调用，不许自己动 version / versions / history。
+import { mergeAgentFiles } from './data/agentFileAdmin';
+import { loadRemoteAgentFiles } from './services/agentFilesApi';
 import { deleteRemoteSkill, loadRemoteSkillLibrary, saveRemoteSkill } from './services/skillLibraryApi';
 import { archiveSkillPackage, readSkillPackage } from './services/skillPackage';
 import { MARKETPLACE_SYNCED_AT, indexStats, marketCategories, searchMarket, searchSkillIndex } from './data/skillMarketplace';
@@ -202,6 +206,8 @@ import GalleryPage from './gallery/GalleryPage';
 import GalleryAdminPage from './gallery/GalleryAdminPage';
 // 课程库（US-402b）：管理员维护课程与分课时课题，是老师端选课与课次推荐课题的来源。
 import CourseLibraryPage from './admin/CourseLibraryPage';
+// Agent 指令与记忆（US-106a）：管理员维护 agent.md 与记忆文件的正文、生效范围与版本历史。
+import AgentFilesPage from './admin/AgentFilesPage';
 
 // 五个维度各自的留空提示语 —— 只说明「这一维该看什么」，不预填任何成句的点评。
 const REVIEW_DIMENSION_HINTS = {
@@ -244,7 +250,7 @@ const navByRole = {
     ['gallery','3D 画廊',Landmark]
   ],
   parent: [['parent','首页',LayoutDashboard],['parentInsight','作品观察',Sparkles],['parentArchive','成长档案',Archive],['gallery','3D 画廊',Landmark],['growthCenter','个人成长中心',BookOpen],['authorization','授权管理',ShieldCheck],['profile','个人中心',UserRound]],
-  admin: [['adminDash','运营总览',LayoutDashboard],['apps','应用中心',Boxes],['providers','模型供应商',Zap],['teacherPersona','老师人设',GraduationCap],['skillLibrary','技能库',Boxes],['courseLibrary','课程库',BookOpen],['framingSettings','装裱设置',Frame],['galleryAdmin','3D 画廊',Landmark],['users','用户管理',Users],['logs','生成日志',FileText],['archiveAdmin','档案管理',Archive],['permissions','权限设置',ShieldCheck],['settings','系统配置',Settings]]
+  admin: [['adminDash','运营总览',LayoutDashboard],['apps','应用中心',Boxes],['providers','模型供应商',Zap],['teacherPersona','老师人设',GraduationCap],['skillLibrary','技能库',Boxes],['courseLibrary','课程库',BookOpen],['agentFiles','指令与记忆',FileText],['framingSettings','装裱设置',Frame],['galleryAdmin','3D 画廊',Landmark],['users','用户管理',Users],['logs','生成日志',FileText],['archiveAdmin','档案管理',Archive],['permissions','权限设置',ShieldCheck],['settings','系统配置',Settings]]
 };
 
 const aiAppsSeed = [
@@ -281,6 +287,9 @@ function App(){
   const [framingPresets,setFramingPresets]=useState(loadFramingPresets);
   // 技能库是与人设分开维护的基础数据，人设只持有被勾选的 id。
   const [skillLibrary,setSkillLibrary]=useState(loadSkillLibrary);
+  // agent.md 与记忆文件库（US-105/US-106a）：管理端维护、老师端生成时加载；
+  // 云端 agent_files 表为真源，本机镜像兜底（合并方向本机优先，见 mergeAgentFiles）。
+  const [agentFiles,setAgentFiles]=useState(loadAgentFiles);
   // 3D 画廊：展厅地点（实景图 + 重建参数）与画展（作品清单），同样以云端表为准。
   const [galleryVenues,setGalleryVenues]=useState(loadGalleryVenues);
   const [galleryExhibitions,setGalleryExhibitions]=useState(loadGalleryExhibitions);
@@ -298,6 +307,7 @@ function App(){
   useEffect(()=>{persistTeacherProfiles(teacherProfiles)},[teacherProfiles]);
   useEffect(()=>{persistFramingPresets(framingPresets)},[framingPresets]);
   useEffect(()=>{persistSkillLibrary(skillLibrary)},[skillLibrary]);
+  useEffect(()=>{persistAgentFiles(agentFiles)},[agentFiles]);
   useEffect(()=>{persistGalleryVenues(galleryVenues)},[galleryVenues]);
   useEffect(()=>{persistGalleryExhibitions(galleryExhibitions)},[galleryExhibitions]);
   useEffect(()=>{persistLessons(lessons)},[lessons]);
@@ -307,6 +317,9 @@ function App(){
   useEffect(()=>{let active=true;
     loadRemoteTeacherProfiles().then(remote=>{if(active&&remote.length)setTeacherProfiles(remote)}).catch(()=>{});
     loadRemoteSkillLibrary().then(remote=>{if(active&&remote.length)setSkillLibrary(remote)}).catch(()=>{});
+    // agent.md 与记忆文件：合并方向是**本机镜像优先**（agent_files 表缺 versions / history / updated_by 列时
+    // 带新列的写入会被整条拒掉，改动只在本机落地；让云端顶掉本机会把刚存的版本历史弄丢）。云端只补本机没有的 id。
+    loadRemoteAgentFiles().then(remote=>{if(active&&remote.length)setAgentFiles(current=>mergeAgentFiles(remote,current))}).catch(()=>{});
     // 画廊这两个必须过 hydrate：内置展厅的实景图不进库，云端那条回来是没图的，
     // 直接 setState 顶掉会让内置展厅变成"没有实景图"。
     loadRemoteGalleryVenues().then(remote=>{if(active&&remote.length)setGalleryVenues(hydrateGalleryVenues(remote))}).catch(()=>{});
@@ -354,7 +367,7 @@ function App(){
     <main className="main">
       <Topbar role={role} onMenu={()=>setMobileNav(true)} onSwitch={(r)=>login(r,'demo')} onGuide={()=>navigate('guide')} onLogout={()=>setAuth(false)}/>
       <div className="content">
-        <PageRouter {...{page,role,navigate,setToast,setModal,apps,setApps,tasks,setTasks,demoState,setDemoState,records,setRecords,parentStudent,parentStudents,parentPhone,parentSession,setParentStudent,teacherProfiles,setTeacherProfiles,framingPresets,setFramingPresets,skillLibrary,setSkillLibrary,galleryVenues,setGalleryVenues,galleryExhibitions,setGalleryExhibitions,lessons,setLessons,courses,setCourses,auditLog,recordAudit}}/>
+        <PageRouter {...{page,role,navigate,setToast,setModal,apps,setApps,tasks,setTasks,demoState,setDemoState,records,setRecords,parentStudent,parentStudents,parentPhone,parentSession,setParentStudent,teacherProfiles,setTeacherProfiles,framingPresets,setFramingPresets,skillLibrary,setSkillLibrary,agentFiles,setAgentFiles,adminName:roleMeta.admin.name,galleryVenues,setGalleryVenues,galleryExhibitions,setGalleryExhibitions,lessons,setLessons,courses,setCourses,auditLog,recordAudit}}/>
       </div>
     </main>
     {toast?<div className="toast panda-toast"><img src={pandaWave} alt="熊猫鼓励"/><span><CircleCheck size={18}/>{toast}</span></div>:null}
@@ -6153,13 +6166,13 @@ function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast,recor
 
 // 机构级基础数据页：只有管理员能进。导航已经隐藏入口，这里再拦一道，
 // 避免从导览页、历史链接或未来新增入口绕过。
-const ADMIN_ONLY_PAGES=['teacherPersona','skillLibrary','courseLibrary','framingSettings','galleryAdmin'];
+const ADMIN_ONLY_PAGES=['teacherPersona','skillLibrary','courseLibrary','agentFiles','framingSettings','galleryAdmin'];
 
 function PageRouter(props){
  // 「课次表单」全站只有一份实现：`TeacherFlowV2`（第一步创建信息 / 后续装裱·点评·归档都在这个组件里）。
  // 旧的 CreateFlow 向导（StepLesson/StepUpload/StepApps/StepGenerate/StepSuccess）已删除，
  // `create` 这个路由 id 保留下来只作为别名，供工作台 / 课后反馈列表 / AI 创作台的历史入口复用同一组件。
- const map={dashboard:TeacherWelcome,teacherFlow:TeacherFlowV2,create:TeacherFlowV2,lessons:LessonsPage,ai:TeacherAIWorkspace,tasks:TasksPage,progress:ProgressBoard,classes:StudentArchiveData,growthCenter:PersonalGrowthCenter,archives:GrowthArchiveData,parent:ParentHomeFamily,parentInsight:ParentInsight,parentArchive:ParentArchiveFamily,authorization:AuthorizationPage,profile:ProfilePage,adminDash:AdminDashboard,apps:AppsPage,providers:ProvidersPage,teacherPersona:TeacherPersonaPage,skillLibrary:SkillLibraryPage,courseLibrary:CourseLibraryPage,framingSettings:FramingSettingsPage,galleryAdmin:GalleryAdminPage,gallery:GalleryPage,users:UsersPage,logs:LogsPage,archiveAdmin:ArchiveAdmin,permissions:PermissionsPage,settings:SettingsPage,guide:GuidePage};
+ const map={dashboard:TeacherWelcome,teacherFlow:TeacherFlowV2,create:TeacherFlowV2,lessons:LessonsPage,ai:TeacherAIWorkspace,tasks:TasksPage,progress:ProgressBoard,classes:StudentArchiveData,growthCenter:PersonalGrowthCenter,archives:GrowthArchiveData,parent:ParentHomeFamily,parentInsight:ParentInsight,parentArchive:ParentArchiveFamily,authorization:AuthorizationPage,profile:ProfilePage,adminDash:AdminDashboard,apps:AppsPage,providers:ProvidersPage,teacherPersona:TeacherPersonaPage,skillLibrary:SkillLibraryPage,courseLibrary:CourseLibraryPage,agentFiles:AgentFilesPage,framingSettings:FramingSettingsPage,galleryAdmin:GalleryAdminPage,gallery:GalleryPage,users:UsersPage,logs:LogsPage,archiveAdmin:ArchiveAdmin,permissions:PermissionsPage,settings:SettingsPage,guide:GuidePage};
  if(ADMIN_ONLY_PAGES.includes(props.page)&&props.role!=='admin'){
    const Fallback=props.role==='parent'?ParentHomeFamily:TeacherWelcome;
    return <Fallback {...props}/>;
