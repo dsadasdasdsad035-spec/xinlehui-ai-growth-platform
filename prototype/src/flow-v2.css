@@ -647,3 +647,56 @@
 }
 /* 默认选中说明（[第二步 US-011b]）：按课程绑定 → 默认模板 → 第一套。只在「跟随默认」时出现。 */
 .frame-style-resolve{margin:0;border-radius:10px;background:#eef5ff;border:1px solid #cfe0fb;color:#20456f;font-size:10px;line-height:1.6;padding:7px 10px}
+
+/* ---- 装裱移动端与性能（[第二步 US-012]）----------------------------------------------
+   390px 验收原文：编辑、选框、调水印、保存全流程在**同一屏的底部抽屉**内完成，且无横向滚动。
+   四件事各只有一份真源：抽屉断点 `STUDIO_DRAWER_MAX_WIDTH`（430px）、四项预算、
+   手机口径与结论都在 src/data/framingPerformance.js（CSS 不能 import 常量，断点与 44px 都要同步）；
+   浏览器侧的执行（合成计时 / 编辑底图降采样 / rAF 采帧 / 内存峰值）在 services/framingPerformance.js。
+   桌面端（>430px）这三块面板仍是内联的宽面板，触发按钮与抽屉头 `display:none` —— 一行行为都不变。 */
+.studio-drawer-trigger{display:none}
+.studio-drawer-scrim{display:none}
+.studio-drawer-head{display:none}
+/* 编辑底图（先降采样到长边 2400 再编辑）：准备期间舞台上是上一版成品图 + 一句说明，
+   裁剪框与把手挂起（`is-preparing`）—— 拿旧画幅的框去拖会得到错的几何。 */
+.artwork-editor-base{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;margin:0;border-radius:10px;background:#eef5ff;border:1px solid #cfe0fb;color:#20456f;font-size:10px;line-height:1.6;padding:7px 10px}
+.artwork-editor-base b{flex:none;font-size:10px;color:#20456f}
+.artwork-editor-base em{font-style:normal;flex:1 1 240px;min-width:0;word-break:break-word}
+.artwork-crop-preparing{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:4;background:rgba(24,20,12,.72);color:#fff8e2;font-size:10px;font-weight:700;line-height:1.6;border-radius:10px;padding:8px 10px;text-align:center;max-width:86%;pointer-events:none}
+.artwork-crop-stage.is-preparing .artwork-crop-box,.artwork-crop-stage.is-preparing .artwork-crop-handle{pointer-events:none;opacity:.5}
+/* 装裱性能读数：四项检查（合成 / 编辑底图 / 拖动帧率 / 内存峰值）的实测值与预算。 */
+.framing-perf-panel{display:flex;flex-direction:column;gap:10px;margin-top:22px;border:1px solid #eadfbd;border-radius:18px;background:#fffdf7;padding:20px}
+.framing-perf-head{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.framing-perf-head b{font-size:13px;color:#292720}
+.framing-perf-head em{font-style:normal;font-size:10px;font-weight:800;color:#7a5b00;background:#fff2c8;border-radius:999px;padding:3px 10px}
+.framing-perf-head .framing-perf-summary{color:#3f5a1e;background:#e6f0d6}
+.framing-perf-head .framing-perf-summary[data-framing-perf-summary*='超标']{color:#9a3529;background:#fadad5}
+.framing-perf-head small{flex:1 1 100%;font-size:10px;line-height:1.6;color:#857a64;word-break:break-word}
+.framing-perf-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:0;padding:0;list-style:none}
+.framing-perf-list li{display:flex;flex-direction:column;gap:3px;border:1px solid #ece1c6;border-radius:11px;background:#fffdf7;padding:8px 10px;min-width:0}
+.framing-perf-list li[data-perf-state=ok]{border-color:#cfe1b4;background:#f6fbef}
+.framing-perf-list li[data-perf-state=over]{border-color:#eebdb6;background:#fdeceb}
+.framing-perf-list li[data-perf-state=pending]{opacity:.85}
+.framing-perf-list li b{font-size:11px;color:#292720}
+.framing-perf-list li em{font-style:normal;font-size:10px;line-height:1.6;color:#857a64;word-break:break-word}
+@media(max-width:430px){
+  /* 触发按钮：选框 / 保存各自一个（编辑与调水印各有自己的入口），都从这一步的同一屏打开。 */
+  .studio-drawer-trigger{display:flex;flex-direction:column;align-items:flex-start;gap:2px;width:100%;margin-top:12px;border:1px solid #d5bd71;border-radius:14px;background:#fff5d1;color:#765800;font-size:12px;font-weight:800;padding:11px 13px;min-height:44px;cursor:pointer;text-align:left}
+  .studio-drawer-trigger em{font-style:normal;font-size:10px;font-weight:600;opacity:.85}
+  .studio-drawer-scrim{display:block;position:fixed;inset:0;z-index:71;border:0;background:rgba(41,39,32,.42)}
+  /* 三块面板变成底部抽屉（水印面板沿用它自己的 US-007 抽屉样式）：fixed + 下移 102% 收起、`is-open` 时归位。 */
+  .frame-style-panel,.save-image-panel,.artwork-editor.is-open{position:fixed;left:0;right:0;bottom:0;z-index:72;max-height:88vh;overflow:auto;overscroll-behavior:contain;margin:0;border-radius:20px 20px 0 0;border-bottom:0;padding:12px 14px calc(16px + env(safe-area-inset-bottom,0px));transform:translateY(102%);transition:transform .22s ease;box-shadow:0 -14px 40px rgba(84,64,12,.26)}
+  .frame-style-panel.is-open,.save-image-panel.is-open,.artwork-editor.is-open{transform:translateY(0)}
+  /* 收起的抽屉不只是「移到屏幕外」：`visibility:hidden` 顺手让里面的控件不可点、不进键盘 tab 顺序。 */
+  .frame-style-panel:not(.is-open),.save-image-panel:not(.is-open){visibility:hidden}
+  /* 抽屉头（把手 + 标题 + 完成）：粘在抽屉顶部，滚动时一直能收起。 */
+  .studio-drawer-head{display:flex;align-items:center;gap:8px;position:sticky;top:-12px;z-index:3;background:#fffdf7;padding:6px 0 8px;margin:-6px 0 0}
+  .studio-drawer-handle{width:42px;height:4px;border-radius:999px;background:#e0d3ae;margin-right:2px}
+  .studio-drawer-head b{font-size:12px;color:#292720}
+  .studio-drawer-head button{margin-left:auto;border:1px solid #e3d7b5;background:#fff;border-radius:9px;padding:8px 14px;font-size:11px;font-weight:700;color:#716850;min-height:44px}
+  .studio-drawer-head button:disabled{opacity:.5}
+  /* 抽屉里的按钮不额外定尺寸：`.feedback-flow-v2 button` 在 ≤430px 已经有 44px 下限（US-413）。
+     裁剪把手是 `<span>`（不是 button），沿用 US-004b 的 24px 触摸端尺寸 —— 强行拉到 44px 会把裁剪框撑坏。 */
+  .framing-perf-panel{padding:14px}
+  .framing-perf-list{grid-template-columns:minmax(0,1fr)}
+}

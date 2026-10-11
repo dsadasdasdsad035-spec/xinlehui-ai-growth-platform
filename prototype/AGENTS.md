@@ -1115,6 +1115,59 @@ DOM/canvas 部分在 `src/services/artworkWriteBack.js`，编排在 `main.jsx` �
   arch + 水印位置且 0 处收敛）：生成类功能的验证可以装**透传替身**
   （记录 payload 后 `original.call(completions, payload)`），既抓提示词参数又让真实模型跑完整条链路。
 
+## 装裱移动端与性能：底部抽屉 + 四项性能预算（US-012）
+
+第二步（`TeacherFlowV2` 的 step 2）在 390px 上把「编辑 / 选框 / 调水印 / 保存」全部收进**底部抽屉**，
+四项性能验收（合成耗时 / 原图加载与显示 / 拖动帧率 / 内存峰值）也在这里落地。
+
+| 关注点 | 位置 | 说明 |
+|---|---|---|
+| 预算 / 手机口径 / 四项结论 | `data/framingPerformance.js`（零依赖，Node 可直跑） | `FRAMING_COMPOSE_BUDGET_MS`（桌面 800 / 手机 1500）、`EDIT_BASE_MAX_EDGE`（2400）、`EDIT_BASE_LOAD_BUDGET_MS`（2000）、`EDIT_DRAG_MIN_FPS`（30）、`FRAMING_MEMORY_BUDGET_MB`（300）、`STUDIO_DRAWER_MAX_WIDTH`（430）、`STUDIO_DRAWERS` |
+| 浏览器侧的执行 | `services/framingPerformance.js` | `prepareEditBase`（编辑底图）/ `createFrameSampler`（rAF 采帧）/ `createMemorySampler`（`performance.memory` 峰值） |
+| 界面上的「装裱性能」读数 | `main.jsx` 的 `framingPerfPanel` | 每行是 `[data-perf-check="compose\|edit-base\|drag-fps\|memory"]` + `data-perf-state/value/budget/text` |
+
+- **两项预算是两套口径，别混用**：`1800px 合成`量的是第二步那一段 `renderFramedArtwork` 的实耗时
+  （含底图解码 + 1800×1360 合成 + JPEG 编码），**桌面 800ms / 手机 1.5s**；`原图加载与显示`量的是
+  `prepareEditBase` 的「解码原图 + 降采样 + 编码 + 底图可显示」，固定 2 秒（与设备无关）。
+- **手机口径 = 三条判据任一命中**（`framingDeviceProfile`）：手机 UA /（触摸屏 + 视口 ≤800px）/ 视口 ≤430px（抽屉断点）。
+  第三条是刻意的：抽屉断点本来就是视口口径，预算不跟着切档就会出现「抽屉已经切到手机、合成还按桌面 800ms 判」。
+  口径**每次渲染现算**（纯函数），另用一个「口径变了才 setState」的 resize 监听触发重渲染 ——
+  React 不会因为 resize 自己重渲染，但也不能每次 resize 都重渲染整个第二步（React 对同值 setState 会直接跳过）。
+- **编辑拖动帧率用 rAF 采帧，不用定时器**（`createFrameSampler`）：`beginCropDrag` / `beginViewGesture` 里 `start()`，
+  指针全部抬起时 `stop()`（裁剪拖拽与缩放手势共用同一个采样器，`stop()` 幂等，第二次拿到 null 就不重复记录）。
+  样本 < 4 帧时 `evaluateDragFps` 给 `ok: null`（「还没量到」）—— 两帧算出来的「500fps」不能当达标证据。
+- **编辑底图 = 「先降采样到长边 2400 再编辑」的落地处**：编辑器打开时先 `prepareEditBase`，
+  编辑期间的实时预览（≤900）与高清稿（≤2400）都以它作源 —— 避免让 4000px 手机原图在每次微调时重复解码。
+  准备期间舞台显示上一版成品图 + `.artwork-crop-preparing` 提示，**裁剪框与把手挂起**
+  （`.is-preparing` 下 `pointer-events:none`）：拿旧画幅的框去拖会得到错的几何。
+  `editBaseRef` 按「作品 id + 原图地址」缓存，换作品 / 换班 / 重新上传天然作废。
+- **四项检查的结论只在 data 层算**：界面与断言都读 `framingPerformanceChecks().rows`，
+  不要在面板或脚本里各写一套阈值；`ok === null` = 还没测到（界面显示 pending 灰字，**不能当成达标**）。
+- **内存峰值只采样、不刷屏**（`createMemorySampler`）：`performance.memory` 是 Chromium 扩展，
+  不支持时如实写「未提供 performance.memory」；峰值只在**抬高 ≥5MB** 时才发布到 state（定时器里 setState
+  会让第二步每秒重渲染一次，与 US-413「录入用时不用定时器」同一条纪律）。
+- **390px 的四个抽屉**：选框与保存各有 `.studio-drawer-trigger`（桌面 `display:none`）+ 抽屉头（把手 + 完成）；
+  编辑器 `is-open` 时自己就是抽屉（头里是「完成编辑」）；水印沿用 US-007 自己的抽屉。
+  收起态是 `transform:translateY(102%)` **加** `visibility:hidden`（后者顺手把里面的控件移出 tab 顺序）。
+  桌面端（>430px）三块面板仍是内联的宽面板，一行行为都不变。
+- **裁剪把手不要套 44px 的移动端兜底**：`.feedback-flow-v2 button` 在 ≤430px 已有 44px 下限，
+  但裁剪把手是 `<span>`（24px，US-004b 定的）—— 强行拉到 44px 会把裁剪框撑坏。
+- **验证方式**（本故事实测）：`pnpm run build`；Node 直跑 `data/framingPerformance.js` +
+  `services/framingPerformance.js` 的可离线部分 **135 项断言**；CDP + headless Chrome **81 项断言**
+  （桌面合成 22ms / 手机 67ms、4000×3000 → 2400×1800 用时 34ms、四个抽屉逐个开合、
+  在抽屉里改水印与保存（手机 UA 走「长按保存」提示页）、拖动 46fps、内存峰值 102MB、
+  390px 下页面与三个抽屉都不横向溢出、切回桌面后口径与内联布局都回到桌面）；
+  回归 US-026 **71**、US-027 **79**、US-028 **65**、US-030 **50**、US-031 **53**、US-032 **67**、
+  US-034 **106** 全绿；截图 139~144 留档。
+- **已知边界**：上传通道本身会把 >3000px 的图降采样到长边 3000（US-408），所以 4000×3000 这种
+  「手机原图」只会从历史数据 / 导入路径进来 —— 验收③是按服务层同一个函数（`prepareEditBase`）在页面里
+  实测的（4000×3000 → 2400×1800，34ms），UI 侧用 3000×2250 走完整路径（`data-edit-base-*` 读数）。
+- **写这类断言的时机坑**：编辑底图要先「解码原图 → 降采样 → 编码 → 底图可显示」才算就绪
+  （实测 130~600ms，视冷热缓存而定）—— 断言必须等 `data-edit-base-status="ready"`，
+  只等 `data-editor-open="true"` 会读到 `preparing`（本轮踩过，看着像功能坏了）。
+  另外 `Emulation.setUserAgentOverride` 之后**要派发一次真实的 resize 事件**（真实浏览器在视口变化时会派发）
+  才会重算设备口径。
+
 ## 容易踩的坑
 
 - **写接口抛错时「await 之后就没了」**：`save<X>/create<X>/update<X>` 是「先写本地镜像再推云端」，
@@ -1138,6 +1191,10 @@ DOM/canvas 部分在 `src/services/artworkWriteBack.js`，编排在 `main.jsx` �
   构建完全正常，直到浏览器渲染到那一行才 `ReferenceError`，React 直接把整棵树卸载成白屏。
   这类错误只有「真的把页面点到那一步」才会暴露 —— UI 故事的最小验证是把改动的界面**渲染出来**
   （截图 + 断言），不要只看构建与 Node 断言。
+  **改完 `main.jsx` 先跑一遍静态自查再进浏览器**（US-012 又踩了一次：`evaluateMemoryPeak` 忘了加进
+  import 列表，第一步整页白屏、构建照样过）：不需要装 eslint，拿一段 20 行 Python 把
+  「用到的名字」与「import 绑定 + const/let/function 声明（含解构）」比对即可 ——
+  `grep -o` 出形如 `evaluate[A-Z]\w*` / `EDIT_\w+` / `framing\w+` 的标识符逐个对，比白屏之后二分定位便宜得多。
 - **异步事件处理器里的 `ReferenceError` 连 console 都不报**（US-009 真踩）：把 import 里的函数改了名、
   却漏改调用点（`framePresetNameProblem` → `framingPresetNameIssue`），于是 `onClick` 的 `async`
   处理器在 `await` 之前就抛错 —— 表现是「按钮点了完全没反应」，DOM 无变化、**console 无报错**、

@@ -151,6 +151,15 @@ import {
   groupSlotRows, intakePaceSummary, shouldGroupSlotRows, thumbnailPendingLabel
 } from './data/intakePerformance';
 import { createThumbnail, downsampleImageFile, resolveMediaTypes, revokeMediaEntries, revokeMediaUrl, scheduleMediaTask } from './services/mediaIntake';
+// 第二步的移动端与性能（US-012）：手机口径与四项预算（合成 800ms/1.5s、编辑底图 2400px/2s、
+// 拖动 30fps、内存 300MB）的唯一真源是 data 层（零依赖纯函数，可直接 Node 断言）；
+// 浏览器侧的执行（合成计时、编辑底图降采样、rAF 采帧、内存峰值采样）在 services/framingPerformance。
+import {
+  EDIT_BASE_LOAD_BUDGET_MS, EDIT_BASE_MAX_EDGE, EDIT_DRAG_MIN_FPS, FRAMING_MEMORY_BUDGET_MB, STUDIO_DRAWER_MAX_WIDTH,
+  STUDIO_DRAWERS, evaluateEditBase, formatPerfMs, framingComposeBudgetMs, framingDeviceProfile,
+  framingPerformanceChecks
+} from './data/framingPerformance';
+import { createFrameSampler, createMemorySampler, prepareEditBase } from './services/framingPerformance';
 import { createLesson, loadRemoteLessons, updateLesson } from './services/lessonApi';
 // 课程库（course）是课题的来源：课次上的 courseId 指向一门课程，课题按课时序号从 syllabus 取。
 import { findCourseById, loadCourses, persistCourses, resolveCourseId, resolveSyllabusTopic, selectableCourses } from './data/courses';
@@ -639,6 +648,24 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
   const [editorPreviewMode,setEditorPreviewMode]=useState('low');
   // 已经合过高清预览的那个旋转角（同一个角不重复编码；换角度/重开编辑器都作废）。
   const editorPreviewHdRef=useRef('');
+  // ---- 装裱移动端与性能（US-012）------------------------------------------------------
+  // 编辑底图：手机原图**先降采样到长边 2400 再编辑**（编辑期间的预览与舞台都用它，
+  // 原图 originalUrl 仍是只读的四层地址之一）。准备过程中的耗时落进 editBasePerf 给界面读数。
+  const [editBase,setEditBase]=useState(null);
+  const [editBaseBusy,setEditBaseBusy]=useState(false);
+  const [editBasePerf,setEditBasePerf]=useState(null);
+  // 拖动帧率与内存峰值：都是「测量 → 数据层判定」，界面只显示结论（不在这里写阈值）。
+  const [dragPerf,setDragPerf]=useState(null);
+  const [memoryBytes,setMemoryBytes]=useState(0);
+  // 1800px 合成的实测耗时（每一次合成都会刷新；budgetMs 由设备口径决定）。
+  const [composePerf,setComposePerf]=useState(null);
+  // 第二步的底部抽屉（390px 验收：选框 / 保存各自一个抽屉；编辑器开着自己就是抽屉；水印沿用 US-007 的抽屉）。
+  const [studioDrawer,setStudioDrawer]=useState('');
+  const frameSamplerRef=useRef(null);
+  const memorySamplerRef=useRef(null);
+  // 编辑底图按「作品 + 原图地址」缓存：换作品 / 重新上传会作废（换班、新建草稿也一起清）。
+  const editBaseRef=useRef({key:'',base:null});
+  const editBaseRequestRef=useRef(0);
   // 裁剪舞台（US-004b）：预览图的原生尺寸（= 摆正后那张图的像素比例）。尺寸未知时禁用比例预设。
   const [cropStage,setCropStage]=useState({naturalWidth:0,naturalHeight:0});
   const cropStageRef=useRef(null);
@@ -1184,6 +1211,9 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
     const styleKey=JSON.stringify([activeFrameSpecKey,plaque.student,plaque.title,plaque.date,lessonDateDots,currentTeacherName,DEFAULT_ORG_NAME]);
     if(media.artwork?.framedStyle===styleKey&&media.artwork?.framedUrl) return;
     let cancelled=false;
+    // 1800px 合成耗时（US-012 的「桌面不超过 800ms、手机不超过 1.5 秒」）：量的是这一段
+    // `renderFramedArtwork` 的实耗时（含底图解码 + 1800×1360 合成 + JPEG 编码），结论由数据层按设备口径判。
+    const composeStarted=typeof performance!=='undefined'&&typeof performance.now==='function'?performance.now():Date.now();
     renderFramedArtwork({
       source:media.artwork.cleanUrl,
       spec:plaque.spec,
@@ -1196,6 +1226,8 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
       teacherName:currentTeacherName
     }).then(framedUrl=>{
       if(cancelled) return;
+      const composeMs=(typeof performance!=='undefined'&&typeof performance.now==='function'?performance.now():Date.now())-composeStarted;
+      setComposePerf({ms:composeMs,at:Date.now()});
       setMedia(current=>({...current,artwork:applyArtworkLayerPatch(current.artwork,{framedUrl,framedStyle:styleKey}).artwork}));
       setFramingState('ready');
     }).catch(()=>{if(!cancelled) setFramingState('error')});
@@ -1434,13 +1466,94 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
   // 依赖只有**旋转角**（不是整份草稿）：US-004b 拖动裁剪框时草稿一直在变，但旋转稿没有变化，
   // 若跟着整份快照键重画，每移动一格都会重编码一张 900px 的图（裁剪框会拖得一顿一顿）。
   const editorRotationKey=normalizeArtworkEdit(artworkEditor.draft).rotateDeg;
-  // 缩放/平移的快照键：只影响舞台的 CSS transform（与裁剪渲染），不进入低分辨率稿的依赖 ——
-  // 滚轮缩放时没必要重新编码一张 900px 的图（这也是 US-004b 收窄依赖的同一条纪律）。
-  const editorViewKey=artworkViewKey(artworkEditor.draft);
-  editorDraftRef.current=artworkEditor.draft;
+  // ---- 装裱移动端与性能（US-012）------------------------------------------------------
+  // 设备口径**每次渲染现算**（纯函数、零成本）：抽屉断点本来就是视口口径（CSS 媒体查询），
+  // 预算必须跟着同一个口径切档，否则会出现「抽屉已经切到手机、合成预算还按桌面 800ms 算」的错位。
+  // React 不会因为 resize 自己重渲染，所以再把「口径变了」这件事接成一次 state 变化：
+  // 值相同的时候 setState 会被 React 直接跳过（一次多余渲染都不会有），只有真的切了档才重渲染一次。
+  const [deviceSignature,setDeviceSignature]=useState('');
+  useEffect(()=>{
+    const sync=()=>{
+      const next=framingDeviceProfile({
+        userAgent:typeof navigator==='undefined'?'':navigator.userAgent,
+        maxTouchPoints:typeof navigator==='undefined'?0:navigator.maxTouchPoints,
+        viewportWidth:typeof window==='undefined'?0:window.innerWidth
+      }).id;
+      setDeviceSignature(current=>current===next?current:next);
+    };
+    sync();
+    window.addEventListener('resize',sync);
+    return()=>window.removeEventListener('resize',sync);
+  },[]);
+  const deviceProfile=framingDeviceProfile({
+    userAgent:typeof navigator==='undefined'?'':navigator.userAgent,
+    maxTouchPoints:typeof navigator==='undefined'?0:navigator.maxTouchPoints,
+    viewportWidth:typeof window==='undefined'?0:window.innerWidth
+  });
+  // 拖动帧率采样器：整个会话一个实例（一次拖动 = 一次 start / stop，指针抬起时收尾）。
+  if(!frameSamplerRef.current) frameSamplerRef.current=createFrameSampler();
+  // 内存峰值（≤300MB）：只在第二步采样，离开就停；**只在峰值确实抬高 5MB 以上时才发布到 state**
+  // —— 定时器里 setState 会让整个第二步每秒重渲染一次（与 US-413「录入用时不用定时器」同一条纪律）。
+  useEffect(()=>{
+    if(step!==2) return undefined;
+    const sampler=createMemorySampler({intervalMs:500,onPeak:(bytes,previous)=>{
+      if(!previous||bytes-previous>=5*1024*1024) setMemoryBytes(bytes);
+    }});
+    memorySamplerRef.current=sampler;
+    sampler.start();
+    return()=>{
+      sampler.stop();
+      memorySamplerRef.current=null;
+      const peak=sampler.peakBytes;
+      if(peak>0) setMemoryBytes(current=>Math.max(current,peak));
+    };
+  },[step]);
+  // 编辑底图（US-012 的「4000x3000 手机原图加载并显示不超过 2 秒，先降采样到长边 2400 再编辑」）：
+  // 打开编辑器时先量一次原图，超过 EDIT_BASE_MAX_EDGE（2400）就**先降采样成编辑底图**，
+  // 编辑期间的实时预览与高清稿都以它作源（原图 originalUrl 仍是只读的四层地址之一，不参与反复解码）。
+  // 同一幅作品只准备一次（按「作品 id + 原图地址」缓存）；换作品 / 重新上传 / 换班 / 新建草稿都会作废。
+  useEffect(()=>{
+    if(!artworkEditor.open) return undefined;
+    const source=media.artwork?.originalUrl;
+    if(!source){setEditBase(null);setEditBaseBusy(false);return undefined;}
+    const key=`${media.artwork?.id||''}|${source}`;
+    if(editBaseRef.current.key===key&&editBaseRef.current.base){setEditBase(editBaseRef.current.base);return undefined;}
+    let cancelled=false;
+    const requestId=++editBaseRequestRef.current;
+    setEditBase(null);
+    setEditBaseBusy(true);
+    // 底图还没准备好之前，舞台显示的是上一版成品图（已在屏幕上的解码结果），
+    // 裁剪框与把手同时挂起（`is-preparing`）—— 拿旧画幅的框去拖会得到错的几何。
+    setCropStage({naturalWidth:0,naturalHeight:0});
+    prepareEditBase({source,maxEdge:EDIT_BASE_MAX_EDGE}).then(result=>{
+      if(cancelled||requestId!==editBaseRequestRef.current) return;
+      const base={url:result.url||source,downsampled:result.downsampled,width:result.width,height:result.height,originalWidth:result.originalWidth,originalHeight:result.originalHeight,message:result.message};
+      editBaseRef.current={key,base};
+      setEditBase(base);
+      setEditBasePerf(result.ok?{ms:result.totalMs,plan:result.plan||null,message:result.message,downsampled:result.downsampled,originalWidth:result.originalWidth,originalHeight:result.originalHeight,width:result.width,height:result.height,at:Date.now()}:null);
+      setEditBaseBusy(false);
+    }).catch(()=>{
+      if(cancelled||requestId!==editBaseRequestRef.current) return;
+      // 准备失败也留一条可用的底图（退回原图），编辑器不会因此打不开。
+      setEditBase({url:source});
+      setEditBasePerf(null);
+      setEditBaseBusy(false);
+    });
+    return()=>{cancelled=true};
+  },[artworkEditor.open,media.artwork?.id,media.artwork?.originalUrl]);
+  /** 编辑期间真正参与解码的那张图：编辑底图优先，其次是原图（底图还没好 / 准备失败时）。 */
+  const editorBaseSource=editBase?.url||media.artwork?.originalUrl||'';
+  /**
+   * 舞台上的那张图 = 实时预览 → 编辑底图 → 原图（最后一级只在不处于「准备底图」时用）。
+   * 准备底图期间**绝不**回落到原图：那正是本故事要避开的那一次「4000×3000 解码」。
+   */
+  const editorStageSrc=editorPreview||(editBaseBusy?(media.artwork?.framedUrl||media.artwork?.cleanUrl||''):(editorBaseSource||media.artwork?.originalUrl||''));
   useEffect(()=>{
     if(!artworkEditor.open){setEditorPreview('');setEditorPreviewPending(false);return undefined;}
-    const source=media.artwork?.originalUrl;
+    // 底图还在准备（要先降采样到长边 2400）：这一轮不画预览，等底图就绪后这条 effect 会再跑一次
+    // —— 否则 4000×3000 的原图会被先解一遍（正是本故事要避免的那一次解码）。
+    if(editBaseBusy){setEditorPreview('');setEditorPreviewPending(true);return undefined;}
+    const source=editorBaseSource;
     if(!source){setEditorPreview('');setEditorPreviewPending(false);return undefined;}
     let cancelled=false;
     setEditorPreviewPending(true);
@@ -1453,28 +1566,34 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
         .finally(()=>{if(!cancelled)setEditorPreviewPending(false)});
     },120);
     return()=>{cancelled=true;clearTimeout(timer)};
-  },[artworkEditor.open,editorRotationKey,media.artwork?.id,media.artwork?.originalUrl]);
+  },[artworkEditor.open,editorRotationKey,media.artwork?.id,editorBaseSource,editBaseBusy]);
+  // 缩放/平移的快照键：只影响舞台的 CSS transform（与裁剪渲染），不进入低分辨率稿的依赖 ——
+  // 滚轮缩放时没必要重新编码一张 900px 的图（这也是 US-004b 收窄依赖的同一条纪律）。
+  const editorViewKey=artworkViewKey(artworkEditor.draft);
+  editorDraftRef.current=artworkEditor.draft;
   // 「停止操作 300ms 后合成高清预览」（US-004c 验收原文）：依赖里带上缩放/平移快照键，
   // 于是滚轮 / 双指 / 拖动都会把 300ms 的窗口重新计时；停手之后才编码一次高清稿（长边 ≤ 2400）。
   // 同一个旋转角已经合过高清稿时直接跳过（缩放平移不改变这张位图，位图分辨率只由旋转角决定）。
+  // US-012 起记账的口径多一项**源**：编辑底图准备好之后源从原图切成底图，同一个角度也要重画一次。
   useEffect(()=>{
-    if(!artworkEditor.open) return undefined;
-    const source=media.artwork?.originalUrl;
+    if(!artworkEditor.open||editBaseBusy) return undefined;
+    const source=editorBaseSource;
     if(!source) return undefined;
     let cancelled=false;
     const timer=setTimeout(()=>{
-      if(editorPreviewHdRef.current===editorRotationKey) return;
+      const hdKey=`${artworkUrlFingerprint(source)}|${editorRotationKey}`;
+      if(editorPreviewHdRef.current===hdKey) return;
       renderArtworkRotation({source,rotation:editorRotationKey,maxEdge:EDIT_PREVIEW_HD_MAX_EDGE})
         .then(url=>{
           if(cancelled) return;
-          editorPreviewHdRef.current=editorRotationKey;
+          editorPreviewHdRef.current=hdKey;
           setEditorPreview(url||source);
           setEditorPreviewMode('hd');
         })
         .catch(()=>{});
     },ARTWORK_PREVIEW_SETTLE_MS);
     return()=>{cancelled=true;clearTimeout(timer)};
-  },[artworkEditor.open,editorRotationKey,editorViewKey,media.artwork?.id,media.artwork?.originalUrl]);
+  },[artworkEditor.open,editorRotationKey,editorViewKey,media.artwork?.id,editorBaseSource,editBaseBusy]);
   // 停手 300ms 后的第二件事：把这一段缩放/平移压成**一步**撤销栈。
   // 一次手势 = 一步可撤销的操作（连续滚轮/拖动的中间值不占步），与裁剪拖拽的「松手压栈」同一条纪律。
   // 已经是这一步时 pushArtworkEditHistory 返回同一个对象，这里就原样返回 current（不触发重渲染）。
@@ -2602,6 +2721,8 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
     };
     // 还没显式选过比例时，一动手就按「自由裁剪」记：否则高亮会随着框子对上了某个比例而自己跳。
     if(!artworkEditor.cropAspect) setArtworkEditor(current=>({...current,cropAspect:CROP_FREE_ASPECT_ID}));
+    // 拖动帧率采样（US-012）：一次拖动 = 一次采样，松手时收尾并给出结论。
+    frameSamplerRef.current?.start();
   };
   const moveCropDrag=(event)=>{
     const drag=cropDragRef.current;
@@ -2623,7 +2744,10 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
     const drag=cropDragRef.current;
     if(!drag||(event&&event.pointerId!==drag.pointerId)) return;
     cropDragRef.current=null;
+    // 采样器一定收尾（哪怕这次只是点了一下把手）；只有真的拖动过才把读数给学生看。
+    const frameStats=frameSamplerRef.current?.stop();
     if(!drag.moved) return;
+    if(frameStats) setDragPerf(frameStats);
     // 松手才把这一步压进撤销栈（与旋转/微调一样：一步 = 一次可撤销的操作，label 说明做了什么）。
     setArtworkEditor(current=>{
       if(!current.open) return current;
@@ -2664,6 +2788,8 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
     const windowRect=cropRectOf(base.crop||media.artwork?.cleanCropRect);
     if(points.size===1){
       viewGestureRef.current={mode:'pan',pointerId:event.pointerId,base,windowRect,start:{x:event.clientX,y:event.clientY},box,moved:false};
+      // 拖动帧率采样（US-012）：平移手势同样算「编辑拖动」。
+      frameSamplerRef.current?.start();
       return;
     }
     const [first,second]=[...points.values()];
@@ -2722,6 +2848,9 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
       return;
     }
     viewGestureRef.current=null;
+    // 全部手指都抬起来了：拖动帧率采样收尾（这是一个完整手势的帧率）。没真的动过就不记录读数。
+    const frameStats=frameSamplerRef.current?.stop();
+    if(frameStats&&gesture.moved) setDragPerf(frameStats);
     if(!gesture.moved) return;
     // 松手才压一步撤销栈（与裁剪拖拽一致）：一次手势 = 一步可撤销的操作。
     setArtworkEditor(current=>{
@@ -2765,9 +2894,41 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
     borderWidth:`${Math.max(3,Math.round((desc.widthRatio||0.0412)*170))}px`,
     background:desc.matVisible?desc.matHex:'#FFFFFF'
   });
+  // ---- 装裱性能读数与底部抽屉（US-012）-----------------------------------------------
+  // 四项检查（合成耗时 / 原图加载与显示 / 拖动帧率 / 内存峰值）的结论**只在 data 层算**，
+  // 界面与断言读同一份 `framingPerformance.rows`；这里只做「测量值 → 结论文本」的编排。
+  // `performance.memory` 是 Chromium 的扩展（Safari / Firefox 没有）：不支持时如实写「未提供」。
+  const memorySupported=typeof performance!=='undefined'&&Boolean(performance.memory);
+  const editBaseCheck=editBasePerf?evaluateEditBase({ms:editBasePerf.ms,plan:editBasePerf.plan}):null;
+  const framingPerf=framingPerformanceChecks({
+    profile:deviceProfile,
+    compose:composePerf,
+    editBase:editBasePerf,
+    dragFps:dragPerf,
+    memory:memoryBytes>0?{bytes:memoryBytes,supported:true}:(memorySupported?null:{bytes:0,supported:false})
+  });
+  const editBaseSummary=editBaseCheck?`${editBaseCheck.detail} · 加载与显示 ${editBaseCheck.value}（预算 ${editBaseCheck.budget}，${editBaseCheck.ok?'达标':'超标'}）`:'';
+  const studioDrawerItem=(id)=>STUDIO_DRAWERS.find(item=>item.id===id)||{id,label:'',hint:''};
+  /** 抽屉的触发按钮（只在 ≤430px 显示，桌面端 `display:none` —— 面板本身就是内联的一块）。 */
+  const studioDrawerTrigger=(id)=>{
+    const item=studioDrawerItem(id);
+    return <button type="button" className="studio-drawer-trigger" data-studio-drawer-trigger={id} aria-expanded={studioDrawer===id?'true':'false'} onClick={()=>{setOverlayDrawerOpen(false);setStudioDrawer(id)}}>
+      {item.label}<em>{item.hint}</em>
+    </button>;
+  };
+  /** 抽屉的头（把手 + 标题 + 完成）：同样只在手机断点显示（桌面端面板是内联的，不需要「完成」）。 */
+  const studioDrawerHead=(id)=>{
+    const item=studioDrawerItem(id);
+    return <div className="studio-drawer-head" data-studio-drawer-head={id}>
+      <span className="studio-drawer-handle" aria-hidden="true"/>
+      <b>{item.label}</b>
+      <button type="button" data-studio-drawer-close={id} onClick={()=>setStudioDrawer('')}>完成</button>
+    </div>;
+  };
   const frameStylePanel=(
-    <section className="frame-style-panel" data-frame-style-panel="true" data-frame-active={activeFrameId} data-frame-style-count={enabledFrames.length} data-frame-tweak-count={frameTweakCount} data-frame-tweaks={frameTweakSummary} data-frame-thumb-ready={enabledFrames.filter(item=>frameThumbs[item.id]).length} data-frame-thumb-pending={enabledFrames.filter(item=>!frameThumbs[item.id]).length}
+    <section className={`frame-style-panel${studioDrawer==='frame'?' is-open':''}`} data-frame-style-panel="true" data-studio-drawer="frame" data-studio-drawer-open={studioDrawer==='frame'?'true':'false'} data-frame-active={activeFrameId} data-frame-style-count={enabledFrames.length} data-frame-tweak-count={frameTweakCount} data-frame-tweaks={frameTweakSummary} data-frame-thumb-ready={enabledFrames.filter(item=>frameThumbs[item.id]).length} data-frame-thumb-pending={enabledFrames.filter(item=>!frameThumbs[item.id]).length}
       data-frame-resolve-source={frameResolution.source} data-frame-resolved-id={resolvedFrame?.id||''} data-frame-default-id={(defaultFramingPreset(visibleFrames)?.id)||''} data-frame-manual-pick={framePickedManually?'true':'false'}>
+      {studioDrawerHead('frame')}
       <div className="frame-style-head">
         <b>相框样式</b>
         <em className="frame-style-active" data-frame-active-summary={`${activeFrame?.name||'默认装裱'}${frameTweakCount?` · ${frameTweakSummary}`:''}`}>当前：{activeFrame?.name||'默认装裱'}{frameTweakCount?` · ${frameTweakSummary}`:''}</em>
@@ -3031,7 +3192,7 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
     </div>
   );
   const overlayPanelTrigger=(
-    <button type="button" className="lesson-overlay-trigger" data-overlay-action="open" aria-expanded={overlayDrawerOpen} onClick={()=>setOverlayDrawerOpen(true)}>
+    <button type="button" className="lesson-overlay-trigger" data-overlay-action="open" aria-expanded={overlayDrawerOpen} onClick={()=>{setStudioDrawer('');setOverlayDrawerOpen(true)}}>
       <Sparkles size={15}/>水印 · 落款 · 时间
       <em data-overlay-trigger-summary={overlayTweakSummaryText}>{overlayTweakCountValue?`已调整 ${overlayTweakCountValue} 项`:'跟随模板'}</em>
     </button>
@@ -3252,8 +3413,13 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
   useEffect(()=>{
     if(step!==2) closeSaveImagePreview();
   },[step]);
+  // 底部抽屉是第二步自己的界面态：离开这一步就收起（回来时不会莫名停在一个打开的抽屉上）。
+  useEffect(()=>{
+    if(step!==2) setStudioDrawer('');
+  },[step]);
   const saveImagePanel=(
-    <section className="save-image-panel" data-save-image-panel="true" data-save-image-status={saveImageState.status} data-save-image-quality={saveImageState.quality} data-save-image-ready={saveImageReady?'true':'false'} data-save-image-strategy={saveImageStrategy.mode} data-save-image-filename={saveImageFileNamePreview} data-save-image-subject={saveImageSubjectLabel} data-save-image-source={saveImageUsesClassArtwork?'class':'personal'}>
+    <section className={`save-image-panel${studioDrawer==='save'?' is-open':''}`} data-save-image-panel="true" data-studio-drawer="save" data-studio-drawer-open={studioDrawer==='save'?'true':'false'} data-save-image-status={saveImageState.status} data-save-image-quality={saveImageState.quality} data-save-image-ready={saveImageReady?'true':'false'} data-save-image-strategy={saveImageStrategy.mode} data-save-image-filename={saveImageFileNamePreview} data-save-image-subject={saveImageSubjectLabel} data-save-image-source={saveImageUsesClassArtwork?'class':'personal'}>
+      {studioDrawerHead('save')}
       <div className="save-image-head">
         <b>保存图片</b>
         <em className="save-image-subject" data-save-image-subject-summary={saveImageSubjectLabel}>{saveImageSubjectLabel}</em>
@@ -3309,6 +3475,25 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
           {writeBackStale&&writeBackAttempt.status!=='writing'?<button type="button" data-save-image-writeback-refresh="true" disabled={!saveImageReady} onClick={()=>saveArtworkImage(writeBackAttempt.quality||'hd')}>重新保存并更新档案</button>:null}
         </div>
       </div>
+    </section>
+  );
+  // 「装裱性能」面板（US-012）：四项验收指标的**实测读数**与预算一起显示。
+  // 结论全部来自 `data/framingPerformance.js`（同一份也进浏览器断言），面板只挑字段渲染。
+  // 顶上是设备口径徽标：桌面（800ms）/ 手机（1.5s）两档预算由视口与 UA 决定。
+  const framingPerfPanel=(
+    <section className="framing-perf-panel" data-framing-perf="true" data-framing-profile={deviceProfile.id} data-framing-profile-label={deviceProfile.label} data-framing-profile-reasons={deviceProfile.reasons.join(' / ')} data-framing-compose-budget={framingComposeBudgetMs(deviceProfile)} data-framing-edit-base-edge={EDIT_BASE_MAX_EDGE} data-framing-min-fps={EDIT_DRAG_MIN_FPS} data-framing-memory-budget={FRAMING_MEMORY_BUDGET_MB} data-framing-drawer-breakpoint={STUDIO_DRAWER_MAX_WIDTH} data-framing-perf-measured={framingPerf.measured} data-framing-perf-total={framingPerf.total} data-framing-perf-all-ok={framingPerf.measured===framingPerf.total&&framingPerf.allOk?'true':'false'}>
+      <div className="framing-perf-head">
+        <b>装裱性能</b>
+        <em data-framing-perf-profile={deviceProfile.id}>{deviceProfile.label}口径 · 合成预算 {framingComposeBudgetMs(deviceProfile)}ms</em>
+        <em className="framing-perf-summary" data-framing-perf-summary={framingPerf.summary}>{framingPerf.summary}</em>
+        <small>口径判据：{deviceProfile.reasons.length?deviceProfile.reasons.join(' / '):'桌面视口（无手机 UA / 触摸屏 / 窄屏）'}。四项预算 —— 1800px 合成 {framingComposeBudgetMs(deviceProfile)}ms、原图加载与显示 {formatPerfMs(EDIT_BASE_LOAD_BUDGET_MS)}（先降采样到长边 {EDIT_BASE_MAX_EDGE}px）、编辑拖动 ≥{EDIT_DRAG_MIN_FPS}fps、内存峰值 ≤{FRAMING_MEMORY_BUDGET_MB}MB。</small>
+      </div>
+      <ul className="framing-perf-list">
+        {framingPerf.rows.map(row=><li key={row.id} data-perf-check={row.id} data-perf-state={row.ok===null?'pending':(row.ok?'ok':'over')} data-perf-value={row.value} data-perf-budget={row.budget} data-perf-text={row.text}>
+          <b>{row.label}</b>
+          <em>{row.text}</em>
+        </li>)}
+      </ul>
     </section>
   );
   // 长按保存提示页：iOS Safari / 微信内置浏览器不执行 blob 下载，把图显示出来并明确写出怎么存。
@@ -3567,7 +3752,13 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
     </section>
   );
   const artworkEditorField=(
-    <div className={`artwork-editor${artworkEditor.open?' is-open':''}`} data-editor-open={artworkEditor.open?'true':'false'} data-edit-unconfirmed={hasUnconfirmedArtworkEdit()?'true':'false'} data-edit-rotation={artworkEditorShown.rotateDeg} data-edit-fine={artworkEditorFine} data-editor-preview-mode={editorPreviewMode} data-editor-preview-edge={editorPreviewMode==='hd'?EDIT_PREVIEW_HD_MAX_EDGE:EDIT_PREVIEW_MAX_EDGE} data-shown-crop={artworkEditorShown.crop?[artworkEditorShown.crop.x,artworkEditorShown.crop.y,artworkEditorShown.crop.w,artworkEditorShown.crop.h].join(','):'none'} data-shown-zoom={artworkEditorShown.zoom} data-shown-offset={[artworkEditorShown.offsetX,artworkEditorShown.offsetY].join(',')}>
+    <div className={`artwork-editor${artworkEditor.open?' is-open':''}`} data-editor-open={artworkEditor.open?'true':'false'} data-studio-drawer="editor" data-studio-drawer-open={artworkEditor.open?'true':'false'} data-edit-unconfirmed={hasUnconfirmedArtworkEdit()?'true':'false'} data-edit-rotation={artworkEditorShown.rotateDeg} data-edit-fine={artworkEditorFine} data-editor-preview-mode={editorPreviewMode} data-editor-preview-edge={editorPreviewMode==='hd'?EDIT_PREVIEW_HD_MAX_EDGE:EDIT_PREVIEW_MAX_EDGE} data-shown-crop={artworkEditorShown.crop?[artworkEditorShown.crop.x,artworkEditorShown.crop.y,artworkEditorShown.crop.w,artworkEditorShown.crop.h].join(','):'none'} data-shown-zoom={artworkEditorShown.zoom} data-shown-offset={[artworkEditorShown.offsetX,artworkEditorShown.offsetY].join(',')}>
+      {/* 手机断点（≤430px）下编辑器是底部抽屉：头里给一个把手与「完成编辑」（= 面板底部的同一个动作）。 */}
+      {artworkEditor.open?<div className="studio-drawer-head" data-studio-drawer-head="editor">
+        <span className="studio-drawer-handle" aria-hidden="true"/>
+        <b>作品编辑器</b>
+        <button type="button" data-studio-drawer-close="editor" disabled={editorPreviewPending} onClick={confirmArtworkEdit}>{editorPreviewPending?'正在生成预览…':'完成编辑'}</button>
+      </div>:null}
       <div className="artwork-editor-head">
         <b>作品编辑器</b>
         <em data-edit-summary={rotationSummary(artworkEditorShown)}>{rotationSummary(artworkEditorShown)}</em>
@@ -3575,6 +3766,14 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
         <em className="artwork-editor-view-badge" data-edit-view={zoomableView}>{zoomableView}</em>
         <small>{artworkEditor.open?`编辑中：预览为${editorPreviewMode==='hd'?`高清稿（长边 ≤ ${EDIT_PREVIEW_HD_MAX_EDGE}px）`:`低分辨率稿（长边 ≤ ${EDIT_PREVIEW_MAX_EDGE}px，跟手）`}，点「完成编辑」后再按新方向重新裁剪与装裱。`:'旋转、裁剪与缩放结果写入独立的 artworkEdit，原图 originalUrl 全程只读、不会被覆盖。'}</small>
       </div>
+      {/* 编辑底图（US-012）：手机原图**先降采样到长边 2400 再编辑**，并把「加载与显示」的实测耗时写出来
+          （验收原文：4000x3000 手机原图加载并显示不超过 2 秒）。 */}
+      {artworkEditor.open?<p className="artwork-editor-base" data-edit-base="true" data-edit-base-status={editBaseBusy?'preparing':(editBasePerf?'ready':'pending')} data-edit-base-edge={EDIT_BASE_MAX_EDGE} data-edit-base-ms={editBasePerf?Math.round(editBasePerf.ms):''} data-edit-base-limit={formatPerfMs(EDIT_BASE_LOAD_BUDGET_MS)} data-edit-base-source={editBasePerf?`${editBasePerf.originalWidth}×${editBasePerf.originalHeight}`:''} data-edit-base-target={editBasePerf?`${editBasePerf.width}×${editBasePerf.height}`:''} data-edit-base-verdict={editBaseCheck?(editBaseCheck.ok?'ok':'over'):''}>
+        <b>编辑底图</b>
+        {editBaseBusy
+          ?<em data-edit-base-summary="preparing">正在准备：先把原图降采样到长边 ≤ {EDIT_BASE_MAX_EDGE}px，再进入编辑（编辑与高清预览共用这一张，避免让手机原图反复解码）。</em>
+          :<em data-edit-base-summary={editBaseSummary}>{editBaseSummary||`长边 ≤ ${EDIT_BASE_MAX_EDGE}px 的底图是编辑与高清预览共用的那一张；原图 originalUrl 仍然只读保留。`}</em>}
+      </p>:null}
       {artworkEditor.open?<>
         <div className="artwork-crop">
           <div className="artwork-editor-row">
@@ -3585,8 +3784,9 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
           <div className="artwork-crop-presets" role="group" aria-label="裁剪比例预设">
             {CROP_ASPECT_PRESETS.map(preset=><button key={preset.id} type="button" data-crop-preset={preset.id} className={cropAspectId===preset.id?'active':''} aria-pressed={cropAspectId===preset.id} disabled={preset.id!==CROP_FREE_ASPECT_ID&&!cropStage.naturalWidth} onClick={()=>chooseCropPreset(preset.id)}>{preset.label}</button>)}
           </div>
-          <div className={`artwork-crop-stage${artworkEditorShown.zoom<1?' is-zoomed-out':''}`} ref={cropStageRef} data-crop-stage="true" data-crop-image-aspect={Number(cropImageAspect.toFixed(4))} data-crop-locked={cropLockedRatio?Number(cropLockedRatio.toFixed(4)):''} data-editor-zoom={artworkEditorShown.zoom} data-editor-offset={[artworkEditorShown.offsetX,artworkEditorShown.offsetY].map(item=>Number(item.toFixed(4))).join(',')} data-editor-preview-mode={editorPreviewMode} onPointerDown={beginViewGesture} onPointerMove={(event)=>{moveCropDrag(event);moveViewGesture(event)}} onPointerUp={(event)=>{endCropDrag(event);endViewGesture(event)}} onPointerCancel={(event)=>{endCropDrag(event);endViewGesture(event)}}>
-            <img src={editorPreview||media.artwork?.originalUrl} alt="裁剪预览（摆正后的低分辨率旋转稿，缩放与平移实时生效）" draggable={false} style={cropStageTransform?{transform:cropStageTransform}:undefined} onLoad={(event)=>{const image=event.currentTarget;setCropStage(current=>current.naturalWidth===image.naturalWidth&&current.naturalHeight===image.naturalHeight?current:{naturalWidth:image.naturalWidth,naturalHeight:image.naturalHeight});}}/>
+          <div className={`artwork-crop-stage${artworkEditorShown.zoom<1?' is-zoomed-out':''}${editBaseBusy?' is-preparing':''}`} ref={cropStageRef} data-crop-stage="true" data-crop-preparing={editBaseBusy?'true':'false'} data-crop-image-aspect={Number(cropImageAspect.toFixed(4))} data-crop-locked={cropLockedRatio?Number(cropLockedRatio.toFixed(4)):''} data-editor-zoom={artworkEditorShown.zoom} data-editor-offset={[artworkEditorShown.offsetX,artworkEditorShown.offsetY].map(item=>Number(item.toFixed(4))).join(',')} data-editor-preview-mode={editorPreviewMode} onPointerDown={beginViewGesture} onPointerMove={(event)=>{moveCropDrag(event);moveViewGesture(event)}} onPointerUp={(event)=>{endCropDrag(event);endViewGesture(event)}} onPointerCancel={(event)=>{endCropDrag(event);endViewGesture(event)}}>
+            {editorStageSrc?<img src={editorStageSrc} alt="裁剪预览（摆正后的低分辨率旋转稿，缩放与平移实时生效）" draggable={false} style={cropStageTransform?{transform:cropStageTransform}:undefined} onLoad={(event)=>{const image=event.currentTarget;setCropStage(current=>current.naturalWidth===image.naturalWidth&&current.naturalHeight===image.naturalHeight?current:{naturalWidth:image.naturalWidth,naturalHeight:image.naturalHeight});}}/>:null}
+            {editBaseBusy?<span className="artwork-crop-preparing" data-crop-preparing-note="true">正在准备编辑底图：先把原图降采样到长边 ≤ {EDIT_BASE_MAX_EDGE}px，再进入编辑…</span>:null}
             <div className={`artwork-crop-box${cropIsFull(cropShownRect)?' is-full':''}`} style={cropBoxStyle(cropShownRect)} data-crop-rect={cropRectAttr}>
               <span className="artwork-crop-move" data-crop-handle={CROP_BODY_HANDLE} title="拖动整框（越界会回弹）" onPointerDown={(event)=>beginCropDrag(event,CROP_BODY_HANDLE)}/>
               {CROP_HANDLES.map(handle=><span key={handle} className={`artwork-crop-handle is-${handle}`} data-crop-handle={handle} title={`拖动${cropHandleLabel(handle)}`} onPointerDown={(event)=>beginCropDrag(event,handle)}/>)}
@@ -3658,7 +3858,7 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
       {step===3&&!reviewStream.open?<ReviewLaunchPanel profiles={teacherProfiles} skillLibrary={skillLibrary} activeProfileId={activeProfileId} setActiveProfileId={setActiveProfileId} onStart={startCloudReview} onLocalDraft={fillLocalDraft} draftReady={reviewGenerated} localDraftUsed={localDraftUsed} keywordCount={keywords.length} hasArtwork={Boolean(media.artwork?.cleanUrl||media.artwork?.originalUrl)}/>:null}
       {step===2&&mode==='班级反馈'?<ClassFramingWall artworks={batchUploads.artwork} photos={batchUploads.photo} photoGroups={photoGroups} writeBackKeyOf={classArtworkWriteBackKeyOf} onRotate={index=>rotateBatchItem('artwork',index)} onRotatePhotoEntry={uploadId=>rotateUploadEntry('photo',uploadId)}/>:null}
       {step===1?<section className="scene-panel"><div className="scene-heading"><span>第一步</span><h2>创建课后反馈信息</h2><p>先确定服务对象，再同步收集本节课素材。素材只在本次操作中保留。</p></div>{draftRestored?<div className="intake-draft-restored"><Clock3 size={14}/><div><b>已恢复上次的课次信息；素材需重新选择</b><small>{draftRestoreDetail}</small></div>{pendingTitles.length?<em>已保留 {pendingTitles.length} 个作品名，「学员作品上传位」里重新选择素材后自动填回</em>:null}<button type="button" className="text-link" onClick={()=>setDraftRestored(false)}>知道了</button></div>:null}<div className="feedback-mode"><button className={mode==='个人反馈'?'selected':''} onClick={()=>selectMode('个人反馈')}>个人反馈<small>为一位孩子完成反馈</small></button><button className={mode==='班级反馈'?'selected':''} onClick={()=>selectMode('班级反馈')}>班级反馈<small>批量处理全班素材</small></button></div>{availableClasses.length?<div className="intake-scope"><span>班级范围</span><div className="intake-scope-switch"><button type="button" className={showAllClasses?'':'active'} onClick={()=>selectClassScope(false)}>我带的班（{myClasses.length}）</button><button type="button" className={showAllClasses?'active':''} onClick={()=>selectClassScope(true)}>全部班级（{availableClasses.length}）</button></div><small>当前登录老师：{currentTeacherName}</small></div>:null}{visibleClasses.length?<div className="task-form"><label>选择班级<select value={selectedClassId} onChange={event=>selectClass(event.target.value)}>{visibleClasses.map(item=><option key={item.id} value={item.id}>{item.name}{item.teacher?`（${item.teacher}）`:''}</option>)}</select></label><label>选择学员<select value={mode==='班级反馈'?'__class__':selectedStudentName} disabled={mode==='班级反馈'} onChange={event=>{setSelectedStudentName(event.target.value);setArchived(false);setCurrentRecordId('');setWriteBackAttempt({status:'idle',quality:'',message:''})}}>{mode==='班级反馈'?<option value="__class__">本班全部学员（{classStudents.length}人）</option>:<><option value="">请选择学员</option>{classStudents.map(item=><option key={item.name} value={item.name}>{item.name}</option>)}</>}</select></label>{courseOptions.length?<label>选择课程<select value={activeCourseId} onChange={event=>selectCourse(event.target.value)}>{courseOptions.map(item=><option key={item.courseId} value={item.courseId}>{item.name}{item.courseId===classCourseId?' · 本班课程':''}</option>)}</select></label>:<div className="intake-course-empty"><b>课程库暂时没有可选课程</b><p>{classCourseName?`本班课程「${classCourseName}」不在可选课程里，可能已被停用。`:'课程由机构管理员在「课程库」中维护。'}</p>{role==='admin'?<Button variant="secondary" onClick={()=>navigate('courseLibrary')}>去课程库添加课程</Button>:<small>请联系机构管理员在「课程库」中新增或启用课程。</small>}</div>}{lessonScheduleField}{participantField}{consentNoticeField}{mediaIntakeNotice?<p className="intake-media-notice"><ShieldAlert size={14}/><span>{mediaIntakeNotice}</span></p>:null}</div>:<div className="intake-empty"><Users size={26}/><b>{showAllClasses?'机构里还没有任何班级':'还没有属于你的班级'}</b><p>{showAllClasses?'请先在「学员管理」中新建班级，再回到这里创建课后反馈。':'可以切到「全部班级」确认是否存在其他老师名下的班级，或先去「学员管理」新建班级。'}</p><div className="intake-empty-actions">{showAllClasses?null:<button type="button" className="text-link" onClick={()=>selectClassScope(true)}>查看全部班级</button>}<Button onClick={()=>navigate('classes')}>去学员管理添加班级</Button></div></div>}{mode==='个人反馈'&&selectedClass&&!classStudents.length?<p className="intake-hint">该班级还没有学员，请先在「学员管理」里导入名单，再创建课后反馈。</p>:null}{artworkSlotField}{photoSlotField}{mode==='个人反馈'?<div className="sync-upload"><div className={media.artwork?.url?'has-file':''}><Frame/><b>学员作品 <em>必选</em></b><small>{uploadSummary('artwork')}</small><input ref={artworkInput} type="file" accept="image/jpeg,image/png,image/webp" hidden multiple={mode==='班级反馈'} onChange={e=>readFiles('artwork',e.target.files,e.currentTarget)}/><button onClick={()=>artworkInput.current?.click()}>{media.artwork?.url?'已上传 · 重新选择':'上传作品'}</button></div><div className={media.photo?.url?'has-file':''}><Image/><b>学员照片 <em>选填</em></b><small>{uploadSummary('photo')}</small><input ref={photoInput} type="file" accept="image/jpeg,image/png,image/webp" hidden multiple={mode==='班级反馈'} onChange={e=>readFiles('photo',e.target.files,e.currentTarget)}/><button onClick={()=>photoInput.current?.click()}>{media.photo?.url?'已上传 · 重新选择':'上传照片'}</button></div></div>:null}{lostSessionMedia&&!mediaLostDismissed?<div className="intake-media-lost"><ShieldAlert size={14}/><div><b>上次选择的素材已失效</b><small>作品与课堂照片只在当次会话里有效（只使用会话内 object URL，不写入 localStorage / IndexedDB）。页面刷新或重新进入后，请重新选择原始素材。</small></div><button type="button" className="text-link" onClick={()=>setMediaLostDismissed(true)}>知道了</button></div>:null}<div className="upload-privacy-note"><ShieldCheck size={14}/>{mediaRulesText(UPLOAD_SLOTS_PER_STUDENT)}</div>{intakeReadinessPanel}<div className="scene-actions"><Button variant="secondary" onClick={resetDraft}>新建草稿</Button><Button variant="secondary" icon={Save} disabled={!activeCourseId||lessonSaveState.status==='saving'} onClick={requestLessonSave}>{lessonSaveState.status==='saving'?'保存中…':'保存课次'}</Button><Button icon={ArrowRight} disabled={!intakeReadiness.ok} onClick={()=>go(2)}>进入智能装裱</Button></div></section>:null}
-      {step===2?<section className="scene-panel studio-task"><div className="scene-heading"><span>第二步</span><h2>智能装裱</h2><p>先旋转完整原图并确认方向；确认后自动裁掉纸外的桌面、地面与背景，只保留作品本身。装裱方案（画框、卡纸、展签、日期与署名）由管理员在「装裱设置」中统一维护，这里直接选用。</p></div><div className="media-process"><article><div className={`mini-frame uploaded-art${media.artwork?.framedUrl&&!artworkEditor.open?' framed-preview':''}${artworkEditor.open?' is-editing':''}`}>{media.artwork?.url?<><img src={artworkEditor.open?(editorPreview||media.artwork.originalUrl):(media.artwork.framedUrl||media.artwork.cleanUrl||media.artwork.orientedUrl||media.artwork.originalUrl)} alt={artworkEditor.open?'编辑中的旋转稿预览（低分辨率画布）':media.artwork.framedUrl?`已按「${activeFrame?.name||'默认装裱'}」完成装裱的作品`:media.artwork.cleanUrl?'已裁掉纸外背景、只保留作品本身':'等待确认方向的完整原图'}/>{media.artwork?.framedUrl&&!artworkEditor.open?<span className="framed-badge">{activeFrame?.name||'默认装裱'}</span>:null}{artworkEditor.open?<span className="framed-badge editing-badge">编辑中</span>:null}<div className="frame-rotate-controls" aria-label="旋转作品"><button type="button" title="向左旋转 90°" aria-label="向左旋转作品" disabled={artworkEditor.open&&editorPreviewPending} onClick={()=>quickRotateArtwork(-1)}><RotateCcw size={18}/></button><button type="button" title="向右旋转 90°" aria-label="向右旋转作品" disabled={artworkEditor.open&&editorPreviewPending} onClick={()=>quickRotateArtwork(1)}><RotateCw size={18}/></button></div></>:'✺'}</div><div><b>学员作品</b><p>{artworkEditor.open?(editorPreviewPending?'正在生成低分辨率预览…':'编辑中：调整旋转后点「完成编辑」，再按新的方向重新裁剪与装裱。'):framingState==='processing'?(media.artwork?.cleanUrl?'正在按当前装裱方案合成装裱图…':'正在裁掉纸外的桌面与地面，只保留作品本身…'):media.artwork?.framedUrl?`已装裱：${activeFrame?.name||'默认装裱'}。作品只做等比缩放与居中，不裁切主体、不重绘、不调色。`:media.artwork?.cleanUrl?'已完成作品裁剪，正在生成装裱图…':'当前仅显示完整原图；可以先点「编辑作品」把方向摆正，再开始裁剪与装裱。'}</p>{mode==='个人反馈'?artworkEditorField:null}{!media.artwork?.cleanUrl?<button type="button" className="confirm-artwork-button" onClick={startArtworkCleanup} disabled={framingState==='rotating'||framingState==='processing'}>{framingState==='processing'?'正在裁剪作品…':'方向正确，开始裁剪与装裱'}</button>:null}<span className="frame-choice-hint">相框样式在下方「相框样式」面板里挑（缩略图用这幅作品实时渲染）→</span></div></article><article><div className="photo-card">{media.photo?.url?<><img src={media.photo.url} alt="已自然优化的课堂照片" style={{transform:`rotate(${media.photo.rotation||0}deg)`}}/><button type="button" className="frame-rotate-button photo-rotate-button" onClick={rotatePersonalPhoto}><RefreshCw size={16}/>旋转照片</button></>:<img src={pandaMascot} alt="课堂照片占位预览"/>}</div><div><b>学员照片</b><p>{media.photo?.name||'未上传课堂照片，可返回上一步补充。'}</p></div></article></div>{batchFramingPanel}{frameStylePanel}{overlayPanelTrigger}{overlayDrawerOpen?<div className="lesson-overlay-scrim" data-overlay-scrim="true" onClick={()=>setOverlayDrawerOpen(false)}/>:null}{overlayPanel}{saveImagePanel}{saveImageSheet}<div className="scene-actions"><Button variant="secondary" onClick={()=>go(1)}>返回创建信息</Button><Button icon={ArrowRight} onClick={()=>go(3)}>进入五维点评</Button></div></section>:null}
+      {step===2?<section className="scene-panel studio-task"><div className="scene-heading"><span>第二步</span><h2>智能装裱</h2><p>先旋转完整原图并确认方向；确认后自动裁掉纸外的桌面、地面与背景，只保留作品本身。装裱方案（画框、卡纸、展签、日期与署名）由管理员在「装裱设置」中统一维护，这里直接选用。</p></div><div className="media-process"><article><div className={`mini-frame uploaded-art${media.artwork?.framedUrl&&!artworkEditor.open?' framed-preview':''}${artworkEditor.open?' is-editing':''}`}>{media.artwork?.url?<><img src={artworkEditor.open?(editorPreview||media.artwork.originalUrl):(media.artwork.framedUrl||media.artwork.cleanUrl||media.artwork.orientedUrl||media.artwork.originalUrl)} alt={artworkEditor.open?'编辑中的旋转稿预览（低分辨率画布）':media.artwork.framedUrl?`已按「${activeFrame?.name||'默认装裱'}」完成装裱的作品`:media.artwork.cleanUrl?'已裁掉纸外背景、只保留作品本身':'等待确认方向的完整原图'}/>{media.artwork?.framedUrl&&!artworkEditor.open?<span className="framed-badge">{activeFrame?.name||'默认装裱'}</span>:null}{artworkEditor.open?<span className="framed-badge editing-badge">编辑中</span>:null}<div className="frame-rotate-controls" aria-label="旋转作品"><button type="button" title="向左旋转 90°" aria-label="向左旋转作品" disabled={artworkEditor.open&&editorPreviewPending} onClick={()=>quickRotateArtwork(-1)}><RotateCcw size={18}/></button><button type="button" title="向右旋转 90°" aria-label="向右旋转作品" disabled={artworkEditor.open&&editorPreviewPending} onClick={()=>quickRotateArtwork(1)}><RotateCw size={18}/></button></div></>:'✺'}</div><div><b>学员作品</b><p>{artworkEditor.open?(editorPreviewPending?'正在生成低分辨率预览…':'编辑中：调整旋转后点「完成编辑」，再按新的方向重新裁剪与装裱。'):framingState==='processing'?(media.artwork?.cleanUrl?'正在按当前装裱方案合成装裱图…':'正在裁掉纸外的桌面与地面，只保留作品本身…'):media.artwork?.framedUrl?`已装裱：${activeFrame?.name||'默认装裱'}。作品只做等比缩放与居中，不裁切主体、不重绘、不调色。`:media.artwork?.cleanUrl?'已完成作品裁剪，正在生成装裱图…':'当前仅显示完整原图；可以先点「编辑作品」把方向摆正，再开始裁剪与装裱。'}</p>{mode==='个人反馈'?artworkEditorField:null}{!media.artwork?.cleanUrl?<button type="button" className="confirm-artwork-button" onClick={startArtworkCleanup} disabled={framingState==='rotating'||framingState==='processing'}>{framingState==='processing'?'正在裁剪作品…':'方向正确，开始裁剪与装裱'}</button>:null}<span className="frame-choice-hint">相框样式在下方「相框样式」面板里挑（缩略图用这幅作品实时渲染）→</span></div></article><article><div className="photo-card">{media.photo?.url?<><img src={media.photo.url} alt="已自然优化的课堂照片" style={{transform:`rotate(${media.photo.rotation||0}deg)`}}/><button type="button" className="frame-rotate-button photo-rotate-button" onClick={rotatePersonalPhoto}><RefreshCw size={16}/>旋转照片</button></>:<img src={pandaMascot} alt="课堂照片占位预览"/>}</div><div><b>学员照片</b><p>{media.photo?.name||'未上传课堂照片，可返回上一步补充。'}</p></div></article></div>{batchFramingPanel}{studioDrawerTrigger('frame')}{frameStylePanel}{overlayPanelTrigger}{overlayDrawerOpen?<div className="lesson-overlay-scrim" data-overlay-scrim="true" onClick={()=>setOverlayDrawerOpen(false)}/>:null}{overlayPanel}{studioDrawerTrigger('save')}{saveImagePanel}{studioDrawer?<div className="studio-drawer-scrim" data-studio-drawer-scrim={studioDrawer} onClick={()=>setStudioDrawer('')}/>:null}{framingPerfPanel}{saveImageSheet}<div className="scene-actions"><Button variant="secondary" onClick={()=>go(1)}>返回创建信息</Button><Button icon={ArrowRight} onClick={()=>go(3)}>进入五维点评</Button></div></section>:null}
       {step===3?<section className="scene-panel review-task-v2"><div className="review-media"><div className="scene-heading"><span>{mode==='班级反馈'?'本班课后素材':'本次课素材'}</span><h2>{mode==='班级反馈'?'周六创意绘画 2 班 · 班级课后反馈':`${selectedStudentLabel}${activeFrame?.plaqueTitle?` · 《${activeFrame.plaqueTitle}》`:''}`}</h2></div><div className={`review-gallery ${mode==='班级反馈'?'class-review-gallery':''}`}>{mode==='班级反馈'?<><ClassMediaMosaic items={classMosaicArtworks} kind="artwork" date={lessonDateDots} writeBackKeyOf={classArtworkWriteBackKeyOf} onRotate={index=>rotateBatchItem('artwork',index)}/><ClassMediaMosaic items={classMosaicPhotos} kind="photo" groups={photoGroups} date={lessonDateDots} onRotateEntry={uploadId=>rotateUploadEntry('photo',uploadId)}/></>:<><div className={`review-art exhibition-art${reviewFramedSrc?' framed-art':''}`} data-review-artwork-source={reviewWrittenBackUrl?'writeback':'framed'} data-review-artwork-fingerprint={artworkUrlFingerprint(reviewFramedSrc)}>{reviewFramedSrc?<div className="framed-art-final"><img src={reviewFramedSrc} alt={`${selectedStudentLabel}的作品 · ${activeFrame?.name||'装裱'}`} data-review-artwork="true"/>{activeFrame?.name?<span className="framed-badge">{activeFrame.name}</span>:null}{reviewWrittenBackUrl?<span className="written-back-badge" data-review-artwork-written-back="true">老师保存的成品图</span>:null}</div>:<><div className="artwork-mat">{media.artwork?.url?<img src={media.artwork.cleanUrl||media.artwork.originalUrl||media.artwork.url} alt={`${selectedStudentLabel}的作品`}/>:'✺'}</div><div className="artwork-plaque"><div><b>{selectedStudentLabel}</b><span>{activeFrame?.plaqueTitle?`《${activeFrame.plaqueTitle}》`:''}</span></div><time>创作于 {(activeFrame?.plaqueDate||new Date().toISOString().slice(0,10).replace(/-/g,'.'))}</time></div></>}</div><div className="review-photo portrait-print"><div className="portrait-mat">{media.photo?.url?<img src={media.photo.url} alt="陈一诺课堂照片"/>:<img src={pandaMascot} alt="课堂照片占位"/>}</div><div className="portrait-caption">{selectedStudentLabel} · {(activeFrame?.plaqueDate||new Date().toISOString().slice(0,10).replace(/-/g,'.'))}</div></div></>}</div></div><ReviewKeywordDock visible selected={keywords} onToggle={toggleKeyword} suggested={aiKeywords} suggesting={keywordSuggesting} dirty={keywordDirty} generated={reviewGenerated}/><div className={`coach-review ${mode==='班级反馈'?'class-coach-review':''}`}><div className="scene-heading"><span>第三步</span><h2>{mode==='班级反馈'?'班级课程反馈':'五维点评'}</h2></div><select value={subject} onChange={e=>setSubject(e.target.value)}><option>通用美术</option><option>创意绘画（3-6岁）</option><option>儿童画（6-9岁）</option><option>素描（9-18岁）</option><option>速写（9-18岁）</option><option>水彩 / 水粉（7-18岁）</option><option>国画（6-18岁）</option></select><p className="evidence">{mode==='班级反馈'?'以下内容基于本节课课程设计、班级素材与老师观察生成，老师可编辑确认后发布给家长。':`下列内容由大模型生成：先读懂作品与课堂素材，再结合「${activeProfileLabel}」的人设、已启用技能与长期记忆，按五个维度分别输出评语。老师可逐条修改后再发布。`}</p>{mode==='班级反馈'?<ClassReviewContent subject={subject}/>:<><div className={`review-source ${reviewGenerated?(localDraftUsed?'local':'ai'):'pending'}`}>{reviewGenerated?(localDraftUsed?<><CircleAlert size={14}/><span>当前正文来自<strong>本地草稿模板</strong>（未调用大模型），发布前请老师逐条核对。</span></>:<><Sparkles size={14}/><span>当前正文由大模型「{activeProfileLabel}」依据人设、技能与长期记忆生成，可直接编辑。</span></>):<><Sparkles size={14}/><span>五个维度等待大模型生成：点击上方「开始生成点评」，评语会逐字写入这里。</span></>}{keywordDirty&&reviewGenerated?<em>观察词已调整，建议重新生成</em>:null}</div>{Object.entries(reviews).map(([name,copy])=><article className={`coach-card${copy?'':' is-empty'}`} key={name}><b>{name}{copy?null:<em className="review-pending">待生成</em>}</b><textarea aria-label={name} value={copy} placeholder={REVIEW_DIMENSION_HINTS[name]||''} onChange={event=>setReviews(current=>({...current,[name]:event.target.value}))}/></article>)}</>}<div className="scene-actions"><Button variant="secondary" onClick={()=>go(2)}>返回智能装裱</Button><Button icon={Archive} onClick={archiveRecord}>归档并生成分享</Button></div></div></section>:null}
       {step===4?<section className="share-task scene-panel"><img src={pandaObserve} alt="熊猫成长伙伴"/><div><span>已归档至{selectedStudentLabel}的成长档案</span><h2>这一次的成长，<br/>已经被完整记录。</h2><p>作品、课堂照片与五维点评已经同步保存到本地草稿。</p><div className="share-actions"><Button icon={Archive} onClick={()=>setToast('成长集锦任务已创建，等待服务端接入')}>制作成长集锦</Button><Button variant="secondary" icon={Frame} onClick={()=>setToast('个人作品集任务已创建，等待服务端接入')}>制作作品集</Button></div><div className="scene-actions"><Button variant="secondary" onClick={()=>go(3)}>返回五维点评</Button><Button icon={FileText} onClick={()=>navigate('archives')}>进入成长档案</Button></div></div></section>:null}
     </section></>;
