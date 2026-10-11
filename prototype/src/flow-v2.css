@@ -403,7 +403,30 @@
 .frame-style-tune-foot button{border:1px solid #e3d7b5;background:#fff;border-radius:8px;padding:6px 10px;font-size:10px;font-weight:700;color:#716850;cursor:pointer}
 .frame-style-tune-foot button:disabled{opacity:.45;cursor:default}
 .frame-choice-hint{display:block;margin-top:5px;font-size:10px;line-height:1.5;color:#857a64}
-@media(max-width:800px){.frame-style-panel{padding:14px}.frame-style-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.frame-style-group{align-items:flex-start;flex-direction:column;gap:6px}.frame-style-group>span{width:auto}}
+/* ---- 我的模板（[第二步 US-009]）--------------------------------------------------
+   个人模板在缩略图网格里带「我的」标记、卡片配色与系统模板区分；网格下方是「我的模板」管理块
+   （只有个人模板才有重命名 / 删除入口）与「另存为我的模板」表单。 */
+.frame-style-card.is-mine:not(.active){border-color:#c3d8ae;background:#fbfdf5}
+.frame-style-card.is-mine.active{border-color:#8fae63;box-shadow:0 0 0 2px #e7f2d8}
+.frame-style-mine{position:absolute;top:6px;left:6px;font-style:normal;font-size:9px;font-weight:800;color:#3f5b20;background:#e7f2d8;border-radius:999px;padding:1px 7px}
+.frame-preset-mine,.frame-preset-save{display:flex;flex-direction:column;gap:9px;border-top:1px dashed #e6d9b8;padding-top:11px}
+.frame-preset-head{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.frame-preset-head b{font-size:12px;color:#292720}
+.frame-preset-head small{flex:1 1 100%;font-size:10px;line-height:1.6;color:#857a64}
+.frame-preset-head small b{color:#4d6b28}
+.frame-preset-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;border:1px solid #dfeacd;background:#fbfdf5;border-radius:11px;padding:7px 9px}
+.frame-preset-badge{flex:none;font-size:9px;font-weight:800;color:#3f5b20;background:#e7f2d8;border-radius:999px;padding:2px 8px}
+.frame-preset-row b{font-size:11px;color:#292720}
+.frame-preset-row em{flex:1 1 120px;font-style:normal;font-size:10px;line-height:1.5;color:#857a64}
+.frame-preset-row button{border:1px solid #e3d7b5;background:#fff;border-radius:8px;padding:6px 10px;font-size:10px;font-weight:700;color:#716850;cursor:pointer}
+.frame-preset-row button.danger{color:#a33326;border-color:#f0d2cb}
+.frame-preset-fields{display:flex;align-items:flex-end;gap:9px;flex-wrap:wrap}
+.frame-preset-fields label{display:flex;flex-direction:column;gap:4px;flex:1 1 180px;font-size:10px;font-weight:700;color:#514a38;text-align:left}
+.frame-preset-fields input[type=text]{border:1px solid #e3d7b5;border-radius:8px;padding:7px 9px;font-size:11px;color:#3c3627;background:#fff;width:100%}
+.frame-preset-fields button{border:1px solid #c99908;background:#fff5d1;border-radius:9px;padding:9px 13px;font-size:11px;font-weight:800;color:#765800;cursor:pointer}
+.frame-preset-fields button:disabled{opacity:.5;cursor:default}
+.frame-preset-notice{margin:0;font-size:10px;line-height:1.6;font-weight:700;color:#4d6b28;background:#edf5e2;border-radius:9px;padding:6px 9px}
+@media(max-width:800px){.frame-style-panel{padding:14px}.frame-style-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.frame-style-group{align-items:flex-start;flex-direction:column;gap:6px}.frame-style-group>span{width:auto}.frame-preset-fields{flex-direction:column;align-items:stretch}.frame-preset-fields label{flex:1 1 auto}.frame-preset-row{align-items:flex-start}}
 
 /* ---- 水印 · 落款 · 时间面板（[第二步 US-007]）------------------------------------
    三区（水印 / 落款 / 时间）共用九宫格定位控件（后台那个 OverlayPositionPad，加了拖动微调）。

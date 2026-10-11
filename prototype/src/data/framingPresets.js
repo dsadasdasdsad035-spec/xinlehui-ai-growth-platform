@@ -264,6 +264,182 @@ export function persistFramingPresets(presets) {
   try { window.localStorage.setItem(STORAGE_KEY, JSON.stringify(presets)); } catch { /* 配额满时静默降级 */ }
 }
 
+// ---------------------------------------------------------------------------
+// 我的模板（老师端「另存为我的模板」/ 重命名 / 删除，[第二步 US-009]）
+//
+// 三条口径写清楚，免得后人改坏：
+//   1. **保存下来的是一份 spec，不是「当前选用」的一层补丁**。来源是 `frameSpecRenderView()`
+//      给出的渲染视图（= 渲染层真正读到的那几个字段），所以「老师看到的样子」与「存下来的样子」
+//      由同一条路径保证一致，且**结构上不可能带上对单幅作品的编辑**（artworkEdit：旋转 / 裁剪 / 缩放）。
+//   2. **只有本人写、本人删**：`framePresetEditableBy` 是界面与（将来）接口共用的写权限判据，
+//      平台与机构模板在老师端不显示编辑入口，也不接受写入。
+//   3. 删除**只影响可选列表**：成品图是保存 / 归档时写下的独立副本（作品位与档案记录各一份），
+//      模板没了不会改动任何已经产出的图。
+// ---------------------------------------------------------------------------
+
+/** 保存为模板时 spec 里**保留**的分组：相框 / 卡纸 / 展签 / 水印 / 落款 / 时间。 */
+export const FRAMING_PRESET_SPEC_GROUPS = ['frame', 'mat', 'plaque', 'watermark', 'signature', 'date'];
+
+/** 分组的中文名（保存成功的回执、面板摘要与断言都读它，别在界面里另写一份）。 */
+export const FRAMING_PRESET_GROUP_LABELS = {
+  canvas: '画布',
+  frame: '相框',
+  mat: '卡纸',
+  plaque: '展签',
+  watermark: '水印',
+  signature: '落款',
+  date: '时间',
+  art: '作品编辑'
+};
+
+/**
+ * 明确**不进模板**的分组：`art` 是单幅作品的 artworkEdit（旋转 / 裁剪 / 缩放），
+ * v1 平面结构里的同一意涵字段是 `artRotateDeg` —— 两者都不进模板（US-009 验收原文「不含 artworkEdit」）。
+ * 保存路径走白名单构造（只复制上面的分组），这份清单用于文档与断言的自证。
+ */
+export const FRAMING_PRESET_UNSAVED_FIELDS = ['art', 'artRotateDeg'];
+
+export const FRAMING_PRESET_NAME_MAX = 24;
+export const FRAMING_PRESET_DESCRIPTION_MAX = 60;
+
+/** 删除模板时的说明文案（删除不影响任何已经产出的成品图）。 */
+export const FRAMING_PRESET_DELETE_NOTE = '删除只影响以后的可选列表；已经装裱、保存或归档过的成品图不会被改动。';
+
+const plainObject = (value) => (value && typeof value === 'object' && !Array.isArray(value) ? value : {});
+const cloneValue = (value) => JSON.parse(JSON.stringify(value));
+
+/** 模板名归一化：去首尾空格、把连续空白压成一个空格、截到上限；空值用 `fallback`。 */
+export function normalizeFramingPresetName(value, fallback = '') {
+  const raw = String(value ?? '').replace(/\s+/g, ' ').trim();
+  return (raw || String(fallback ?? '').trim()).slice(0, FRAMING_PRESET_NAME_MAX);
+}
+
+/**
+ * 模板名的问题（空名 / 重名）→ 可读文案；没问题返回空串。
+ * 重名在**同一份列表内**判断（老师端这份列表就是「平台 + 本机构 + 我的」可见集合），
+ * 让老师不必靠「哪个是我的 XX 展」来分辨两套同名模板。重命名时用 `exceptId` 排除自己。
+ */
+export function framingPresetNameIssue(name, presets, { exceptId = '' } = {}) {
+  const clean = normalizeFramingPresetName(name);
+  if (!clean) return '请填写模板名';
+  const clash = (Array.isArray(presets) ? presets : []).some(item => item && item.id !== exceptId
+    && normalizeFramingPresetName(item.name) === clean);
+  return clash ? `已有名为「${clean}」的模板，请换个名字` : '';
+}
+
+/**
+ * 从**渲染视图**（`services/frameSpec.js` 的 `frameSpecRenderView` 输出）构造一份可保存的 v2 spec。
+ *
+ * 为什么以渲染视图为输入：那是「渲染层真正读到的那一份」（形状 / 光影 / 卡纸开关 / 五支叠加元素的
+ * 收敛后取值），于是「另存为我的模板」存下来的就是老师此刻看到的效果，且白名单构造**结构上**排除了
+ * artworkEdit（渲染视图里根本没有 art 分组）。缺失的分组由 `normalizeFrameSpecV2` 补默认值。
+ */
+export function framePresetSpecFromRenderView(view) {
+  const source = plainObject(view);
+  const overlays = plainObject(source.overlays);
+  const hasOverlays = Object.keys(overlays).length > 0;
+  const frame = {
+    shape: source.shape || 'square',
+    color: source.outer,
+    widthRatio: source.outerWidthRatio,
+    cornerRadiusRatio: Number.isFinite(Number(source.cornerRadiusRatio)) ? Number(source.cornerRadiusRatio) : 0,
+    texture: 'solid'
+  };
+  // 光影**只在渲染视图显式给出时**才写进模板：缺失 = 不画光影（v1 老模板的行为）。
+  // 补一份默认光影会让「以老模板为基础另存」凭空多出一层体积感，那就不是「保存我看到的样式」了。
+  if (Object.keys(plainObject(source.lighting)).length) frame.lighting = { ...plainObject(source.lighting) };
+  const group = (name) => cloneValue(plainObject(overlays[name]));
+  return {
+    version: 2,
+    frame,
+    mat: {
+      visible: source.matVisible !== false,
+      color: source.mat,
+      widthRatio: source.matWidthRatio,
+      innerLine: source.innerLine ?? null
+    },
+    plaque: {
+      visible: true,
+      bg: source.plaqueBg,
+      text: source.plaqueText,
+      fontFamily: source.plaqueFontFamily,
+      letterSpacing: source.plaqueLetterSpacing,
+      position: 'bottom'
+    },
+    // 水印 / 落款 / 时间三组**总是写进模板**（验收原文点名了这三项）。渲染视图里没有它们时
+    // （v1 老模板不画任何叠加元素）写一份 `visible: false` 的最小占位 —— 「整组缺省」与
+    // `visible: false` 在绘制层是逐像素一致的两条路径（US-003a 已证），模板的样子不会变。
+    watermark: hasOverlays
+      ? (Object.keys(group('watermark')).length ? group('watermark') : { logo: { visible: false }, text: { visible: false }, qr: { visible: false } })
+      : { logo: { visible: false }, text: { visible: false }, qr: { visible: false } },
+    signature: hasOverlays
+      ? (Object.keys(group('signature')).length ? group('signature') : { visible: false })
+      : { visible: false },
+    date: hasOverlays
+      ? (Object.keys(group('date')).length ? group('date') : { visible: false })
+      : { visible: false },
+    atmosphere: String(source.atmosphere ?? '').slice(0, 120),
+    rationale: String(source.rationale ?? '').slice(0, 120)
+  };
+}
+
+/** 这份 spec 里带了哪几组（保存成功的回执文案；顺序与 FRAMING_PRESET_SPEC_GROUPS 一致）。 */
+export function framePresetSpecGroupLabels(spec) {
+  const source = plainObject(spec);
+  return FRAMING_PRESET_SPEC_GROUPS
+    .filter(key => Object.keys(plainObject(source[key])).length > 0)
+    .map(key => FRAMING_PRESET_GROUP_LABELS[key] || key);
+}
+
+/** 列表里「能由这位观察者改写」的模板（老师端 = 自己的个人模板；管理端 = 全部）。 */
+export function framePresetEditableBy(preset, viewer = {}) {
+  const item = normalizeFramingPreset(preset);
+  if (viewer.role === 'admin' || viewer.manageAllScopes === true) return true;
+  // 系统（平台）与机构模板由管理员维护：老师端既不显示编辑入口，也不接受写入。
+  if (item.scope !== 'teacher') return false;
+  return Boolean(item.ownerKey) && teacherIdentityKeys(viewer).includes(item.ownerKey);
+}
+
+/** 可编辑的模板列表（界面只给它渲染编辑入口）。 */
+export function editableFramingPresets(presets, viewer = {}) {
+  return (Array.isArray(presets) ? presets : []).filter(item => framePresetEditableBy(item, viewer));
+}
+
+/** 层级徽标：平台 / 机构 / 我的（`我的` 就是个人模板的标记）。 */
+export function framePresetScopeLabel(preset) {
+  return FRAMING_PRESET_SCOPE_LABELS[normalizeFrameScope(preset?.scope)] || FRAMING_PRESET_SCOPE_LABELS.platform;
+}
+
+/**
+ * 「另存为我的模板」：把当前样式存成一套**个人模板**。
+ * ownerKey 取观察者身份串（老师姓名优先）—— 缺了 ownerKey 的个人模板对谁都不可见（fail-safe），
+ * 所以这里必须落下来；id 仍用随机唯一值（`preset_key` 是 upsert 冲突键，不能由自然键派生）。
+ */
+export function buildTeacherFramingPreset({ name, description = '', spec = null, viewer = {}, sortOrder } = {}) {
+  const now = Date.now();
+  const ownerKey = String(viewer.teacherName || viewer.teacherId || teacherIdentityKeys(viewer)[0] || '');
+  return {
+    id: `frame-teacher-${now.toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+    name: normalizeFramingPresetName(name, '我的装裱'),
+    description: String(description ?? '').replace(/\s+/g, ' ').trim().slice(0, FRAMING_PRESET_DESCRIPTION_MAX),
+    spec,
+    plaqueStudent: '',
+    plaqueDate: '',
+    plaqueTitle: '',
+    enabled: true,
+    builtin: false,
+    scope: 'teacher',
+    ownerKey,
+    sortOrder: Number.isFinite(sortOrder) ? sortOrder : 90
+  };
+}
+
+/** 重命名：只改名字，模板 id 与 spec 一个字段都不动（历史成品图引用的就是这份 spec）。 */
+export function renameFramingPreset(preset, name) {
+  const item = normalizeFramingPreset(preset);
+  return { ...item, name: normalizeFramingPresetName(name, normalizeFramingPresetName(item.name, '我的装裱')) };
+}
+
 /**
  * 新建一套模板。默认是**平台层**（后台「新增装裱」由管理员维护）；
  * 老师端「另存为我的模板」（US-031）传 `{ scope: 'teacher', ownerKey: 当前老师 }`，

@@ -56,9 +56,9 @@ import { archiveSkillPackage, readSkillPackage } from './services/skillPackage';
 import { MARKETPLACE_SYNCED_AT, indexStats, marketCategories, searchMarket, searchSkillIndex } from './data/skillMarketplace';
 // 装裱模板分三层（platform / org / teacher，US-001b）：scope + ownerKey 决定归属，
 // 老师端只显示自己可见的模板（filterFramingPresetsForViewer），管理端读全量。
-import { createEmptyFramingPreset, filterFramingPresetsForViewer, loadFramingPresets, mergeMissingFramingPresets, persistFramingPresets } from './data/framingPresets';
+import { createEmptyFramingPreset, editableFramingPresets, filterFramingPresetsForViewer, framePresetEditableBy, framingPresetNameIssue, framePresetScopeLabel, framePresetSpecFromRenderView, framePresetSpecGroupLabels, FRAMING_PRESET_DELETE_NOTE, buildTeacherFramingPreset, loadFramingPresets, mergeMissingFramingPresets, normalizeFramingPreset, persistFramingPresets, renameFramingPreset } from './data/framingPresets';
 import { deleteRemoteFramingPreset, loadRemoteFramingPresets, saveRemoteFramingPreset } from './services/framingPresetsApi';
-import { DEFAULT_FRAME_SPEC, DATE_FORMATS, DATE_SOURCES, FRAMING_FONT_WHITELIST, SEAL_SHAPES, frameSpecRenderKey, frameSpecView, generateFrameSpec, normalizeFrameSpec, normalizeFrameSpecV2 } from './services/frameSpec';
+import { DEFAULT_FRAME_SPEC, DATE_FORMATS, DATE_SOURCES, FRAMING_FONT_WHITELIST, SEAL_SHAPES, frameSpecRenderKey, frameSpecRenderView, frameSpecView, generateFrameSpec, normalizeFrameSpec, normalizeFrameSpecV2 } from './services/frameSpec';
 import { FRAME_STYLE_COLORS, FRAME_STYLE_MAT_COLORS, FRAME_STYLE_SHAPES, FRAME_STYLE_WIDTHS, applyFrameStyleTweaks, describeFrameStyleSpec, frameStyleTweakCount, frameStyleTweakSummary, normalizeFrameStyleTweaks } from './data/frameStyles';
 import { FRAME_PREVIEW_LONG_EDGE, FRAME_THUMB_CACHE_LIMIT, frameThumbnailKey, renderFrameStyleThumbnail } from './services/frameThumbnails';
 // 叠加元素的定位与遮挡规则（US-003a/003b/003c）：九宫格枚举、字体白名单、位置中文名、
@@ -416,7 +416,7 @@ function IntakeSlotGroups({listKey,rows,collapsedKeys,onToggle,renderRow,classNa
   </div>;
 }
 
-function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherProfiles=[],skillLibrary=[],courses=[],lessons=[],setLessons=()=>{},role='teacher'}){
+function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramingPresets=()=>{},teacherProfiles=[],skillLibrary=[],courses=[],lessons=[],setLessons=()=>{},role='teacher'}){
   const management=loadStudentManagement();
   const availableClasses=management.classes||[];
   // 当前登录老师：原型阶段只有一个老师身份（见 roleMeta.teacher），班级数据里存的是老师姓名。
@@ -478,6 +478,16 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
   const enabledFrames=filterFramingPresetsForViewer(framingPresets,teacherFrameViewer).filter(item=>item.enabled!==false);
   const activeFrame=enabledFrames.find(item=>item.id===frame)||enabledFrames[0]||null;
   const activeFrameId=activeFrame?.id||'';
+  // ---- 我的模板（US-009）-----------------------------------------------------------
+  // 老师端「另存为我的模板」的重命名 / 删除只对自己的个人模板开放：系统（平台）与机构模板
+  // 由管理员在「装裱设置」里维护，老师端**不显示编辑入口**，写入侧也由 `framePresetEditableBy` 再拦一道。
+  const myTemplateFrames=editableFramingPresets(framingPresets,teacherFrameViewer);
+  const [myTemplateForm,setMyTemplateForm]=useState({name:'',description:''});
+  // 保存 / 重命名 / 删除的回执与拒绝原因（内联文案，不只在 2.6 秒的 toast 里）。
+  const [myTemplateNotice,setMyTemplateNotice]=useState('');
+  const [renamingPresetId,setRenamingPresetId]=useState('');
+  const [renamePresetValue,setRenamePresetValue]=useState('');
+  const [myTemplateSaving,setMyTemplateSaving]=useState(false);
   // ---- 相框样式微调（US-006）-------------------------------------------------------
   // 老师对所选样式的调整（形状 / 材质色 / 框宽 / 卡纸）是**本次选用的一层补丁**：
   // 不写回模板（模板的写权限是 US-031「另存为我的模板」的事），也不进草稿（草稿字段清单是 US-409 定的）。
@@ -1177,6 +1187,57 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
     if(!frameTweakCount) return;
     setFrameTweaks(normalizeFrameStyleTweaks(null));
     setToast('已重置相框微调，回到模板本身的样式');
+  };
+  // ---- 我的模板：另存为 / 重命名 / 删除（US-009）------------------------------------
+  // 保存的是**老师此刻看到的那份样式**：spec 从 `frameSpecRenderView(effectiveFrameSpec)` 构造，
+  // 因而相框 / 卡纸 / 水印 / 落款 / 时间规则全在里面，而单幅作品的 artworkEdit（旋转 / 裁剪 / 缩放）
+  // 结构上不可能进去（渲染视图里没有 art 分组）。
+  const saveAsMyTemplate=async()=>{
+    if(myTemplateSaving) return;
+    const problem=framingPresetNameIssue(myTemplateForm.name,framingPresets);
+    if(problem){setMyTemplateNotice(problem);setToast(problem);return}
+    const spec=framePresetSpecFromRenderView(frameSpecRenderView(effectiveFrameSpec));
+    const preset=buildTeacherFramingPreset({name:myTemplateForm.name,description:myTemplateForm.description,spec,viewer:teacherFrameViewer});
+    // 先落进受控列表（本地镜像由 main.jsx 的 persistFramingPresets effect 负责），云端不通时 catch 里保留。
+    setFramingPresets([...framingPresets,preset]);
+    // 保存后直接选用这一套，并把「本次微调」清掉：微调已经并进模板 spec，留着只会让面板显示「已微调」
+    // （像素不变 —— 新模板的 spec 就是从当前渲染视图构造的，两条路径渲染结果一致）。
+    setFrameTweaks(normalizeFrameStyleTweaks(null));
+    setOverlayTweaks(normalizeOverlayTweaks(null));
+    setFrame(preset.id);
+    setMyTemplateForm({name:'',description:''});
+    setMyTemplateNotice(`已保存我的模板「${preset.name}」：含 ${framePresetSpecGroupLabels(spec).join(' · ')}，不含对单幅作品的旋转与裁剪。`);
+    setMyTemplateSaving(true);
+    try{ await saveRemoteFramingPreset(preset); setToast(`我的模板「${preset.name}」已保存，下次进入可直接选用`); }
+    catch{ setToast('已保存到本机；云端暂未连通，稍后可重试。'); }
+    finally{ setMyTemplateSaving(false); }
+  };
+  const startRenamePreset=(preset)=>{
+    if(!framePresetEditableBy(preset,teacherFrameViewer)){setToast('系统与机构模板由管理员维护，老师端不能重命名');return}
+    setMyTemplateNotice('');
+    setRenamingPresetId(preset.id);
+    setRenamePresetValue(preset.name||'');
+  };
+  const commitRenamePreset=async(preset)=>{
+    if(!framePresetEditableBy(preset,teacherFrameViewer)){setToast('系统与机构模板由管理员维护，老师端不能重命名');return}
+    const problem=framingPresetNameIssue(renamePresetValue,framingPresets,{exceptId:preset.id});
+    if(problem){setMyTemplateNotice(problem);setToast(problem);return}
+    const next=renameFramingPreset(preset,renamePresetValue);
+    setFramingPresets(framingPresets.map(item=>item.id===next.id?next:item));
+    setRenamingPresetId('');
+    setMyTemplateNotice(`已把我的模板重命名为「${next.name}」；模板 id 与参数都没变，已产出的成品图不受影响。`);
+    try{ await saveRemoteFramingPreset(next); setToast(`我的模板已重命名为「${next.name}」`); }
+    catch{ setToast('已在本机重命名；云端暂未同步。'); }
+  };
+  const removeMyPreset=async(preset)=>{
+    if(!framePresetEditableBy(preset,teacherFrameViewer)){setToast('系统与机构模板由管理员维护，老师端不能删除');return}
+    // 删除只从可选列表里移除：成品图是保存 / 归档时写下的独立副本，模板没了也不会改动它。
+    setFramingPresets(framingPresets.filter(item=>item.id!==preset.id));
+    if(renamingPresetId===preset.id) setRenamingPresetId('');
+    if(activeFrameId===preset.id) setFrame('');
+    setMyTemplateNotice(`已删除我的模板「${preset.name}」。${FRAMING_PRESET_DELETE_NOTE}`);
+    try{ await deleteRemoteFramingPreset(preset.id); setToast(`已删除我的模板「${preset.name}」`); }
+    catch{ setToast('已从本机删除；云端删除未成功。'); }
   };
   // ---- 水印 · 落款 · 时间面板（US-007）的写入与素材上传 -----------------------------
   // 三区各自的写入都走同一条路：先把「当前分组」（模板 + 本次改动收敛后的值）复制一份，
@@ -2642,12 +2703,17 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
           const cardSpec=applyFrameStyleTweaks(preset.spec||DEFAULT_FRAME_SPEC,isActive?frameTweaks:{});
           const desc=describeFrameStyleSpec(cardSpec);
           const thumb=frameThumbs[preset.id];
-          return <button type="button" role="radio" aria-checked={isActive} key={preset.id} className={`frame-style-card${isActive?' active':''}`} data-frame-style={preset.id} data-frame-style-active={isActive?'true':'false'} data-frame-style-name={preset.name} data-frame-style-shape={desc.shapeId} data-frame-style-color={desc.colorHex} data-frame-style-width={desc.widthRatio===null?'':Number(desc.widthRatio.toFixed(4))} data-frame-style-mat={desc.matVisible?'true':'false'} data-frame-style-builtin={preset.builtin?'true':'false'} data-frame-style-tweaked={isActive&&frameTweakCount?'true':'false'} data-frame-thumb-ready={thumb?'true':'false'} onClick={()=>selectFrameStyle(preset.id)} title={preset.description||preset.name}>
+          // 个人模板带「我的」标记并与系统模板视觉区分（US-009）：卡片上标出来，
+          // 「我的模板」管理块里还有重命名 / 删除两个入口（只有个人模板才有）。
+          const frameScope=normalizeFramingPreset(preset).scope;
+          const isMine=frameScope==='teacher';
+          return <button type="button" role="radio" aria-checked={isActive} key={preset.id} className={`frame-style-card${isActive?' active':''}${isMine?' is-mine':''}`} data-frame-style={preset.id} data-frame-style-active={isActive?'true':'false'} data-frame-style-name={preset.name} data-frame-style-scope={frameScope} data-frame-style-mine={isMine?'true':'false'} data-frame-style-shape={desc.shapeId} data-frame-style-color={desc.colorHex} data-frame-style-width={desc.widthRatio===null?'':Number(desc.widthRatio.toFixed(4))} data-frame-style-mat={desc.matVisible?'true':'false'} data-frame-style-builtin={preset.builtin?'true':'false'} data-frame-style-tweaked={isActive&&frameTweakCount?'true':'false'} data-frame-thumb-ready={thumb?'true':'false'} onClick={()=>selectFrameStyle(preset.id)} title={preset.description||preset.name}>
             <span className={`frame-style-thumb is-${desc.shapeId}`} data-frame-thumb={preset.id} style={frameStyleFallbackStyle(desc)}>
               {thumb?<img src={thumb} alt={`${preset.name}：用当前作品实时渲染的装裱缩略图`}/>:<em>{frameThumbSource?'实时渲染中…':'上传作品后显示实时预览'}</em>}
             </span>
             <b>{preset.name}</b>
             <small>{desc.summary}</small>
+            {isMine?<i className="frame-style-mine" data-frame-style-mine-badge={preset.id}>{framePresetScopeLabel(preset)}</i>:null}
             {isActive&&frameTweakCount?<i className="frame-style-tweaked">已微调</i>:null}
           </button>;
         })}
@@ -2679,6 +2745,44 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
           <button type="button" data-frame-action="reset-tweaks" disabled={!frameTweakCount} onClick={resetFrameTweaks}>重置微调</button>
         </div>
       </div>:null}
+      {enabledFrames.length?<div className="frame-preset-mine" data-frame-preset-mine="true" data-frame-preset-mine-count={myTemplateFrames.length}>
+        <div className="frame-preset-head">
+          <b>我的模板</b>
+          <small>{myTemplateFrames.length
+            ? `共 ${myTemplateFrames.length} 套；平台与机构模板由管理员在「装裱设置」里维护，老师端不显示这些模板的编辑入口。`
+            : '还没有自己的模板：把当前样式（含卡纸、水印、落款与时间规则）存一套，下次进入直接选用。'}</small>
+        </div>
+        {myTemplateFrames.map(preset=>{
+          const editingName=renamingPresetId===preset.id;
+          return <div className="frame-preset-row" key={preset.id} data-frame-preset-row={preset.id} data-frame-preset-scope={normalizeFramingPreset(preset).scope}>
+            <span className="frame-preset-badge" data-frame-preset-scope-label={framePresetScopeLabel(preset)}>{framePresetScopeLabel(preset)}</span>
+            {editingName
+              ? <>
+                  <input type="text" value={renamePresetValue} data-frame-preset-rename-input={preset.id} aria-label="模板名" onChange={event=>setRenamePresetValue(event.target.value)} onKeyDown={event=>{if(event.key==='Enter'){event.preventDefault();commitRenamePreset(preset)}}}/>
+                  <button type="button" data-frame-preset-action={`rename-confirm:${preset.id}`} onClick={()=>commitRenamePreset(preset)}>保存名称</button>
+                  <button type="button" data-frame-preset-action={`rename-cancel:${preset.id}`} onClick={()=>setRenamingPresetId('')}>取消</button>
+                </>
+              : <>
+                  <b>{preset.name}</b>
+                  <em>{preset.description||'无备注'}</em>
+                  <button type="button" data-frame-preset-action={`rename:${preset.id}`} onClick={()=>startRenamePreset(preset)}>重命名</button>
+                  <button type="button" className="danger" data-frame-preset-action={`delete:${preset.id}`} onClick={()=>removeMyPreset(preset)}>删除</button>
+                </>}
+          </div>;
+        })}
+      </div>:null}
+      <div className="frame-preset-save" data-frame-preset-save="true" data-frame-preset-save-busy={myTemplateSaving?'true':'false'}>
+        <div className="frame-preset-head">
+          <b>另存为我的模板</b>
+          <small>保存当前这套样式：相框、卡纸、水印、落款与时间规则；<b>不含</b>对单幅作品的旋转与裁剪（那是这幅作品自己的编辑）。</small>
+        </div>
+        <div className="frame-preset-fields">
+          <label>模板名<input type="text" value={myTemplateForm.name} data-frame-preset-name="true" placeholder="例如：我的暖金细边" onChange={event=>setMyTemplateForm(current=>({...current,name:event.target.value}))}/></label>
+          <label>备注（选填）<input type="text" value={myTemplateForm.description} data-frame-preset-note="true" placeholder="例如：结课展用，暖金细边 + 米白卡纸" onChange={event=>setMyTemplateForm(current=>({...current,description:event.target.value}))}/></label>
+          <button type="button" data-frame-preset-action="save" disabled={myTemplateSaving} onClick={saveAsMyTemplate}>{myTemplateSaving?'保存中…':'保存为我的模板'}</button>
+        </div>
+        {myTemplateNotice?<p className="frame-preset-notice" data-frame-preset-notice="true">{myTemplateNotice}</p>:null}
+      </div>
     </section>
   );
   // ---- 水印 · 落款 · 时间面板（US-007）---------------------------------------------

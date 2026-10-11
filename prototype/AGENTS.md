@@ -907,6 +907,39 @@ DOM/canvas 部分在 `src/services/artworkWriteBack.js`，编排在 `main.jsx` �
 - 「停用」（`enabled`）与「层级」（`scope`）是两个正交维度：`enabled === false` 只影响可选列表
   （老师端 `enabledFrames`），不影响管理端列表显示；层级过滤也不看 `enabled`。
 
+## 我的模板：老师端「另存为我的模板 / 重命名 / 删除」（US-009）
+
+面板在 `TeacherFlowV2` 的 `frameStylePanel` **底部**（相框网格 → 微调 → 「我的模板」管理块 → 「另存为我的模板」表单）。
+
+| | 位置 | 约定 |
+|---|---|---|
+| 保存的分组白名单 | `data/framingPresets.js` 的 `FRAMING_PRESET_SPEC_GROUPS` | 只保留 `frame/mat/plaque/watermark/signature/date`；`art`（artworkEdit）与 v1 的 `artRotateDeg` 明确**不进模板** |
+| 从渲染视图构造 spec | 同文件 `framePresetSpecFromRenderView(view)` | 入参是 `services/frameSpec.js` 的 **`frameSpecRenderView()` 输出**（渲染层真正读到的那一份）→「所见即所存」，且结构上不可能带上 artworkEdit |
+| 构造个人模板 | 同文件 `buildTeacherFramingPreset({name, description, spec, viewer})` | `scope: 'teacher'` + `ownerKey = viewer.teacherName`（缺 ownerKey 对谁都不可见），id 随机唯一 |
+| 写权限判据 | 同文件 `framePresetEditableBy(preset, viewer)` / `editableFramingPresets(list, viewer)` | 老师端**只有自己的个人模板**可改 / 可删；平台与机构模板返回 false（管理端 `role:'admin'` 仍为 true） |
+| 命名规则 | `normalizeFramingPresetName` / `framingPresetNameIssue` | 空名与重名（同一份可见列表内）给出可读原因；重命名时用 `{ exceptId }` 排除自己 |
+
+- **保存的就是「老师此刻看到的样式」**：`spec` 由 `frameSpecRenderView(effectiveFrameSpec)` 构造，
+  所以相框 / 卡纸 / 水印 / 落款 / 时间规则都在，而单幅作品的 `artworkEdit`（旋转 / 裁剪 / 缩放）不在。
+  两条已验证的推论：① 保存前后成品图**逐字节一致**（保存后清掉本次微调、切到新模板，渲染结果不变）；
+  ② 老 v1 模板没有显式 `frame.lighting` 时保存结果也不写光影（否则会凭空多出一层体积感）。
+- 三支叠加元素**总是**写进模板：渲染视图里没有它们时（v1 老模板）写一份 `visible:false` 的最小占位 ——
+  「整组缺省」与 `visible:false` 在绘制层逐像素一致（US-003a 已证），模板的样子不会变，但验收要的
+  「保存内容含水印 / 落款 / 时间」在结构上成立。
+- **老师端不显示系统 / 机构模板的编辑入口**：管理块只渲染 `editableFramingPresets(...)`（= 自己的个人模板），
+  网格卡片只带 `data-frame-style-mine` 标记，没有任何 platform / org 的 rename / delete 控件；
+  写入侧（`saveAsMyTemplate` / `commitRenamePreset` / `removeMyPreset`）**再判一次** `framePresetEditableBy`。
+  服务端的 scope 写权限校验是 US-013 的范围，这里只做界面 + 领域层两道。
+- **删除只影响可选列表**：`removeMyPreset` 只从 `framingPresets` 里摘掉这一条（+ 删云端行），
+  成品图是保存 / 归档时写下的独立副本（作品位 `writeBack.imageUrl` 与记录 `framedArtwork.imageUrl`），
+  删除后归档记录的图**逐字符不变**（已在浏览器里按地址指纹验过）。删掉的正好是当前选用的那一套时，
+  `setFrame('')` 让 `activeFrame` 回落到第一套可用模板，不留下指向不存在模板的选中态。
+- 保存路径照抄其它实体的口径：先落进受控 state（`main.jsx` 的 `persistFramingPresets` effect 写本机镜像
+  并补齐内置样式），再 `saveRemoteFramingPreset`；云端不通时 `catch` 里提示「已保存到本机」，
+  **不把 state 回滚**（本机云端表缺 `owner_key` 列，个人模板本来就写不上去）。
+- US-006 的微调与 US-007 的叠加元素仍是「本次选用的一层补丁」：保存成我的模板后会把两层补丁清掉
+  （内容已经并进新模板的 spec），面板因此不再显示「已微调」。
+
 ## 容易踩的坑
 
 - **写接口抛错时「await 之后就没了」**：`save<X>/create<X>/update<X>` 是「先写本地镜像再推云端」，
@@ -930,6 +963,17 @@ DOM/canvas 部分在 `src/services/artworkWriteBack.js`，编排在 `main.jsx` �
   构建完全正常，直到浏览器渲染到那一行才 `ReferenceError`，React 直接把整棵树卸载成白屏。
   这类错误只有「真的把页面点到那一步」才会暴露 —— UI 故事的最小验证是把改动的界面**渲染出来**
   （截图 + 断言），不要只看构建与 Node 断言。
+- **异步事件处理器里的 `ReferenceError` 连 console 都不报**（US-009 真踩）：把 import 里的函数改了名、
+  却漏改调用点（`framePresetNameProblem` → `framingPresetNameIssue`），于是 `onClick` 的 `async`
+  处理器在 `await` 之前就抛错 —— 表现是「按钮点了完全没反应」，DOM 无变化、**console 无报错**、
+  build 通过（不检查未定义全局）。定位手段：在页面里装 `window.addEventListener('unhandledrejection', …)`
+  收集 rejection（普通 `console.error` 探针抓不到），或直接读按钮 fiber 的 `__reactProps$…` 确认 `onClick` 在。
+  改函数名时用**词界全局替换**并回读一遍所有调用点。
+- **构建偶发 `[MISSING_EXPORT]`：模块单独打包时导出明明存在**（US-009 实测 `framePresetNameProblem`）：
+  rolldown 对某个具体标识符报「not exported by src/data/xxx.js」，但直接 `rolldown({input:'src/data/xxx.js'})`
+  打印出的 `exports` 列表里有它，Node 也能 import。**换一个名字立刻就好**（本故事改成
+  `framingPresetNameIssue`）。遇到这种「导出明明在、构建说没有」的情况，别去改导出语法，
+  先换标识符名再验一次。
 - **验证「后台改模板 → 老师端生效」时要挑一套不在本机云端表里的模板**：本机云端
   `framing_presets` 表存着最早的 4 套（`frame-starlight / frame-oak / frame-ink / frame-ai-shuimo`），
   它们是**真源**且本机写不回去，登录老师端时会把后台刚改的本机值顶掉（表现：后台明明保存成功、
