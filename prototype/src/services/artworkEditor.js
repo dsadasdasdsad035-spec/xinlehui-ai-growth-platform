@@ -9,7 +9,7 @@
  * 原图**只读**，编辑结果是一份新的画布产物，任何情况下都不回写 `originalUrl`。
  */
 import { rotateArtworkOriginal, CLEAN_MAX_EDGE } from './framing';
-import { normalizeRotationDeg } from '../data/artworkEdit';
+import { artworkContentRect, normalizeArtworkEdit, normalizeRotationDeg } from '../data/artworkEdit';
 import { cropIsFull, cropRectOf } from '../data/artworkCrop';
 
 /**
@@ -31,11 +31,15 @@ function loadImage(source) {
 /**
  * 按旋转角生成「旋转稿」。
  *
- * - `0° / 360°`：**原样返回 source**（不重新编码 —— 没转就是没转，连一像素都不动）；
+ * - `0° / 360°` 且**不限尺寸**：原样返回 source（不重新编码 —— 没转就是没转，连一像素都不动）；
  * - `90°` 的整数倍且要高清：走 `framing.js` 的 `rotateArtworkOriginal`（旧实现的精确路径，逐字节一致）；
- * - 任意角度、或低分辨率预览：先把源图等比缩到长边 ≤ `maxEdge`（预览时用，低分辨率才跟手），
+ * - 任意角度、或要低分辨率预览稿：先把源图等比缩到长边 ≤ `maxEdge`（预览时用，低分辨率才跟手），
  *   再把画布按「旋转后的外接框」放大、用背景色补齐四角 —— 任意角度旋转后原图的角会转出画布，
  *   补齐保证**作品本身一个像素都不被裁掉**（补白交给下游的自动裁剪处理）。
+ *   0° 且源图本来就 ≤ `maxEdge` 时同样不重新编码（直接返回 source）。
+ *
+ * `maxEdge` 就是「编辑态实时预览」（`EDIT_PREVIEW_MAX_EDGE` = 900）与「停手 300ms 后合成的高清预览」
+ * （`EDIT_PREVIEW_HD_MAX_EDGE` = 2400）这两档的唯一开关（US-004c）。
  *
  * @param {{source:string, rotation?:number, maxEdge?:number, background?:string}} options
  * @returns {Promise<string>} data URL（或原图地址本身）
@@ -43,9 +47,26 @@ function loadImage(source) {
 export async function renderArtworkRotation({ source, rotation = 0, maxEdge = 0, background = '#FFFFFF' } = {}) {
   if (!source) throw new Error('缺少作品原图地址。');
   const deg = normalizeRotationDeg(rotation);
-  if (!deg) return source;
   const limit = Number(maxEdge) > 0 ? Math.floor(Number(maxEdge)) : 0;
+  // 没转、也没有尺寸上限：原样返回原图地址（连一像素都不动）。
+  if (!deg && !limit) return source;
   if (!limit && deg % 90 === 0) return rotateArtworkOriginal({ source, rotation: deg });
+  if (!deg) {
+    // 没转、但只要「低分辨率预览稿」（US-004c 的实时预览长边 ≤ 900）：本来就在上限内就不重新编码。
+    const preview = await loadImage(source);
+    const previewWidth = preview.naturalWidth || 1;
+    const previewHeight = preview.naturalHeight || 1;
+    if (Math.max(previewWidth, previewHeight) <= limit) return source;
+    const previewScale = limit / Math.max(previewWidth, previewHeight);
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(previewWidth * previewScale));
+    canvas.height = Math.max(1, Math.round(previewHeight * previewScale));
+    const context = canvas.getContext('2d');
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = 'high';
+    context.drawImage(preview, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL('image/jpeg', 0.92);
+  }
 
   const image = await loadImage(source);
   let sourceWidth = image.naturalWidth || 1;
@@ -77,24 +98,30 @@ export async function renderArtworkRotation({ source, rotation = 0, maxEdge = 0,
 }
 
 /**
- * 按 `artworkEdit.crop` 裁剪「旋转稿」（US-004b 的手动裁剪分支）。
+ * 按 `artworkEdit.crop` 裁剪「旋转稿」（US-004b 的手动裁剪分支 + US-004c 的缩放/平移）。
  *
  * - 裁剪框是**归一化**坐标（0–1，相对摆正后的整幅画面），乘回像素即可，不做旋转（旋转已经在旋转稿里做过）；
- * - 框 = 整幅且原图没超上限时**原样返回 source**（不重新编码 —— 没裁就是没裁，连一像素都不动）；
- * - 其余情况只搬像素：输出长边不超过 `maxEdge`（与自动画心提取同一个上限），JPEG 0.94。
- *   比自动路径简单是**有意为之**：老师画的框就是最终边界，不做纸边识别、不填白、不再外推安全边。
+ * - 未缩放且未平移（identity）且框 = 整幅、原图没超上限：**原样返回 source**（不重新编码）；
+ * - identity 的其余情况只搬像素：按源矩形取样，输出长边不超过 `maxEdge`（与自动画心提取同一个上限），JPEG 0.94；
+ * - `zoom`/`offsetX`/`offsetY` 非默认时走「内容变换」路径：输出画布仍是**裁剪区域的原始像素**
+ *   （长边 ≤ maxEdge），内容按 `data/artworkEdit.js` 的 `artworkContentRect()`（= 编辑器舞台上那套几何）
+ *   画在裁剪窗口里 —— 编辑器里看到什么，成品图就是什么。`zoom < 1` 时窗口边上是白底。
  *
- * @param {{source:string, crop:object, maxEdge?:number, quality?:number}} options
+ * 不做纸边识别、不填白、不再外推安全边：老师画的框（与缩放平移）就是最终边界。
+ *
+ * @param {{source:string, crop:object, zoom?:number, offsetX?:number, offsetY?:number, maxEdge?:number, quality?:number}} options
  * @returns {Promise<{url:string, crop:object, width:number, height:number, source:{width:number,height:number,sx:number,sy:number,sw:number,sh:number}}>}
  */
-export async function renderArtworkCrop({ source, crop, maxEdge = CLEAN_MAX_EDGE, quality = 0.94 } = {}) {
+export async function renderArtworkCrop({ source, crop, zoom, offsetX, offsetY, maxEdge = CLEAN_MAX_EDGE, quality = 0.94 } = {}) {
   if (!source) throw new Error('缺少作品原图地址。');
   const rect = cropRectOf(crop);
+  const edit = normalizeArtworkEdit({ crop: rect, zoom, offsetX, offsetY });
+  const transformed = edit.zoom !== 1 || edit.offsetX !== 0 || edit.offsetY !== 0;
   const image = await loadImage(source);
   const width = image.naturalWidth || 1;
   const height = image.naturalHeight || 1;
   const limit = Number(maxEdge) > 0 ? Math.floor(Number(maxEdge)) : 0;
-  if (cropIsFull(rect) && (!limit || Math.max(width, height) <= limit)) {
+  if (!transformed && cropIsFull(rect) && (!limit || Math.max(width, height) <= limit)) {
     return {
       url: source,
       crop: rect,
@@ -116,7 +143,15 @@ export async function renderArtworkCrop({ source, crop, maxEdge = CLEAN_MAX_EDGE
   const context = canvas.getContext('2d');
   context.imageSmoothingEnabled = true;
   context.imageSmoothingQuality = 'high';
-  context.drawImage(image, sx, sy, sw, sh, 0, 0, outWidth, outHeight);
+  if (transformed) {
+    // 裁剪窗口坐标系 → 画布：两边同比例，所以内容（矩形）的画法与舞台上的 CSS transform 逐项对应。
+    const content = artworkContentRect(edit, rect);
+    context.fillStyle = '#FFFFFF';
+    context.fillRect(0, 0, outWidth, outHeight);
+    context.drawImage(image, content.x * outWidth, content.y * outHeight, content.w * outWidth, content.h * outHeight);
+  } else {
+    context.drawImage(image, sx, sy, sw, sh, 0, 0, outWidth, outHeight);
+  }
   return {
     url: canvas.toDataURL('image/jpeg', quality),
     crop: rect,

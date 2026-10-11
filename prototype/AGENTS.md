@@ -646,6 +646,43 @@ DSH 的 `browser_*` 工具**没有 selectOption 能力**：`browser_type` 走的
     把手会盖在角上，没有优先级就再也抓不回角。
   - 移动端（≤800px）把手放大到 24px 并**隐藏框内的尺寸标签**（一定会被把手压住，尺寸在上方读数里有一份）。
 
+### 缩放 / 平移与两档预览（US-004c）
+
+- **口径（只有一份，三处共用）**：缩放与平移都相对**裁剪窗口**（`artworkEdit.crop`；没裁剪过时是整幅画面）表达。
+  `zoom = 1` 且 `offsetX = offsetY = 0` 是 **identity**（逐像素等于没缩放）；`zoom` 以**窗口中心**为基准缩放，
+  `offsetX/offsetY` 是「窗口宽/高的比例」（正数 = 内容往右下走）。范围 0.5×–5×（`ARTWORK_ZOOM_RANGE`），
+  量化到 0.01（`clampArtworkZoom`，否则读数与缓存键全是浮点噪声）。
+- **偏移区间由「内容与窗口的关系」推**（`artworkOffsetBounds`）：内容比窗口大 → 区间是「刚好盖住窗口」；
+  比窗口小 → 区间是「完全落在窗口内」。三个特例都落在同一个公式里：整幅 + 1× → `[0,0]`（居中，不能平移）；
+  整幅 + 2× → `±0.5`；10% 窗口 + 1× → `0~9`。**于是画面上永远不会露出内容之外的空背景**。
+- **夹取发生在 `normalizeArtworkEdit(raw, windowCrop)`**：第二个参数是「生效窗口」（界面显示的那一版裁剪框），
+  缺省取编辑自身的 crop。它**只夹偏移、绝不写 crop** —— 把 crop 写成整幅会把「未手动裁剪（沿用系统识别）」
+  偷偷变成「手动裁剪到整幅画面」，下游的纸边自动裁剪就再也不会跑了（本轮真踩：偏移函数往编辑里写了 crop）。
+- **一份几何、两处消费**：`artworkImageTransform`（编辑器舞台上 `<img>` 的 inline transform）与
+  `renderArtworkCrop`（画布渲染）都读 `artworkImageView / artworkContentRect`，所以「编辑器里看到的 = 成品图」。
+  舞台是 `display:inline-block` + 图片自身尺寸 → 归一化坐标直接就是百分比，不必在 JS 里算像素；
+  图片的 `transform-origin` 必须是**中心**（几何就是按中心推的）。
+- **两档预览（节流）**：操作过程中先给低分辨率稿（长边 ≤ `EDIT_PREVIEW_MAX_EDGE` = 900，120ms 合并连点），
+  **停止操作 300ms**（`ARTWORK_PREVIEW_SETTLE_MS`）后合成高清稿（长边 ≤ `EDIT_PREVIEW_HD_MAX_EDGE` = 2400）。
+  高清稿按**旋转角记账**（`editorPreviewHdRef`）：缩放 / 平移不改变这张位图（舞台上是 CSS transform 即时生效），
+  同一个角不重复编码；`renderArtworkRotation` 在 0° 且源图本来 ≤ maxEdge 时也不重新编码。
+- **输出画布的口径没变**：裁剪稿仍是「裁剪区域的原始像素，长边 ≤ `CLEAN_MAX_EDGE`」。缩放只是把内容
+  *画进*这个画布（`drawImage` 的目标矩形来自同一份几何），不是把画布放大 —— US-008a 的「高清 PNG 保留
+  裁剪后的原始像素」因此仍然成立。
+- **手势分工**（同一套指针事件、按 `pointerId` 记账）：把手与「未铺满的整框」= 裁剪拖拽（US-004b）；
+  **画面空白处**与「已铺满整幅画面的整框」= 平移画面（框铺满时它本来就无处可移，不让位就再也拖不动画面）；
+  两指 = 缩放（锚点 = 两指中点，同时按中点位移平移）；滚轮 = 以指针为锚点缩放。舞台要有 `touch-action:none`；
+  双指抬起一根后剩下那根继续平移（不要留在 pinch 模式）。
+- **滚轮必须用非 passive 监听**：React 的 `onWheel` 挂在 root 上且是 passive，里面 `preventDefault()`
+  会被忽略（症状：缩放的同时整页跟着滚）。做法：`useEffect` 里 `stage.addEventListener('wheel', h, {passive:false})`，
+  最新草稿从 `editorDraftRef` 读（监听只挂一次，别反复解绑）。
+- **撤销栈节流**：手势进行中只改草稿（`setArtworkViewDraft`），**松手 / 停手 300ms 后压一步**
+  （一次手势 = 一步可撤销的操作，连续滚轮的中间值不占步）；按钮缩放是「一步到位」的动作，当场压栈。
+  到 0.5×/5× 边界或平移到边界时，缩放 / 平移函数返回**值不变**的编辑 → 界面按 `artworkEditSnapshotKey`
+  比较后跳过（内部会重新归一化，对象不是同一个，别用 `===` 判）。
+- 已知边界（有意为之）：批量（班级反馈）没有逐幅缩放平移，与 US-004b 的裁剪同一处限制；「重置 / 一键还原
+  完整作品 / 四层地址保护」是 US-026 的 AC，本故事只提供撤销栈（撤销即可回到上一步）。
+
 ## 装裱模板的三层归属：scope / ownerKey（US-001b）
 
 模板分三层「平台（platform）/ 机构（org）/ 老师个人（teacher）」，**三层共用云端 `framing_presets`
@@ -882,3 +919,33 @@ service 模块也能在 Node 里测：`cloud.database` 是**可写属性**，导
   确认裁剪后把 `media.artwork.cleanUrl` 解码回 canvas，在 5×5 网格上采样，把每个采样点的**相对位置**换算回
   原图坐标（`nx = crop.x + fx·crop.w`）算出期望颜色再比 —— 期望值由**实际**裁剪框推出来，所以拖动结果
   与意图有偏差也不会假失败（跳过贴近象限边界的采样点即可）。
+
+### 验证「编辑器缩放平移」（US-004c 起）
+
+- 夹具用 **1800×1200**（四象限纯色）：长边 1800 > 两档上限，所以低分辨率稿（≤900）与高清稿（≤2400）
+  在 `img.naturalWidth` 上**可区分**（900 vs 1800）；900×600 的夹具两档都是它自己，验不出节流。
+- **两档预览是时序行为**：在页面里装一个采样探针（每 30ms 记 `data-editor-preview-mode` + `naturalWidth`，
+  存 `window.__us004cTraceResult`），并用页面内**同步** `.click()` 触发操作（不要用 `Input.dispatchMouseEvent`
+  —— 脚本里的 `scrollIntoView + sleep(400)` 会让「操作时刻」偏移几百毫秒，300ms 的窗口量不准），
+  紧跟着打一个 mark（`__us004cMarkNow()`）。判据：低分辨率帧出现在操作后 <300ms（跟手），
+  高清帧出现在操作后 ≥300ms（**不是**「两帧间隔 300ms」—— 高清计时从操作那一刻起算）。
+- **期望值要独立重算，别抄 data 层的公式**：本轮把窗口几何在脚本里重写了一遍，结果多乘了一次 crop
+  （`nx = crop.x + u·crop.w`），看起来像产品 bug（25 个采样点里 5 个颜色不对）。正确口径：
+  输出图 = 裁剪窗口，`u = (fx - content.x)/content.w` **就是**画面坐标（窗口坐标与画面坐标是同一个归一化系）。
+  另一个安全的做法是**服务层直调**：页面里 `await import('/src/services/artworkEditor.js')` 拿到与 app 同一个
+  模块实例，用明确的参数（crop / zoom / offset）跑几组 `renderArtworkCrop`，与 UI 状态无关地证几何。
+- **拖拽断言永远写「位移差值」**：前面的操作会留下非零偏移，写绝对值必假失败（本轮真实踩到，差值恰好对得上）。
+  方向断言也要按实际参数推（缩放 5× 时同样 0.1 的窗口平移只让画面坐标动 0.1/5）。
+- **每次取点 / 拖拽前重新量舞台 rect**：`clickSelector` 内部会 `scrollIntoView({block:'center'})`，
+  视口位置会变（本轮出现「x 对、y 错」—— 页面滚了 249px，水平不动所以只有 y 偏）。
+- **越界夹紧用多次小拖动累加**：一次拖 4 个舞台宽会拖出视口，`Input.dispatchMouseEvent` 的落点可能根本不派发
+  （表现：偏移停在半路，看着像夹紧没生效）；改成 14 次 ±0.15 舞台宽的小拖动，最终必须精确停在 `±(zoom-1)/2`。
+- **双指（最省事的一条路）**：`Input.dispatchTouchEvent`（touchStart 两个点 → 多次 touchMove → touchEnd）
+  **真的能用**，headless Chrome 会合成 pointer 事件（本轮实测通过）。但两指落点要在**裁剪框之外的画面**上，
+  或者先把裁剪框还原成整幅画面 —— 否则第一根手指会被裁剪框的 `move` 把手接走，变成拖裁剪框（非常像
+  「双指缩放坏了」）。真实触摸这条路失败时再退回页面内合成 `PointerEvent`（`pointerId` 用两个不同的值）。
+- 面板上的 `data-editor-*` 只读属性是为断言准备的：`data-editor-zoom`（舞台上的归一化值）、
+  `data-editor-offset`（`x,y`，4 位小数）、`data-editor-preview-mode`（low|hd）、
+  `data-editor-preview-edge`（当前档位的长边上限）、`data-crop-rect`（裁剪框）、
+  `[data-edit-view]`（`1.25× 缩放 · 已平移` 文案）。`<img>` 上的 transform 也能读（`__us004cImageCoordAt`
+  就是把它反解成画面坐标，用来验证「锚点下的画面不动」）。
