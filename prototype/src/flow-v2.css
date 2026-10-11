@@ -335,6 +335,19 @@
 .artwork-editor-zoom{min-width:52px;text-align:center;font-size:11px;font-weight:800;color:#8a6a20}
 .artwork-editor-view{font-style:normal;font-size:10px;font-weight:800;color:#4d6b28;background:#edf5e2;border-radius:999px;padding:2px 9px}
 .artwork-editor-view-badge{background:#e4eef7;color:#2d5675}
+/* 编辑保护与四层地址（US-005）：两个「回到已知状态」的动作 + 原图只读的地址清单。 */
+.artwork-editor-protect{font-style:normal;font-size:10px;font-weight:800;color:#2d5675;background:#e4eef7;border-radius:999px;padding:2px 9px}
+.artwork-layers{display:flex;flex-direction:column;gap:6px;border-top:1px dashed #e6d9b8;padding-top:8px}
+.artwork-layers-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.artwork-layers-head b{font-size:11px;color:#292720}
+.artwork-layers-head em{font-style:normal;font-size:10px;font-weight:800;color:#4d6b28;background:#edf5e2;border-radius:999px;padding:2px 9px}
+.artwork-layers-head small{flex:1 1 100%;font-size:10px;line-height:1.6;color:#857a64}
+.artwork-layers ul{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;margin:0;padding:0;list-style:none}
+.artwork-layers li{display:flex;flex-direction:column;gap:2px;border:1px solid #ece1c6;border-radius:9px;background:#fffdf7;padding:6px 8px}
+.artwork-layers li>b{display:flex;align-items:center;gap:6px;font-size:10px;color:#292720}
+.artwork-layers li code{font-size:10px;color:#6f6242;word-break:break-all}
+.artwork-layers li small{font-size:10px;line-height:1.5;color:#857a64}
+.artwork-layer-lock{font-style:normal;font-size:9px;font-weight:800;color:#7a5b00;background:#fff2c8;border-radius:999px;padding:1px 6px}
 @media(max-width:800px){.artwork-editor-row>span{width:100%}.artwork-editor-actions button{flex:1 1 auto}
   /* 触摸端的把手要做大（手指按不住 14px），但**不能走 44px 的全局兜底**：把手是 span 不是 button，
      这里显式给 24px 并把可视方块用内阴影画小一点。 */
@@ -348,6 +361,8 @@
   .artwork-crop-handle.is-sw{left:-2px;bottom:-2px}
   .artwork-crop-handle.is-w{left:-2px;top:calc(50% - 12px)}
   .artwork-crop-stage>img{max-height:260px}
+  /* 四层地址清单在手机上排成一列（两列会把指纹挤成折行）。 */
+  .artwork-layers ul{grid-template-columns:minmax(0,1fr)}
   /* 触摸端把手变大（24px）后，框内的尺寸标签一定会被中间那三个把手压住：
      移动端直接不画它 —— 尺寸在上方的「裁剪框 62% × 78% · ≈1:1」读数是同一份数据。 */
   .artwork-crop-size{display:none}}

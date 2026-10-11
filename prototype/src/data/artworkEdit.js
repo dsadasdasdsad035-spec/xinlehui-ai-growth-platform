@@ -68,8 +68,17 @@ export const ARTWORK_ZOOM_WHEEL_MAX_FACTOR = 1.5;
  */
 export const ARTWORK_OFFSET_RANGE = { min: -9, max: 9 };
 
+/**
+ * 「整幅画面」的裁剪框（US-005「回到完整作品」用它显式表达「保留完整画面」）。
+ * 与 `crop: null` 是**两件不同的事**，别混用：
+ *   * `crop: null` = 老师还没手动裁过 → 下游跑系统纸边识别（自动裁剪）；
+ *   * `crop: ARTWORK_FULL_FRAME` = 老师明确要求保留完整画面 → 走手动裁剪路径，画心就是
+ *     「系统自动裁剪前的完整画面」（原样返回旋转稿，不识别纸边、不裁）。
+ */
+export const ARTWORK_FULL_FRAME = { x: 0, y: 0, w: 1, h: 1 };
+
 /** 没有裁剪框时的窗口 = 整幅画面。 */
-const FULL_CROP = { x: 0, y: 0, w: 1, h: 1 };
+const FULL_CROP = ARTWORK_FULL_FRAME;
 
 /** `artworkEdit` 的字段清单：构造与归一化的唯一真源（界面只读这些字段）。 */
 export const ARTWORK_EDIT_FIELDS = ['version', 'rotateDeg', 'crop', 'zoom', 'offsetX', 'offsetY'];
@@ -371,6 +380,56 @@ export function canNudgeArtworkEditRotation(edit, deltaDeg = FINE_ROTATION_STEP)
 export function artworkEditIsDefault(edit) {
   return artworkEditSnapshotKey(edit) === artworkEditSnapshotKey(createArtworkEdit());
 }
+
+// ---- 编辑保护：重置 / 回到完整作品（US-005）----------------------------------------------
+// 这两个动作都是「老师可以从任何状态回到一个已知状态」的兜底（FR-30）：
+//   * 重置：恢复 `artworkEdit` 的默认值（不旋转、不裁剪、1× 缩放、居中）——
+//     等价于「这幅作品还没编辑过」，因此确认之后系统纸边识别会重新跑一遍；
+//   * 回到完整作品：保留旋转方向，取消裁剪与缩放平移，画心直接变成「系统自动裁剪前的完整画面」。
+// 两者都只产出**新的 artworkEdit**，原图 `originalUrl` 全程只读（结构上就不在这个对象里）。
+
+/**
+ * 重置：`artworkEdit` 恢复为默认（不旋转、不裁剪、1 倍缩放、居中）。
+ * 不接收入参是刻意的 —— 重置的结果与「之前改成什么样」无关，只由 `createArtworkEdit()` 一处定义。
+ */
+export function resetArtworkEdit() {
+  return createArtworkEdit();
+}
+
+/** 重置这一步是否真的会改变画面（已经是默认态时界面把按钮置灰，而不是点了没反应）。 */
+export function canResetArtworkEdit(edit) {
+  return !artworkEditIsDefault(edit);
+}
+
+/**
+ * 回到完整作品：保留旋转方向，把裁剪框显式写成**整幅画面**、缩放回 1×、居中。
+ * 写成整幅而不是 `null` 是关键：`null` 会被下游当成「未手动裁剪」去跑系统纸边识别（又裁一次），
+ * 而老师点这个按钮的意思正是「我要这张完整的画，别再自动裁」。
+ */
+export function restoreArtworkFullFrame(edit) {
+  const current = normalizeArtworkEdit(edit);
+  return normalizeArtworkEdit({ ...current, crop: { ...ARTWORK_FULL_FRAME }, zoom: 1, offsetX: 0, offsetY: 0 });
+}
+
+/** 回到完整作品这一步是否真的会改变画面（已经是整幅 + 1× 居中时按钮置灰）。 */
+export function canRestoreArtworkFullFrame(edit) {
+  const current = normalizeArtworkEdit(edit);
+  return artworkEditSnapshotKey(current) !== artworkEditSnapshotKey(restoreArtworkFullFrame(current));
+}
+
+/** 两个保护动作在同一处描述，界面与断言读同一份文案口径。 */
+export const ARTWORK_EDIT_PROTECTIONS = [
+  {
+    id: 'reset',
+    label: '重置',
+    hint: '恢复到默认：不旋转、不裁剪、1× 缩放、居中（确认后仍会走系统自动裁剪）'
+  },
+  {
+    id: 'restore-full',
+    label: '回到完整作品',
+    hint: '保留旋转方向，取消裁剪与缩放平移，画心恢复为系统自动裁剪前的完整画面'
+  }
+];
 
 /** 确定性快照键：进 React 依赖数组与缓存键。字段顺序由本模块固定，所以两次调用逐字符相同。 */
 export function artworkEditSnapshotKey(edit) {

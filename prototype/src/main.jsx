@@ -42,7 +42,10 @@ import { ARTWORK_CLEAN_ALGORITHM, createExhibitionFrame, createPortraitPrint, ex
 // 作品编辑器（US-004a 旋转与撤销重做 / US-004b 裁剪框与比例预设）：单幅作品的编辑状态 `artworkEdit`、
 // 撤销栈与裁剪框几何的唯一真源都在 data 层（零依赖、可 Node 断言），
 // 「原图 → 旋转稿 → 裁剪稿」的画布渲染在 services/artworkEditor.js。原图 originalUrl 全程只读，编辑结果单独一份。
-import { ARTWORK_PREVIEW_SETTLE_MS, ARTWORK_ZOOM_BUTTON_FACTOR, ARTWORK_ZOOM_RANGE, EDIT_PREVIEW_HD_MAX_EDGE, EDIT_PREVIEW_MAX_EDGE, FINE_ROTATION_STEP, artworkEditHistoryState, artworkEditSnapshotKey, artworkImageTransform, artworkViewKey, artworkViewSummary, canNudgeArtworkEditRotation, canZoomArtworkEdit, createArtworkEdit, createArtworkEditHistory, currentArtworkEdit, fineRotationOf, formatRotationDeg, normalizeArtworkEdit, nudgeArtworkEditRotation, panArtworkEdit, pushArtworkEditHistory, redoArtworkEditHistory, rotateArtworkEdit, rotationSummary, undoArtworkEditHistory, wheelZoomFactor, zoomArtworkEdit, zoomLabel } from './data/artworkEdit';
+import { ARTWORK_EDIT_PROTECTIONS, ARTWORK_PREVIEW_SETTLE_MS, ARTWORK_ZOOM_BUTTON_FACTOR, ARTWORK_ZOOM_RANGE, EDIT_PREVIEW_HD_MAX_EDGE, EDIT_PREVIEW_MAX_EDGE, FINE_ROTATION_STEP, artworkEditHistoryState, artworkEditIsDefault, artworkEditSnapshotKey, artworkImageTransform, artworkViewKey, artworkViewSummary, canNudgeArtworkEditRotation, canResetArtworkEdit, canRestoreArtworkFullFrame, canZoomArtworkEdit, createArtworkEdit, createArtworkEditHistory, currentArtworkEdit, fineRotationOf, formatRotationDeg, normalizeArtworkEdit, nudgeArtworkEditRotation, panArtworkEdit, pushArtworkEditHistory, redoArtworkEditHistory, resetArtworkEdit, restoreArtworkFullFrame, rotateArtworkEdit, rotationSummary, undoArtworkEditHistory, wheelZoomFactor, zoomArtworkEdit, zoomLabel } from './data/artworkEdit';
+// 四层地址（原图 / 旋转稿 / 裁剪稿 / 成品图，US-005）：只读层与派生层的清单、地址指纹与写入侧的
+// 「原图只读」守卫都在这里，界面把这份清单显示给老师看（原图不会被任何编辑覆盖）。
+import { ARTWORK_LAYER_KEYS, applyArtworkLayerPatch, artworkLayerEntries, artworkLayerReadyCount, artworkLayerSummary } from './data/artworkLayers';
 import { CROP_ASPECT_PRESETS, CROP_BODY_HANDLE, CROP_FREE_ASPECT_ID, CROP_HANDLES, CROP_MIN_RATIO, CROP_SNAP_RATIO, applyCropPreset, cropBoxStyle, cropHandleLabel, cropIsFull, cropRatioText, cropRectOf, cropSizeText, cropSummary, describeCropRules, matchCropPreset, moveCrop, resizeCrop, resolveCropAspect } from './data/artworkCrop';
 import { renderArtworkCrop, renderArtworkRotation, ARTWORK_MANUAL_CROP_ALGORITHM } from './services/artworkEditor';
 import { createEmptyTeacherProfile, loadTeacherProfiles, persistTeacherProfiles } from './data/teacherProfiles';
@@ -713,8 +716,10 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
       setMedia({artwork:null,photo:null});
       setMediaIntakeNotice('');
       // 上一幅作品的编辑状态与撤销栈跟着素材一起清掉（US-004a）：换班后是另一批孩子的新素材。
+      // 未确认的编辑在这一刻被丢弃（US-005），所以提示里要说明，别让老师以为它已经生效。
+      const discardedEdit=hasUnconfirmedArtworkEdit();
       closeArtworkEditor();
-      setToast('已切换班级：上一个班级的素材已清空（素材只在当次会话内有效），请在新班级重新选择原始素材。');
+      setToast(`已切换班级：上一个班级的素材已清空（素材只在当次会话内有效），请在新班级重新选择原始素材。${discardedEdit?'未确认的作品编辑已一并放弃。':''}`);
     }
     setSelectedClassId(next?.id||'');
     setSelectedStudentName('');
@@ -993,8 +998,9 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
       return {orientedUrl,cleanUrl:auto.url,cleanAlgorithm:ARTWORK_CLEAN_ALGORITHM,cleanCropRect:auto.crop};
     })().then(({orientedUrl,cleanUrl,cleanAlgorithm,cleanCropRect})=>{
       if(cancelled||!cleanUrl) return;
-      // 原图、旋转稿和画心永远分开保存，任何结果都不能覆盖原图地址。
-      setMedia(current=>({...current,artwork:{...current.artwork,orientedUrl,cleanUrl,cleanAlgorithm,cleanCropRect,cleanEditKey:artworkEditKey,framedUrl:null,framedStyle:''}}));
+      // 原图、旋转稿和画心永远分开保存，任何结果都不能覆盖原图地址（US-005 的四层地址保护：
+      // applyArtworkLayerPatch 只接受派生层字段，originalUrl 的写入会被拒绝并回报 blocked）。
+      setMedia(current=>({...current,artwork:applyArtworkLayerPatch(current.artwork,{orientedUrl,cleanUrl,cleanAlgorithm,cleanCropRect,cleanEditKey:artworkEditKey,framedUrl:null,framedStyle:''}).artwork}));
     }).catch(()=>{if(!cancelled) setFramingState('error')});
     return()=>{cancelled=true};
   },[step,media.artwork?.id,media.artwork?.processingRequested,artworkEditKey,media.artwork?.cleanUrl,media.artwork?.cleanAlgorithm,media.artwork?.cleanEditKey]);
@@ -1020,7 +1026,7 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
       teacherName:currentTeacherName
     }).then(framedUrl=>{
       if(cancelled) return;
-      setMedia(current=>({...current,artwork:{...current.artwork,framedUrl,framedStyle:styleKey}}));
+      setMedia(current=>({...current,artwork:applyArtworkLayerPatch(current.artwork,{framedUrl,framedStyle:styleKey}).artwork}));
       setFramingState('ready');
     }).catch(()=>{if(!cancelled) setFramingState('error')});
     return()=>{cancelled=true};
@@ -1496,6 +1502,13 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
     }
     if(next>=3&&!hasProcessedArtwork){setToast('作品正在自动处理，请等待作品裁剪完成后再进入五维点评。');return}
     if(next>=4&&(!hasProcessedArtwork||!reviewGenerated)){setToast('请等待作品点评生成完成后再归档。');return}
+    // 离开第二步 = 退出编辑态（US-005）：未确认的编辑就地丢弃并给出提示，
+    // 作品保持上一次确认的结果（编辑态本来就是草稿 + 撤销栈，丢弃是结构性的，不会污染成品）。
+    if(next!==2&&artworkEditor.open){
+      const discarded=hasUnconfirmedArtworkEdit();
+      closeArtworkEditor();
+      if(discarded) setToast('已离开作品编辑器并放弃未确认的编辑，作品保持上一次确认的结果。');
+    }
     setStep(next);
     if(next===2){
       if(hasProcessedArtwork){setFramingState('ready');return;}
@@ -1519,7 +1532,8 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
     setBatchUploads({artwork:[],photo:[]});
     setMediaIntakeNotice('');
     setMediaLostDismissed(false);
-    // 新草稿 = 新素材：作品的编辑状态与撤销栈也回到初始态（US-004a）。
+    // 新草稿 = 新素材：作品的编辑状态与撤销栈也回到初始态（US-004a）；未确认的编辑同样丢弃（US-005）。
+    const discardedEdit=hasUnconfirmedArtworkEdit();
     closeArtworkEditor();
     // 录入节奏与折叠分组也回到初始态（US-413）：新草稿的用时从零开始。
     intakeStartedAtRef.current=Date.now();
@@ -1553,7 +1567,7 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
     setPhotoAssignSelection([]);
     setDraftRestored(false);
     setPendingTitles([]);
-    setToast('已新建一份课后反馈草稿');
+    setToast(discardedEdit?'已新建一份课后反馈草稿（未确认的作品编辑已放弃）':'已新建一份课后反馈草稿');
   };
   // 老师手动增删观察词。AI 选中的词被取消时，同步从「AI 已识别」集合里去掉，标记才一致。
   const toggleKeyword=(keyword)=>{
@@ -1565,7 +1579,12 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
   // 编辑态 = 一份**草稿**（artworkEditor.draft）+ 撤销栈；点「完成编辑」才写进 media.artwork.artworkEdit。
   // 因此取消 / 未确认退出不会污染已装裱的成品，而旋转结果永远落在 artworkEdit 上，
   // 原图 originalUrl 全程只读（不覆盖、不重编码）。
-  /** 退出编辑器并清空草稿与撤销栈：换班 / 新建草稿 / 重新上传 / 移除作品时调用（别把上一幅的历史带过去）。 */
+  /**
+   * 有没有「未确认的编辑」= 编辑器开着、且草稿与已确认那一版不同（US-005 的判据只有这一处）。
+   * 「未确认退出编辑态要丢弃本次编辑并给出提示」的所有路径都读它，不各写一遍比较逻辑。
+   */
+  const hasUnconfirmedArtworkEdit=()=>artworkEditor.open&&artworkEditSnapshotKey(artworkEditor.draft)!==artworkEditKey;
+  /** 退出编辑器并清空草稿与撤销栈：换班 / 新建草稿 / 重新上传 / 移除作品 / 离开第二步时调用（别把上一幅的历史带过去）。 */
   const closeArtworkEditor=()=>{
     setArtworkEditor({open:false,draft:createArtworkEdit(),history:createArtworkEditHistory(createArtworkEdit()),cropAspect:''});
     setCropStage({naturalWidth:0,naturalHeight:0});
@@ -1612,6 +1631,11 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
     if(history===current.history) return current;
     return {...current,history,draft:currentArtworkEdit(history)};
   });
+  // 编辑保护（US-005）：两个「回到已知状态」的动作，都只改草稿并各占一步撤销栈。
+  //   * 重置 = artworkEdit 恢复默认（不旋转、不裁剪、1× 居中），确认之后系统纸边识别会重新跑；
+  //   * 回到完整作品 = 保留旋转方向，把裁剪框恢复成整幅画面（系统自动裁剪前的完整画面）并回 1× 居中。
+  const resetArtworkEditor=()=>applyArtworkEditStep(resetArtworkEdit(artworkEditor.draft),'重置编辑');
+  const restoreArtworkFullFrameEditor=()=>applyArtworkEditStep(restoreArtworkFullFrame(artworkEditor.draft),'回到完整作品');
   // 图上的快捷旋转按钮：编辑器没开就先按当前 artworkEdit 打开（这一步也进撤销栈），
   // 之后由「完成编辑」统一提交 —— 于是连点旋转不会每一下都重扫一遍像素去重新裁剪。
   const quickRotateArtwork=(direction=1)=>{
@@ -1634,7 +1658,9 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
     }
     setMedia(current=>{
       if(!current.artwork) return current;
-      return {...current,artwork:{...current.artwork,
+      // 写回的四层地址只走 applyArtworkLayerPatch：派生层随便写，**原图 originalUrl 一律拒绝**
+      // （US-005「四层地址独立存在且互不覆盖」在写入侧的实现点）。
+      return {...current,artwork:applyArtworkLayerPatch(current.artwork,{
         artworkEdit:edit,
         orientationConfirmed:true,
         processingRequested:true,
@@ -1645,15 +1671,15 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
         cleanAlgorithm:null,
         cleanEditKey:'',
         framedUrl:null,
-        framedStyle:''}};
+        framedStyle:''}).artwork};
     });
     setFramingState('processing');
     setToast(`编辑已保存：${rotationSummary(edit)}。正在按新的方向重新裁剪与装裱。`);
   };
   const cancelArtworkEdit=()=>{
-    const changed=artworkEditSnapshotKey(artworkEditor.draft)!==artworkEditKey;
+    const changed=hasUnconfirmedArtworkEdit();
     setArtworkEditor(current=>({...current,open:false}));
-    if(changed) setToast('已放弃本次编辑，作品保持确认过的方向。');
+    if(changed) setToast('已放弃未确认的编辑，作品保持上一次确认的旋转、裁剪与缩放结果。');
   };
   const startArtworkCleanup=()=>{
     if(!media.artwork?.originalUrl||framingState==='processing') return;
@@ -2101,6 +2127,9 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
   const artworkEditorShown=artworkEditor.open?artworkEditor.draft:normalizeArtworkEdit(media.artwork?.artworkEdit);
   const artworkEditorState=artworkEditHistoryState(artworkEditor.history);
   const artworkEditorFine=fineRotationOf(artworkEditorShown.rotateDeg);
+  // 「编辑保护」两个动作（重置 / 回到完整作品，US-005）的现状摘要：默认态、完整画面 + 1× 居中时
+  // 对应按钮置灰，这一行说明「现在是哪种状态」，免得老师对着置灰的按钮猜。
+  const artworkViewIsIdentity=artworkEditorShown.zoom===1&&artworkEditorShown.offsetX===0&&artworkEditorShown.offsetY===0;
   // ---- 裁剪框（US-004b）---------------------------------------------------------------
   // 归一化裁剪框 ↔ 屏幕坐标的换算只有一处：**裁剪舞台**（图片的渲染盒）就是坐标系，
   // 于是「拖动位移 ÷ 舞台尺寸」就是归一化位移，与图片分辨率、缩放、窗口大小都无关。
@@ -2117,6 +2146,11 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
   // 与裁剪渲染 `renderArtworkCrop` 共用 data 层同一份 `artworkImageTransform` 几何 —— 看到什么就得到什么。
   const cropStageTransform=artworkImageTransform(artworkEditorShown,cropShownRect)?.css||'';
   const zoomableView=artworkViewSummary(artworkEditorShown);
+  const artworkEditProtectLabel=`${artworkEditIsDefault(artworkEditorShown)?'默认状态':'有编辑'} · ${cropIsFull(cropShownRect)&&artworkViewIsIdentity?'完整画面':'已裁剪 / 已缩放平移'}`;
+  // 四层地址（US-005）：原图 / 旋转稿 / 裁剪稿 / 成品图各自的就绪状态与地址指纹。
+  // 清单只读 data/artworkLayers.js（层定义与显示口径的唯一真源），界面不自己拼字段名。
+  const artworkLayers=artworkLayerEntries(media.artwork);
+  const artworkLayersReady=artworkLayerReadyCount(media.artwork);
   /** 拖动过程中只改草稿、**不进撤销栈**：每一步都压栈会把 40 步的上限在一秒内用光。 */
   const setArtworkCropDraft=(nextCrop)=>setArtworkEditor(current=>{
     if(!current.open) return current;
@@ -2298,7 +2332,7 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
     });
   };
   const artworkEditorField=(
-    <div className={`artwork-editor${artworkEditor.open?' is-open':''}`} data-editor-open={artworkEditor.open?'true':'false'} data-edit-rotation={artworkEditorShown.rotateDeg} data-edit-fine={artworkEditorFine} data-editor-preview-mode={editorPreviewMode} data-editor-preview-edge={editorPreviewMode==='hd'?EDIT_PREVIEW_HD_MAX_EDGE:EDIT_PREVIEW_MAX_EDGE}>
+    <div className={`artwork-editor${artworkEditor.open?' is-open':''}`} data-editor-open={artworkEditor.open?'true':'false'} data-edit-unconfirmed={hasUnconfirmedArtworkEdit()?'true':'false'} data-edit-rotation={artworkEditorShown.rotateDeg} data-edit-fine={artworkEditorFine} data-editor-preview-mode={editorPreviewMode} data-editor-preview-edge={editorPreviewMode==='hd'?EDIT_PREVIEW_HD_MAX_EDGE:EDIT_PREVIEW_MAX_EDGE} data-shown-crop={artworkEditorShown.crop?[artworkEditorShown.crop.x,artworkEditorShown.crop.y,artworkEditorShown.crop.w,artworkEditorShown.crop.h].join(','):'none'} data-shown-zoom={artworkEditorShown.zoom} data-shown-offset={[artworkEditorShown.offsetX,artworkEditorShown.offsetY].join(',')}>
       <div className="artwork-editor-head">
         <b>作品编辑器</b>
         <em data-edit-summary={rotationSummary(artworkEditorShown)}>{rotationSummary(artworkEditorShown)}</em>
@@ -2352,12 +2386,33 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
           <button type="button" data-edit-action="redo" disabled={!artworkEditorState.canRedo} onClick={redoArtworkEdit}>重做{artworkEditorState.redoSteps?`（${artworkEditorState.redoSteps}）`:''}</button>
           <small data-edit-history={artworkEditorState.undoSteps}>最多可撤销 {artworkEditorState.limit} 步{artworkEditorState.undoLabel?` · 上一步：${artworkEditorState.undoLabel}`:''}</small>
         </div>
+        <div className="artwork-editor-row">
+          <span>编辑保护</span>
+          <button type="button" data-edit-action="reset" title={ARTWORK_EDIT_PROTECTIONS[0].hint} disabled={!canResetArtworkEdit(artworkEditor.draft)} onClick={resetArtworkEditor}>重置</button>
+          <button type="button" data-edit-action="restore-full" title={ARTWORK_EDIT_PROTECTIONS[1].hint} disabled={!canRestoreArtworkFullFrame(artworkEditor.draft)} onClick={restoreArtworkFullFrameEditor}>回到完整作品</button>
+          <em className="artwork-editor-protect" data-edit-protect={artworkEditProtectLabel}>{artworkEditProtectLabel}</em>
+          <small>重置 = 不旋转 / 不裁剪 / 1× 居中（确认后仍走系统自动裁剪）；回到完整作品 = 保留旋转方向、取消裁剪与缩放平移，画心恢复为系统自动裁剪前的完整画面。两个动作都只改草稿，点「完成编辑」才生效，且各自占一步撤销。</small>
+        </div>
         <div className="artwork-editor-actions">
           <button type="button" className="artwork-editor-cancel" data-edit-action="cancel" onClick={cancelArtworkEdit}>放弃本次编辑</button>
           <button type="button" className="artwork-editor-confirm" data-edit-action="confirm" disabled={editorPreviewPending} onClick={confirmArtworkEdit}>{editorPreviewPending?'正在生成预览…':'完成编辑，重新裁剪与装裱'}</button>
         </div>
-        <p className="artwork-editor-note">编辑只改这一幅作品的旋转、裁剪与缩放平移参数（写入 <code>artworkEdit</code>），不写入装裱模板，也不会覆盖原图。</p>
+        <p className="artwork-editor-note">编辑只改这一幅作品的旋转、裁剪与缩放平移参数（写入 <code>artworkEdit</code>），不写入装裱模板，也不会覆盖原图；「重置」与「回到完整作品」随时能回到已知状态，未确认就退出（放弃 / 离开本步 / 换班 / 新建草稿）会丢弃这一份草稿并给出提示。</p>
       </>:<button type="button" className="artwork-editor-entry" data-edit-action="open" disabled={!media.artwork?.originalUrl} onClick={openArtworkEditor}><WandSparkles size={15}/>编辑作品（旋转 / 微调 / 裁剪 / 缩放平移 / 撤销重做）</button>}
+      {media.artwork?.originalUrl?<div className="artwork-layers" data-artwork-layers="true" data-layers-ready={artworkLayersReady}>
+        <div className="artwork-layers-head">
+          <b>四层地址</b>
+          <em data-layers-summary={artworkLayerSummary(media.artwork)}>{artworkLayerSummary(media.artwork)}</em>
+          <small>{artworkLayersReady} / {ARTWORK_LAYER_KEYS.length} 层已生成 · 原图只读，编辑只写派生层（旋转稿 / 裁剪稿 / 成品图）</small>
+        </div>
+        <ul>
+          {artworkLayers.map(entry=><li key={entry.key} data-artwork-layer={entry.key} data-layer-ready={entry.ready?'true':'false'} data-layer-readonly={entry.readonly?'true':'false'} data-layer-fingerprint={entry.fingerprint} data-layer-chars={entry.chars}>
+            <b>{entry.label}{entry.readonly?<em className="artwork-layer-lock">只读</em>:null}</b>
+            <code>{entry.ready?`${entry.fingerprint} · ${entry.chars} 字符`:'未生成'}</code>
+            <small>{entry.hint}</small>
+          </li>)}
+        </ul>
+      </div>:null}
     </div>
   );
   return <><PageHeader title="课后反馈" desc="每一个环节都可随时进入，当前进度会同步保留。" prd="课后反馈工作流"/>

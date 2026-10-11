@@ -680,11 +680,46 @@ DSH 的 `browser_*` 工具**没有 selectOption 能力**：`browser_type` 走的
   （一次手势 = 一步可撤销的操作，连续滚轮的中间值不占步）；按钮缩放是「一步到位」的动作，当场压栈。
   到 0.5×/5× 边界或平移到边界时，缩放 / 平移函数返回**值不变**的编辑 → 界面按 `artworkEditSnapshotKey`
   比较后跳过（内部会重新归一化，对象不是同一个，别用 `===` 判）。
-- 已知边界（有意为之）：批量（班级反馈）没有逐幅缩放平移，与 US-004b 的裁剪同一处限制；「重置 / 一键还原
-  完整作品 / 四层地址保护」是 US-026 的 AC，本故事只提供撤销栈（撤销即可回到上一步）。
+- 已知边界（有意为之）：批量（班级反馈）没有逐幅缩放平移，与 US-004b 的裁剪同一处限制。
+  「重置 / 一键还原完整作品 / 四层地址保护」已由 US-005 接上，见下一节。
+
+## 编辑保护：重置 / 回到完整作品 / 四层地址（US-005）
+
+两个「回到已知状态」的动作 + 一层结构性的只读保证，规则都在 **`src/data/artworkEdit.js`** 与
+**`src/data/artworkLayers.js`**（都是零依赖纯函数），界面只是按钮与清单。
+
+- **重置（`resetArtworkEdit()` → `canResetArtworkEdit(edit)` 置灰）**：返回 `createArtworkEdit()`，
+  也就是「这幅作品从没编辑过」。**不接收入参是刻意的** —— 重置的结果只由默认值那一处定义。
+  因为它把 `crop` 变回 `null`，所以确认之后**系统纸边识别会重新跑一遍**（与 `crop: 整幅` 是两条不同的路）。
+- **回到完整作品（`restoreArtworkFullFrame(edit)`）**：**保留旋转方向**，把 `crop` 显式写成整幅画面
+  （`ARTWORK_FULL_FRAME`）、`zoom` 回 1×、偏移归零。写成整幅而不是 `null` 是关键：`null` 会被下游当成
+  「未手动裁剪」去跑系统识别（又裁一次），而这个按钮的意思正是「我要这张完整的画，别再自动裁」。
+  由于 `renderArtworkRotation` 在 0° 时不重新编码、`renderArtworkCrop` 在「整幅 + identity + 未超上限」
+  时原样返回 source，**画心会逐字符等于原图地址**（一个像素都没有重编码）—— 这也是最好的断言：
+  `cleanUrl === orientedUrl === originalUrl`，且成品图里能重新数到本该被裁掉的桌面像素。
+- **两个动作都只改草稿**（`applyArtworkEditStep`），各占一步撤销栈（标签「重置编辑」/「回到完整作品」），
+  点「完成编辑」才生效。到边界（已是默认态 / 已是整幅 + 1× 居中）时按钮置灰，
+  面板上的 `data-edit-protect` 徽标写明现在是哪种状态（默认状态 / 有编辑 · 完整画面 / 已裁剪 · 已缩放平移）。
+- **四层地址（`src/data/artworkLayers.js`）**：`originalUrl`（原图，**只读**）→ `orientedUrl`（旋转稿）→
+  `cleanUrl`（裁剪稿）→ `framedUrl`（成品图）。`ARTWORK_LAYERS` 是层定义（标签 / 是否只读 / 一行说明）的
+  唯一真源，`artworkLayerEntries(artwork)` 给界面与断言同一份清单（`ready / chars / fingerprint`），
+  `artworkUrlFingerprint(url)` 是 FNV-1a 32 位（`data:` 地址时它同时是内容摘要，`blob:` 时只是地址标识 ——
+  所以界面上叫「指纹」，不下「内容哈希」的结论）。
+- **写入侧守卫 `applyArtworkLayerPatch(artwork, patch)`**：渲染流水线写回地址层时走它，
+  **`originalUrl` 的写入一律被拒绝并回报 `blocked`**。这是「互不覆盖」在结构上的实现点
+  （重新选择素材是新建一条记录，不属于写回，不受这条限制）。
+- 两条口径（别当 bug 修）：① 某一层不需要做事时，上层地址会**原样等于**下层地址
+  （0° 旋转 → 旋转稿 = 原图；整幅裁剪 + identity → 裁剪稿 = 旋转稿），这是「不重新编码」的优化，
+  四个地址仍住在四个字段里；② 重置之后裁剪框可能还显示着**上一次那个框**
+  （`cropShownRect = draft.crop || cleanCropRect`，`cleanCropRect` 是「当前画心是哪个框裁出来的」），
+  确认后系统识别更新它 —— 「未手动裁剪」的含义是「确认后由系统决定」，不是「框一定要铺满」。
+- **未确认退出编辑态 = 丢弃 + 提示**：判据只有 `main.jsx` 的 `hasUnconfirmedArtworkEdit()`
+  （编辑器开着且草稿 ≠ 已确认那一版）。目前覆盖四条路径：点「放弃本次编辑」、**离开第二步**
+  （`go()` 里，`next !== 2` 时关闭编辑器并提示）、换班（`selectClass`）、新建草稿（`resetDraft`）与
+  重新上传作品（`closeArtworkEditor` 由它们调用）。提示文案统一包含「放弃未确认的编辑」，
+  验证与文案断言都匹配这句。编辑态本来就是「草稿 + 撤销栈」，所以丢弃是结构性的，成品不会被污染。
 
 ## 装裱模板的三层归属：scope / ownerKey（US-001b）
-
 模板分三层「平台（platform）/ 机构（org）/ 老师个人（teacher）」，**三层共用云端 `framing_presets`
 一张表**，靠 `scope + owner_key` 区分归属，不另开表、不双写。`preset_key` 仍然是幂等 upsert 的冲突键
 （三层的 id 各自唯一，所以 upsert 不会跨层互相覆盖）。
@@ -949,3 +984,27 @@ service 模块也能在 Node 里测：`cloud.database` 是**可写属性**，导
   `data-editor-preview-edge`（当前档位的长边上限）、`data-crop-rect`（裁剪框）、
   `[data-edit-view]`（`1.25× 缩放 · 已平移` 文案）。`<img>` 上的 transform 也能读（`__us004cImageCoordAt`
   就是把它反解成画面坐标，用来验证「锚点下的画面不动」）。
+
+### 验证「编辑保护与四层地址」（US-005 起）
+
+- **DOM 只读属性优先于 React fiber 探针**：`host[__reactFiber$…]` 那条链取到的是**这个 DOM 节点所属的那一次
+  提交**，setState 之后它可能仍指着**上一次提交**的 fiber——同一段脚本里有些读是新的、有些读是旧的
+  （本轮真踩：点「重置」后 fiber 读到的还是重置前的草稿，看着像产品 bug，而 DOM 上的裁剪摘要已经是新的）。
+  纪律：草稿 / 已确认这一类**会频繁变的状态**一律断言 DOM 属性；fiber 探针只用于「本来就不变或极少变」
+  的字段（`originalUrl` / `cleanUrl` / `framedUrl` / `artworkEdit`），且要配一条 DOM 侧的交叉断言。
+- 为此面板新增了三个只读属性（都在 `.artwork-editor` 根节点上，值可跨折叠 / 编辑两态读）：
+  `data-shown-crop`（当前展示的那一版裁剪框 `x,y,w,h`，未手动裁剪时是字符串 `none`）、
+  `data-shown-zoom`、`data-shown-offset`；另外 `data-edit-crop`（中文摘要，`未手动裁剪（沿用系统识别）` /
+  `已还原为完整作品` / `已裁剪 62%×78%`）与 `data-edit-protect`（编辑保护现状徽标）适合做**语义**断言。
+- **「回到完整作品」的最强证明是地址相等**：0° 旋转 + 整幅裁剪 + 未超上限时，旋转稿与裁剪稿都是
+  **原图地址本身**（不重新编码），所以断言 `cleanUrl === orientedUrl === originalUrl` 比逐像素比对干净得多；
+  再配一条**内容**证：夹具做成「深蓝桌面边框（各边 12%）+ 浅色画纸 + 四象限色块」，
+  在成品图上按 40×40 网格数「深蓝像素」——系统自动裁剪后是 0，`回到完整作品` 后是 300+，
+  `重置` 后回到 0（本轮实测 `0 / 346 / 0`，一次就把三个状态区分开）。
+- **确定性重算 ≠ 覆盖**：`重置` 之后流水线会用同一份输入重跑，产物与**基线逐字节相同**（指纹回到基线值）。
+  断言要写成「完整画面那一阶段与基线不同 + 重置后回到基线」，写成「派生层指纹必须一直变」会假失败。
+- 四层地址清单的断言口径：`[data-artwork-layers]` 上四行 `[data-artwork-layer="originalUrl|…"]`，每行
+  `data-layer-ready` / `data-layer-readonly`（只有原图是 `true`）/ `data-layer-fingerprint`；
+  指纹要拿 `window.__us026strHash(url)`（页面内重算同一套 FNV）**交叉验证**，别直接信 DOM 里的值。
+- 守卫函数要在**真实运行中的应用模块实例**上验：`await import('/src/data/artworkLayers.js')` 然后
+  `applyArtworkLayerPatch({originalUrl:'ORIG'},{originalUrl:'HACKED'})` → 值不变 + `blocked:['originalUrl']`。
