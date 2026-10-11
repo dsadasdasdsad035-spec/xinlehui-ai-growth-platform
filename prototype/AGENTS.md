@@ -297,6 +297,34 @@ React + Vite 单页原型（`src/main.jsx` 是主入口，另按模块拆出 `sr
   （逐项去掉作品 / 出席 / 日期 / 序号，走管理端「课程库」停用全部课程验证「课程」一项，
   覆盖截断路径、`disabled` 按钮真实点击、顶部导航点击、以及「保存课次」在两种校验状态下的可用性）。
 
+### 家长授权状态提示与授权状态来源（US-411 / F-CONSENT-01）
+
+`src/data/consent.js` 是**家长授权状态的唯一来源**（零依赖纯函数 + 一条 localStorage 兜底键）：
+第一步的「未完成查看授权」提示（US-411 / F-INTAKE-CONSENT-01）与第四步转发前的硬校验
+（US-208 / FR-222，同一份来源是它的验收之一）都必须从这里读，不要在各自的组件里再写一套判断。
+
+- **「查看授权」只影响转发，不影响录入**：授权是「把作品/点评分享给家长」的前置条件。所以第一步的提示
+  **不加进 `lessonReadiness.js` 的六项校验、不进 `go()` 的拦截、不 disable 任何按钮** ——
+  老师可以先录完、先归档，家长授权后再转发（US-411 + US-410 的共同口径）。
+- **提示算的是「所选学员」**：用 `effectiveParticipants`（个人反馈 = 选中的那一位，班级反馈 = 勾选名单），
+  不要用 `classStudents` 全班名单，否则个人反馈会提示到别人家的孩子。
+  有未授权学员时渲染，全部已授权时不渲染（US-411 的「避免噪音」）。
+- **fail-safe 方向**：没有授权记录的学员（临时加入的试听学员、新登记的学员）按**未完成授权**算，
+  记录里的 `viewAuthorized: true` 也不能把 `status: 'revoked'` 顶回已授权。宁可多提示一次，
+  也不能把没有授权的孩子转发出去。
+- **提示文案分口径**：`consentSummaryOf().message` 在只有待完成时是验收原文
+  「N 位学员的家长尚未完成查看授权，发布后可能无法转发」；存在**已撤回**的记录时换成
+  「…尚未完成查看授权或已撤回授权…」（撤回不等于「尚未完成」，不能糊成同一句）。
+- 面板变量是 `consentNoticeField`（`main.jsx` 的 `TeacherFlowV2` 内），默认折叠只给一句摘要 + `查看是哪 N 位`，
+  展开后逐条列姓名 / 状态 / 监护人；入口只有一个「去授权管理」（`navigate('authorization')`，
+  目标是既有的 F-CONSENT-01 页面）。CSS 在 `flow-v2.css` 的 `.intake-consent*`（提醒色，不用错误色）。
+- 入口指向的授权管理页目前仍是家长侧的静态卡片（PRD-16 / F-CONSENT-01）；**老师端在这页登记/补授权**
+  属于 `prd-archive-share.md` 的转发与审计故事（US-208 / US-211），本轮没有改它，
+  授权状态模块只提供读接口（`loadConsents` / `consentSummaryOf` / `unauthorizedParticipants`）。
+- 验证方式（本轮实测）：Node 直跑 `data/consent.js` 59 项断言；CDP 浏览器 27 项断言（见下节脚本要点），
+  覆盖「个人反馈默认不提示 / 班级反馈 2 位 / 展开只列未授权者 / 入口跳转 / 上传作品后提示仍在且可进入第二步 /
+  保存课次照常 / 只剩已授权学员时提示消失 / 390px 单列与 44px 按钮」。
+
 ### 浏览器验证原生 `<select>` 的坑（重要）
 
 DSH 的 `browser_*` 工具**没有 selectOption 能力**：`browser_type` 走的是 `locator.fill`
@@ -386,4 +414,14 @@ service 模块也能在 Node 里测：`cloud.database` 是**可写属性**，导
 - **刷新会回到登录页**（登录态只存在内存里），所以脚本里每次 `Page.reload()` 之后都要重新
   「快速体验 → 老师」再点侧边栏目标页，否则后面所有选择器都会拿到 null（本故事第一版就卡在这里）。
 - 记完 console：`Runtime.enable` + `Log.enable`，`net::ERR_CONNECTION_REFUSED` 是本机云端不通的既有现象，
-  `404` 多为 favicon / 未接的后端接口，不代表功能坏了。
+  `404` 多为 favicon / 未接的后端接口，不代表功能坏了。本机云端还会对 `lessons` / `courses` 表返回
+  **404**（`.cloud/database/rest/...`，表未配置），过滤 console 报错时要连这一类一起排除。
+- **CDP 的连接端点要选对**：`/json/version` 给的是 **browser target**，对它发 `Page.enable` 会报
+  `'Page.enable' wasn't found`；要从 `/json/list` 里挑 `type === 'page'` 的那条 `webSocketDebuggerUrl`。
+- **点击前先 `scrollIntoView`**：`Input.dispatchMouseEvent` 用的是视口坐标，元素在视口外时点击会落空
+  （表现为「点了没反应 / waitFor 超时」）。滚到 `{block:'center'}` 再取 `getBoundingClientRect()` 中心。
+- 侧边栏导航按钮用**精确文本**匹配：`课后反馈工作台` 以 `课后反馈` 开头，`startsWith` 会点到工作台。
+- 页面里跳走再回来（例如点「去授权管理」再回「课后反馈」）时：`TeacherFlowV2` 重新挂载，
+  **mode 不进草稿**（US-409 口径）、纯初始态也不会写草稿，所以脚本要重新点一次「班级反馈」再断言提示，
+  不要以为状态会原样回来。
+- 登录页的类名是 `.auth-shell`（不是 `.auth-screen`）。

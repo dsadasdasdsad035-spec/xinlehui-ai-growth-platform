@@ -184,3 +184,25 @@
 .intake-readiness-list li.todo .intake-readiness-mark{background:#fbe4de;color:#b03a2e}
 .intake-readiness-note{margin:0;border-left:3px solid #d5bd71;background:#fff8e2;border-radius:8px;padding:8px 10px;font-size:10px;line-height:1.65;color:#6f6242}
 @media(max-width:800px){.intake-readiness-list{grid-template-columns:1fr}}
+
+/* ---- 家长授权状态提示（US-411）----------------------------------------------------
+   非阻断提示：只说明「哪几位学员的家长还没完成查看授权」，不去 disable 任何按钮。
+   授权是转发的前置条件，不是录入 / 归档的前置条件，所以配色用「提醒」而不是「错误」；
+   展开后逐条列出姓名与状态，入口动作只有一个「去授权管理」。 */
+.intake-consent{margin-top:13px;border:1px solid #e8c96a;border-radius:12px;background:#fffaf0;padding:11px 12px;display:flex;flex-direction:column;gap:9px}
+.intake-consent-head{display:flex;align-items:flex-start;gap:9px;color:#7a5a12}
+.intake-consent-head svg{flex:none;margin-top:2px;color:#b8871a}
+.intake-consent-head>div{flex:1;min-width:0}
+.intake-consent-head b{display:block;font-size:12px;color:#6d4e0c}
+.intake-consent-head small{display:block;margin-top:3px;font-size:10px;line-height:1.65;color:#8a6a20}
+.intake-consent-head button{flex:none;border:0;background:none;padding:4px 2px;color:#795a00;font-size:10px;font-weight:700;cursor:pointer;text-decoration:underline;white-space:nowrap}
+.intake-consent-list{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:1fr 1fr;gap:6px 10px}
+.intake-consent-list li{display:flex;align-items:center;gap:7px;flex-wrap:wrap;border:1px solid #eee3c8;border-radius:9px;background:#fff;padding:6px 8px}
+.intake-consent-list b{display:flex;align-items:center;gap:5px;font-size:11px;color:#3d382d}
+.intake-consent-list .tag{font-size:9px;padding:0 4px;border-radius:5px;background:#f2efe6;color:#7a7266;font-weight:400}
+.intake-consent-list em{font-size:10px;font-style:normal;font-weight:700;padding:1px 6px;border-radius:6px;background:#fdf1d6;color:#8a6a20}
+.intake-consent-list em.revoked{background:#fbe4de;color:#b03a2e}
+.intake-consent-list small{width:100%;font-size:10px;color:#857a64}
+.intake-consent-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.intake-consent-actions small{font-size:10px;line-height:1.65;color:#8a6a20}
+@media(max-width:800px){.intake-consent-head{flex-wrap:wrap}.intake-consent-head button{margin-left:0;min-height:44px}.intake-consent-list{grid-template-columns:1fr}.intake-consent-actions{align-items:stretch;flex-direction:column}.intake-consent-actions button{width:100%;min-height:44px}}
