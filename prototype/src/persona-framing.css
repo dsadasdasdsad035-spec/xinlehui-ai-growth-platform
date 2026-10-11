@@ -104,6 +104,40 @@
 .spec-row em { font-style: normal; font-size: 12px; color: var(--muted); text-align: right; }
 .spec-note { margin: 4px 0 0; font-size: 12px; color: var(--muted); line-height: 1.6; }
 
+/* —— 水印（机构 Logo / 文字水印，US-003b） ——
+   位置枚举、字体白名单与「遮挡作品主体 15%」的判定都在 services/overlayLayout.js，
+   这里只负责把控件排开；九宫格按钮的标签直接来自 overlayPositionLabel()。 */
+.framing-overlay { margin-top: 18px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); overflow: hidden; }
+.framing-overlay-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 14px 18px; border-bottom: 1px solid var(--border); background: var(--soft); }
+.framing-overlay-head h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.framing-overlay-head p { margin: 6px 0 0; font-size: 12px; color: var(--muted); line-height: 1.6; max-width: 52ch; }
+.framing-overlay-head em { flex: none; font-style: normal; font-size: 12px; padding: 4px 10px; border-radius: 999px; white-space: nowrap; }
+.framing-coverage-ok { color: #1b7f34; background: #eef7ef; }
+.framing-coverage-bad { color: #b3261e; background: #fdecea; }
+p.framing-coverage-bad { margin: 0; padding: 10px 18px; font-size: 12px; line-height: 1.6; }
+.framing-overlay-block { padding: 14px 18px; border-top: 1px solid var(--border); }
+.framing-overlay-block:first-of-type { border-top: 0; }
+.framing-overlay-title { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.framing-overlay-title small { font-size: 12px; color: var(--muted); }
+.framing-overlay-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 10px; }
+.framing-asset-thumb { width: 56px; height: 56px; object-fit: contain; border: 1px solid var(--border); border-radius: 8px; background: #fff; }
+.framing-asset-empty { font-size: 12px; color: var(--muted); font-style: normal; }
+.framing-asset-rules { margin: 10px 0 0; font-size: 12px; color: var(--muted); }
+.framing-asset-error { margin: 8px 0 0; font-size: 12px; color: #b3261e; line-height: 1.6; }
+.framing-overlay-controls { display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; margin-top: 12px; }
+.framing-overlay-controls > label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--muted); }
+.framing-overlay-controls > label.wide { flex: 1 1 100%; }
+.framing-overlay-controls input,
+.framing-overlay-controls select { font: inherit; font-size: 13px; color: var(--ink); padding: 7px 9px; border: 1px solid var(--border); border-radius: 8px; background: #fff; }
+.framing-overlay-controls input[type="color"] { padding: 2px; width: 52px; height: 34px; }
+.framing-overlay-controls input[type="number"] { width: 84px; }
+.framing-overlay-field { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--muted); }
+.framing-overlay-note { margin: 10px 0 0; font-size: 12px; color: var(--muted); line-height: 1.6; }
+.overlay-position-pad { display: grid; grid-template-columns: repeat(3, 34px); gap: 4px; }
+.overlay-position-pad button { width: 34px; height: 34px; padding: 0; border: 1px solid var(--border); border-radius: 7px; background: #fff; font: inherit; font-size: 11px; color: var(--muted); cursor: pointer; }
+.overlay-position-pad button:hover { border-color: var(--blue); color: var(--ink); }
+.overlay-position-pad button.active { border-color: var(--blue); background: #eef3fd; color: var(--blue); font-weight: 600; }
+
 /* —— 技能导入面板：上传本地 / 本机发现 / 技能市场 —— */
 .skill-import { margin: 0 0 18px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); overflow: hidden; }
 .skill-import-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--border); background: var(--soft); }

@@ -458,10 +458,10 @@ DSH 的 `browser_*` 工具**没有 selectOption 能力**：`browser_type` 走的
   画廊里互相串图（形状/光影就是这么漏掉的）。取整份渲染视图，v2 新增的影响渲染字段会自动进键
   —— 宁可多渲染一次，也不能串图。
 - 收敛范围（越界收敛而不是画崩）：框宽 `0.008~0.08`、圆角 `0~0.5`、卡纸宽 `0.02~0.12`、不透明度 `0~1`、
-  字号 `8~200`、面板字体走 `SAFE_FONTS` 白名单、`logo.url` / `signature.imageUrl` 只放行
-  `http(s)` / `data:image` / `blob:`。比例型范围的唯一真源是 `FRAME_WIDTH_RATIO_RANGE` /
-  `MAT_WIDTH_RATIO_RANGE` / `CORNER_RADIUS_RATIO_RANGE`，**收敛器与渲染层都读它、不要在任一侧写死数字**
-  （v1 平面 spec 是**原样**进渲染层的，渲染层不兜住就会被 0.5 的框宽画崩）。
+  字号 `8~200`、面板字体走 `OVERLAY_FONT_WHITELIST` 白名单、`logo.url` / `signature.imageUrl` 只放行
+  `http(s)` / `data:image` / `blob:`（**且有长度上限**，见下文「叠加元素的画笔」）。比例型范围的唯一真源是
+  `FRAME_WIDTH_RATIO_RANGE` / `MAT_WIDTH_RATIO_RANGE` / `CORNER_RADIUS_RATIO_RANGE`，**收敛器与渲染层都读它、
+  不要在任一侧写死数字**（v1 平面 spec 是**原样**进渲染层的，渲染层不兜住就会被 0.5 的框宽画崩）。
 - **US-002a 起内置 4 套预设的渲染结果有意改变**（它们显式带 `lighting`，本故事开始绘制）。
   持久的向后兼容承诺是：**v1 平面 spec**、以及**没有显式 `frame.lighting` 的 v2 spec**，渲染逐像素不变。
   复核兼容性时不要拿「内置预设」当 v1 基准（US-016 的 4 套预设 v1↔v2 逐像素断言自本故事起失效是预期的）。
@@ -494,13 +494,60 @@ DSH 的 `browser_*` 工具**没有 selectOption 能力**：`browser_type` 走的
 - 上下文来自 `renderFramedArtwork({ orgName, student, title, teacherName, date, variables })`
   （`variables` 逐字段优先）。机构显示名的唯一来源是 `data/lessons.js` 的 `DEFAULT_ORG_NAME`；
   **改传参要同步调用点的渲染缓存键**（`main.jsx` 第二步的 `styleKey` 已含 `currentTeacherName` / `DEFAULT_ORG_NAME`）。
-- **绘制门控**：只有 `visible === true` 的元素进 `framing.js` 的 `drawOverlayElements()`（画在最上层、
-  位置相对整块画布短边）。目前只接了文字水印画笔，Logo / 二维码 / 落款 / 时间的画笔由 US-003b / US-003c
-  接在同一门控后 —— 没有画笔的类别同样不画、也不留占位。
+- **绘制门控**：只有 `visible === true` 且**已接画笔**（`DRAWN_OVERLAY_KINDS`）的元素进 `framing.js` 的
+  `drawOverlayElements()`（画在最上层、位置相对整块画布短边）。US-003b 已接文字水印与机构 Logo 两支持画笔，
+  二维码 / 落款 / 时间的画笔由 US-003c 接在同一门控后 —— 没有画笔的类别同样不画、也不留占位。
 - 叠加元素整组进 `frameSpecRenderView()`（v1 平面 spec 是 `overlays: null`），所以水印的位置 / 内容 /
   `visible` 自动进 `frameSpecRenderKey()`：两套只有水印位置不同的模板不会共用画展缓存，**别把它摘出去**。
 - canvas 验证口径：按「可见 vs 不可见」差分找墨迹外接框；字形侧边距（~4px）与 descent（~8px）让绝对位置
   差几个像素 → 绝对位置用 **±10px** 容差，比例精确性改用**两个偏移的差值**断言（±3px）。
+
+### 叠加元素的画笔、Logo 上传与遮挡统计（US-003b）
+
+**画笔清单是单一真源**：`overlayLayout.js` 的 `overlayElementEntries(overlays)` 把五个分组摊平成
+`{ kind, element }`，`DRAWN_OVERLAY_KINDS` 声明**已经接了画笔**的类别（现在 = `watermark.text` +
+`watermark.logo`）。新增一支画笔要**三处一起改**：`DRAWN_OVERLAY_KINDS`、`framing.js` 的
+`drawOverlayElements()` 分支、`loadOverlayImages()` 的取图分支（图片类才需要）。绘制与遮挡统计读同一份
+清单，只看其一就会出现「提示说挡住了、其实没画」或「画了但统计不到」。
+
+- **机构 Logo 的取框走 `resolveOverlayImageBox()`**：宽度 = `widthRatio × 画布短边`，高度按图片自身比例
+  算（**不拉伸、不裁切**），高度超过 `OVERLAY_IMAGE_MAX_HEIGHT_RATIO = 0.5 × 画布高` 时整体等比缩回来
+  —— 不然一张 1:4 的窄长 Logo 按 0.4 的宽度比例能算出 2176px 的高，直接顶出画布。图片尺寸未知（没解码 /
+  解码失败）时按**正方形**估框：宁可高估遮挡，也不要因为量不出来而漏报。
+- **Logo 解码失败 / 未上传（`url` 为空）时什么都不画**（`paintOverlayImage` 直接 return），且渲染
+  **不抛错**：一张坏 Logo 的失败面应该是「少了水印」，不是「没有成品图」。地址解码结果按 URL 缓存在
+  `framing.js` 的 `overlayImageCache`（上限 8 条，批量渲染不重复解码）。
+- **`imageUrl()`（`frameSpec.js`）的长度上限不能拍脑袋写小**：旧的 `slice(0, 2048)` 会把合规的
+  data URL Logo **截断**，而截断后的 PNG 还能被解码器「部分解出来」→ 画面上是一张只有上半截的 Logo，
+  全程不报错（US-003b 真踩到：2048 字符截断让 100×400 的测试图只画出上面 73%，看着像渲染有鬼）。
+  现在上限取 `data/framingAssets.js` 的 `FRAMING_ASSET_DATA_URL_MAX_CHARS`（按 200KB 素材推出来），
+  超过上限**丢弃**而不是截断。
+- 装裱素材（机构 Logo / 手写签名 / 二维码底图）的准入规则是 `data/framingAssets.js`（**零依赖**，可 Node
+  断言）：**PNG / JPG**（比儿童素材的 JPEG/PNG/WebP 更窄）、单边 ≤ `512`、体积 ≤ `200KB`，判定分两步
+  —— 选文件时先判格式与体积（`screenFramingAssetFile`），**解码拿到真实宽高后再判一次**
+  （`validateFramingAsset`，文件名与 MIME 都可能骗人）。浏览器侧只有 `services/framingAssets.js`：
+  `readFramingAsset(file)` 返回 `{ ok, asset: { url(dataURL), width, height, size, type } , message }`。
+  复核**已经存进模板**的地址要用 `validateFramingAssetDimensions`（只判尺寸）—— 拿完整判定去判它，
+  「机构 Logo」这个标签没有扩展名，会一律误报「格式不支持」。
+- 素材存进 spec 的是 **data URL**（`logo.url`）：`imageUrl()` 的白名单本来就放行 `data:image`，
+  而 `blob:` 刷新即失效、带不上云端模板。机构 Logo 是机构资产不是儿童素材，不受「素材不进浏览器存储」约束；
+  换私有对象存储（FR-22 的鉴权上传）属于合规故事。
+- **「水印遮住孩子的画」的统计 = `evaluateOverlayCoverage()`（零依赖）**，三个口径：
+  ① 分母是**作品主体**（`buildFramingLayout` 的 `subjectRect` = 等比缩放+居中之后作品真正占住的那块），
+  不是整块画布、也不是卡纸开口 —— 压住卡纸与相框是允许的，只有压在画上的部分才算遮挡；
+  ② 分子是所有元素框与主体的**交集的并集**（`unionRectArea`，容斥原理；两个水印叠在一起不该算两遍）；
+  ③ 超过 `OVERLAY_COVERAGE_LIMIT = 0.15` 时 `exceeds` 为真并给可读 `message`（验收原文的 15%）。
+- **`measureFramingCoverage()` 与渲染共用同一份几何**（都调 `framing.js` 的 `buildFramingLayout`）：
+  面板上的百分比就是成品图上真实压住的面积。**不要**在面板侧另算一套「作品区」—— arch / bevel 分支的
+  作品区是「形状内最大等比矩形」，用固定的那个 `area` 会算错。文本框由 `textPlanBox()` 从
+  `planOverlayText()` 的产物推出（优先用 `measureText` 的 `actualBoundingBox*`，拿不到按 `0.8em/0.2em` 估，
+  旋转的文本取轴对齐外接框）—— 它是**偏保守**的估计（略大不略小）。
+- **后台「装裱设置」的水印面板写回 spec 只覆盖 `watermark` 组 + `version: 2`**（`patchWatermark`），
+  老模板的 v1 平面字段（`outer` / `matWidthRatio` / `plaque*` …）一个都不动。混写结构在
+  `normalizeFrameSpecV2` 里是合法输入（v2 分组优先、v1 平面字段兜底），所以「给老模板加个水印」不会
+  顺手改掉它的样子 —— 这也是本机云端还存着 v1 模板时仍能演示水印的原因。
+- 面板里的数值输入要**显示 draft 里的原值**（`{...specV2.watermark.logo, ...rawWatermark.logo}`），
+  不要显示收敛后的值：收敛发生在渲染时，显示收敛值会让「输入 2 立刻被改成 8」→ 数字框没法正常输入。
 
 ## 装裱模板的三层归属：scope / ownerKey（US-001b）
 
@@ -650,3 +697,15 @@ service 模块也能在 Node 里测：`cloud.database` 是**可写属性**，导
 - console 里的既有噪音：本机云端不通的 `net::ERR` / `404`、后台装裱预览 `<img src={preview}>` 初始为 `''`
   触发的 React `An empty string ("") was passed to the src attribute` 警告。这些在 HEAD 上就有，
   过滤时要写清楚「是既有噪音」，不要当成新引入的问题放过去。
+
+### 验证「图片类水印画到哪」（US-003b 起）
+
+- 用**纯色测试图**（canvas 现画的 data URL）当 Logo：与「不含该元素」的基线差分出的墨迹外接框就是
+  `drawImage` 的目标框，可直接与 `resolveOverlayImageBox()` 的期望框比。判据写「墨迹**落在**期望框内
+  （±2px）+ 覆盖 ≥ 期望宽高 − 3.6px」比「四边逐一对齐」稳 —— JPEG 会让最外 1~2px 掉出阈值（90）。
+- 纯色图上再画一个小方块（比如左上角蓝块）就能一次证明**等比 + 不镜像**：断言墨迹里的对应位置是蓝色。
+- 透明度要按「与底色的混合值」判（0.5 不透明度时像素是两个颜色的中值），不要用「有/无」的二值判据。
+- **data URL 长于 ~2KB 的图片先怀疑「被长度上限截断」**，再怀疑渲染：截断后的 PNG/JPEG 往往还能解出上面
+  一截，症状是「图片只有上半部分」而**没有任何报错**（US-003b 真踩到 `imageUrl()` 的 `slice(0, 2048)`）。
+- 九宫格位置断言要**跑满 9 个位置 + custom**：只测一两个位置时，「偏移方向」类错误（正值朝外）也可能碰巧
+  落在画面内而不被发现。

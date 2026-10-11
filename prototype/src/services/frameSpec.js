@@ -1,5 +1,6 @@
 import { cloud } from '../cloud';
-import { ELEMENT_POSITIONS, clampOverlayOffset } from './overlayLayout';
+import { ELEMENT_POSITIONS, clampOverlayOffset, normalizeOverlayFont, OVERLAY_FONT_WHITELIST } from './overlayLayout';
+import { FRAMING_ASSET_DATA_URL_MAX_CHARS } from '../data/framingAssets';
 
 // 装裱方案由大模型「设计参数」，再由前端 canvas「精确绘制」。
 //
@@ -9,7 +10,9 @@ import { ELEMENT_POSITIONS, clampOverlayOffset } from './overlayLayout';
 // 既保住了「绝不重绘孩子作品」的核心承诺，也把结果变成可复现、可微调的确定值。
 const SPEC_MODEL = 'glm-5.3-flash';
 
-const SAFE_FONTS = ['serif', 'sans-serif', 'Songti SC', 'STSong', 'Kaiti SC', 'STKaiti', 'Noto Serif SC'];
+// 文本类元素（展签 / 水印 / 落款）的字体白名单的**唯一真源在 overlayLayout.js**
+// （`OVERLAY_FONT_WHITELIST` + `normalizeOverlayFont`）：v1 收敛器、v2 收敛器与绘制层都读同一份，
+// 后台/老师端的字体下拉（US-007）也从这里取选项 —— 别在任何一侧再抄一份列表。
 
 export const DEFAULT_FRAME_SPEC = {
   outer: '#cfa52e',
@@ -63,10 +66,18 @@ const text = (value, fallback, max = 120) => {
   return (raw || fallback).slice(0, max);
 };
 
-/** 叠加元素的图片地址：只接受 http(s) / data:image / blob，避免把任意 URL 印到孩子作品上。 */
+/**
+ * 叠加元素的图片地址：只接受 http(s) / data:image / blob，避免把任意 URL 印到孩子作品上。
+ *
+ * **长度上限按 FR-22 的素材上限推**（`data/framingAssets.js` 的 `FRAMING_ASSET_DATA_URL_MAX_CHARS`）：
+ * 合规的 200KB Logo 转成 data URL 约 273KB 字符，所以上限不能小。超长的一律**丢弃**而不是截断 ——
+ * 截断的 data URL 能被 PNG 解码器「部分解出来」，画面上就是一张下半截消失的 Logo，且不报任何错
+ * （US-003b 真踩到：旧的 2048 字符截断让一张 100×400 的测试图只画出上面 73%）。
+ */
 const imageUrl = (value) => {
   const raw = String(value ?? '').trim();
-  return /^(https?:\/\/|data:image\/|blob:)/i.test(raw) ? raw.slice(0, 2048) : '';
+  if (!/^(https?:\/\/|data:image\/|blob:)/i.test(raw)) return '';
+  return raw.length <= FRAMING_ASSET_DATA_URL_MAX_CHARS ? raw : '';
 };
 
 /**
@@ -90,7 +101,7 @@ export function normalizeFrameSpec(raw) {
     innerLine: hexOrNull(source.innerLine),
     plaqueBg: hex(source.plaqueBg, base.plaqueBg),
     plaqueText: hex(source.plaqueText, base.plaqueText),
-    plaqueFontFamily: SAFE_FONTS.includes(font) ? font : base.plaqueFontFamily,
+    plaqueFontFamily: normalizeOverlayFont(font, base.plaqueFontFamily),
     plaqueLetterSpacing: clamp(source.plaqueLetterSpacing, 0, 8, base.plaqueLetterSpacing),
     artRotateDeg: Number(source.artRotateDeg) === 90 ? 90 : 0,
     atmosphere: String(source.atmosphere ?? '').slice(0, 120),
@@ -132,6 +143,9 @@ export const CORNER_RADIUS_RATIO_RANGE = { min: 0, max: 0.5 };
 // 定位层、这里的收敛器与后台的九宫格控件必须读同一份，别在任一侧再抄一遍。
 // 这里重新导出，保持 `frameSpec.js` 既有调用方的 import 路径不变。
 export { ELEMENT_POSITIONS };
+
+/** 字体白名单（后台/老师端面板的字体下拉直接用它；真源仍是 `overlayLayout.js`）。 */
+export const FRAMING_FONT_WHITELIST = OVERLAY_FONT_WHITELIST;
 export const PLAQUE_POSITIONS = ['bottom', 'top'];
 export const DATE_SOURCES = ['lesson', 'today', 'manual'];
 export const DATE_FORMATS = ['YYYY.MM.DD', 'YYYY-MM-DD', 'YYYY年MM月DD日'];
@@ -268,9 +282,7 @@ export function normalizeFrameSpecV2(raw) {
       visible: bool(plaque.visible, base.plaque.visible),
       bg: hex(plaque.bg ?? source.plaqueBg, base.plaque.bg),
       text: hex(plaque.text ?? source.plaqueText, base.plaque.text),
-      fontFamily: SAFE_FONTS.includes(String(plaque.fontFamily ?? legacyFont).trim())
-        ? String(plaque.fontFamily ?? legacyFont).trim()
-        : base.plaque.fontFamily,
+      fontFamily: normalizeOverlayFont(plaque.fontFamily ?? legacyFont, base.plaque.fontFamily),
       letterSpacing: clamp(plaque.letterSpacing ?? source.plaqueLetterSpacing, 0, 8, base.plaque.letterSpacing),
       position: oneOf(plaque.position, PLAQUE_POSITIONS, base.plaque.position)
     },
@@ -290,9 +302,7 @@ export function normalizeFrameSpecV2(raw) {
         position: oneOf(watermarkText.position, ELEMENT_POSITIONS, base.watermark.text.position),
         offsetX: clampOverlayOffset(watermarkText.offsetX, base.watermark.text.offsetX),
         offsetY: clampOverlayOffset(watermarkText.offsetY, base.watermark.text.offsetY),
-        fontFamily: SAFE_FONTS.includes(String(watermarkText.fontFamily ?? '').trim())
-          ? String(watermarkText.fontFamily).trim()
-          : base.watermark.text.fontFamily,
+        fontFamily: normalizeOverlayFont(watermarkText.fontFamily, base.watermark.text.fontFamily),
         fontSize: clamp(watermarkText.fontSize, 8, 200, base.watermark.text.fontSize),
         color: hex(watermarkText.color, base.watermark.text.color),
         opacity: clamp(watermarkText.opacity, 0, 1, base.watermark.text.opacity),
@@ -324,9 +334,7 @@ export function normalizeFrameSpecV2(raw) {
       position: oneOf(signature.position, ELEMENT_POSITIONS, base.signature.position),
       offsetX: clampOverlayOffset(signature.offsetX, base.signature.offsetX),
       offsetY: clampOverlayOffset(signature.offsetY, base.signature.offsetY),
-      fontFamily: SAFE_FONTS.includes(String(signature.fontFamily ?? '').trim())
-        ? String(signature.fontFamily).trim()
-        : base.signature.fontFamily,
+      fontFamily: normalizeOverlayFont(signature.fontFamily, base.signature.fontFamily),
       fontSize: clamp(signature.fontSize, 8, 200, base.signature.fontSize),
       color: hex(signature.color, base.signature.color)
     },

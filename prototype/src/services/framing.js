@@ -1,6 +1,23 @@
 import { frameSpecRenderView, clampRatio, FRAME_WIDTH_RATIO_RANGE, MAT_WIDTH_RATIO_RANGE, CORNER_RADIUS_RATIO_RANGE } from './frameSpec';
 import { archShape, archInset, bevelShape, bevelInset, shapeBox, inscribeAspectRect, traceShape } from './frameShapes';
-import { overlayVariableContext, planOverlayText, visibleOverlayElements } from './overlayLayout';
+import {
+  overlayVariableContext,
+  planOverlayText,
+  visibleOverlayElements,
+  overlayElementEntries,
+  DRAWN_OVERLAY_KINDS,
+  resolveOverlayImageBox,
+  textPlanBox,
+  overlayElementBoxes,
+  evaluateOverlayCoverage,
+  OVERLAY_COVERAGE_LIMIT
+} from './overlayLayout';
+
+/** 合成画布的固定尺寸（装裱输出口径：1800×1360 JPEG 0.92）。几何与遮挡统计都从这里取，别各写一份。 */
+const FRAME_CANVAS_WIDTH = 1800;
+const FRAME_CANVAS_HEIGHT = 1360;
+/** 展签区高度（相对开口下沿）。 */
+const PLAQUE_HEIGHT = 96;
 
 const FRAME_STYLES = {
   '星光展': { outer: '#cfa52e', inner: '#f3ede2', plaque: '#2b271f' },
@@ -515,6 +532,44 @@ function frameLightingFill(ctx, rect, lighting, baseColor) {
 }
 
 /**
+ * 叠加元素图片（机构 Logo / 手写签名图）的加载缓存：同一份模板连续渲染（批量套用、画廊）时
+ * 不必反复解码同一张图。键是地址，值是 `Promise<Image|null>`。
+ */
+const overlayImageCache = new Map();
+
+/**
+ * 加载一张叠加元素图片，**失败一律返回 `null`**（画笔自己跳过）：一张坏 Logo 的失败面应该是
+ * 「少了水印」，绝不该是「整幅成品图渲染失败」。
+ */
+function loadOverlayImage(url) {
+  const source = String(url ?? '').trim();
+  if (!source) return Promise.resolve(null);
+  if (overlayImageCache.has(source)) return overlayImageCache.get(source);
+  const promise = loadImage(source).catch(() => null);
+  // 简单上限：机构 Logo / 签名图只有个位数，缓存别无限涨（超出直接清空，重新解码的代价可以接受）。
+  if (overlayImageCache.size >= 8) overlayImageCache.clear();
+  overlayImageCache.set(source, promise);
+  return promise;
+}
+
+/**
+ * 载入叠加元素里**已接画笔的图片类元素**（US-003b 是机构 Logo）。
+ * 只解码「`visible === true`」的那些 —— 不可见的元素连解码都不做，与「不绘制、不留占位」是同一条纪律。
+ */
+async function loadOverlayImages(overlays) {
+  const entries = visibleOverlayElements(overlayElementEntries(overlays))
+    .filter(({ kind }) => DRAWN_OVERLAY_KINDS.includes(kind));
+  const images = {};
+  await Promise.all(entries.map(async ({ kind, element }) => {
+    const url = kind === 'signature' ? element?.imageUrl : element?.url;
+    if (!url) return;
+    const image = await loadOverlayImage(url);
+    if (image) images[kind] = image;
+  }));
+  return images;
+}
+
+/**
  * 文本类叠加元素的画笔（US-003a 的绘制层入口）。
  *
  * 位置、字号、对齐、透明度与旋转**全部由 `planOverlayText()`（overlayLayout.js）算好**，
@@ -541,28 +596,133 @@ function paintOverlayText(ctx, plan) {
 }
 
 /**
- * 叠加元素绘制层（水印 / 落款 / 时间 / 二维码），画在**最上层**，位置相对整块画布短边。
+ * 图片类叠加元素的画笔（US-003b：机构 Logo）。
  *
- * **绘制门控**：只有 `visible === true` 的元素会进这一层（`visibleOverlayElements`），
- * 不可见的元素连画笔都不会被调用 —— 所以既不会画出东西，也不会留下任何空白占位
- * （US-003a 的验收原文）。每个元素的 `visible` 默认是 false，老模板因此完全不受影响。
- *
- * 目前这一层只有文字水印的画笔；机构 Logo / 二维码 / 落款（含印章）/ 时间的画笔由
- * US-003b / US-003c 接在同一个门控后面 —— 它们在没有画笔时同样什么都不画。
+ * 框（位置 + 尺寸）由 `resolveOverlayImageBox()` 按「宽度比例 + 图片自身比例」算好并做过越界收敛，
+ * 这里只 `drawImage` —— **不拉伸、不裁切、不调色**（框的比例就等于图片比例）。
+ * 框或图片缺失时什么都不画，也不留空白占位。
  */
-function drawOverlayElements(ctx, { width, height, overlays, context }) {
-  const elements = visibleOverlayElements([
-    { kind: 'watermark.text', element: overlays?.watermark?.text },
-    { kind: 'watermark.logo', element: overlays?.watermark?.logo },
-    { kind: 'watermark.qr', element: overlays?.watermark?.qr },
-    { kind: 'signature', element: overlays?.signature },
-    { kind: 'date', element: overlays?.date }
-  ]);
-  for (const { kind, element } of elements) {
+function paintOverlayImage(ctx, box, image, opacity) {
+  if (!image || !box || !(box.width > 0) || !(box.height > 0)) return;
+  const alpha = Number(opacity);
+  ctx.save();
+  ctx.globalAlpha = Number.isFinite(alpha) ? Math.min(1, Math.max(0, alpha)) : 1;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(image, box.x, box.y, box.width, box.height);
+  ctx.restore();
+}
+
+/**
+ * 叠加元素绘制层（水印 / 落款 / 时间 / 二维码），画在**最上层**（作品、卡纸、相框都已画完），
+ * 位置相对整块画布短边。
+ *
+ * **绘制门控**：只有 `visible === true` 且**已经接了画笔**的类别会进这一层
+ * （`visibleOverlayElements` + `DRAWN_OVERLAY_KINDS`），不可见的元素连画笔都不会被调用 ——
+ * 所以既不会画出东西，也不会留下任何空白占位（US-003a 的验收原文）。
+ *
+ * 已接画笔：文字水印（US-003a）、机构 Logo（US-003b）。
+ * 二维码 / 落款（含印章）/ 时间的画笔由 US-003c 接在同一个门控后面 —— 新增时三处一起改：
+ * `overlayLayout.js` 的 `DRAWN_OVERLAY_KINDS` + 这里的画笔分支 + `loadOverlayImages` 的取图分支。
+ */
+async function drawOverlayElements(ctx, { width, height, overlays, context, images }) {
+  const entries = visibleOverlayElements(overlayElementEntries(overlays))
+    .filter(({ kind }) => DRAWN_OVERLAY_KINDS.includes(kind));
+  for (const { kind, element } of entries) {
     if (kind === 'watermark.text') {
       paintOverlayText(ctx, planOverlayText({ element, canvasWidth: width, canvasHeight: height, context }));
+      continue;
+    }
+    if (kind === 'watermark.logo') {
+      const image = images?.[kind] || null;
+      if (!image) continue;
+      paintOverlayImage(ctx, resolveOverlayImageBox({
+        element,
+        imageWidth: image.naturalWidth,
+        imageHeight: image.naturalHeight,
+        canvasWidth: width,
+        canvasHeight: height
+      }), image, element?.opacity);
     }
   }
+}
+
+/** 文本测量的临时 canvas（只在 `measureFramingCoverage` 里用来量墨迹，不进渲染结果）。 */
+let overlayMeasureCanvas = null;
+
+function overlayMeasureContext() {
+  if (!overlayMeasureCanvas && typeof document !== 'undefined') {
+    overlayMeasureCanvas = document.createElement('canvas').getContext('2d') || null;
+  }
+  return overlayMeasureCanvas;
+}
+
+/**
+ * 注入给 `overlayLayout` 的文本测量：宽度 + 墨迹 ascent / descent。
+ * Chrome 给得出 `actualBoundingBox*`，拿不到时按 `0.8em / 0.2em` 估（与 textPlanBox 的兜底同一个口径）。
+ */
+function measureOverlayTextForBox(text, font) {
+  const ctx = overlayMeasureContext();
+  if (!ctx) return {};
+  ctx.font = font;
+  const metrics = ctx.measureText(String(text ?? ''));
+  const fontSize = Number.parseFloat(String(font).match(/(\d+(?:\.\d+)?)px/)?.[1] || '') || 0;
+  const ascent = Number(metrics.actualBoundingBoxAscent) > 0 ? metrics.actualBoundingBoxAscent : fontSize * 0.8;
+  const descent = Number(metrics.actualBoundingBoxDescent) > 0 ? metrics.actualBoundingBoxDescent : fontSize * 0.2;
+  return { width: metrics.width, ascent, descent };
+}
+
+/**
+ * 「水印 / 落款遮挡作品主体」的统计（US-003b 的验收：超过 15% 面积给出提示）。
+ *
+ * 与 `renderFramedArtwork` **共用同一份几何**（`buildFramingLayout`）与同一份取框规则
+ * （`overlayElementBoxes` + `resolveOverlayImageBox`），所以面板上算出来的百分比就是成品图上
+ * 真实压住的面积 —— 不要在这里另算一套「作品区」矩形。
+ *
+ * 入参口径：`imageWidth / imageHeight` 是**作品原始像素**（与渲染时同一张图），
+ * `rotation` 不传则按 `spec.art.rotateDeg`（与渲染一致）。返回
+ * `evaluateOverlayCoverage()` 的结果（含 `coveredRatio` / `exceeds` / `message` / `items`）。
+ */
+export async function measureFramingCoverage({
+  spec = {},
+  imageWidth,
+  imageHeight,
+  rotation,
+  orgName = '',
+  teacherName = '',
+  student = '',
+  title = '',
+  date = '',
+  variables = null,
+  limit = OVERLAY_COVERAGE_LIMIT
+} = {}) {
+  const view = frameSpecRenderView(spec);
+  const layout = buildFramingLayout({ view, imageWidth, imageHeight, rotation });
+  if (!view.overlays) {
+    // v1 平面 spec 一个叠加元素都不画 → 遮挡恒为 0（与渲染层同一个判据）。
+    return evaluateOverlayCoverage({ boxes: [], subjectRect: layout.subjectRect, limitRatio: limit });
+  }
+  const context = overlayVariableContext({
+    orgName,
+    studentName: student,
+    workTitle: title,
+    teacherName,
+    lessonDate: date,
+    ...(variables && typeof variables === 'object' ? variables : {})
+  });
+  const images = await loadOverlayImages(view.overlays);
+  const imageSizes = {};
+  for (const [kind, image] of Object.entries(images)) {
+    imageSizes[kind] = { width: image.naturalWidth, height: image.naturalHeight };
+  }
+  const boxes = overlayElementBoxes({
+    overlays: view.overlays,
+    canvasWidth: layout.width,
+    canvasHeight: layout.height,
+    context,
+    measureText: measureOverlayTextForBox,
+    imageSizes
+  });
+  return evaluateOverlayCoverage({ boxes, subjectRect: layout.subjectRect, limitRatio: limit });
 }
 
 /**
@@ -594,25 +754,31 @@ function drawOverlayElements(ctx, { width, height, overlays, context }) {
  * 由 `orgName` / `student` / `title` / `teacherName` / `date` 拼出来，也可以用 `variables` 直接覆盖
  * （批量套用与另存模板时用得上）。上下文里的空值替换成空串，因此不会把 `{机构名}` 原样印在画面上。
  */
-export async function renderFramedArtwork({ source, spec = {}, student = '', title = '', date = '', rotation, orgName = '', teacherName = '', variables = null }) {
-  const image = await loadImage(source);
-  const width = 1800;
-  const height = 1360;
+/**
+ * 装裱几何：从**渲染视图 + 作品像素尺寸**算出这次渲染要用的全部矩形。
+ *
+ * 抽出来是因为 US-003b 的「水印遮挡作品主体」统计必须和渲染**看同一份几何** ——
+ * 在面板里另算一套「作品区」迟早会和真正的作画区域漂移（形状分支的作品区是形状内最大等比矩形，
+ * 不是固定的那个 `area`）。`renderFramedArtwork` 与 `measureFramingCoverage` 都调它。
+ *
+ * 返回里几个词的口径：
+ *   - `area`        直角 / 圆角分支的固定作品区（卡纸开口扣掉展签）；
+ *   - `artRect`     作品**实际可以铺开**的区域：直角 / 圆角 = `area`，arch / bevel = 形状内最大等比矩形；
+ *   - `subjectRect` 作品**真正占住**的那块矩形（等比缩放 + 居中之后的大小），
+ *                   「水印遮挡作品主体 15%」的分母就是它 —— 不是整块画布，也不是卡纸开口。
+ */
+function buildFramingLayout({ view, imageWidth = 1, imageHeight = 1, rotation }) {
+  const width = FRAME_CANVAS_WIDTH;
+  const height = FRAME_CANVAS_HEIGHT;
   const shortEdge = Math.min(width, height);
-
-  const view = frameSpecRenderView(spec);
-  const outerColor = view.outer || '#cfa52e';
-  const matColor = view.mat || '#f3ede2';
-  const plaqueBg = view.plaqueBg || '#2b271f';
-  const plaqueText = view.plaqueText || '#fbf8f2';
-  const plaqueFont = view.plaqueFontFamily || 'serif';
-  const letterSpacing = Number.isFinite(view.plaqueLetterSpacing) ? view.plaqueLetterSpacing : 1;
+  const imageW = Number(imageWidth) > 0 ? Number(imageWidth) : 1;
+  const imageH = Number(imageHeight) > 0 ? Number(imageHeight) : 1;
 
   const wall = Math.round(shortEdge * 0.025);
   // 框宽 / 卡纸宽的收敛在渲染层再做一次：v1 平面 spec 原样进来，没有收敛器兜着。
   const outer = Math.max(4, Math.round(shortEdge * clampRatio(view.outerWidthRatio, FRAME_WIDTH_RATIO_RANGE, 0.0412)));
   const mat = view.matVisible === false ? 0 : Math.max(6, Math.round(shortEdge * clampRatio(view.matWidthRatio, MAT_WIDTH_RATIO_RANGE, 0.0647)));
-  const plaqueHeight = 96;
+  const plaqueHeight = PLAQUE_HEIGHT;
 
   const frameRect = { x: wall, y: wall, width: width - wall * 2, height: height - wall * 2 };
   const matRect = {
@@ -635,7 +801,7 @@ export async function renderFramedArtwork({ source, spec = {}, student = '', tit
   const shaped = !!geometry;
   const shapedArt = shaped
     ? inscribeAspectRect(geometry.windowShape, {
-      aspect: sideways ? image.naturalHeight / image.naturalWidth : image.naturalWidth / image.naturalHeight,
+      aspect: sideways ? imageH / imageW : imageW / imageH,
       top: geometry.box.y,
       bottom: geometry.artBottom
     })
@@ -655,6 +821,50 @@ export async function renderFramedArtwork({ source, spec = {}, student = '', tit
     ? Math.min(Math.round(shortEdge * clampRatio(view.cornerRadiusRatio, CORNER_RADIUS_RATIO_RANGE, 0.06)), Math.max(0, Math.floor(Math.min(frameRect.width, frameRect.height) / 2)))
     : 0;
   const matRadius = Math.max(0, Math.min(outerRadius - outer, mat));
+
+  // 作品的等比缩放（只缩放与居中，不裁切、不调色、不重绘）与它真正占住的矩形。
+  const ratio = Math.min(artRect.width / imageW, artRect.height / imageH);
+  const renderedWidth = imageW * ratio;
+  const renderedHeight = imageH * ratio;
+  const drawScale = sideways ? Math.min(artRect.width / renderedHeight, artRect.height / renderedWidth) : 1;
+  const subjectWidth = (sideways ? renderedHeight : renderedWidth) * drawScale;
+  const subjectHeight = (sideways ? renderedWidth : renderedHeight) * drawScale;
+  const subjectRect = {
+    x: artRect.x + artRect.width / 2 - subjectWidth / 2,
+    y: artRect.y + artRect.height / 2 - subjectHeight / 2,
+    width: subjectWidth,
+    height: subjectHeight
+  };
+
+  return {
+    width, height, shortEdge, wall, outer, mat, plaqueHeight,
+    frameRect, matRect, windowRect, area,
+    geometry, shaped, artRect, artRegionBottom, plaqueX, plaqueW,
+    outerRadius, matRadius,
+    deg, sideways, ratio, renderedWidth, renderedHeight, drawScale,
+    subjectRect
+  };
+}
+
+export async function renderFramedArtwork({ source, spec = {}, student = '', title = '', date = '', rotation, orgName = '', teacherName = '', variables = null }) {
+  const image = await loadImage(source);
+
+  const view = frameSpecRenderView(spec);
+  const outerColor = view.outer || '#cfa52e';
+  const matColor = view.mat || '#f3ede2';
+  const plaqueBg = view.plaqueBg || '#2b271f';
+  const plaqueText = view.plaqueText || '#fbf8f2';
+  const plaqueFont = view.plaqueFontFamily || 'serif';
+  const letterSpacing = Number.isFinite(view.plaqueLetterSpacing) ? view.plaqueLetterSpacing : 1;
+
+  const layout = buildFramingLayout({ view, imageWidth: image.naturalWidth, imageHeight: image.naturalHeight, rotation });
+  const {
+    width, height, outer, mat, plaqueHeight,
+    frameRect, matRect, area,
+    geometry, shaped, artRect, artRegionBottom, plaqueX, plaqueW,
+    outerRadius, matRadius,
+    deg, sideways, renderedWidth, renderedHeight, drawScale
+  } = layout;
 
   const canvas = document.createElement('canvas');
   canvas.width = width; canvas.height = height;
@@ -698,16 +908,12 @@ export async function renderFramedArtwork({ source, spec = {}, student = '', tit
     ctx.fillRect(area.x, area.y, area.width, area.height);
   }
 
-  const ratio = Math.min(artRect.width / image.naturalWidth, artRect.height / image.naturalHeight);
-  const renderedWidth = image.naturalWidth * ratio;
-  const renderedHeight = image.naturalHeight * ratio;
-
+  // 作品的等比缩放与居中（尺寸由 buildFramingLayout 算好，与遮挡统计共用一份）。
   ctx.save();
   ctx.translate(artRect.x + artRect.width / 2, artRect.y + artRect.height / 2);
   ctx.rotate((deg * Math.PI) / 180);
-  const scale = sideways ? Math.min(artRect.width / renderedHeight, artRect.height / renderedWidth) : 1;
   ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(image, -renderedWidth * scale / 2, -renderedHeight * scale / 2, renderedWidth * scale, renderedHeight * scale);
+  ctx.drawImage(image, -renderedWidth * drawScale / 2, -renderedHeight * drawScale / 2, renderedWidth * drawScale, renderedHeight * drawScale);
   ctx.restore();
 
   // 展签：只在有内容时绘制。
@@ -735,20 +941,18 @@ export async function renderFramedArtwork({ source, spec = {}, student = '', tit
   // （不是作品区）—— 这样同一份模板在展签、卡纸、相框上都不会因为作品比例变化而跑位。
   // `view.overlays` 只有 v2 spec 才有；v1 平面 spec 是 null，一个像素都不碰。
   if (view.overlays) {
-    drawOverlayElements(ctx, {
-      width,
-      height,
-      overlays: view.overlays,
-      // 显式传入的 variables 优先（批量套用 / 另存模板的场景），其余从既有入参拼。
-      context: overlayVariableContext({
-        orgName,
-        studentName: student,
-        workTitle: title,
-        teacherName,
-        lessonDate: date,
-        ...(variables && typeof variables === 'object' ? variables : {})
-      })
+    // 显式传入的 variables 优先（批量套用 / 另存模板的场景），其余从既有入参拼。
+    const overlayContext = overlayVariableContext({
+      orgName,
+      studentName: student,
+      workTitle: title,
+      teacherName,
+      lessonDate: date,
+      ...(variables && typeof variables === 'object' ? variables : {})
     });
+    // 图片类元素（机构 Logo）先解码再画：解码失败 → 这一张不画（不留占位），其余照画。
+    const images = await loadOverlayImages(view.overlays);
+    await drawOverlayElements(ctx, { width, height, overlays: view.overlays, context: overlayContext, images });
   }
 
   return canvas.toDataURL('image/jpeg', 0.92);

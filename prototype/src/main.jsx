@@ -38,7 +38,7 @@ import { loadStudentManagement } from './data/studentManagement';
 import StudentArchiveData from './StudentArchiveData';
 import GrowthArchiveData from './GrowthArchiveData';
 import { requestAiReview, uploadControlledMedia } from './services/reviewApi';
-import { ARTWORK_CLEAN_ALGORITHM, createExhibitionFrame, createPortraitPrint, extractArtworkSurface, renderFramedArtwork, rotateArtworkOriginal } from './services/framing';
+import { ARTWORK_CLEAN_ALGORITHM, createExhibitionFrame, createPortraitPrint, extractArtworkSurface, measureFramingCoverage, renderFramedArtwork, rotateArtworkOriginal } from './services/framing';
 import { createEmptyTeacherProfile, loadTeacherProfiles, persistTeacherProfiles } from './data/teacherProfiles';
 import { deleteRemoteTeacherProfile, loadRemoteTeacherProfiles, saveRemoteTeacherProfile } from './services/teacherProfileApi';
 import { createEmptySkill, loadSkillLibrary, persistSkillLibrary, resolveSkills, skillFromIndexEntry, skillFromPackage } from './data/skillLibrary';
@@ -49,7 +49,14 @@ import { MARKETPLACE_SYNCED_AT, indexStats, marketCategories, searchMarket, sear
 // 老师端只显示自己可见的模板（filterFramingPresetsForViewer），管理端读全量。
 import { createEmptyFramingPreset, filterFramingPresetsForViewer, loadFramingPresets, persistFramingPresets } from './data/framingPresets';
 import { deleteRemoteFramingPreset, loadRemoteFramingPresets, saveRemoteFramingPreset } from './services/framingPresetsApi';
-import { DEFAULT_FRAME_SPEC, frameSpecView, generateFrameSpec, normalizeFrameSpec } from './services/frameSpec';
+import { DEFAULT_FRAME_SPEC, FRAMING_FONT_WHITELIST, frameSpecView, generateFrameSpec, normalizeFrameSpec, normalizeFrameSpecV2 } from './services/frameSpec';
+// 叠加元素的定位与遮挡规则（US-003a/003b）：九宫格枚举、字体白名单、位置中文名与
+// 「水印遮挡作品主体 15%」的判定全在 overlayLayout.js —— 后台面板只负责渲染控件。
+import { ELEMENT_POSITIONS, CUSTOM_ELEMENT_POSITION, overlayPositionLabel } from './services/overlayLayout';
+// 装裱素材（机构 Logo）的上传准入（US-003b / FR-22）：PNG/JPG、≤512×512、≤200KB，
+// 规则在 data 层（可 Node 断言），解码与读文件在 services 层。
+import { framingAssetRulesText, framingAssetSummary, MAX_FRAMING_ASSET_BYTES } from './data/framingAssets';
+import { readFramingAsset, inspectFramingAssetUrl } from './services/framingAssets';
 import { REVIEW_MODEL, describeReviewError, readableFromRawJson, streamArtworkReview } from './services/llmReview';
 import { keywordCandidatesPrompt, keywordCategoriesFor, keywordOptionsFor, orderKeywords, pickSupportedKeywords } from './data/reviewKeywords';
 // 三个基础展示原语抽到 ui.jsx，3D 画廊页与主文件共用同一份
@@ -2686,6 +2693,20 @@ function SkillLibraryPage({skillLibrary=[],setSkillLibrary,teacherProfiles=[],se
   </>;
 }
 
+/**
+ * 叠加元素的位置选择：九宫格按钮。
+ * 位置枚举、锚点与中文名全部来自 `services/overlayLayout.js`（与渲染层同一份），
+ * 所以这里点出来的位置就是成品图上水印真正落的地方。
+ */
+function OverlayPositionPad({value,onChange,label}){
+  return <div className="overlay-position-pad" role="group" aria-label={label}>
+    {ELEMENT_POSITIONS.filter(position=>position!==CUSTOM_ELEMENT_POSITION).map(position=>
+      <button key={position} type="button" className={position===value?'active':''} aria-pressed={position===value}
+        aria-label={`${label}：${overlayPositionLabel(position)}`} title={overlayPositionLabel(position)}
+        onClick={()=>onChange(position)}>{overlayPositionLabel(position)}</button>)}
+  </div>;
+}
+
 function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast}){
   const [editingId,setEditingId]=useState(framingPresets[0]?.id||'');
   const editing=framingPresets.find(item=>item.id===editingId)||framingPresets[0]||null;
@@ -2693,11 +2714,74 @@ function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast}){
   const [generating,setGenerating]=useState(false);
   const [preview,setPreview]=useState('');
   const [saving,setSaving]=useState(false);
+  // 水印（US-003b）：Logo 上传的忙碌态 / 上传校验的错误文案 / 已保存 Logo 的复核结果 / 遮挡统计。
+  const [logoBusy,setLogoBusy]=useState(false);
+  const [assetError,setAssetError]=useState('');
+  const [logoInfo,setLogoInfo]=useState(null);
+  const [coverage,setCoverage]=useState(null);
+  const logoInput=useRef(null);
   useEffect(()=>{setDraft(editing?{...editing}:null)},[editingId,framingPresets.length]);
   useEffect(()=>{if(!draft)return undefined;let active=true;renderFramedArtwork({source:placeholderArtwork(),spec:draft.spec||DEFAULT_FRAME_SPEC,student:draft.plaqueStudent||'陈一诺',title:draft.plaqueTitle||'向着光的花',date:draft.plaqueDate||'2026.08.11',orgName:DEFAULT_ORG_NAME,teacherName:roleMeta.teacher.name}).then(url=>{if(active)setPreview(url)}).catch(()=>{if(active)setPreview('')});return()=>{active=false}},[draft?.spec,draft?.plaqueStudent,draft?.plaqueTitle,draft?.plaqueDate]);
   const patch=(key,value)=>setDraft(current=>current?{...current,[key]:value}:current);
   // 面板只认识 v1 平面字段，这里统一取视图：老预设（v1）原样、v2 预设映射成平面值。
   const draftSpec=frameSpecView(draft?.spec);
+  // 叠加元素（US-003b）读 v2 收敛后的分组；但**显示值优先用 draft 里的原值**，
+  // 否则「输入 2 立刻被收敛成 8」会让数字框没法正常输入（收敛发生在渲染时，不发生在输入时）。
+  const specV2=normalizeFrameSpecV2(draft?.spec);
+  const rawWatermark=draft?.spec&&typeof draft.spec==='object'&&draft.spec.watermark&&typeof draft.spec.watermark==='object'?draft.spec.watermark:{};
+  const logoWatermark={...specV2.watermark.logo,...(rawWatermark.logo||{})};
+  const textWatermark={...specV2.watermark.text,...(rawWatermark.text||{})};
+
+  // 写回水印：**只覆盖 watermark 组 + version**，老模板的平面字段（outer / mat / plaque* …）一个都不动
+  // —— 混写结构在 `normalizeFrameSpecV2` 里是合法输入（v2 分组优先、v1 平面字段兜底），
+  // 所以后台加上水印不会改变这套模板原本的长相。
+  const patchWatermark=(groups)=>setDraft(current=>{
+    if(!current) return current;
+    const base=current.spec&&typeof current.spec==='object'?current.spec:{};
+    const currentWatermark=normalizeFrameSpecV2(base).watermark;
+    return {...current,spec:{...base,version:2,watermark:{...currentWatermark,...groups}}};
+  });
+  const uploadLogo=async(file)=>{
+    setLogoBusy(true);
+    setAssetError('');
+    try{
+      const result=await readFramingAsset(file);
+      if(!result.ok){setAssetError(result.message);setToast(result.message);return}
+      patchWatermark({logo:{...logoWatermark,visible:true,url:result.asset.url}});
+      setToast(`已上传机构 Logo（${framingAssetSummary(result.asset)}），右侧预览已更新`);
+    }finally{setLogoBusy(false)}
+  };
+  const removeLogo=()=>{
+    setAssetError('');
+    patchWatermark({logo:{...logoWatermark,url:'',visible:false}});
+    setToast('已移除机构 Logo，保存后老师端不再带水印');
+  };
+  // 已保存 Logo 的复核：解码拿真实尺寸，尺寸超限或地址失效都在面板上说明（FR-22）。
+  const logoUrl=logoWatermark.url;
+  useEffect(()=>{
+    if(!logoUrl){setLogoInfo(null);return undefined}
+    let active=true;
+    inspectFramingAssetUrl(logoUrl,'机构 Logo').then(info=>{if(active)setLogoInfo(info)}).catch(()=>{if(active)setLogoInfo(null)});
+    return()=>{active=false};
+  },[logoUrl]);
+  // 遮挡统计（US-003b 的验收：水印遮挡作品主体超过 15% 要提示）。
+  // 与成品图共用同一份几何（measureFramingCoverage → buildFramingLayout），所以面板上的百分比
+  // 就是成品图上真实压住的面积；预览用的是占位作品，尺寸与占位图一致。
+  useEffect(()=>{
+    if(!draft){setCoverage(null);return undefined}
+    let active=true;
+    measureFramingCoverage({
+      spec:draft.spec||DEFAULT_FRAME_SPEC,
+      imageWidth:PLACEHOLDER_ARTWORK_SIZE.width,
+      imageHeight:PLACEHOLDER_ARTWORK_SIZE.height,
+      orgName:DEFAULT_ORG_NAME,
+      teacherName:roleMeta.teacher.name,
+      student:draft.plaqueStudent||'陈一诺',
+      title:draft.plaqueTitle||'向着光的花',
+      date:draft.plaqueDate||'2026.08.11'
+    }).then(result=>{if(active)setCoverage(result)}).catch(()=>{if(active)setCoverage(null)});
+    return()=>{active=false};
+  },[draft?.spec,draft?.plaqueStudent,draft?.plaqueTitle,draft?.plaqueDate]);
 
   const generate=async()=>{
     if(!draft) return;
@@ -2768,6 +2852,75 @@ function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast}){
               {draftSpec.rationale?<p className="spec-note">理由：{draftSpec.rationale}</p>:null}
             </div>
           </div>:<p className="persona-empty">还没有装裱参数。写好需求描述后点「由大模型生成装裱参数」。</p>}
+          {/* 水印（US-003b）：机构 Logo + 文字水印。两项都画在成品图最上层，
+              位置与尺寸走 overlayLayout 的九宫格 + 短边比例，与老师端成品图是同一套规则。 */}
+          <div className="framing-overlay">
+            <div className="framing-overlay-head">
+              <div>
+                <h3>水印</h3>
+                <p>叠加元素画在成品图最上层；位置用九宫格，尺寸用「相对画布短边的比例」，所以换更大尺寸的作品也跑不出格子。</p>
+              </div>
+              {coverage&&coverage.items.length?<em className={coverage.exceeds?'framing-coverage-bad':'framing-coverage-ok'} data-coverage-ratio={coverage.coveredRatio.toFixed(4)}>{coverage.summary}</em>:null}
+            </div>
+            {coverage&&coverage.exceeds?<p className="framing-coverage-bad" data-coverage-warning="1">{coverage.message}</p>:null}
+
+            <div className="framing-overlay-block">
+              <div className="framing-overlay-title">
+                <label className="framing-enable"><input type="checkbox" checked={logoWatermark.visible}
+                  onChange={event=>patchWatermark({logo:{...logoWatermark,visible:event.target.checked}})}/> 机构 Logo</label>
+                <small>{logoWatermark.visible?'老师端成品图会盖上机构 Logo':'关闭时完全不绘制，不留空白占位'}</small>
+              </div>
+              <div className="framing-overlay-row">
+                <input ref={logoInput} type="file" accept="image/png,image/jpeg" hidden
+                  onChange={event=>{const file=event.target.files&&event.target.files[0];event.target.value='';if(file)uploadLogo(file)}}/>
+                <Button icon={UploadCloud} onClick={()=>{if(logoInput.current)logoInput.current.click()}} disabled={logoBusy}>{logoBusy?'读取中…':'上传 Logo'}</Button>
+                {logoWatermark.url?<img className="framing-asset-thumb" src={logoWatermark.url} alt="机构 Logo 缩略图"/>:<em className="framing-asset-empty">还没有 Logo</em>}
+                {logoWatermark.url?<button type="button" className="text-link" onClick={removeLogo}>移除</button>:null}
+              </div>
+              <p className="framing-asset-rules">上传要求：{framingAssetRulesText()}{logoInfo&&logoInfo.ok?`（当前 ${logoInfo.width}×${logoInfo.height}）`:''}</p>
+              {assetError?<p className="framing-asset-error">{assetError}</p>:null}
+              {!assetError&&logoInfo&&!logoInfo.ok?<p className="framing-asset-error">{logoInfo.message}</p>:null}
+              <div className="framing-overlay-controls">
+                <div className="framing-overlay-field"><span>位置</span>
+                  <OverlayPositionPad label="机构 Logo" value={logoWatermark.position} onChange={position=>patchWatermark({logo:{...logoWatermark,position}})}/>
+                </div>
+                <label>宽度 %<input type="number" min="2" max="40" step="1" value={Number((logoWatermark.widthRatio*100).toFixed(2))}
+                  onChange={event=>patchWatermark({logo:{...logoWatermark,widthRatio:Number(event.target.value)/100}})}/></label>
+                <label>透明度 %<input type="number" min="0" max="100" step="5" value={Math.round(logoWatermark.opacity*100)}
+                  onChange={event=>patchWatermark({logo:{...logoWatermark,opacity:Number(event.target.value)/100}})}/></label>
+              </div>
+              <p className="framing-overlay-note">精细偏移（offsetX / offsetY）由老师端的水印面板（US-007）微调，这里是全局默认值。</p>
+            </div>
+
+            <div className="framing-overlay-block">
+              <div className="framing-overlay-title">
+                <label className="framing-enable"><input type="checkbox" checked={textWatermark.visible}
+                  onChange={event=>patchWatermark({text:{...textWatermark,visible:event.target.checked}})}/> 文字水印</label>
+                <small>可用变量：{'{机构名}{学员名}{作品名}{老师姓名}{课次日期}'}</small>
+              </div>
+              <div className="framing-overlay-controls">
+                <label className="wide">内容<input value={textWatermark.content}
+                  onChange={event=>patchWatermark({text:{...textWatermark,content:event.target.value}})}/></label>
+              </div>
+              <div className="framing-overlay-controls">
+                <label>字体<select value={textWatermark.fontFamily} onChange={event=>patchWatermark({text:{...textWatermark,fontFamily:event.target.value}})}>
+                  {FRAMING_FONT_WHITELIST.map(font=><option key={font} value={font}>{font}</option>)}
+                </select></label>
+                <label>字号 px<input type="number" min="8" max="200" step="1" value={textWatermark.fontSize}
+                  onChange={event=>patchWatermark({text:{...textWatermark,fontSize:Number(event.target.value)}})}/></label>
+                <label>颜色<input type="color" value={textWatermark.color}
+                  onChange={event=>patchWatermark({text:{...textWatermark,color:event.target.value}})}/></label>
+                <label>透明度 %<input type="number" min="0" max="100" step="5" value={Math.round(textWatermark.opacity*100)}
+                  onChange={event=>patchWatermark({text:{...textWatermark,opacity:Number(event.target.value)/100}})}/></label>
+                <label>旋转 度<input type="number" min="-180" max="180" step="5" value={textWatermark.rotateDeg}
+                  onChange={event=>patchWatermark({text:{...textWatermark,rotateDeg:Number(event.target.value)}})}/></label>
+                <div className="framing-overlay-field"><span>位置</span>
+                  <OverlayPositionPad label="文字水印" value={textWatermark.position} onChange={position=>patchWatermark({text:{...textWatermark,position}})}/>
+                </div>
+              </div>
+              <p className="framing-overlay-note">字体限后台白名单；渲染时会按变量替换内容，未命中的变量保留原文。</p>
+            </div>
+          </div>
         </>:<p className="persona-empty">选择左侧的一套装裱，或新增一套。</p>}
       </div>
     </div>
@@ -2775,13 +2928,14 @@ function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast}){
 }
 
 /** 装裱预览用的占位作品：只在后台设置页使用，不参与真实渲染。 */
+const PLACEHOLDER_ARTWORK_SIZE={width:900,height:680};
 let placeholderCache='';
 function placeholderArtwork(){
   if(placeholderCache) return placeholderCache;
   const canvas=document.createElement('canvas');
-  canvas.width=900; canvas.height=680;
+  canvas.width=PLACEHOLDER_ARTWORK_SIZE.width; canvas.height=PLACEHOLDER_ARTWORK_SIZE.height;
   const ctx=canvas.getContext('2d');
-  ctx.fillStyle='#fdfbf6'; ctx.fillRect(0,0,900,680);
+  ctx.fillStyle='#fdfbf6'; ctx.fillRect(0,0,PLACEHOLDER_ARTWORK_SIZE.width,PLACEHOLDER_ARTWORK_SIZE.height);
   ctx.fillStyle='#f6c445'; ctx.beginPath(); ctx.arc(420,300,140,0,Math.PI*2); ctx.fill();
   ctx.fillStyle='#e2603c'; ctx.beginPath(); ctx.arc(590,215,62,0,Math.PI*2); ctx.fill();
   ctx.strokeStyle='#2f6fbf'; ctx.lineWidth=9; ctx.lineCap='round';
