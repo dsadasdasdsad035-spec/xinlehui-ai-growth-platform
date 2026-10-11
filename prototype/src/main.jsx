@@ -70,6 +70,13 @@ import {
 // 上传准入规则与素材隐私（US-408）：格式白名单 / 10MB / 长边 3000px 降采样 /
 // 素材只走会话内 object URL。规则是纯函数（可直接 Node 断言），浏览器侧的执行在 mediaIntake。
 import { buildSessionMediaDraft, mediaRulesText, screenMediaFiles, validateMediaFile } from './data/mediaValidation';
+// 课后反馈草稿（US-409）：只落元数据（课次信息 + 学员选择 + 作品名），
+// 图片本体 / object URL / base64 一律不进 localStorage；恢复时安全降级、永不抛错。
+import {
+  applySavedTitles, buildFeedbackDraft, clearFeedbackDraft, clearSessionMediaSnapshot,
+  draftMode, draftSelectedStudent, persistFeedbackDraft, persistSessionMediaSnapshot,
+  readFeedbackDraft, readSessionMediaSnapshot, resolveRestoredStep, restoredArtworkTitles
+} from './data/feedbackDraft';
 import { downsampleImageFile, resolveMediaTypes, revokeMediaEntries, revokeMediaUrl } from './services/mediaIntake';
 import { createLesson, loadRemoteLessons, updateLesson } from './services/lessonApi';
 // 课程库（course）是课题的来源：课次上的 courseId 指向一门课程，课题按课时序号从 syllabus 取。
@@ -296,6 +303,14 @@ function rosterParticipants(students,previous=[]){
 }
 
 /**
+ * 参与学员的稳定指纹（US-409）：草稿要不要落盘的判据之一 ——
+ * 与班级初始名单完全一致时说明老师还没动过学员选择，这份草稿没有恢复价值。
+ */
+function participantSignature(list){
+  return (list||[]).map(item=>`${item?.name||''}:${item?.attendance||''}:${item?.temporary?'1':'0'}`).join('|');
+}
+
+/**
  * 学员在「照片分配」界面里的稳定 key：优先 studentId，临时学员（没有 id）退回姓名。
  * 不能用行号 —— 勾选过程中名单顺序一变（切班/标缺课）就会选错人。
  */
@@ -309,27 +324,54 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
   const availableClasses=management.classes||[];
   // 当前登录老师：原型阶段只有一个老师身份（见 roleMeta.teacher），班级数据里存的是老师姓名。
   const currentTeacherName=roleMeta.teacher.name;
-  // 默认只显示当前老师带的班；「全部班级」开关服务于代课、教研听课与新老师接手（PRD Q8）。
-  const [showAllClasses,setShowAllClasses]=useState(false);
+  // ---- 草稿恢复（US-409）----------------------------------------------------------
+  // 草稿快照**只在首次渲染读一次**：本组件挂载后立刻会跑「写草稿」effect，
+  // 用当前（初始）状态覆盖那条记录，读晚了就永远看不到上次的草稿。
+  // 它只含元数据（课次信息 + 学员选择 + 作品名），没有任何素材地址。
+  const [initialDraft]=useState(()=>readFeedbackDraft());
   // 历史班级可能没有 teacher 字段（旧数据/本机遗留），算作自己的班，否则页面会看起来是空的。
   const myClasses=availableClasses.filter(item=>!item.teacher||item.teacher===currentTeacherName);
+  // 「新建草稿」与无草稿进入时的初始班级：我带的第一个班。
+  const defaultClassId=myClasses[0]?.id||'';
+  // 默认只显示当前老师带的班；「全部班级」开关服务于代课、教研听课与新老师接手（PRD Q8）。
+  // 草稿里的班级若是别人名下的班，先把范围切到「全部班级」，否则 selectedClass 找不到、看起来像没恢复。
+  const [showAllClasses,setShowAllClasses]=useState(()=>Boolean(initialDraft?.classId)
+    &&availableClasses.some(item=>item.id===initialDraft.classId)
+    &&!myClasses.some(item=>item.id===initialDraft.classId));
   const visibleClasses=showAllClasses?availableClasses:myClasses;
-  const [selectedClassId,setSelectedClassId]=useState(()=>myClasses[0]?.id||'');
+  const [selectedClassId,setSelectedClassId]=useState(()=>{
+    const restored=String(initialDraft?.classId||'');
+    return restored&&availableClasses.some(item=>item.id===restored)?restored:defaultClassId;
+  });
   // selectedClass 只认当前可见列表里的班级：切回「我带的班」时不会残留别的老师的班。
   const selectedClass=visibleClasses.find(item=>item.id===selectedClassId)||null;
   const classStudents=management.students.filter(item=>item.className===selectedClass?.name);
-  const [selectedStudentName,setSelectedStudentName]=useState(()=>classStudents[0]?.name||'');
+  // 恢复草稿时把上次选中的学员带回：个人反馈的参与学员只有一位，那一位就是所选学员。
+  const [selectedStudentName,setSelectedStudentName]=useState(()=>{
+    const restored=draftSelectedStudent(initialDraft);
+    if(restored&&classStudents.some(item=>item.name===restored)) return restored;
+    return classStudents[0]?.name||'';
+  });
   // 不再回落到「第一个学员」：切换班级后必须是显式的空选择，否则会跨班串档。
   const selectedStudent=classStudents.find(item=>item.name===selectedStudentName)||null;
   const selectedStudentLabel=selectedStudent?.name||'未选择学员';
   const selectedClassLabel=selectedClass?.name||'未选择班级';
-  const savedDraft=()=>{try{return JSON.parse(localStorage.getItem('xinlehui-feedback-draft')||'null')}catch{return null}};
-  // 「上次进入流程时有没有选过素材」只在**首次渲染**读一次：
-  // 下面的草稿写入 effect 一挂载就会用当前（空）的媒体状态覆盖那条记录，读晚了就看不到了。
-  // 它只用来判断「会话素材是否已随刷新失效」，不承载任何图片数据。
-  const [lastSessionMedia]=useState(()=>{const saved=savedDraft();return saved?.media||null});
-  const [step,setStep]=useState(1);
-  const [mode,setMode]=useState('个人反馈');
+  // 草稿恢复提示的细节（US-409）：上次进行到第几步、恢复了哪次课。用草稿里存的值渲染，
+  // 这样「课题」等字段即便后来课程库改了，也能如实说明上次存的是什么。
+  const draftRestoreDetail=initialDraft
+    ? `${initialDraft.step>1?`上次进行到第 ${initialDraft.step} 步（素材已随刷新失效，已回到第一步）。`:''}已恢复：${selectedClassLabel}${initialDraft.lessonDate?` · ${initialDraft.lessonDate}`:''}${initialDraft.lessonNo?` · 第 ${initialDraft.lessonNo} 次课`:''}${initialDraft.topic?`《${initialDraft.topic}》`:''}。作品与课堂照片只在当次会话内有效，请重新选择原始素材。`
+    : '';
+  // 「上次进入流程时有没有选过素材」同样只在**首次渲染**读一次（与草稿分开两条键：
+  // 草稿里不允许出现素材相关的字段，这条痕迹只服务于「刷新后提示重新选择原始素材」）。
+  const [lastSessionMedia]=useState(()=>readSessionMediaSnapshot());
+  // 恢复草稿的提示条（可关闭）与「上次保存的作品名」待填队列（详见 feedbackDraft.js）。
+  const [draftRestored,setDraftRestored]=useState(()=>Boolean(initialDraft));
+  const [pendingTitles,setPendingTitles]=useState(()=>restoredArtworkTitles(initialDraft));
+  // 素材随刷新失效：草稿里 step>1 的会话回到第一步（那里没有作品可装裱/点评），
+  // 提示条会说明上次进行到第几步，避免老师以为「流程跳回去了」。
+  const [step,setStep]=useState(()=>resolveRestoredStep(initialDraft));
+  // 上次是个人还是班级反馈不额外持久化，由 participants 的不变量推导（多于一位 = 班级反馈）。
+  const [mode,setMode]=useState(()=>draftMode(initialDraft));
   // frame 存的是云端装裱预设的 id，不再是写死的样式名。
   const [frame,setFrame]=useState('');
   const enabledFrames=framingPresets.filter(item=>item.enabled!==false);
@@ -390,7 +432,7 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
   const courseOptions=selectableCourses(courses);
   const classCourseId=resolveCourseId(courses,selectedClass?.course);
   const classCourseName=String(selectedClass?.course||'').trim();
-  const [selectedCourseId,setSelectedCourseId]=useState('');
+  const [selectedCourseId,setSelectedCourseId]=useState(()=>String(initialDraft?.courseId||''));
   // 选中的课程被停用或不在课程库里时，回落到本班课程，再回落到第一门可选课程。
   const activeCourseId=courseOptions.some(item=>item.courseId===selectedCourseId)
     ? selectedCourseId
@@ -404,10 +446,12 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
   // ---- 课次日期与课时序号（US-404）------------------------------------------------
   // 这两项是第一步的必填项，也是下游唯一的日期来源：展签、成长档案、阶段报告都取 lessonDate。
   const todayDate=normalizeLessonDate(new Date());
-  const [lessonDate,setLessonDate]=useState(()=>normalizeLessonDate(new Date()));
+  // 草稿恢复的日期照用（补录过的过去日期不能被打回今天）；没有草稿时才默认今天。
+  const [lessonDate,setLessonDate]=useState(()=>String(initialDraft?.lessonDate||'')||normalizeLessonDate(new Date()));
   // 序号可以手改；手改过之后不再被推荐值顶掉（lessonNoDirty 置真），换班/换课时归零重新跟随推荐值。
-  const [lessonNoInput,setLessonNoInput]=useState('');
-  const [lessonNoDirty,setLessonNoDirty]=useState(false);
+  // 草稿里的序号算「老师显式定过的值」（lessonNoDirty 置真），否则会被推荐值顶掉。
+  const [lessonNoInput,setLessonNoInput]=useState(()=>initialDraft?.lessonNo?String(initialDraft.lessonNo):'');
+  const [lessonNoDirty,setLessonNoDirty]=useState(()=>Boolean(initialDraft?.lessonNo));
   // 未来日期（预排课）与「同日已有课次」都要二次确认；换日期或换序号后必须重新确认一次。
   const [futureDateConfirmed,setFutureDateConfirmed]=useState(false);
   const [sameDayConfirmed,setSameDayConfirmed]=useState(false);
@@ -415,7 +459,14 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
   const [lessonConfirm,setLessonConfirm]=useState(null);
   const [lessonSaveState,setLessonSaveState]=useState({status:'idle',message:''});
   // 已保存课次的 id：同一份草稿再次保存走更新，不会重复创建同一次课。
-  const [currentLessonId,setCurrentLessonId]=useState('');
+  // 恢复草稿时按「班级 + 日期 + 序号」从本地课次里找回它 —— 否则刷新后同一个自然键
+  // 会被自己的上一条记录判成冲突（「该班该日期已有第 N 次课」），而老师其实是在改同一次课。
+  const [currentLessonId,setCurrentLessonId]=useState(()=>{
+    const draft=initialDraft;
+    if(!draft?.classId||!draft.lessonDate||!draft.lessonNo) return '';
+    const hit=lessons.find(item=>item.classId===draft.classId&&item.lessonDate===draft.lessonDate&&item.lessonNo===draft.lessonNo);
+    return hit?.lessonId||'';
+  });
   const lessonNoValue=Number(lessonNoInput);
   const lessonNoValid=Number.isInteger(lessonNoValue)&&lessonNoValue>0;
   const isFutureLessonDate=Boolean(lessonDate)&&lessonDate>todayDate;
@@ -445,7 +496,11 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
   // ---- 参与学员与出席状态（US-405）------------------------------------------------
   // participants 只描述「本次课次」，缺课学员也要留在里面（成长档案需要缺课留白）。
   // 保存课次时才写进 lesson.participants，**不回写班级名单**：临时加入的插班/试听因此不污染名单。
-  const [participants,setParticipants]=useState(()=>rosterParticipants(classStudents));
+  // 草稿恢复时直接带回上次的学员选择与出席标记（素材 id 已在草稿里清空，不会留下悬空引用）。
+  const [participants,setParticipants]=useState(()=>{
+    const restored=(initialDraft?.participants||[]).map(createParticipant).filter(item=>item.name);
+    return restored.length?restored:rosterParticipants(classStudents);
+  });
   const [temporaryName,setTemporaryName]=useState('');
   const [participantNotice,setParticipantNotice]=useState('');
   // 个人反馈只记录选中的那一位；班级反馈记录整份名单里被勾选的孩子。
@@ -711,12 +766,41 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
       sameOk:lessonConfirm.kind==='same-day'?true:sameDayConfirmed
     });
   };
+  // ---- 草稿持久化（US-409）--------------------------------------------------------
+  // 只落元数据：课次信息（班级 / 课程 / 日期 / 序号 / 课题）+ 学员选择 + 学员作品名 + 步骤。
+  // 图片本体 / object URL / base64 没有任何入口：`buildFeedbackDraft` 只复制已知的标量字段，
+  // `persistFeedbackDraft` 再用 containsMediaPayload 兜底。会话素材痕迹另存一条键（见下）。
+  const draftSnapshot=buildFeedbackDraft({
+    step,
+    classId:selectedClass?.id||'',
+    courseId:activeCourseId,
+    lessonDate,
+    lessonNo:lessonNoValue,
+    topic:lessonTopic,
+    participants:effectiveParticipants,
+    artworkTitles:classArtworkItems.map(item=>({studentId:item.studentId,studentName:item.studentName,title:item.title}))
+  });
+  // 快照是确定性的（savedAt 由落盘时打），所以可以序列化成依赖键，避免每次渲染都写 localStorage。
+  const draftSnapshotKey=JSON.stringify(draftSnapshot);
+  // 只有「确实有值得恢复的内容」才写草稿：什么都还没动的初始态不落盘，
+  // 于是「新建草稿」之后 localStorage 里是真的干净（而不是又存了一份初始值）。
+  const draftHasContent=step>1
+    ||Boolean(currentLessonId)
+    ||lessonNoDirty
+    ||lessonDate!==todayDate
+    ||selectedClassId!==defaultClassId
+    ||participantSignature(participants)!==participantSignature(rosterParticipants(classStudents))
+    ||classArtworkItems.length>0
+    ||classPhotoItems.length>0
+    ||Boolean(media.artwork||media.photo);
   useEffect(()=>{
-    // 草稿只落**元数据**：object URL / base64 / 图片本体一律不进 localStorage（US-408）。
-    // 收敛点只有 buildSessionMediaDraft 一处，不要在别处再拼一份 media。
-    const portableMedia=buildSessionMediaDraft(media);
-    localStorage.setItem('xinlehui-feedback-draft',JSON.stringify({step,media:portableMedia}));
-  },[step,media]);
+    if(draftHasContent){persistFeedbackDraft(draftSnapshot);return}
+    // 恢复出来的内容与初始态一模一样（例如只上传过素材）→ 没有可恢复的东西，顺手清掉草稿。
+    if(initialDraft) clearFeedbackDraft();
+  },[draftSnapshotKey,draftHasContent]);
+  // 会话素材痕迹与草稿分开存：草稿里不允许出现任何素材字段，这条记录只用来判断
+  // 「上次选过素材、这次会话里没有 → 刷新后失效了」。瘦身收敛点仍是 buildSessionMediaDraft 一处。
+  useEffect(()=>{persistSessionMediaSnapshot(buildSessionMediaDraft(media))},[media]);
   useEffect(()=>{window.dispatchEvent(new CustomEvent('xinlehui-feedback-step',{detail:step}))},[step]);
   useEffect(()=>{window.__xinlehuiFeedbackMode=mode;window.dispatchEvent(new CustomEvent('xinlehui-feedback-mode',{detail:mode}))},[mode]);
   // 观察词变化不改写 reviewGenerated：正文是老师自己的判断结果，
@@ -955,18 +1039,25 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
       return;
     }
     const binding=bindFilesToStudent(intake.files,participant,{kind:'artwork',existing:batchUploads.artwork,participants,title:''});
-    if(binding.entries.length){
-      setBatchUploads(current=>({...current,artwork:[...current.artwork,...binding.entries]}));
+    // 草稿恢复（US-409）：上次存过的作品名按「这位学员 + 顺序」填回重新选择的素材上，
+    // 只填空标题（这次手填过的名字不覆盖）。素材本体不再存在，所以只能按顺序对位。
+    const restored=applySavedTitles(binding.entries,pendingTitles,participant);
+    const entries=restored.entries;
+    const filledCount=entries.filter(item=>String(item.title||'').trim()).length;
+    if(restored.titles.length!==pendingTitles.length) setPendingTitles(restored.titles);
+    if(entries.length){
+      setBatchUploads(current=>({...current,artwork:[...current.artwork,...entries]}));
       // 绑定同时写回 participant.artworkIds：展签、成长档案、海报都按它认人。
       setParticipants(binding.participants);
     }
     const overflowNote=binding.ignored?`；另有 ${binding.ignored} 幅超过每人 ${binding.max} 幅上限，已忽略，请分次或换一位学员上传`:'';
-    const baseMessage=binding.entries.length
-      ? `已为「${participant.name}」添加 ${binding.entries.length} 幅作品（共 ${binding.used+binding.entries.length}/${binding.max} 幅）${overflowNote}`
+    const titleNote=filledCount?`；已填回 ${filledCount} 个上次保存的作品名`:'';
+    const baseMessage=entries.length
+      ? `已为「${participant.name}」添加 ${entries.length} 幅作品（共 ${binding.used+entries.length}/${binding.max} 幅）${titleNote}${overflowNote}`
       : `「${participant.name}」已达每人 ${binding.max} 幅上限${overflowNote}`;
     const message=intake.notice?`${baseMessage}；${intake.notice}`:baseMessage;
     // readFile 是异步的（受控上传成功/失败还会再弹一条 toast），绑定结果必须最后说（US-406a 的教训）。
-    if(binding.entries.length) readFile('artwork',intake.files[0]).finally(()=>setToast(message));
+    if(entries.length) readFile('artwork',intake.files[0]).finally(()=>setToast(message));
     else setToast(message);
   };
   /** 逐幅填写作品名：只改这一条，不动绑定与顺序。 */
@@ -1096,7 +1187,51 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
       setFramingState('processing');
     }
   };
-  const resetDraft=()=>{localStorage.removeItem('xinlehui-feedback-draft');revokeMediaEntries(batchUploads.artwork);revokeMediaEntries(batchUploads.photo);revokeMediaUrl(media.artwork?.url);revokeMediaUrl(media.photo?.url);setMedia({artwork:null,photo:null});setBatchUploads({artwork:[],photo:[]});setMediaIntakeNotice('');setMediaLostDismissed(false);setReviews(reviewDefaults);setKeywords([]);setAiKeywords([]);setLocalDraftUsed(false);setKeywordDirty(false);setArchived(false);setReviewGenerated(false);setStep(1);setLessonDate(todayDate);setLessonNoDirty(false);setFutureDateConfirmed(false);setSameDayConfirmed(false);setLessonConfirm(null);setLessonSaveState({status:'idle',message:''});setCurrentLessonId('');setParticipants(rosterParticipants(classStudents));setTemporaryName('');setParticipantNotice('');setPhotoAssignId('');setPhotoAssignSelection([]);setToast('已新建一份课后反馈草稿')};
+  /**
+   * 新建草稿（US-409）：清空**全部**草稿元数据与会话素材，回到第一步初始态。
+   * 这里的「初始态」= 无草稿进入时的状态：我带的第一个班 + 本班课程 + 今天 + 推荐序号 + 本班名单，
+   * 个人反馈模式、未选学员。清完 localStorage 后写入 effect 不会立刻又存一份（见 draftHasContent）。
+   */
+  const resetDraft=()=>{
+    clearFeedbackDraft();
+    clearSessionMediaSnapshot();
+    revokeMediaEntries(batchUploads.artwork);
+    revokeMediaEntries(batchUploads.photo);
+    revokeMediaUrl(media.artwork?.url);
+    revokeMediaUrl(media.photo?.url);
+    setMedia({artwork:null,photo:null});
+    setBatchUploads({artwork:[],photo:[]});
+    setMediaIntakeNotice('');
+    setMediaLostDismissed(false);
+    setReviews(reviewDefaults);
+    setKeywords([]);
+    setAiKeywords([]);
+    setLocalDraftUsed(false);
+    setKeywordDirty(false);
+    setArchived(false);
+    setReviewGenerated(false);
+    setStep(1);
+    setShowAllClasses(false);
+    setSelectedClassId(defaultClassId);
+    setSelectedStudentName('');
+    setSelectedCourseId(resolveCourseId(courses,myClasses[0]?.course));
+    setMode('个人反馈');
+    setLessonDate(todayDate);
+    setLessonNoDirty(false);
+    setFutureDateConfirmed(false);
+    setSameDayConfirmed(false);
+    setLessonConfirm(null);
+    setLessonSaveState({status:'idle',message:''});
+    setCurrentLessonId('');
+    setParticipants(rosterParticipants(management.students.filter(item=>item.className===myClasses[0]?.name)));
+    setTemporaryName('');
+    setParticipantNotice('');
+    setPhotoAssignId('');
+    setPhotoAssignSelection([]);
+    setDraftRestored(false);
+    setPendingTitles([]);
+    setToast('已新建一份课后反馈草稿');
+  };
   // 老师手动增删观察词。AI 选中的词被取消时，同步从「AI 已识别」集合里去掉，标记才一致。
   const toggleKeyword=(keyword)=>{
     setKeywords(current=>current.includes(keyword)?current.filter(item=>item!==keyword):[...current,keyword]);
@@ -1493,7 +1628,7 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
       {reviewStream.open?<ReviewStreamPanel stream={reviewStream} profiles={teacherProfiles} activeProfileId={activeProfileId} setActiveProfileId={setActiveProfileId} onStart={startCloudReview} onStop={stopCloudReview} onLocalDraft={fillLocalDraft} onClose={()=>setReviewStream(current=>({...current,open:false}))}/>:null}
       {step===3&&!reviewStream.open?<ReviewLaunchPanel profiles={teacherProfiles} skillLibrary={skillLibrary} activeProfileId={activeProfileId} setActiveProfileId={setActiveProfileId} onStart={startCloudReview} onLocalDraft={fillLocalDraft} draftReady={reviewGenerated} localDraftUsed={localDraftUsed} keywordCount={keywords.length} hasArtwork={Boolean(media.artwork?.cleanUrl||media.artwork?.originalUrl)}/>:null}
       {step===2&&mode==='班级反馈'?<ClassFramingWall artworks={batchUploads.artwork} photos={batchUploads.photo} photoGroups={photoGroups} onRotate={index=>rotateBatchItem('artwork',index)} onRotatePhotoEntry={uploadId=>rotateUploadEntry('photo',uploadId)}/>:null}
-      {step===1?<section className="scene-panel"><div className="scene-heading"><span>第一步</span><h2>创建课后反馈信息</h2><p>先确定服务对象，再同步收集本节课素材。素材只在本次操作中保留。</p></div><div className="feedback-mode"><button className={mode==='个人反馈'?'selected':''} onClick={()=>selectMode('个人反馈')}>个人反馈<small>为一位孩子完成反馈</small></button><button className={mode==='班级反馈'?'selected':''} onClick={()=>selectMode('班级反馈')}>班级反馈<small>批量处理全班素材</small></button></div>{availableClasses.length?<div className="intake-scope"><span>班级范围</span><div className="intake-scope-switch"><button type="button" className={showAllClasses?'':'active'} onClick={()=>selectClassScope(false)}>我带的班（{myClasses.length}）</button><button type="button" className={showAllClasses?'active':''} onClick={()=>selectClassScope(true)}>全部班级（{availableClasses.length}）</button></div><small>当前登录老师：{currentTeacherName}</small></div>:null}{visibleClasses.length?<div className="task-form"><label>选择班级<select value={selectedClassId} onChange={event=>selectClass(event.target.value)}>{visibleClasses.map(item=><option key={item.id} value={item.id}>{item.name}{item.teacher?`（${item.teacher}）`:''}</option>)}</select></label><label>选择学员<select value={mode==='班级反馈'?'__class__':selectedStudentName} disabled={mode==='班级反馈'} onChange={event=>{setSelectedStudentName(event.target.value);setArchived(false)}}>{mode==='班级反馈'?<option value="__class__">本班全部学员（{classStudents.length}人）</option>:<><option value="">请选择学员</option>{classStudents.map(item=><option key={item.name} value={item.name}>{item.name}</option>)}</>}</select></label>{courseOptions.length?<label>选择课程<select value={activeCourseId} onChange={event=>selectCourse(event.target.value)}>{courseOptions.map(item=><option key={item.courseId} value={item.courseId}>{item.name}{item.courseId===classCourseId?' · 本班课程':''}</option>)}</select></label>:<div className="intake-course-empty"><b>课程库暂时没有可选课程</b><p>{classCourseName?`本班课程「${classCourseName}」不在可选课程里，可能已被停用。`:'课程由机构管理员在「课程库」中维护。'}</p>{role==='admin'?<Button variant="secondary" onClick={()=>navigate('courseLibrary')}>去课程库添加课程</Button>:<small>请联系机构管理员在「课程库」中新增或启用课程。</small>}</div>}{lessonScheduleField}{participantField}{mediaIntakeNotice?<p className="intake-media-notice"><ShieldAlert size={14}/><span>{mediaIntakeNotice}</span></p>:null}</div>:<div className="intake-empty"><Users size={26}/><b>{showAllClasses?'机构里还没有任何班级':'还没有属于你的班级'}</b><p>{showAllClasses?'请先在「学员管理」中新建班级，再回到这里创建课后反馈。':'可以切到「全部班级」确认是否存在其他老师名下的班级，或先去「学员管理」新建班级。'}</p><div className="intake-empty-actions">{showAllClasses?null:<button type="button" className="text-link" onClick={()=>selectClassScope(true)}>查看全部班级</button>}<Button onClick={()=>navigate('classes')}>去学员管理添加班级</Button></div></div>}{mode==='个人反馈'&&selectedClass&&!classStudents.length?<p className="intake-hint">该班级还没有学员，请先在「学员管理」里导入名单，再创建课后反馈。</p>:null}{artworkSlotField}{photoSlotField}{mode==='个人反馈'?<div className="sync-upload"><div className={media.artwork?.url?'has-file':''}><Frame/><b>学员作品 <em>必选</em></b><small>{uploadSummary('artwork')}</small><input ref={artworkInput} type="file" accept="image/jpeg,image/png,image/webp" hidden multiple={mode==='班级反馈'} onChange={e=>readFiles('artwork',e.target.files,e.currentTarget)}/><button onClick={()=>artworkInput.current?.click()}>{media.artwork?.url?'已上传 · 重新选择':'上传作品'}</button></div><div className={media.photo?.url?'has-file':''}><Image/><b>学员照片 <em>选填</em></b><small>{uploadSummary('photo')}</small><input ref={photoInput} type="file" accept="image/jpeg,image/png,image/webp" hidden multiple={mode==='班级反馈'} onChange={e=>readFiles('photo',e.target.files,e.currentTarget)}/><button onClick={()=>photoInput.current?.click()}>{media.photo?.url?'已上传 · 重新选择':'上传照片'}</button></div></div>:null}{lostSessionMedia&&!mediaLostDismissed?<div className="intake-media-lost"><ShieldAlert size={14}/><div><b>上次选择的素材已失效</b><small>作品与课堂照片只在当次会话里有效（只使用会话内 object URL，不写入 localStorage / IndexedDB）。页面刷新或重新进入后，请重新选择原始素材。</small></div><button type="button" className="text-link" onClick={()=>setMediaLostDismissed(true)}>知道了</button></div>:null}<div className="upload-privacy-note"><ShieldCheck size={14}/>{mediaRulesText(UPLOAD_SLOTS_PER_STUDENT)}</div><div className="scene-actions"><Button variant="secondary" onClick={resetDraft}>新建草稿</Button><Button variant="secondary" icon={Save} disabled={!activeCourseId||lessonSaveState.status==='saving'} onClick={requestLessonSave}>{lessonSaveState.status==='saving'?'保存中…':'保存课次'}</Button><Button icon={ArrowRight} onClick={()=>go(2)}>进入智能装裱</Button></div></section>:null}
+      {step===1?<section className="scene-panel"><div className="scene-heading"><span>第一步</span><h2>创建课后反馈信息</h2><p>先确定服务对象，再同步收集本节课素材。素材只在本次操作中保留。</p></div>{draftRestored?<div className="intake-draft-restored"><Clock3 size={14}/><div><b>已恢复上次的课次信息；素材需重新选择</b><small>{draftRestoreDetail}</small></div>{pendingTitles.length?<em>已保留 {pendingTitles.length} 个作品名，「学员作品上传位」里重新选择素材后自动填回</em>:null}<button type="button" className="text-link" onClick={()=>setDraftRestored(false)}>知道了</button></div>:null}<div className="feedback-mode"><button className={mode==='个人反馈'?'selected':''} onClick={()=>selectMode('个人反馈')}>个人反馈<small>为一位孩子完成反馈</small></button><button className={mode==='班级反馈'?'selected':''} onClick={()=>selectMode('班级反馈')}>班级反馈<small>批量处理全班素材</small></button></div>{availableClasses.length?<div className="intake-scope"><span>班级范围</span><div className="intake-scope-switch"><button type="button" className={showAllClasses?'':'active'} onClick={()=>selectClassScope(false)}>我带的班（{myClasses.length}）</button><button type="button" className={showAllClasses?'active':''} onClick={()=>selectClassScope(true)}>全部班级（{availableClasses.length}）</button></div><small>当前登录老师：{currentTeacherName}</small></div>:null}{visibleClasses.length?<div className="task-form"><label>选择班级<select value={selectedClassId} onChange={event=>selectClass(event.target.value)}>{visibleClasses.map(item=><option key={item.id} value={item.id}>{item.name}{item.teacher?`（${item.teacher}）`:''}</option>)}</select></label><label>选择学员<select value={mode==='班级反馈'?'__class__':selectedStudentName} disabled={mode==='班级反馈'} onChange={event=>{setSelectedStudentName(event.target.value);setArchived(false)}}>{mode==='班级反馈'?<option value="__class__">本班全部学员（{classStudents.length}人）</option>:<><option value="">请选择学员</option>{classStudents.map(item=><option key={item.name} value={item.name}>{item.name}</option>)}</>}</select></label>{courseOptions.length?<label>选择课程<select value={activeCourseId} onChange={event=>selectCourse(event.target.value)}>{courseOptions.map(item=><option key={item.courseId} value={item.courseId}>{item.name}{item.courseId===classCourseId?' · 本班课程':''}</option>)}</select></label>:<div className="intake-course-empty"><b>课程库暂时没有可选课程</b><p>{classCourseName?`本班课程「${classCourseName}」不在可选课程里，可能已被停用。`:'课程由机构管理员在「课程库」中维护。'}</p>{role==='admin'?<Button variant="secondary" onClick={()=>navigate('courseLibrary')}>去课程库添加课程</Button>:<small>请联系机构管理员在「课程库」中新增或启用课程。</small>}</div>}{lessonScheduleField}{participantField}{mediaIntakeNotice?<p className="intake-media-notice"><ShieldAlert size={14}/><span>{mediaIntakeNotice}</span></p>:null}</div>:<div className="intake-empty"><Users size={26}/><b>{showAllClasses?'机构里还没有任何班级':'还没有属于你的班级'}</b><p>{showAllClasses?'请先在「学员管理」中新建班级，再回到这里创建课后反馈。':'可以切到「全部班级」确认是否存在其他老师名下的班级，或先去「学员管理」新建班级。'}</p><div className="intake-empty-actions">{showAllClasses?null:<button type="button" className="text-link" onClick={()=>selectClassScope(true)}>查看全部班级</button>}<Button onClick={()=>navigate('classes')}>去学员管理添加班级</Button></div></div>}{mode==='个人反馈'&&selectedClass&&!classStudents.length?<p className="intake-hint">该班级还没有学员，请先在「学员管理」里导入名单，再创建课后反馈。</p>:null}{artworkSlotField}{photoSlotField}{mode==='个人反馈'?<div className="sync-upload"><div className={media.artwork?.url?'has-file':''}><Frame/><b>学员作品 <em>必选</em></b><small>{uploadSummary('artwork')}</small><input ref={artworkInput} type="file" accept="image/jpeg,image/png,image/webp" hidden multiple={mode==='班级反馈'} onChange={e=>readFiles('artwork',e.target.files,e.currentTarget)}/><button onClick={()=>artworkInput.current?.click()}>{media.artwork?.url?'已上传 · 重新选择':'上传作品'}</button></div><div className={media.photo?.url?'has-file':''}><Image/><b>学员照片 <em>选填</em></b><small>{uploadSummary('photo')}</small><input ref={photoInput} type="file" accept="image/jpeg,image/png,image/webp" hidden multiple={mode==='班级反馈'} onChange={e=>readFiles('photo',e.target.files,e.currentTarget)}/><button onClick={()=>photoInput.current?.click()}>{media.photo?.url?'已上传 · 重新选择':'上传照片'}</button></div></div>:null}{lostSessionMedia&&!mediaLostDismissed?<div className="intake-media-lost"><ShieldAlert size={14}/><div><b>上次选择的素材已失效</b><small>作品与课堂照片只在当次会话里有效（只使用会话内 object URL，不写入 localStorage / IndexedDB）。页面刷新或重新进入后，请重新选择原始素材。</small></div><button type="button" className="text-link" onClick={()=>setMediaLostDismissed(true)}>知道了</button></div>:null}<div className="upload-privacy-note"><ShieldCheck size={14}/>{mediaRulesText(UPLOAD_SLOTS_PER_STUDENT)}</div><div className="scene-actions"><Button variant="secondary" onClick={resetDraft}>新建草稿</Button><Button variant="secondary" icon={Save} disabled={!activeCourseId||lessonSaveState.status==='saving'} onClick={requestLessonSave}>{lessonSaveState.status==='saving'?'保存中…':'保存课次'}</Button><Button icon={ArrowRight} onClick={()=>go(2)}>进入智能装裱</Button></div></section>:null}
       {step===2?<section className="scene-panel studio-task"><div className="scene-heading"><span>第二步</span><h2>智能装裱</h2><p>先旋转完整原图并确认方向；确认后自动裁掉纸外的桌面、地面与背景，只保留作品本身。装裱方案（画框、卡纸、展签、日期与署名）由管理员在「装裱设置」中统一维护，这里直接选用。</p></div><div className="media-process"><article><div className={`mini-frame uploaded-art${media.artwork?.framedUrl?' framed-preview':''}`}>{media.artwork?.url?<><img src={media.artwork.framedUrl||media.artwork.cleanUrl||media.artwork.orientedUrl||media.artwork.originalUrl} alt={media.artwork.framedUrl?`已按「${activeFrame?.name||'默认装裱'}」完成装裱的作品`:media.artwork.cleanUrl?'已裁掉纸外背景、只保留作品本身':'等待确认方向的完整原图'}/>{media.artwork?.framedUrl?<span className="framed-badge">{activeFrame?.name||'默认装裱'}</span>:null}<div className="frame-rotate-controls" aria-label="旋转作品"><button type="button" title="向左旋转 90°" aria-label="向左旋转作品" disabled={framingState==='rotating'||framingState==='processing'} onClick={()=>rotatePersonalArtwork(-1)}><RotateCcw size={18}/></button><button type="button" title="向右旋转 90°" aria-label="向右旋转作品" disabled={framingState==='rotating'||framingState==='processing'} onClick={()=>rotatePersonalArtwork(1)}><RotateCw size={18}/></button></div></>:'✺'}</div><div><b>学员作品</b><p>{framingState==='processing'?(media.artwork?.cleanUrl?'正在按当前装裱方案合成装裱图…':'正在裁掉纸外的桌面与地面，只保留作品本身…'):media.artwork?.framedUrl?`已装裱：${activeFrame?.name||'默认装裱'}。作品只做等比缩放与居中，不裁切主体、不重绘、不调色。`:media.artwork?.cleanUrl?'已完成作品裁剪，正在生成装裱图…':'当前仅显示完整原图；请先旋转到正确方向。'}</p>{!media.artwork?.cleanUrl?<button type="button" className="confirm-artwork-button" onClick={startArtworkCleanup} disabled={framingState==='rotating'||framingState==='processing'}>{framingState==='processing'?'正在裁剪作品…':'方向正确，开始裁剪与装裱'}</button>:null}<div className="tiny-choice">{enabledFrames.length?enabledFrames.map(item=><button key={item.id} className={activeFrameId===item.id?'active':''} disabled={framingState==='processing'} onClick={()=>setFrame(item.id)} title={item.spec?.atmosphere||item.description||item.name}>{item.name}</button>):<span className="frame-loading">正在读取装裱设置…</span>}</div></div></article><article><div className="photo-card">{media.photo?.url?<><img src={media.photo.url} alt="已自然优化的课堂照片" style={{transform:`rotate(${media.photo.rotation||0}deg)`}}/><button type="button" className="frame-rotate-button photo-rotate-button" onClick={rotatePersonalPhoto}><RefreshCw size={16}/>旋转照片</button></>:<img src={pandaMascot} alt="课堂照片占位预览"/>}</div><div><b>学员照片</b><p>{media.photo?.name||'未上传课堂照片，可返回上一步补充。'}</p></div></article></div><div className="scene-actions"><Button variant="secondary" onClick={()=>go(1)}>返回创建信息</Button><Button icon={ArrowRight} onClick={()=>go(3)}>进入五维点评</Button></div></section>:null}
       {step===3?<section className="scene-panel review-task-v2"><div className="review-media"><div className="scene-heading"><span>{mode==='班级反馈'?'本班课后素材':'本次课素材'}</span><h2>{mode==='班级反馈'?'周六创意绘画 2 班 · 班级课后反馈':`${selectedStudentLabel}${activeFrame?.plaqueTitle?` · 《${activeFrame.plaqueTitle}》`:''}`}</h2></div><div className={`review-gallery ${mode==='班级反馈'?'class-review-gallery':''}`}>{mode==='班级反馈'?<><ClassMediaMosaic items={classMosaicArtworks} kind="artwork" date={lessonDateDots} onRotate={index=>rotateBatchItem('artwork',index)}/><ClassMediaMosaic items={classMosaicPhotos} kind="photo" groups={photoGroups} date={lessonDateDots} onRotateEntry={uploadId=>rotateUploadEntry('photo',uploadId)}/></>:<><div className={`review-art exhibition-art${media.artwork?.framedUrl?' framed-art':''}`}>{media.artwork?.framedUrl?<div className="framed-art-final"><img src={media.artwork.framedUrl} alt={`${selectedStudentLabel}的作品 · ${activeFrame?.name||'装裱'}`}/>{activeFrame?.name?<span className="framed-badge">{activeFrame.name}</span>:null}</div>:<><div className="artwork-mat">{media.artwork?.url?<img src={media.artwork.cleanUrl||media.artwork.originalUrl||media.artwork.url} alt={`${selectedStudentLabel}的作品`}/>:'✺'}</div><div className="artwork-plaque"><div><b>{selectedStudentLabel}</b><span>{activeFrame?.plaqueTitle?`《${activeFrame.plaqueTitle}》`:''}</span></div><time>创作于 {(activeFrame?.plaqueDate||new Date().toISOString().slice(0,10).replace(/-/g,'.'))}</time></div></>}</div><div className="review-photo portrait-print"><div className="portrait-mat">{media.photo?.url?<img src={media.photo.url} alt="陈一诺课堂照片"/>:<img src={pandaMascot} alt="课堂照片占位"/>}</div><div className="portrait-caption">{selectedStudentLabel} · {(activeFrame?.plaqueDate||new Date().toISOString().slice(0,10).replace(/-/g,'.'))}</div></div></>}</div></div><ReviewKeywordDock visible selected={keywords} onToggle={toggleKeyword} suggested={aiKeywords} suggesting={keywordSuggesting} dirty={keywordDirty} generated={reviewGenerated}/><div className={`coach-review ${mode==='班级反馈'?'class-coach-review':''}`}><div className="scene-heading"><span>第三步</span><h2>{mode==='班级反馈'?'班级课程反馈':'五维点评'}</h2></div><select value={subject} onChange={e=>setSubject(e.target.value)}><option>通用美术</option><option>创意绘画（3-6岁）</option><option>儿童画（6-9岁）</option><option>素描（9-18岁）</option><option>速写（9-18岁）</option><option>水彩 / 水粉（7-18岁）</option><option>国画（6-18岁）</option></select><p className="evidence">{mode==='班级反馈'?'以下内容基于本节课课程设计、班级素材与老师观察生成，老师可编辑确认后发布给家长。':`下列内容由大模型生成：先读懂作品与课堂素材，再结合「${activeProfileLabel}」的人设、已启用技能与长期记忆，按五个维度分别输出评语。老师可逐条修改后再发布。`}</p>{mode==='班级反馈'?<ClassReviewContent subject={subject}/>:<><div className={`review-source ${reviewGenerated?(localDraftUsed?'local':'ai'):'pending'}`}>{reviewGenerated?(localDraftUsed?<><CircleAlert size={14}/><span>当前正文来自<strong>本地草稿模板</strong>（未调用大模型），发布前请老师逐条核对。</span></>:<><Sparkles size={14}/><span>当前正文由大模型「{activeProfileLabel}」依据人设、技能与长期记忆生成，可直接编辑。</span></>):<><Sparkles size={14}/><span>五个维度等待大模型生成：点击上方「开始生成点评」，评语会逐字写入这里。</span></>}{keywordDirty&&reviewGenerated?<em>观察词已调整，建议重新生成</em>:null}</div>{Object.entries(reviews).map(([name,copy])=><article className={`coach-card${copy?'':' is-empty'}`} key={name}><b>{name}{copy?null:<em className="review-pending">待生成</em>}</b><textarea aria-label={name} value={copy} placeholder={REVIEW_DIMENSION_HINTS[name]||''} onChange={event=>setReviews(current=>({...current,[name]:event.target.value}))}/></article>)}</>}<div className="scene-actions"><Button variant="secondary" onClick={()=>go(2)}>返回智能装裱</Button><Button icon={Archive} onClick={archiveRecord}>归档并生成分享</Button></div></div></section>:null}
       {step===4?<section className="share-task scene-panel"><img src={pandaObserve} alt="熊猫成长伙伴"/><div><span>已归档至{selectedStudentLabel}的成长档案</span><h2>这一次的成长，<br/>已经被完整记录。</h2><p>作品、课堂照片与五维点评已经同步保存到本地草稿。</p><div className="share-actions"><Button icon={Archive} onClick={()=>setToast('成长集锦任务已创建，等待服务端接入')}>制作成长集锦</Button><Button variant="secondary" icon={Frame} onClick={()=>setToast('个人作品集任务已创建，等待服务端接入')}>制作作品集</Button></div><div className="scene-actions"><Button variant="secondary" onClick={()=>go(3)}>返回五维点评</Button><Button icon={FileText} onClick={()=>navigate('archives')}>进入成长档案</Button></div></div></section>:null}

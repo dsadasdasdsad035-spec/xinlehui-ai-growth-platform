@@ -147,3 +147,15 @@
 .intake-media-lost small{display:block;margin-top:3px;font-size:10px;line-height:1.65;color:#8a6a20}
 .intake-media-lost button{flex:none;border:0;background:none;padding:4px 2px;color:#795a00;font-size:10px;font-weight:700;cursor:pointer;text-decoration:underline;white-space:nowrap}
 @media(max-width:800px){.intake-media-lost{align-items:flex-start;flex-wrap:wrap}.intake-media-lost button{margin-left:0;min-height:44px}}
+
+/* ---- 草稿恢复（US-409）------------------------------------------------------------
+   重新进入流程时自动恢复元数据（课次信息 + 学员选择 + 作品名），并明确说明「素材需重新选择」：
+   素材只活在当次会话里，恢复出来的课次信息与素材无关。 */
+.intake-draft-restored{display:flex;align-items:flex-start;gap:9px;margin-top:13px;padding:11px 12px;border:1px solid #bcd6c0;border-radius:12px;background:#f5fbf6;color:#2f5b3a}
+.intake-draft-restored svg{flex:none;margin-top:2px;color:#4a8b5c}
+.intake-draft-restored>div{flex:1;min-width:0}
+.intake-draft-restored b{display:block;font-size:11px;color:#20492c}
+.intake-draft-restored small{display:block;margin-top:3px;font-size:10px;line-height:1.65;color:#4a6d52}
+.intake-draft-restored em{flex:none;align-self:center;font-style:normal;font-size:10px;font-weight:700;color:#2f5b3a;background:#e3f2e6;border-radius:99px;padding:3px 9px;white-space:nowrap}
+.intake-draft-restored button{flex:none;border:0;background:none;padding:4px 2px;color:#2f5b3a;font-size:10px;font-weight:700;cursor:pointer;text-decoration:underline;white-space:nowrap}
+@media(max-width:800px){.intake-draft-restored{align-items:flex-start;flex-wrap:wrap}.intake-draft-restored em{order:3}.intake-draft-restored button{margin-left:0;min-height:44px}}

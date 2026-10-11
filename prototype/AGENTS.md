@@ -217,7 +217,8 @@ React + Vite 单页原型（`src/main.jsx` 是主入口，另按模块拆出 `sr
   - 归档记录落盘前用 `stripSessionMediaUrls()` 清掉 `blob:`（`data:` 归档成品保留）：
     object URL 刷新即死，写在 localStorage 里只是一条指向不存在素材的垃圾地址。
 - **「刷新后素材失效」的提示要在挂载那一刻就把上次的媒体元数据读出来**：
-  `const [lastSessionMedia]=useState(()=>savedDraft()?.media||null)`。
+  `const [lastSessionMedia]=useState(()=>readSessionMediaSnapshot())`（US-409 起，素材痕迹单独一条键；
+  之前是 `savedDraft()?.media`）。
   写成 `const draft=savedDraft()` 再在渲染里读是**错的** —— 草稿写入 effect 一挂载就会用当前（空）的
   media 覆盖 localStorage 那条记录，读到的永远是空。`lostSessionMedia = 上次有素材 && 本次没有`，
   文案必须含「请重新选择原始素材」（US-408 的验收原文）。
@@ -228,6 +229,41 @@ React + Vite 单页原型（`src/main.jsx` 是主入口，另按模块拆出 `sr
   （真实 `DOM.setFileInputFiles` 选 3600px 大图 / 400px 小图 / PDF / 11.9MB 超限图，观察点：
   `img.naturalWidth` 是否 3000、计数是否 5/5 与 10/10、`localStorage` 里有无 `blob:`/`base64`、
   `indexedDB.databases()` 是否为空、刷新后 `.intake-media-lost` 是否出现）。
+
+### 课后反馈草稿：只存元数据与恢复（US-409）
+
+草稿的读写全部在 `src/data/feedbackDraft.js`（纯逻辑 + 一个显式 `.js` 扩展名的 import，
+所以在 Node 里也能直接跑断言）；`main.jsx` 的 `TeacherFlowV2` 只负责把状态喂进去、把草稿读回 state。
+
+- **两条 localStorage 键，不要合并**：
+  - `xinlehui-feedback-draft-v2`（`FEEDBACK_DRAFT_KEY`）= 草稿本体，**只含元数据**：
+    `version / savedAt / step / classId / courseId / lessonDate / lessonNo / topic / participants / artworkTitles`。
+    字段清单的唯一真源是 `FEEDBACK_DRAFT_FIELDS`（断言直接用它对键）。
+  - `xinlehui-feedback-session-media-v2`（`FEEDBACK_SESSION_MEDIA_KEY`）= 会话素材痕迹
+    （只留 `id/name/type/size`），用来判断「上次选过素材、这次失效了」（US-408 的横幅）。
+    素材相关字段**绝不能**进草稿键 —— 验收要求草稿 JSON 里不含图片本体 / object URL / base64。
+- **草稿里不允许出现素材**是靠两层保证的：`buildFeedbackDraft` 只复制已知标量字段（结构上没入口），
+  `persistFeedbackDraft` 再用 `containsMediaPayload` 兜底拒绝。改字段时两层都要过一遍。
+- **版本号对不上就忽略草稿**（`Number(raw.version) !== FEEDBACK_DRAFT_VERSION` → 返回 null），
+  不做半成品迁移；JSON 读坏 / localStorage 抛错 / 结构不是对象，一律返回 null，
+  调用方（`useState(()=>readFeedbackDraft())`）按初始态继续。**读写永不抛错**是硬约定。
+- **草稿快照只在首次渲染读一次**（`const [initialDraft]=useState(()=>readFeedbackDraft())`）：
+  写草稿的 effect 一挂载就会覆盖那条记录，读晚了永远看不到上次的草稿（与 US-408 的 `lastSessionMedia` 同一坑）。
+- **恢复不留悬空引用**：草稿里的 `participants` 把 `artworkIds/photoIds` 显式清空（素材条目刷新后已不存在），
+  读回来时统一走 `createParticipant()` 归一化。
+- **`mode` 不进草稿**，而是由 participants 的不变量推导：`draftMode()` —— 个人反馈的
+  `effectiveParticipants` 至多一位，多于一位就是班级反馈。`draftSelectedStudent()` 同理（只有一位时就是所选学员）。
+- **写入前先判断「有没有值得恢复的内容」**（`main.jsx` 的 `draftHasContent`）：什么都还没动的初始态不写草稿，
+  否则「新建草稿」之后 localStorage 里又会立刻多出一份初始值。判据是「和初始态不一样」：
+  `step>1 / 已保存课次 / 序号手改过 / 日期非今天 / 班级非默认 / 参与学员与班级名单不同 / 有素材`。
+- **恢复时的 step**：素材随刷新失效，`step>1` 的草稿回到第一步（`resolveRestoredStep`），
+  提示条里用草稿里存的 step 原文说明「上次进行到第几步」。
+- **恢复时按自然键找回课次 id**：`currentLessonId` 不持久化（不在字段清单里），改为按
+  `classId+lessonDate+lessonNo` 从本地 `lessons` 里查回来，否则刷新后保存同一个自然键会被自己的记录判成冲突。
+- **作品名可以填回**：`artworkTitles` 按「学员 + 顺序」对位（`applySavedTitles`），**只填空标题**；
+  填回的条目要从待填队列里扣掉（`titles` 返回值），否则同一位学员的第二批素材会再领一遍同样的名字。
+- **恢复提示条的文案是验收原文**：`.intake-draft-restored` 的 `<b>` 必须含
+  「已恢复上次的课次信息；素材需重新选择」（`.intake-media-lost` 是 US-408 的另一条提示，两条并存不要合并掉）。
 
 ### 浏览器验证原生 `<select>` 的坑（重要）
 
@@ -309,5 +345,13 @@ service 模块也能在 Node 里测：`cloud.database` 是**可写属性**，导
   `80420-02-06` 这种脏值，别用。
 - 这套脚本放在 `/tmp` 即可（不进仓库）：注意本机 `node`（v20）**没有全局 WebSocket**，
   要用 `~/.nvm/versions/node/v22.23.2/bin/node` 跑。
+- **填 `<input type=date|number|text>` 用 `locator.fill()` 的等价写法，不要用 `Input.insertText`**：
+  裸 CDP 下 `Input.insertText` 连打字符都进不去日期输入框（试过整串、也试过分段 + `ArrowRight`，值都不变），
+  `Meta+A` 也不生效（于是 insertText 变成追加：`3` → `312`）。可行做法是用**原型上的 value setter**
+  绕过 React 的 value tracker，再派发真实的 `input`/`change`：
+  `Object.getOwnPropertyDescriptor(el.constructor.prototype,'value').set.call(el,v)` —— 这正是 Playwright
+  `fill()` 内部做的事，所以与「`browser_type` 能填 date/number」的既有结论一致。
+- **刷新会回到登录页**（登录态只存在内存里），所以脚本里每次 `Page.reload()` 之后都要重新
+  「快速体验 → 老师」再点侧边栏目标页，否则后面所有选择器都会拿到 null（本故事第一版就卡在这里）。
 - 记完 console：`Runtime.enable` + `Log.enable`，`net::ERR_CONNECTION_REFUSED` 是本机云端不通的既有现象，
   `404` 多为 favicon / 未接的后端接口，不代表功能坏了。
