@@ -366,3 +366,41 @@
   /* 触摸端把手变大（24px）后，框内的尺寸标签一定会被中间那三个把手压住：
      移动端直接不画它 —— 尺寸在上方的「裁剪框 62% × 78% · ≈1:1」读数是同一份数据。 */
   .artwork-crop-size{display:none}}
+
+/* 相框样式选择器（US-006）：缩略图网格 + 「形状 / 材质色 / 框宽」三组微调 + 卡纸开关与卡纸色。
+   缩略图是 canvas 产物（用当前作品实时渲染），还没生成或渲染失败时卡片是 CSS 预览：
+   框色 / 框宽 / 卡纸色 / 形状仍能看出来，所以卡片在任何时刻都是「有内容」的。 */
+.frame-style-panel{display:flex;flex-direction:column;gap:12px;margin-top:22px;border:1px solid #eadfbd;border-radius:18px;background:#fffdf7;padding:20px}
+.frame-style-head{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.frame-style-head b{font-size:13px;color:#292720}
+.frame-style-active{font-style:normal;font-size:10px;font-weight:800;color:#7a5b00;background:#fff2c8;border-radius:999px;padding:3px 10px}
+.frame-style-head small{flex:1 1 100%;font-size:10px;line-height:1.6;color:#857a64}
+.frame-style-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.frame-style-card{display:flex;flex-direction:column;gap:6px;border:1px solid #e6d9b8;border-radius:13px;background:#fff;padding:9px;text-align:left;cursor:pointer;position:relative}
+.frame-style-card.active{border-color:#c99908;box-shadow:0 0 0 2px #fff0bd;background:#fffdf3}
+.frame-style-thumb{display:grid;place-items:center;height:96px;overflow:hidden;border-style:solid;border-radius:6px;background:#fff}
+.frame-style-thumb img{display:block;max-width:100%;max-height:100%}
+.frame-style-thumb em{font-size:9px;font-style:normal;line-height:1.5;text-align:center;color:#8d8471;padding:0 6px;background:none}
+/* 形状的 CSS 近似（只在缩略图还没生成时看得到）：直角 / 圆角 / 拱形 / 斜角。 */
+.frame-style-thumb.is-rounded{border-radius:18px}
+.frame-style-thumb.is-arch{border-radius:46px 46px 5px 5px}
+.frame-style-thumb.is-bevel{clip-path:polygon(11% 0,89% 0,100% 11%,100% 89%,89% 100%,11% 100%,0 89%,0 11%)}
+.frame-style-card>b{font-size:11px;color:#292720}
+.frame-style-card>small{font-size:9px;line-height:1.5;color:#857a64}
+.frame-style-tweaked{position:absolute;top:6px;right:6px;font-style:normal;font-size:9px;font-weight:800;color:#4d6b28;background:#edf5e2;border-radius:999px;padding:1px 7px}
+.frame-style-tune{display:flex;flex-direction:column;gap:9px;border-top:1px dashed #e6d9b8;padding-top:11px}
+.frame-style-tune-head{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.frame-style-tune-head b{font-size:12px;color:#292720}
+.frame-style-tune-head small{flex:1 1 100%;font-size:10px;line-height:1.6;color:#857a64}
+.frame-style-group{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.frame-style-group>span{width:52px;flex:none;font-size:11px;font-weight:700;color:#514a38}
+.frame-style-options{display:flex;flex-wrap:wrap;gap:6px}
+.frame-style-options button{display:flex;align-items:center;gap:5px;border:1px solid #e3d7b5;background:#fff;border-radius:8px;padding:6px 9px;color:#716850;font-size:10px;font-weight:700;cursor:pointer}
+.frame-style-options button.active{border-color:#c99908;background:#fff5d1;color:#765800}
+.frame-style-options button.frame-style-swatch i{width:13px;height:13px;flex:none;border-radius:4px;border:1px solid rgba(0,0,0,.16)}
+.frame-style-tune-foot{display:flex;align-items:center;justify-content:space-between;gap:9px;flex-wrap:wrap}
+.frame-style-tune-foot em{font-style:normal;font-size:10px;font-weight:800;color:#4d6b28;background:#edf5e2;border-radius:999px;padding:3px 10px}
+.frame-style-tune-foot button{border:1px solid #e3d7b5;background:#fff;border-radius:8px;padding:6px 10px;font-size:10px;font-weight:700;color:#716850;cursor:pointer}
+.frame-style-tune-foot button:disabled{opacity:.45;cursor:default}
+.frame-choice-hint{display:block;margin-top:5px;font-size:10px;line-height:1.5;color:#857a64}
+@media(max-width:800px){.frame-style-panel{padding:14px}.frame-style-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.frame-style-group{align-items:flex-start;flex-direction:column;gap:6px}.frame-style-group>span{width:auto}}

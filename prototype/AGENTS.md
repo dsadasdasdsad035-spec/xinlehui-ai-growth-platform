@@ -414,6 +414,48 @@ DSH 的 `browser_*` 工具**没有 selectOption 能力**：`browser_type` 走的
 - 「新建」在点击保存前**不要**先塞进受控列表：`main.jsx` 的 `persist<X>` effect 会把 state 立刻落盘，
   半成品（没名字的课程）就会活过一次刷新。用 `isNew` 之类的外部草稿，保存成功后再并入列表。
 
+## 相框样式选择器：样式库 / 微调 / 缩略图（US-006）
+
+老师在第二步挑样式的那块面板（`main.jsx` 的 `TeacherFlowV2` 里变量名 `frameStylePanel`）。
+三块拼图各只有一份真源：
+
+| 关注点 | 位置 | 说明 |
+|---|---|---|
+| 样式库（内置 ≥8 套 + 八种长相对照表） | `data/framingPresets.js` 的 `seedFramingPresets` / `FRAME_STYLE_LOOK_PRESETS` | 内置样式是**随代码发布的资产**，spec 由 `builtinSpec()` / `styleSpec()` 构造 |
+| 微调选项与叠加规则 | `data/frameStyles.js`（零依赖，可 Node 直跑） | 形状 / 材质色 / 框宽 / 卡纸开关 / 卡纸色 + `applyFrameStyleTweaks` |
+| 缩略图渲染 | `services/frameThumbnails.js` | 调**同一个** `renderFramedArtwork`（1800×1360）再缩到长边 ≤320 |
+
+- **微调不改模板、不进草稿**：老师对所选样式的调整只是「本次选用的一层补丁」
+  （`effectiveFrameSpec = applyFrameStyleTweaks(activeFrame.spec, frameTweaks)`），
+  不写回平台/机构/老师模板（模板写权限是 US-031「另存为我的模板」），也不进 `feedbackDraft`
+  （草稿字段清单是 US-409 定的，加字段就违规）。切换款式会**重置微调**（微调属于那一套）。
+- **没有微调时 `applyFrameStyleTweaks` 原样返回输入对象**（连对象都不换）：老模板的渲染一个像素不变。
+  它只覆盖 `frame` / `mat` 两个分组 + `version`，其余分组（水印/落款/时间/展签）一个都不碰 ——
+  混写结构在 `normalizeFrameSpecV2` 里本来就是合法输入。**换材质色必须连 `frame.lighting` 一起换**：
+  色板条目自带 highlight / shadow，只换底色会在墨黑框上留下暖金高光。
+- **渲染缓存键取「渲染视图」而不是模板 id**：`main.jsx` 第二步的 `activeFrameSpecKey` 现在是
+  `frameSpecRenderKey(effectiveFrameSpec)`。用模板 id 当键时，微调改了 spec 却不改 id →
+  成品图永远慢一拍（这是本故事最容易踩的坑）。
+- **缩略图 = 真渲染的小图，不是另画一套便宜的预览**：`renderFrameStyleThumbnail()` 走完整
+  `renderFramedArtwork`（与成品图同一条几何）再用 canvas 缩到 ≤320px，只把小图放进 state
+  （1800px 的位图用完即弃，否则十来张全尺寸位图会把解码内存顶到几十 MB）。
+  缓存键是 `frameThumbnailKey()`（渲染视图 + 作品地址指纹 + 展签变量 + 长边上限），
+  串行渲染、逐张回填，**先出缩略图再出其它内容**的渐进体验靠卡片上的 CSS 预览兜底。
+- **「缩略图用当前作品」在班级反馈下退化为第一幅已上传作品**（班级反馈没有单幅「当前作品」）；
+  没有任何作品可渲染时卡片显示 CSS 近似预览（框色 / 框宽 / 卡纸色 / 形状），不是空白。
+- **内置样式要会「补出来」**：`loadFramingPresets()` 合并本机镜像缺失的内置样式，
+  云端读取路径（`main.jsx` 依赖 `[auth,role]` 那条 effect）也要走
+  `mergeMissingFramingPresets(remote, 当前列表)` —— 本机的云端表就缺 `owner_key` 列、写不进去，
+  只存着最早 4 套（读得出来、写不进去），只认云端列表的话新内置样式在真机上永远不出现。
+  只补 **id 缺失** 的条目：既不用本机旧数据覆盖云端更新，也不会把管理端停用过的模板顶回启用。
+- **验证要点**（本故事实测口径）：① 缩略图与成品图**同比例采样**几乎逐点一致（证明缩略图 = 这幅作品的渲染）；
+  ② 用页面内原型补丁数 `getImageData` 调用与 `toDataURL` 的**画布尺寸**：
+  裁剪路径才会 `getImageData`（`extractArtworkSurfaceDetails`），装裱路径只产出 1800×1360 ——
+  「切换样式期间 `getImageData` 增量为 0 且没有非 1800×1360 的编码」就是「只重绘装裱、不重跑裁剪」的硬证据
+  （只比 `cleanUrl` 字符串是**不够**的：同一份输入重跑裁剪切面会产出逐字节相同的结果）。
+  ③ 想断言「点某个微调后成品图真的变了」，要选一个**与模板当前值不同**的选项 ——
+  点成本身已有的颜色时渲染结果不变，等它变化会白等 40 秒。
+
 ## 装裱参数 spec：v1 平面结构 / v2 分组结构
 
 `src/services/frameSpec.js` 同时持有两代结构，动装裱参数前先确认自己在哪一代：
@@ -462,14 +504,16 @@ DSH 的 `browser_*` 工具**没有 selectOption 能力**：`browser_type` 走的
   `http(s)` / `data:image` / `blob:`（**且有长度上限**，见下文「叠加元素的画笔」）。比例型范围的唯一真源是
   `FRAME_WIDTH_RATIO_RANGE` / `MAT_WIDTH_RATIO_RANGE` / `CORNER_RADIUS_RATIO_RANGE`，**收敛器与渲染层都读它、
   不要在任一侧写死数字**（v1 平面 spec 是**原样**进渲染层的，渲染层不兜住就会被 0.5 的框宽画崩）。
-- **US-002a 起内置 4 套预设的渲染结果有意改变**（它们显式带 `lighting`，本故事开始绘制）。
+- **US-002a 起内置预设的渲染结果有意改变**（它们显式带 `lighting`，本故事开始绘制）；
+  US-006 把内置样式库从 4 套扩到 11 套（老 4 套的 spec 一个数都没动，新增的 7 套见下一节）。
   持久的向后兼容承诺是：**v1 平面 spec**、以及**没有显式 `frame.lighting` 的 v2 spec**，渲染逐像素不变。
-  复核兼容性时不要拿「内置预设」当 v1 基准（US-016 的 4 套预设 v1↔v2 逐像素断言自本故事起失效是预期的）。
+  复核兼容性时不要拿「内置预设」当 v1 基准（US-016 的 4 套预设 v1↔v2 逐像素断言自 US-002a 起失效是预期的）。
 - **v2 的叠加元素（`watermark.*` / `signature` / `date` / 印章）默认 `visible: false`**：v1 本来不画
   任何叠加元素，默认 true 会让「迁移过来的老模板」凭空多出 `{机构名}` 水印。是否绘制由面板显式开启
   （US-003a/003b/003c），**不要为了省事把默认值改成 true**。
 - `src/data/framingPresets.js` 的内置预设已是 v2，且**故意省略 watermark / signature / date 三组**
-  （字段可选，缺省即 v1 行为）。该 data 模块保持**零依赖**（不 import services），以便 Node 直跑断言。
+  （字段可选，缺省即 v1 行为）。该 data 模块保持**零依赖**（不 import services；跨 data 模块的
+  `import { FRAME_STYLE_COLORS } from './frameStyles'` 是可以的，两边都零依赖），以便 Node 直跑断言。
 - 状态机：`art.rotateDeg` 只允许 **0 / 90**（模板级）；任意角度微调属于单幅作品的 `artworkEdit`（US-004），
   不进模板。`date.source` = `lesson | today | manual`，`date.format` 三种白名单；所有位置是九宫格枚举
   + `offsetX/offsetY` 比例偏移（-0.5~0.5）；尺寸与位置一律用「相对画布短边的比例」。

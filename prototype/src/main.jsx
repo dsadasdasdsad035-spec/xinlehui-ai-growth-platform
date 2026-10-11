@@ -56,9 +56,11 @@ import { archiveSkillPackage, readSkillPackage } from './services/skillPackage';
 import { MARKETPLACE_SYNCED_AT, indexStats, marketCategories, searchMarket, searchSkillIndex } from './data/skillMarketplace';
 // 装裱模板分三层（platform / org / teacher，US-001b）：scope + ownerKey 决定归属，
 // 老师端只显示自己可见的模板（filterFramingPresetsForViewer），管理端读全量。
-import { createEmptyFramingPreset, filterFramingPresetsForViewer, loadFramingPresets, persistFramingPresets } from './data/framingPresets';
+import { createEmptyFramingPreset, filterFramingPresetsForViewer, loadFramingPresets, mergeMissingFramingPresets, persistFramingPresets } from './data/framingPresets';
 import { deleteRemoteFramingPreset, loadRemoteFramingPresets, saveRemoteFramingPreset } from './services/framingPresetsApi';
-import { DEFAULT_FRAME_SPEC, DATE_FORMATS, DATE_SOURCES, FRAMING_FONT_WHITELIST, SEAL_SHAPES, frameSpecView, generateFrameSpec, normalizeFrameSpec, normalizeFrameSpecV2 } from './services/frameSpec';
+import { DEFAULT_FRAME_SPEC, DATE_FORMATS, DATE_SOURCES, FRAMING_FONT_WHITELIST, SEAL_SHAPES, frameSpecRenderKey, frameSpecView, generateFrameSpec, normalizeFrameSpec, normalizeFrameSpecV2 } from './services/frameSpec';
+import { FRAME_STYLE_COLORS, FRAME_STYLE_MAT_COLORS, FRAME_STYLE_SHAPES, FRAME_STYLE_WIDTHS, applyFrameStyleTweaks, describeFrameStyleSpec, frameStyleTweakCount, frameStyleTweakSummary, normalizeFrameStyleTweaks } from './data/frameStyles';
+import { FRAME_THUMB_CACHE_LIMIT, frameThumbnailKey, renderFrameStyleThumbnail } from './services/frameThumbnails';
 // 叠加元素的定位与遮挡规则（US-003a/003b/003c）：九宫格枚举、字体白名单、位置中文名、
 // 时间来源与格式、印章形状与「水印遮挡作品主体 15%」的判定全在 overlayLayout.js —— 后台面板只负责渲染控件。
 import { DATE_SOURCE_LABELS, ELEMENT_POSITIONS, CUSTOM_ELEMENT_POSITION, overlayPositionLabel } from './services/overlayLayout';
@@ -233,7 +235,10 @@ function App(){
   // 所以不能并进上面那组「登录前就跑、只跑一次」的 effect。
   useEffect(()=>{let active=true;
     const viewer=role==='admin'?null:{role:'teacher',teacherName:roleMeta.teacher.name,orgId:DEFAULT_ORG_ID};
-    loadRemoteFramingPresets(viewer).then(remote=>{if(active&&remote.length)setFramingPresets(remote)}).catch(()=>{});
+    // 补齐「云端还不知道的模板」（US-006）：云端是真源，但云端表里可能没有新内置样式
+    // （本机的云端表缺 owner_key 列、写不进去，只存着最早 4 套）。只补 id 缺失的条目，
+    // 兜底来源是本机镜像 ∪ 内置样式库 —— 于是管理端在本机停用过的模板仍然按停用生效。
+    loadRemoteFramingPresets(viewer).then(remote=>{if(active&&remote.length)setFramingPresets(current=>mergeMissingFramingPresets(remote,current.length?current:loadFramingPresets()))}).catch(()=>{});
     return()=>{active=false};
   },[auth,role]);
   const navigate=(p)=>{setPage(p);setMobileNav(false);window.scrollTo(0,0)};
@@ -453,6 +458,20 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
   const enabledFrames=filterFramingPresetsForViewer(framingPresets,teacherFrameViewer).filter(item=>item.enabled!==false);
   const activeFrame=enabledFrames.find(item=>item.id===frame)||enabledFrames[0]||null;
   const activeFrameId=activeFrame?.id||'';
+  // ---- 相框样式微调（US-006）-------------------------------------------------------
+  // 老师对所选样式的调整（形状 / 材质色 / 框宽 / 卡纸）是**本次选用的一层补丁**：
+  // 不写回模板（模板的写权限是 US-031「另存为我的模板」的事），也不进草稿（草稿字段清单是 US-409 定的）。
+  // 没有微调时 applyFrameStyleTweaks 原样返回模板 spec —— 老模板的渲染一个像素都不变。
+  const [frameTweaks,setFrameTweaks]=useState(()=>normalizeFrameStyleTweaks(null));
+  const frameTweaksKey=JSON.stringify(normalizeFrameStyleTweaks(frameTweaks));
+  const effectiveFrameSpec=applyFrameStyleTweaks(activeFrame?.spec||DEFAULT_FRAME_SPEC,frameTweaks);
+  const frameTweakSummary=frameStyleTweakSummary(frameTweaks);
+  const frameTweakCount=frameStyleTweakCount(frameTweaks);
+  // 形状 / 材质色 / 框宽 / 卡纸的「现在是什么」：微调控件的高亮与卡片副标题都读它。
+  const frameStyleNow=describeFrameStyleSpec(effectiveFrameSpec);
+  // 样式缩略图（US-006）：串行渲染「用当前作品实时渲染」的小图，按渲染视图 + 作品地址指纹缓存。
+  const [frameThumbs,setFrameThumbs]=useState({});
+  const frameThumbCacheRef=useRef(new Map());
   const [subject,setSubject]=useState('通用美术');
   const [media,setMedia]=useState({artwork:null,photo:null});
   const [batchUploads,setBatchUploads]=useState({artwork:[],photo:[]});
@@ -960,7 +979,8 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
   //   - 装裱很便宜（一次 canvas 合成），换一个装裱方案、换一个学员就要立刻重画。
   // 旧实现把两件事捆在一个 effect 里，导致「切换装裱方案」既不重画、也没人渲染结果。
   const framePlaque=()=>({
-    spec:activeFrame?.spec||DEFAULT_FRAME_SPEC,
+    // 渲染用的 spec = 模板 spec + 本次微调（US-006）。没有微调时它原样等于模板 spec。
+    spec:effectiveFrameSpec,
     student:activeFrame?.plaqueStudent||selectedStudentLabel||'',
     title:activeFrame?.plaqueTitle||'',
     date:activeFrame?.plaqueDate||new Date().toISOString().slice(0,10).replace(/-/g,'.')
@@ -1006,7 +1026,9 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
   },[step,media.artwork?.id,media.artwork?.processingRequested,artworkEditKey,media.artwork?.cleanUrl,media.artwork?.cleanAlgorithm,media.artwork?.cleanEditKey]);
   // 第二段：把画心按当前装裱方案（云端预设 / 大模型生成的参数）合成成完整的装裱图。
   // 结果存进 framedUrl，step 2 的预览与 step 3 的展陈都直接读它 —— 这就是「框实时渲染到作品上」。
-  const activeFrameSpecKey=activeFrame?.id||'default';
+  // 缓存键里的 spec 部分取 `frameSpecRenderKey`（= JSON.stringify(frameSpecRenderView)）而不是模板 id：
+  // 「样式微调」（US-006）改的是 spec、不改 id，用 id 当键会让微调之后不再重渲染（画面永远慢一拍）。
+  const activeFrameSpecKey=frameSpecRenderKey(effectiveFrameSpec);
   useEffect(()=>{
     if(step!==2||!media.artwork?.cleanUrl||!ARTWORK_CLEAN_ALGORITHMS.includes(media.artwork?.cleanAlgorithm)) return;
     const plaque=framePlaque();
@@ -1031,6 +1053,55 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
     }).catch(()=>{if(!cancelled) setFramingState('error')});
     return()=>{cancelled=true};
   },[step,media.artwork?.cleanUrl,media.artwork?.cleanAlgorithm,media.artwork?.framedStyle,media.artwork?.framedUrl,activeFrameSpecKey,selectedStudentLabel,currentTeacherName]);
+  // ---- 相框样式缩略图（US-006）-----------------------------------------------------
+  // 「缩略图用当前作品实时渲染」：个人反馈用画心（裁剪稿）当作品底图；班级反馈没有单幅「当前作品」，
+  // 退化为第一幅已上传作品（这条口径写在进度日志里，US-010 的班级批量套用会接手）。
+  const frameThumbSource=media.artwork?.cleanUrl||media.artwork?.orientedUrl||media.artwork?.originalUrl||batchUploads.artwork[0]?.url||'';
+  const frameThumbRefMedia=media.artwork?null:batchUploads.artwork[0]||null;
+  const thumbPlaque=framePlaque();
+  const frameThumbStudent=frameThumbRefMedia?(frameThumbRefMedia.studentName||frameThumbRefMedia.owners?.[0]?.studentName||''):thumbPlaque.student;
+  const frameThumbTitle=frameThumbRefMedia?(frameThumbRefMedia.title||''):thumbPlaque.title;
+  const frameThumbDate=thumbPlaque.date;
+  // 计划键：哪些样式、各自的 spec 是什么（模板或模板+微调）。它一变就要重算缩略图。
+  const frameThumbPlanKey=JSON.stringify(enabledFrames.map(item=>[item.id,frameSpecRenderKey(item.spec||DEFAULT_FRAME_SPEC)]));
+  useEffect(()=>{
+    if(step!==2||!frameThumbSource||artworkEditor.open) return undefined;
+    let cancelled=false;
+    const ref={student:frameThumbStudent,title:frameThumbTitle,date:frameThumbDate};
+    const jobs=enabledFrames.map(preset=>{
+      // 当前选中的那一套用「模板 + 本次微调」，其余用模板本身 —— 老师调完立刻能在卡片上看到结果。
+      const spec=applyFrameStyleTweaks(preset.spec||DEFAULT_FRAME_SPEC,preset.id===activeFrameId?frameTweaks:{});
+      return {id:preset.id,spec,key:frameThumbnailKey({spec,source:frameThumbSource,...ref,orgName:DEFAULT_ORG_NAME,teacherName:currentTeacherName})};
+    });
+    // 串行渲染：一次只合成一张（单张就是一次 1800×1360 的合成），渲染完一张就把这一张换成小图，
+    // 其余卡片保持「实时渲染中」。渲染失败的那张不写缓存、退回 CSS 预览，不影响其它样式与主装裱流程。
+    (async()=>{
+      for(const job of jobs){
+        if(cancelled) return;
+        const cached=frameThumbCacheRef.current.get(job.key);
+        if(cached){setFrameThumbs(current=>current[job.id]===cached?current:{...current,[job.id]:cached});continue}
+        try{
+          const url=await renderFrameStyleThumbnail({source:frameThumbSource,spec:job.spec,...ref,orgName:DEFAULT_ORG_NAME,teacherName:currentTeacherName});
+          if(cancelled) return;
+          if(frameThumbCacheRef.current.size<FRAME_THUMB_CACHE_LIMIT) frameThumbCacheRef.current.set(job.key,url);
+          setFrameThumbs(current=>current[job.id]===url?current:{...current,[job.id]:url});
+        }catch{/* 这一张渲染失败：保持 CSS 预览 */ }
+      }
+    })();
+    return ()=>{cancelled=true};
+  },[step,frameThumbSource,frameThumbPlanKey,frameTweaksKey,activeFrameId,frameThumbStudent,frameThumbTitle,frameThumbDate,currentTeacherName,artworkEditor.open]);
+  // 切换款式：换 id 并把本次微调清掉（微调属于「那一套」的调整，带到下一套只会让人以为模板坏了）。
+  const selectFrameStyle=(id)=>{
+    if(id===activeFrameId) return;
+    if(frameTweakCount){setFrameTweaks(normalizeFrameStyleTweaks(null));setToast('已切换款式，本次微调已重置')}
+    setFrame(id);
+  };
+  const setFrameTweak=(patch)=>setFrameTweaks(current=>normalizeFrameStyleTweaks({...normalizeFrameStyleTweaks(current),...patch}));
+  const resetFrameTweaks=()=>{
+    if(!frameTweakCount) return;
+    setFrameTweaks(normalizeFrameStyleTweaks(null));
+    setToast('已重置相框微调，回到模板本身的样式');
+  };
   // 编辑态的实时预览（US-004a）：只画「旋转稿」，低分辨率画布（长边 ≤ EDIT_PREVIEW_MAX_EDGE）才跟手；
   // 编辑期间**不跑**上面那两段重活（裁剪 + 装裱），确认后再跑一次 —— 于是每按一下微调不会重扫一遍像素。
   // 120ms 的合并窗口是为了连点：同一帧内的多次点击只画最后一张。
@@ -2331,6 +2402,70 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
       return {...current,draft:edit,cropAspect:id,history:pushArtworkEditHistory(current.history,edit,`裁剪比例 ${name}`)};
     });
   };
+  // ---- 相框样式选择器面板（US-006）-------------------------------------------------
+  // 验收四件事都落在这块面板上：① 缩略图网格、缩略图用**当前作品**实时渲染（`frameThumbs` 来自
+  // `renderFrameStyleThumbnail`，与成品图同一条渲染路径）；② 只列 `enabled !== false` 的模板
+  // （`enabledFrames` 已过滤）；③ 形状 / 材质色 / 框宽三组继续微调 + 卡纸开关与卡纸色；
+  // ④ 切换样式只触发装裱那一段 effect（裁剪那一段的依赖里没有 frame / 微调）。
+  // 缩略图还没生成（或这一张渲染失败）时卡片退化为 CSS 预览：框色 / 框宽 / 卡纸色 / 形状仍然能看出来。
+  const frameStyleFallbackStyle=(desc)=>({
+    borderColor:desc.colorHex,
+    borderWidth:`${Math.max(3,Math.round((desc.widthRatio||0.0412)*170))}px`,
+    background:desc.matVisible?desc.matHex:'#FFFFFF'
+  });
+  const frameStylePanel=(
+    <section className="frame-style-panel" data-frame-style-panel="true" data-frame-active={activeFrameId} data-frame-style-count={enabledFrames.length} data-frame-tweak-count={frameTweakCount} data-frame-tweaks={frameTweakSummary} data-frame-thumb-ready={enabledFrames.filter(item=>frameThumbs[item.id]).length} data-frame-thumb-pending={enabledFrames.filter(item=>!frameThumbs[item.id]).length}>
+      <div className="frame-style-head">
+        <b>相框样式</b>
+        <em className="frame-style-active" data-frame-active-summary={`${activeFrame?.name||'默认装裱'}${frameTweakCount?` · ${frameTweakSummary}`:''}`}>当前：{activeFrame?.name||'默认装裱'}{frameTweakCount?` · ${frameTweakSummary}`:''}</em>
+        <small>{enabledFrames.length?`共 ${enabledFrames.length} 套可选；缩略图用当前作品实时渲染。切换样式只重绘装裱，不会重新裁剪作品。`:'正在读取装裱设置…'}</small>
+      </div>
+      {enabledFrames.length?<div className="frame-style-grid" role="radiogroup" aria-label="相框样式">
+        {enabledFrames.map(preset=>{
+          const isActive=preset.id===activeFrameId;
+          // 卡片描述与缩略图都按「这套样式 + （若是当前选中）本次微调」算，老师调完立刻能在卡片上看到结果。
+          const cardSpec=applyFrameStyleTweaks(preset.spec||DEFAULT_FRAME_SPEC,isActive?frameTweaks:{});
+          const desc=describeFrameStyleSpec(cardSpec);
+          const thumb=frameThumbs[preset.id];
+          return <button type="button" role="radio" aria-checked={isActive} key={preset.id} className={`frame-style-card${isActive?' active':''}`} data-frame-style={preset.id} data-frame-style-active={isActive?'true':'false'} data-frame-style-name={preset.name} data-frame-style-shape={desc.shapeId} data-frame-style-color={desc.colorHex} data-frame-style-width={desc.widthRatio===null?'':Number(desc.widthRatio.toFixed(4))} data-frame-style-mat={desc.matVisible?'true':'false'} data-frame-style-builtin={preset.builtin?'true':'false'} data-frame-style-tweaked={isActive&&frameTweakCount?'true':'false'} data-frame-thumb-ready={thumb?'true':'false'} onClick={()=>selectFrameStyle(preset.id)} title={preset.description||preset.name}>
+            <span className={`frame-style-thumb is-${desc.shapeId}`} data-frame-thumb={preset.id} style={frameStyleFallbackStyle(desc)}>
+              {thumb?<img src={thumb} alt={`${preset.name}：用当前作品实时渲染的装裱缩略图`}/>:<em>{frameThumbSource?'实时渲染中…':'上传作品后显示实时预览'}</em>}
+            </span>
+            <b>{preset.name}</b>
+            <small>{desc.summary}</small>
+            {isActive&&frameTweakCount?<i className="frame-style-tweaked">已微调</i>:null}
+          </button>;
+        })}
+      </div>:null}
+      {enabledFrames.length?<div className="frame-style-tune" data-frame-tune="true">
+        <div className="frame-style-tune-head"><b>继续微调</b><small>微调只作用于本次选用，不写回模板；想留下自己的样式请用「另存为我的模板」。</small></div>
+        <div className="frame-style-group" data-frame-tune-group="shape" data-frame-shape-now={frameStyleNow.shapeId}>
+          <span>形状</span>
+          <div className="frame-style-options">{FRAME_STYLE_SHAPES.map(option=><button type="button" key={option.id} data-frame-shape={option.id} className={frameStyleNow.shapeId===option.id?'active':''} aria-pressed={frameStyleNow.shapeId===option.id} title={option.hint} onClick={()=>setFrameTweak({shape:option.id})}>{option.label}</button>)}</div>
+        </div>
+        <div className="frame-style-group" data-frame-tune-group="color" data-frame-color-now={frameStyleNow.colorId||frameStyleNow.colorHex}>
+          <span>材质色</span>
+          <div className="frame-style-options">{FRAME_STYLE_COLORS.map(option=><button type="button" key={option.id} data-frame-color={option.id} className={`frame-style-swatch${frameStyleNow.colorHex===option.hex.toUpperCase()?' active':''}`} aria-pressed={frameStyleNow.colorHex===option.hex.toUpperCase()} title={`${option.label} ${option.hex}`} onClick={()=>setFrameTweak({color:option.id})}><i style={{background:option.hex}}/>{option.label}</button>)}</div>
+        </div>
+        <div className="frame-style-group" data-frame-tune-group="width" data-frame-width-now={frameStyleNow.widthId||frameStyleNow.widthRatio}>
+          <span>框宽</span>
+          <div className="frame-style-options">{FRAME_STYLE_WIDTHS.map(option=><button type="button" key={option.id} data-frame-width={option.id} className={frameStyleNow.widthId===option.id?'active':''} aria-pressed={frameStyleNow.widthId===option.id} title={`${option.hint}（画布短边的 ${(option.ratio*100).toFixed(2)}%）`} onClick={()=>setFrameTweak({width:option.id})}>{option.label}</button>)}</div>
+        </div>
+        <div className="frame-style-group" data-frame-tune-group="mat" data-frame-mat-now={frameStyleNow.matVisible?'on':'off'}>
+          <span>卡纸</span>
+          <div className="frame-style-options">
+            <button type="button" data-frame-mat="on" className={frameStyleNow.matVisible?'active':''} aria-pressed={frameStyleNow.matVisible} onClick={()=>setFrameTweak({matVisible:true})}>卡纸开</button>
+            <button type="button" data-frame-mat="off" className={!frameStyleNow.matVisible?'active':''} aria-pressed={!frameStyleNow.matVisible} onClick={()=>setFrameTweak({matVisible:false})}>卡纸关</button>
+            {FRAME_STYLE_MAT_COLORS.map(option=><button type="button" key={option.id} data-frame-mat-color={option.id} className={`frame-style-swatch${frameStyleNow.matColorId===option.id?' active':''}`} aria-pressed={frameStyleNow.matColorId===option.id} title={`卡纸${option.label} ${option.hex}`} onClick={()=>setFrameTweak({matColor:option.id})}><i style={{background:option.hex}}/>{option.label}</button>)}
+          </div>
+        </div>
+        <div className="frame-style-tune-foot">
+          <em data-frame-tweak-summary={frameTweakSummary}>{frameTweakSummary}</em>
+          <button type="button" data-frame-action="reset-tweaks" disabled={!frameTweakCount} onClick={resetFrameTweaks}>重置微调</button>
+        </div>
+      </div>:null}
+    </section>
+  );
   const artworkEditorField=(
     <div className={`artwork-editor${artworkEditor.open?' is-open':''}`} data-editor-open={artworkEditor.open?'true':'false'} data-edit-unconfirmed={hasUnconfirmedArtworkEdit()?'true':'false'} data-edit-rotation={artworkEditorShown.rotateDeg} data-edit-fine={artworkEditorFine} data-editor-preview-mode={editorPreviewMode} data-editor-preview-edge={editorPreviewMode==='hd'?EDIT_PREVIEW_HD_MAX_EDGE:EDIT_PREVIEW_MAX_EDGE} data-shown-crop={artworkEditorShown.crop?[artworkEditorShown.crop.x,artworkEditorShown.crop.y,artworkEditorShown.crop.w,artworkEditorShown.crop.h].join(','):'none'} data-shown-zoom={artworkEditorShown.zoom} data-shown-offset={[artworkEditorShown.offsetX,artworkEditorShown.offsetY].join(',')}>
       <div className="artwork-editor-head">
@@ -2423,7 +2558,7 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
       {step===3&&!reviewStream.open?<ReviewLaunchPanel profiles={teacherProfiles} skillLibrary={skillLibrary} activeProfileId={activeProfileId} setActiveProfileId={setActiveProfileId} onStart={startCloudReview} onLocalDraft={fillLocalDraft} draftReady={reviewGenerated} localDraftUsed={localDraftUsed} keywordCount={keywords.length} hasArtwork={Boolean(media.artwork?.cleanUrl||media.artwork?.originalUrl)}/>:null}
       {step===2&&mode==='班级反馈'?<ClassFramingWall artworks={batchUploads.artwork} photos={batchUploads.photo} photoGroups={photoGroups} onRotate={index=>rotateBatchItem('artwork',index)} onRotatePhotoEntry={uploadId=>rotateUploadEntry('photo',uploadId)}/>:null}
       {step===1?<section className="scene-panel"><div className="scene-heading"><span>第一步</span><h2>创建课后反馈信息</h2><p>先确定服务对象，再同步收集本节课素材。素材只在本次操作中保留。</p></div>{draftRestored?<div className="intake-draft-restored"><Clock3 size={14}/><div><b>已恢复上次的课次信息；素材需重新选择</b><small>{draftRestoreDetail}</small></div>{pendingTitles.length?<em>已保留 {pendingTitles.length} 个作品名，「学员作品上传位」里重新选择素材后自动填回</em>:null}<button type="button" className="text-link" onClick={()=>setDraftRestored(false)}>知道了</button></div>:null}<div className="feedback-mode"><button className={mode==='个人反馈'?'selected':''} onClick={()=>selectMode('个人反馈')}>个人反馈<small>为一位孩子完成反馈</small></button><button className={mode==='班级反馈'?'selected':''} onClick={()=>selectMode('班级反馈')}>班级反馈<small>批量处理全班素材</small></button></div>{availableClasses.length?<div className="intake-scope"><span>班级范围</span><div className="intake-scope-switch"><button type="button" className={showAllClasses?'':'active'} onClick={()=>selectClassScope(false)}>我带的班（{myClasses.length}）</button><button type="button" className={showAllClasses?'active':''} onClick={()=>selectClassScope(true)}>全部班级（{availableClasses.length}）</button></div><small>当前登录老师：{currentTeacherName}</small></div>:null}{visibleClasses.length?<div className="task-form"><label>选择班级<select value={selectedClassId} onChange={event=>selectClass(event.target.value)}>{visibleClasses.map(item=><option key={item.id} value={item.id}>{item.name}{item.teacher?`（${item.teacher}）`:''}</option>)}</select></label><label>选择学员<select value={mode==='班级反馈'?'__class__':selectedStudentName} disabled={mode==='班级反馈'} onChange={event=>{setSelectedStudentName(event.target.value);setArchived(false)}}>{mode==='班级反馈'?<option value="__class__">本班全部学员（{classStudents.length}人）</option>:<><option value="">请选择学员</option>{classStudents.map(item=><option key={item.name} value={item.name}>{item.name}</option>)}</>}</select></label>{courseOptions.length?<label>选择课程<select value={activeCourseId} onChange={event=>selectCourse(event.target.value)}>{courseOptions.map(item=><option key={item.courseId} value={item.courseId}>{item.name}{item.courseId===classCourseId?' · 本班课程':''}</option>)}</select></label>:<div className="intake-course-empty"><b>课程库暂时没有可选课程</b><p>{classCourseName?`本班课程「${classCourseName}」不在可选课程里，可能已被停用。`:'课程由机构管理员在「课程库」中维护。'}</p>{role==='admin'?<Button variant="secondary" onClick={()=>navigate('courseLibrary')}>去课程库添加课程</Button>:<small>请联系机构管理员在「课程库」中新增或启用课程。</small>}</div>}{lessonScheduleField}{participantField}{consentNoticeField}{mediaIntakeNotice?<p className="intake-media-notice"><ShieldAlert size={14}/><span>{mediaIntakeNotice}</span></p>:null}</div>:<div className="intake-empty"><Users size={26}/><b>{showAllClasses?'机构里还没有任何班级':'还没有属于你的班级'}</b><p>{showAllClasses?'请先在「学员管理」中新建班级，再回到这里创建课后反馈。':'可以切到「全部班级」确认是否存在其他老师名下的班级，或先去「学员管理」新建班级。'}</p><div className="intake-empty-actions">{showAllClasses?null:<button type="button" className="text-link" onClick={()=>selectClassScope(true)}>查看全部班级</button>}<Button onClick={()=>navigate('classes')}>去学员管理添加班级</Button></div></div>}{mode==='个人反馈'&&selectedClass&&!classStudents.length?<p className="intake-hint">该班级还没有学员，请先在「学员管理」里导入名单，再创建课后反馈。</p>:null}{artworkSlotField}{photoSlotField}{mode==='个人反馈'?<div className="sync-upload"><div className={media.artwork?.url?'has-file':''}><Frame/><b>学员作品 <em>必选</em></b><small>{uploadSummary('artwork')}</small><input ref={artworkInput} type="file" accept="image/jpeg,image/png,image/webp" hidden multiple={mode==='班级反馈'} onChange={e=>readFiles('artwork',e.target.files,e.currentTarget)}/><button onClick={()=>artworkInput.current?.click()}>{media.artwork?.url?'已上传 · 重新选择':'上传作品'}</button></div><div className={media.photo?.url?'has-file':''}><Image/><b>学员照片 <em>选填</em></b><small>{uploadSummary('photo')}</small><input ref={photoInput} type="file" accept="image/jpeg,image/png,image/webp" hidden multiple={mode==='班级反馈'} onChange={e=>readFiles('photo',e.target.files,e.currentTarget)}/><button onClick={()=>photoInput.current?.click()}>{media.photo?.url?'已上传 · 重新选择':'上传照片'}</button></div></div>:null}{lostSessionMedia&&!mediaLostDismissed?<div className="intake-media-lost"><ShieldAlert size={14}/><div><b>上次选择的素材已失效</b><small>作品与课堂照片只在当次会话里有效（只使用会话内 object URL，不写入 localStorage / IndexedDB）。页面刷新或重新进入后，请重新选择原始素材。</small></div><button type="button" className="text-link" onClick={()=>setMediaLostDismissed(true)}>知道了</button></div>:null}<div className="upload-privacy-note"><ShieldCheck size={14}/>{mediaRulesText(UPLOAD_SLOTS_PER_STUDENT)}</div>{intakeReadinessPanel}<div className="scene-actions"><Button variant="secondary" onClick={resetDraft}>新建草稿</Button><Button variant="secondary" icon={Save} disabled={!activeCourseId||lessonSaveState.status==='saving'} onClick={requestLessonSave}>{lessonSaveState.status==='saving'?'保存中…':'保存课次'}</Button><Button icon={ArrowRight} disabled={!intakeReadiness.ok} onClick={()=>go(2)}>进入智能装裱</Button></div></section>:null}
-      {step===2?<section className="scene-panel studio-task"><div className="scene-heading"><span>第二步</span><h2>智能装裱</h2><p>先旋转完整原图并确认方向；确认后自动裁掉纸外的桌面、地面与背景，只保留作品本身。装裱方案（画框、卡纸、展签、日期与署名）由管理员在「装裱设置」中统一维护，这里直接选用。</p></div><div className="media-process"><article><div className={`mini-frame uploaded-art${media.artwork?.framedUrl&&!artworkEditor.open?' framed-preview':''}${artworkEditor.open?' is-editing':''}`}>{media.artwork?.url?<><img src={artworkEditor.open?(editorPreview||media.artwork.originalUrl):(media.artwork.framedUrl||media.artwork.cleanUrl||media.artwork.orientedUrl||media.artwork.originalUrl)} alt={artworkEditor.open?'编辑中的旋转稿预览（低分辨率画布）':media.artwork.framedUrl?`已按「${activeFrame?.name||'默认装裱'}」完成装裱的作品`:media.artwork.cleanUrl?'已裁掉纸外背景、只保留作品本身':'等待确认方向的完整原图'}/>{media.artwork?.framedUrl&&!artworkEditor.open?<span className="framed-badge">{activeFrame?.name||'默认装裱'}</span>:null}{artworkEditor.open?<span className="framed-badge editing-badge">编辑中</span>:null}<div className="frame-rotate-controls" aria-label="旋转作品"><button type="button" title="向左旋转 90°" aria-label="向左旋转作品" disabled={artworkEditor.open&&editorPreviewPending} onClick={()=>quickRotateArtwork(-1)}><RotateCcw size={18}/></button><button type="button" title="向右旋转 90°" aria-label="向右旋转作品" disabled={artworkEditor.open&&editorPreviewPending} onClick={()=>quickRotateArtwork(1)}><RotateCw size={18}/></button></div></>:'✺'}</div><div><b>学员作品</b><p>{artworkEditor.open?(editorPreviewPending?'正在生成低分辨率预览…':'编辑中：调整旋转后点「完成编辑」，再按新的方向重新裁剪与装裱。'):framingState==='processing'?(media.artwork?.cleanUrl?'正在按当前装裱方案合成装裱图…':'正在裁掉纸外的桌面与地面，只保留作品本身…'):media.artwork?.framedUrl?`已装裱：${activeFrame?.name||'默认装裱'}。作品只做等比缩放与居中，不裁切主体、不重绘、不调色。`:media.artwork?.cleanUrl?'已完成作品裁剪，正在生成装裱图…':'当前仅显示完整原图；可以先点「编辑作品」把方向摆正，再开始裁剪与装裱。'}</p>{mode==='个人反馈'?artworkEditorField:null}{!media.artwork?.cleanUrl?<button type="button" className="confirm-artwork-button" onClick={startArtworkCleanup} disabled={framingState==='rotating'||framingState==='processing'}>{framingState==='processing'?'正在裁剪作品…':'方向正确，开始裁剪与装裱'}</button>:null}<div className="tiny-choice">{enabledFrames.length?enabledFrames.map(item=><button key={item.id} className={activeFrameId===item.id?'active':''} disabled={framingState==='processing'} onClick={()=>setFrame(item.id)} title={item.spec?.atmosphere||item.description||item.name}>{item.name}</button>):<span className="frame-loading">正在读取装裱设置…</span>}</div></div></article><article><div className="photo-card">{media.photo?.url?<><img src={media.photo.url} alt="已自然优化的课堂照片" style={{transform:`rotate(${media.photo.rotation||0}deg)`}}/><button type="button" className="frame-rotate-button photo-rotate-button" onClick={rotatePersonalPhoto}><RefreshCw size={16}/>旋转照片</button></>:<img src={pandaMascot} alt="课堂照片占位预览"/>}</div><div><b>学员照片</b><p>{media.photo?.name||'未上传课堂照片，可返回上一步补充。'}</p></div></article></div><div className="scene-actions"><Button variant="secondary" onClick={()=>go(1)}>返回创建信息</Button><Button icon={ArrowRight} onClick={()=>go(3)}>进入五维点评</Button></div></section>:null}
+      {step===2?<section className="scene-panel studio-task"><div className="scene-heading"><span>第二步</span><h2>智能装裱</h2><p>先旋转完整原图并确认方向；确认后自动裁掉纸外的桌面、地面与背景，只保留作品本身。装裱方案（画框、卡纸、展签、日期与署名）由管理员在「装裱设置」中统一维护，这里直接选用。</p></div><div className="media-process"><article><div className={`mini-frame uploaded-art${media.artwork?.framedUrl&&!artworkEditor.open?' framed-preview':''}${artworkEditor.open?' is-editing':''}`}>{media.artwork?.url?<><img src={artworkEditor.open?(editorPreview||media.artwork.originalUrl):(media.artwork.framedUrl||media.artwork.cleanUrl||media.artwork.orientedUrl||media.artwork.originalUrl)} alt={artworkEditor.open?'编辑中的旋转稿预览（低分辨率画布）':media.artwork.framedUrl?`已按「${activeFrame?.name||'默认装裱'}」完成装裱的作品`:media.artwork.cleanUrl?'已裁掉纸外背景、只保留作品本身':'等待确认方向的完整原图'}/>{media.artwork?.framedUrl&&!artworkEditor.open?<span className="framed-badge">{activeFrame?.name||'默认装裱'}</span>:null}{artworkEditor.open?<span className="framed-badge editing-badge">编辑中</span>:null}<div className="frame-rotate-controls" aria-label="旋转作品"><button type="button" title="向左旋转 90°" aria-label="向左旋转作品" disabled={artworkEditor.open&&editorPreviewPending} onClick={()=>quickRotateArtwork(-1)}><RotateCcw size={18}/></button><button type="button" title="向右旋转 90°" aria-label="向右旋转作品" disabled={artworkEditor.open&&editorPreviewPending} onClick={()=>quickRotateArtwork(1)}><RotateCw size={18}/></button></div></>:'✺'}</div><div><b>学员作品</b><p>{artworkEditor.open?(editorPreviewPending?'正在生成低分辨率预览…':'编辑中：调整旋转后点「完成编辑」，再按新的方向重新裁剪与装裱。'):framingState==='processing'?(media.artwork?.cleanUrl?'正在按当前装裱方案合成装裱图…':'正在裁掉纸外的桌面与地面，只保留作品本身…'):media.artwork?.framedUrl?`已装裱：${activeFrame?.name||'默认装裱'}。作品只做等比缩放与居中，不裁切主体、不重绘、不调色。`:media.artwork?.cleanUrl?'已完成作品裁剪，正在生成装裱图…':'当前仅显示完整原图；可以先点「编辑作品」把方向摆正，再开始裁剪与装裱。'}</p>{mode==='个人反馈'?artworkEditorField:null}{!media.artwork?.cleanUrl?<button type="button" className="confirm-artwork-button" onClick={startArtworkCleanup} disabled={framingState==='rotating'||framingState==='processing'}>{framingState==='processing'?'正在裁剪作品…':'方向正确，开始裁剪与装裱'}</button>:null}<span className="frame-choice-hint">相框样式在下方「相框样式」面板里挑（缩略图用这幅作品实时渲染）→</span></div></article><article><div className="photo-card">{media.photo?.url?<><img src={media.photo.url} alt="已自然优化的课堂照片" style={{transform:`rotate(${media.photo.rotation||0}deg)`}}/><button type="button" className="frame-rotate-button photo-rotate-button" onClick={rotatePersonalPhoto}><RefreshCw size={16}/>旋转照片</button></>:<img src={pandaMascot} alt="课堂照片占位预览"/>}</div><div><b>学员照片</b><p>{media.photo?.name||'未上传课堂照片，可返回上一步补充。'}</p></div></article></div>{frameStylePanel}<div className="scene-actions"><Button variant="secondary" onClick={()=>go(1)}>返回创建信息</Button><Button icon={ArrowRight} onClick={()=>go(3)}>进入五维点评</Button></div></section>:null}
       {step===3?<section className="scene-panel review-task-v2"><div className="review-media"><div className="scene-heading"><span>{mode==='班级反馈'?'本班课后素材':'本次课素材'}</span><h2>{mode==='班级反馈'?'周六创意绘画 2 班 · 班级课后反馈':`${selectedStudentLabel}${activeFrame?.plaqueTitle?` · 《${activeFrame.plaqueTitle}》`:''}`}</h2></div><div className={`review-gallery ${mode==='班级反馈'?'class-review-gallery':''}`}>{mode==='班级反馈'?<><ClassMediaMosaic items={classMosaicArtworks} kind="artwork" date={lessonDateDots} onRotate={index=>rotateBatchItem('artwork',index)}/><ClassMediaMosaic items={classMosaicPhotos} kind="photo" groups={photoGroups} date={lessonDateDots} onRotateEntry={uploadId=>rotateUploadEntry('photo',uploadId)}/></>:<><div className={`review-art exhibition-art${media.artwork?.framedUrl?' framed-art':''}`}>{media.artwork?.framedUrl?<div className="framed-art-final"><img src={media.artwork.framedUrl} alt={`${selectedStudentLabel}的作品 · ${activeFrame?.name||'装裱'}`}/>{activeFrame?.name?<span className="framed-badge">{activeFrame.name}</span>:null}</div>:<><div className="artwork-mat">{media.artwork?.url?<img src={media.artwork.cleanUrl||media.artwork.originalUrl||media.artwork.url} alt={`${selectedStudentLabel}的作品`}/>:'✺'}</div><div className="artwork-plaque"><div><b>{selectedStudentLabel}</b><span>{activeFrame?.plaqueTitle?`《${activeFrame.plaqueTitle}》`:''}</span></div><time>创作于 {(activeFrame?.plaqueDate||new Date().toISOString().slice(0,10).replace(/-/g,'.'))}</time></div></>}</div><div className="review-photo portrait-print"><div className="portrait-mat">{media.photo?.url?<img src={media.photo.url} alt="陈一诺课堂照片"/>:<img src={pandaMascot} alt="课堂照片占位"/>}</div><div className="portrait-caption">{selectedStudentLabel} · {(activeFrame?.plaqueDate||new Date().toISOString().slice(0,10).replace(/-/g,'.'))}</div></div></>}</div></div><ReviewKeywordDock visible selected={keywords} onToggle={toggleKeyword} suggested={aiKeywords} suggesting={keywordSuggesting} dirty={keywordDirty} generated={reviewGenerated}/><div className={`coach-review ${mode==='班级反馈'?'class-coach-review':''}`}><div className="scene-heading"><span>第三步</span><h2>{mode==='班级反馈'?'班级课程反馈':'五维点评'}</h2></div><select value={subject} onChange={e=>setSubject(e.target.value)}><option>通用美术</option><option>创意绘画（3-6岁）</option><option>儿童画（6-9岁）</option><option>素描（9-18岁）</option><option>速写（9-18岁）</option><option>水彩 / 水粉（7-18岁）</option><option>国画（6-18岁）</option></select><p className="evidence">{mode==='班级反馈'?'以下内容基于本节课课程设计、班级素材与老师观察生成，老师可编辑确认后发布给家长。':`下列内容由大模型生成：先读懂作品与课堂素材，再结合「${activeProfileLabel}」的人设、已启用技能与长期记忆，按五个维度分别输出评语。老师可逐条修改后再发布。`}</p>{mode==='班级反馈'?<ClassReviewContent subject={subject}/>:<><div className={`review-source ${reviewGenerated?(localDraftUsed?'local':'ai'):'pending'}`}>{reviewGenerated?(localDraftUsed?<><CircleAlert size={14}/><span>当前正文来自<strong>本地草稿模板</strong>（未调用大模型），发布前请老师逐条核对。</span></>:<><Sparkles size={14}/><span>当前正文由大模型「{activeProfileLabel}」依据人设、技能与长期记忆生成，可直接编辑。</span></>):<><Sparkles size={14}/><span>五个维度等待大模型生成：点击上方「开始生成点评」，评语会逐字写入这里。</span></>}{keywordDirty&&reviewGenerated?<em>观察词已调整，建议重新生成</em>:null}</div>{Object.entries(reviews).map(([name,copy])=><article className={`coach-card${copy?'':' is-empty'}`} key={name}><b>{name}{copy?null:<em className="review-pending">待生成</em>}</b><textarea aria-label={name} value={copy} placeholder={REVIEW_DIMENSION_HINTS[name]||''} onChange={event=>setReviews(current=>({...current,[name]:event.target.value}))}/></article>)}</>}<div className="scene-actions"><Button variant="secondary" onClick={()=>go(2)}>返回智能装裱</Button><Button icon={Archive} onClick={archiveRecord}>归档并生成分享</Button></div></div></section>:null}
       {step===4?<section className="share-task scene-panel"><img src={pandaObserve} alt="熊猫成长伙伴"/><div><span>已归档至{selectedStudentLabel}的成长档案</span><h2>这一次的成长，<br/>已经被完整记录。</h2><p>作品、课堂照片与五维点评已经同步保存到本地草稿。</p><div className="share-actions"><Button icon={Archive} onClick={()=>setToast('成长集锦任务已创建，等待服务端接入')}>制作成长集锦</Button><Button variant="secondary" icon={Frame} onClick={()=>setToast('个人作品集任务已创建，等待服务端接入')}>制作作品集</Button></div><div className="scene-actions"><Button variant="secondary" onClick={()=>go(3)}>返回五维点评</Button><Button icon={FileText} onClick={()=>navigate('archives')}>进入成长档案</Button></div></div></section>:null}
     </section></>;
