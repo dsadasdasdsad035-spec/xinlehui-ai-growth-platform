@@ -649,3 +649,37 @@ p.framing-coverage-bad { margin: 0; padding: 10px 18px; font-size: 12px; line-he
   .frame-library-confirm-actions button { min-height: 44px; }
   .frame-preset-course-list label { min-height: 44px; }
 }
+
+/* ==========================================================================
+   权限与合规（[第二步 US-013]）
+   ① 模板三层写权限矩阵（读 data/framingPermissions.js 的同一份行）；
+   ② 审计日志（另存为我的模板 / 保存图片，操作人 · 学员 · 模板 · 时间）；
+   ③ 儿童素材的存储落点与上传鉴权（读 data/mediaStoragePolicy.js + /health 探测）。
+   灰底小字卡片，行内不换行的地方全部走 flex-wrap（390px 下不撑破页面）。
+   ========================================================================== */
+.compliance-panel { margin-top: 18px; }
+.compliance-panel .panel-head { align-items: flex-start; }
+.compliance-actor { font-style: normal; flex: none; font-size: 10px; font-weight: 800; color: #7a5b00; background: #fff2c8; border-radius: 999px; padding: 4px 10px; white-space: nowrap; }
+.compliance-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+.compliance-block { display: flex; flex-direction: column; gap: 8px; min-width: 0; border: 1px solid #e6d9b8; border-radius: 14px; background: #fffdf7; padding: 12px; }
+.compliance-block h3 { margin: 0; font-size: 12px; color: #292720; }
+.compliance-matrix { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 7px; }
+.compliance-matrix li { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; border: 1px solid #eee3c8; border-radius: 10px; background: #fff; padding: 7px 9px; font-size: 10px; line-height: 1.6; color: #514a38; }
+.compliance-matrix li b { font-size: 11px; color: #292720; }
+.compliance-matrix li small { flex: 1 1 100%; font-size: 10px; line-height: 1.6; color: #857a64; }
+.compliance-matrix li em { font-style: normal; font-size: 9px; font-weight: 800; border-radius: 999px; padding: 2px 7px; white-space: nowrap; }
+.compliance-matrix li em.ok { color: #1b7f34; background: #e8f5e9; }
+.compliance-matrix li em.muted { color: #7d7050; background: #f2ecdc; }
+.compliance-note { margin: 0; font-size: 10px; line-height: 1.65; color: #857a64; }
+.compliance-audit { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow: auto; }
+.compliance-audit li { display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap; border-left: 3px solid #cfa52e; background: #fdfaf1; border-radius: 0 9px 9px 0; padding: 6px 9px; font-size: 10px; line-height: 1.6; color: #514a38; }
+.compliance-audit li b { font-size: 10px; color: #292720; }
+.compliance-audit li small { flex: 1 1 100%; color: #857a64; }
+.compliance-audit li em.denied { font-style: normal; font-size: 9px; font-weight: 800; color: #a33326; background: #fdece7; border-radius: 999px; padding: 2px 7px; }
+.compliance-probe { margin: 0; font-size: 10px; line-height: 1.65; border-radius: 9px; padding: 7px 9px; color: #514a38; background: #f7f2e4; }
+.compliance-probe.is-ok { color: #1b7f34; background: #eef7ec; }
+.compliance-probe.is-blocked { color: #8a2f20; background: #fdece7; }
+/* 不可写的模板：列表行徽标与编辑区顶部那句「谁维护、为什么只读」。 */
+.frame-library-readonly { font-style: normal; flex: none; font-size: 10px; font-weight: 800; color: #7d7050; background: #f2ecdc; border-radius: 999px; padding: 2px 8px; white-space: nowrap; }
+.frame-preset-readonly { margin: 0 0 12px; font-size: 10px; line-height: 1.65; font-weight: 700; color: #8a6100; background: #fff3cf; border-radius: 9px; padding: 7px 10px; }
+.frame-preset-audit { margin: 8px 0 0; font-size: 10px; line-height: 1.65; color: #1b7f34; background: #eef7ec; border-radius: 9px; padding: 7px 10px; }

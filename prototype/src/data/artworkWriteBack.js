@@ -226,9 +226,61 @@ export function artworkWriteBackProblem(record) {
   if (!str(source.imageUrl)) return '成品图地址为空';
   if (persistentAddressKind(source.imageUrl) === 'session') return '成品图地址是会话内地址（刷新即失效）';
   if (!str(source.sourceUrl)) return '原图地址为空';
+  // [US-013] 溯源四项里 `specSnapshot` 原来是「有就带、没有也收」—— 现在它是硬要求：
+  // 「所有成品图保留 specSnapshot 与 sourceUrl」（PRD US-013 第 3 条）。
+  // 没有参数快照的成品图复现不出来，缺了就在这里拦下（调用方按写回失败处理，可重试）。
+  const snapshotProblem = specSnapshotProblem(source.specSnapshot);
+  if (snapshotProblem) return snapshotProblem;
   if (!str(source.operatorId)) return '操作人为空';
   if (!str(source.generatedAt)) return '生成时间为空';
   return '';
+}
+
+/** 参数快照的完整性判据：必须是「有内容的普通对象」（空对象等于没留档）。 */
+export function specSnapshotProblem(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) return '缺少参数快照（specSnapshot）：成品图必须能追溯到是哪套参数生成的';
+  if (!Object.keys(snapshot).length) return '参数快照（specSnapshot）是空的：成品图必须能追溯到是哪套参数生成的';
+  return '';
+}
+
+/** 四项溯源的中文名（面板与断言读同一份）。 */
+const TRACE_FIELD_LABELS = {
+  specSnapshot: '参数快照',
+  sourceUrl: '原图地址',
+  operatorId: '操作人',
+  generatedAt: '生成时间'
+};
+
+/**
+ * 四项溯源的读数（[US-013] 第 3 条：任意一张成品图都要能说出
+ * 「哪张原图 + 哪套参数 + 谁生成的 + 什么时候」）。缺哪一项就点名哪一项。
+ */
+export function artworkWriteBackTraceability(record) {
+  const normalized = normalizeArtworkWriteBack(record);
+  if (!normalized) {
+    return {
+      complete: false,
+      missing: [...ARTWORK_WRITE_BACK_PROVENANCE_KEYS],
+      fields: ARTWORK_WRITE_BACK_PROVENANCE_KEYS.map(key => ({ key, label: TRACE_FIELD_LABELS[key] || key, value: '', ok: false }))
+    };
+  }
+  const fields = ARTWORK_WRITE_BACK_PROVENANCE_KEYS.map(key => {
+    const raw = normalized[key];
+    let value = str(raw);
+    if (key === 'specSnapshot') value = `${normalized.specSummary || '已记录渲染参数'}（${Object.keys(raw || {}).length} 个分组）`;
+    if (key === 'generatedAt') value = artworkWriteBackTimeText(raw) || str(raw);
+    const ok = key === 'specSnapshot' ? !specSnapshotProblem(raw) : Boolean(str(raw));
+    return { key, label: TRACE_FIELD_LABELS[key] || key, value, ok };
+  });
+  const missing = fields.filter(item => !item.ok).map(item => item.key);
+  return { complete: missing.length === 0, missing, fields };
+}
+
+/** 四项溯源的可读一行（面板上那句话；缺项如实写「（缺）」，不粉饰）。 */
+export function artworkWriteBackTraceText(record) {
+  const trace = artworkWriteBackTraceability(record);
+  const parts = trace.fields.map(item => `${item.label}${item.ok ? '' : '（缺）'}`);
+  return `${trace.complete ? '四项溯源齐全' : '溯源不完整'}：${parts.join(' · ')}`;
 }
 
 /** 一条写回记录是否可用（`artworkWriteBackProblem` 的布尔版）。 */

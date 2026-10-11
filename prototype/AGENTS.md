@@ -1168,6 +1168,59 @@ DOM/canvas 部分在 `src/services/artworkWriteBack.js`，编排在 `main.jsx` �
   另外 `Emulation.setUserAgentOverride` 之后**要派发一次真实的 resize 事件**（真实浏览器在视口变化时会派发）
   才会重算设备口径。
 
+## 模板写权限 · 审计日志 · 儿童素材合规（US-013）
+
+三件事各有一个零依赖数据模块 + 一个服务模块，界面只渲染、判定一律读同一份纯函数。
+
+| 关注点 | 位置 | 说明 |
+|---|---|---|
+| 三层写权限（FR-44/45） | `data/framingPermissions.js` | `FRAMING_SCOPE_WRITER`（每层的唯一可写角色）、`framingActor(viewer)`（viewer→操作人）、`framingPresetWriteIssue(preset, viewer)`（能写返回空串，否则可读原因）、`framingPermissionRows`（面板矩阵） |
+| 写接口拦截（403） | `services/framingPresetsApi.js` | `assertFramingPresetWrite` / `FramingPresetWriteError`；**保存与删除都必须传 `(preset, viewer)`**（删除也是写） |
+| 审计日志 | `data/auditLog.js` + `services/auditLogApi.js` | 动作 `framing.template.save` / `framing.artwork.save` / `framing.template.write-denied`；必填清单 `AUDIT_ACTION_REQUIRED`；四项 `AUDIT_TRACE_FIELDS` = 操作人 / 学员 id / 时间 / 模板 id |
+| 儿童素材存储策略（FR-46） | `data/mediaStoragePolicy.js` + `services/mediaStorage.js` | `childMediaUploadHeaders`（缺鉴权抛错、不发请求）、`assertChildMediaStorage`（复核服务端声明的落点）、`probeChildMediaSink`（探 `/health`） |
+| 成品图溯源（验收③） | `data/artworkWriteBack.js` | `specSnapshot` 现在是**硬要求**（`artworkWriteBackProblem` 会拒），读数用 `artworkWriteBackTraceability` / `artworkWriteBackTraceText` |
+
+- **写权限是「仅 X 可写」，没有上层代写**：平台模板仅平台管理员、机构模板仅**本机构**管理员
+  （`ownerKey === viewer.orgId`）、老师个人模板仅**本人**（`ownerKey` 命中 `teacherId` 或 `teacherName`）、
+  家长端三层都只读。管理端仍然**读**全量（US-001b 的读模型不变），但平台管理员**不能**代写机构 / 老师的模板 ——
+  这条是要点：`framePresetEditableBy`（US-031，老师端视角）与 `framingPresetWriteIssue`（本故事，四角色矩阵）
+  是两份判据，**写入口一律读后者**。
+- **界面关入口 + 服务层 403 是两道，缺一不可**：管理端对不属于本层的行关掉 上移/下移/启停/保存/删除
+  （`data-frame-preset-writable` / `data-frame-draft-writable` + 只读徽标 + `FRAMING_PRESET_READONLY_NOTE` 文案），
+  服务层再拦一次（`assertFramingPresetWrite` → `FramingPresetWriteError`，`status:403`、`code:'forbidden-scope-write'`）。
+  服务层的判定在 `upsert/delete` **之前**，所以越权 payload 连云端都不会碰（断言：内存表替身里 `calls.length` 不变）。
+- **乐观更新要在权限判定之后**：老师端 `writeTeacherPreset` / 管理端 `commit` 都是「先判 → 不过就记一条
+  `outcome:'denied'` 的审计 + 可读提示 + **一个 state 都不改**」；判定失败还去 `setFramingPresets` 就会把越权结果画出来。
+- **审计日志只认白名单字段**（`AUDIT_ENTRY_FIELDS`）：手机号、素材地址这类东西结构上进不来
+  （断言直接 `JSON.stringify(entry)` 里搜敏感值）。本机镜像键 `xinlehui-audit-log-v1`（裸数组，最多 200 条），
+  云端 `audit_logs` 表未建时写入被拒 → 只落本机（与装裱模板同一套兜底口径，读时 `mergeAuditLog` 合并）。
+  `recordAudit` 在 `App` 里（本机镜像 + 云端推送），老师端用 `auditTeacherEntry` 补操作人四件套。
+- **审计的「四项」不是同一套必填**：另存为我的模板没有学员（`studentId` 空是正常的），
+  保存图片必须有学员（`studentId` 是那条成品图的归属）；模板 id 在「保存图片」里是「这次用的哪套」——
+  老师没用模板时为空，不算缺。别把四件都写成必填（会把合规记录误判成不完整）。
+- **儿童素材的两条防线都在客户端这侧强制**：`childMediaUploadHeaders` 缺「老师身份 + 监护人授权」直接抛错
+  （旧写法是一份写死的常量头，谁调都带）；`assertChildMediaStorage` 复核响应里的 `storage`
+  —— 落到 `server-local-disk` / 公开地址 / 没登记的落点一律拒绝（服务端 `GET /health` 的 `storage`
+  与 `GET /api/compliance/storage-policy` 是它的对侧声明）。
+- **验证「写权限」用页面内直调服务层**（`await import('/src/services/framingPresetsApi.js')`）：
+  一次拿到七种越权路径的 `{status, code, scope, message}`。**「放行」的判据不能写 `threw === false`** ——
+  本机云端 `framing_presets` 缺列（`DATABASE_PGRST204`，US-011b 的既有事实）会让「合格的那几条」也抛错；
+  正确判据是「没有被 `forbidden-scope-write` 拒绝」。
+- **元素级截图要用文档坐标**：`Page.captureScreenshot` 的 `clip` 是**页面坐标**（不是视口坐标），
+  要用 `getBoundingClientRect() + scrollX/scrollY` 并配 `captureBeyondViewport: true`，
+  否则截出来是空白（本轮踩过）。
+- **验证方式**（本故事实测）：`pnpm run build`；Node 直跑 data + service **147 项断言**
+  （三层写权限矩阵 12 种身份组合、服务层 403、四项溯源逐项缺一被点名、存储落点与鉴权、日志白名单/上限/合并）；
+  CDP + headless Chrome **93 项断言**全绿、console 0 异常（受控上传的真实响应落点 = `memory-development-only`、
+  老师提交 `scope=platform` 被 403、另存为我的模板与保存图片两条审计在面板与本机镜像里四项齐全、
+  管理端矩阵 / 只读入口 / 存储策略探测）；服务端另用 curl 验过三条（无鉴权 403 / 无授权 403 / 齐全 201 且
+  `server/data/` 不落素材）；回归 US-027 **79**、US-030 **50**、US-031 **53**、US-032 **67**、
+  US-033 **71**、US-034 **106**、US-036 **81** 全绿；截图 145~148 留档。
+- **已知边界**：① 云端 `audit_logs` 表尚未建立，审计目前只在本机镜像里「真的落地」，跨设备可见要等建表；
+  ② 「渲染接口」在原型里就是 `services/framingPresetsApi.js` 这一层（`cloud.database` 是它后面的库），
+  真实部署时要把它搬到服务端函数里（本故事的判定函数可直接复用）；
+  ③ 机构管理员角色目前只在权限层与「权限设置」页的角色组里存在，还没有机构管理员的登录入口。
+
 ## 容易踩的坑
 
 - **写接口抛错时「await 之后就没了」**：`save<X>/create<X>/update<X>` 是「先写本地镜像再推云端」，

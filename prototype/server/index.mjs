@@ -27,6 +27,22 @@ const tasks = new Map();
 const parentSessions = new Map();
 const managementFile = path.join(dirname, 'data', 'student-management.json');
 const feedbackRecordsFile = path.join(dirname, 'data', 'feedback-records.json');
+// 儿童素材的存储落点（[第二步 US-013] / FR-46）：开发适配器只声明「内存」这一个落点。
+// 任何把素材写到本机磁盘的实现都不允许（学员/班级档案是另一类数据，见 managementFile）。
+const childMediaStorageSink = 'memory-development-only';
+const childMediaStoragePolicy = {
+  sink: childMediaStorageSink,
+  allowedSinks: ['session-memory', 'private-object-storage'],
+  forbiddenSinks: ['server-local-disk', 'public-bucket'],
+  auth: {
+    roleHeader: 'X-Actor-Role',
+    consentHeader: 'X-Media-Consent',
+    requiredRole: 'teacher',
+    requiredConsent: 'granted'
+  },
+  credentialsToClient: ['publishableKey'],
+  note: '开发适配器只在内存里持有儿童素材，不落服务端本地磁盘；生产环境必须换成私有对象存储（带鉴权、服务端签名）。'
+};
 const managementSeed = {
   students: [
     { name: '陈一诺', birthDate: '2019-04-18', className: '周六创意绘画 2 班', guardianName: '陈一诺妈妈', guardianPhone: '', expect: '希望孩子更自信地表达自己的想法。' },
@@ -236,7 +252,10 @@ http.createServer(async (request, response) => {
   if (request.method === 'OPTIONS') return send(response, 204, {});
   const url = new URL(request.url, `http://${request.headers.host}`);
   try {
-    if (request.method === 'GET' && url.pathname === '/health') return send(response, 200, { ok: true, configured: Boolean(process.env.ARK_API_KEY), model: arkModel, storage: 'memory-development-only' });
+    if (request.method === 'GET' && url.pathname === '/health') return send(response, 200, { ok: true, configured: Boolean(process.env.ARK_API_KEY), model: arkModel, storage: childMediaStorageSink });
+    // 儿童素材的存储策略（[第二步 US-013]）：服务端自己声明落点与鉴权要求，
+    // 客户端（`services/mediaStorage.js`）拿 `/health` 的 storage 字段与这份声明复核。
+    if (request.method === 'GET' && url.pathname === '/api/compliance/storage-policy') return send(response, 200, childMediaStoragePolicy);
     if (request.method === 'GET' && url.pathname === '/api/management') {
       if (!requireTeacher(request, response)) return;
       return send(response, 200, loadManagement());

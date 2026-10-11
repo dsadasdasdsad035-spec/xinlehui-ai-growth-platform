@@ -700,3 +700,11 @@
   .framing-perf-panel{padding:14px}
   .framing-perf-list{grid-template-columns:minmax(0,1fr)}
 }
+
+/* 溯源完整性与审计留痕（[第二步 US-013]）：写回面板里的两行读数 ——
+   ① 四项溯源（参数快照 / 原图 / 操作人 / 生成时间）齐不齐；
+   ② 保存图片这个动作写进审计日志的四项（操作人 / 学员 id / 时间 / 模板 id）。 */
+.save-image-writeback-trace{margin:0;font-size:10px;line-height:1.6;border-radius:9px;padding:6px 9px;background:#f7f2e4;color:#514a38}
+.save-image-writeback-trace.is-ok{color:#1b7f34;background:#eef7ec}
+.save-image-writeback-trace.is-missing{color:#8a2f20;background:#fdece7}
+.save-image-audit{margin:0;font-size:10px;line-height:1.6;border-radius:9px;padding:6px 9px;background:#eef7ec;color:#1b7f34}

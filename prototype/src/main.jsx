@@ -60,6 +60,16 @@ import { MARKETPLACE_SYNCED_AT, indexStats, marketCategories, searchMarket, sear
 // 老师端的「默认选哪一套」与管理端的「删除只允许停用」读的是同一批纯函数。
 import { FRAMING_PRESET_COURSE_BINDING_NOTE, FRAMING_PRESET_DEFAULT_NOTE, FRAMING_PRESET_DELETE_NOTE, FRAMING_PRESET_HISTORY_EMPTY, bindFramingPresetCourse, buildTeacherFramingPreset, createEmptyFramingPreset, defaultFramingPreset, editableFramingPresets, filterFramingPresetsForViewer, framePresetEditableBy, framingPresetChangeSummary, framingPresetCourseConflicts, framingPresetDeleteVerdict, framingPresetHistory, framingPresetHistoryText, framingPresetNameIssue, framingPresetResolveText, framePresetScopeLabel, framePresetSpecFromRenderView, framePresetSpecGroupLabels, framingPresetUpdateText, framingPresetUsage, framingPresetUsageText, loadFramingPresets, mergeRemoteFramingPresets, missingBuiltinFramingPresets, moveFramingPreset, restoreMissingBuiltinFramingPresets, normalizeFramingPreset, persistFramingPresets, renameFramingPreset, resolveFramingPresetForCourse, selectableFramingPresets, setDefaultFramingPreset, sortFramingPresets, stampFramingPresetUpdate } from './data/framingPresets';
 import { deleteRemoteFramingPreset, loadRemoteFramingPresets, saveRemoteFramingPreset } from './services/framingPresetsApi';
+// 模板写权限（[第二步 US-013] / FR-44 / FR-45）：三层模板「谁的地盘谁写」的判定与文案都在这里，
+// 界面「关掉写入入口」与服务层 403 读的是同一份纯函数。
+import { FRAMING_PERMISSION_SUMMARY, FRAMING_PRESET_READONLY_NOTE, framingActor, framingPermissionRows, framingPresetWriteIssue, framingPresetWriteOwnerText, framingWriteDeniedMessage } from './data/framingPermissions';
+// 审计日志（[第二步 US-013] 第 5 条）：「另存为我的模板」与「保存图片」两个动作留痕
+// （操作人 / 学员 id / 时间 / 模板 id）；本机镜像 + 云端 audit_logs（表未建时只落本机镜像）。
+import { AUDIT_ACTIONS, AUDIT_ACTION_LABELS, AUDIT_LOG_EMPTY_TEXT, appendAuditEntry, auditEntryMissingFields, auditEntryText, auditLogStats, auditTraceText, buildAuditEntry, loadAuditLog, mergeAuditLog, persistAuditLog } from './data/auditLog';
+import { appendRemoteAuditEntry, loadRemoteAuditLog } from './services/auditLogApi';
+// 儿童素材的存储策略（[第二步 US-013] 第 4 条 / FR-46）：上传必须带鉴权、落点不许是服务端本地磁盘。
+import { CHILD_MEDIA_UPLOAD_AUTH, MEDIA_STORAGE_CREDENTIAL_NOTE, MEDIA_STORAGE_POLICY_SUMMARY, mediaStoragePolicyRows } from './data/mediaStoragePolicy';
+import { CHILD_MEDIA_API_BASE, probeChildMediaSink } from './services/mediaStorage';
 // 装裱 spec 与「自然语言 → v2 参数」的大模型入口（US-011c）：提示词要形状建议 + 水印位置建议，
 // 输出一律过 normalizeFrameSpecV2 收敛（非法值回落默认、永不抛错），生成失败也只是 ok:false 的信封。
 import { DEFAULT_FRAME_SPEC, DATE_FORMATS, DATE_SOURCES, FRAMING_FONT_WHITELIST, SEAL_SHAPES, frameSpecRenderKey, frameSpecRenderView, frameSpecView, generateFrameSpecV2, mergeGeneratedFrameSpec, normalizeFrameSpecV2 } from './services/frameSpec';
@@ -95,7 +105,7 @@ import { ARTWORK_EXPORT_QUALITIES, artworkExportFilename, artworkExportSizeText 
 import { composeArtworkExport, createArtworkExportUrl, downloadArtworkExport, releaseArtworkExportUrl, artworkExportStrategy } from './services/artworkExport';
 // 成品图写回课次作品位 + 溯源记录（[第二步 US-008b]）：写回的字段白名单、新鲜度键、失败文案在 data 层
 // （零依赖，可 Node 断言）；把成品图画布编成持久副本（data URL）在 services 层；编排在本文件。
-import { ARTWORK_WRITE_BACK_IMAGE, applyWriteBackToSlot, artworkWriteBackContextText, artworkWriteBackFailureText, artworkWriteBackIsFresh, artworkWriteBackKey, artworkWriteBackOf, artworkWriteBackProblem, artworkWriteBackProvenanceEntries, artworkWriteBackSummaryText, buildArtworkWriteBack, writtenBackImageUrl } from './data/artworkWriteBack';
+import { ARTWORK_WRITE_BACK_IMAGE, applyWriteBackToSlot, artworkWriteBackContextText, artworkWriteBackFailureText, artworkWriteBackIsFresh, artworkWriteBackKey, artworkWriteBackOf, artworkWriteBackProblem, artworkWriteBackProvenanceEntries, artworkWriteBackSummaryText, artworkWriteBackTraceText, artworkWriteBackTraceability, buildArtworkWriteBack, writtenBackImageUrl } from './data/artworkWriteBack';
 import { artworkWriteBackImageRulesText, encodeArtworkWriteBackImage } from './services/artworkWriteBack';
 // 班级批量应用装裱（[第二步 US-010]）：目标分类（要装 / 已是最新 / 已单独调整）、状态机、
 // 进度与失败清单、耗时预算与「覆盖前二次确认」文案全在 data 层（零依赖，可 Node 断言）；
@@ -254,6 +264,9 @@ function App(){
   const [lessons,setLessons]=useState(loadLessons);
   // 课程库：云端 courses 表为真源，本地只做兜底；课次课题与班级选课都从这里取。
   const [courses,setCourses]=useState(loadCourses);
+  // 审计日志（[第二步 US-013] 第 5 条）：本机镜像先渲染，云端 audit_logs 表回来就并进去
+  // （表还没建 → 写入被拒，日志只在本机镜像里，与装裱模板同一套兜底口径）。
+  const [auditLog,setAuditLog]=useState(loadAuditLog);
   const [demoState,setDemoState]=useState('normal');
   useEffect(()=>{ if(toast){const t=setTimeout(()=>setToast(''),2600); return()=>clearTimeout(t)}},[toast]);
   useEffect(()=>{let active=true;loadRemoteFeedbackRecords().then(remote=>{if(!active)return;setRecords(current=>mergeFeedbackRecords(current,remote));setRecordsRemoteReady(true);}).catch(()=>{});return()=>{active=false}},[]);
@@ -265,6 +278,8 @@ function App(){
   useEffect(()=>{persistGalleryExhibitions(galleryExhibitions)},[galleryExhibitions]);
   useEffect(()=>{persistLessons(lessons)},[lessons]);
   useEffect(()=>{persistCourses(courses)},[courses]);
+  useEffect(()=>{persistAuditLog(auditLog)},[auditLog]);
+  useEffect(()=>{let active=true;loadRemoteAuditLog().then(remote=>{if(active&&remote.length)setAuditLog(current=>mergeAuditLog(remote,current))}).catch(()=>{});return()=>{active=false}},[]);
   useEffect(()=>{let active=true;
     loadRemoteTeacherProfiles().then(remote=>{if(active&&remote.length)setTeacherProfiles(remote)}).catch(()=>{});
     loadRemoteSkillLibrary().then(remote=>{if(active&&remote.length)setSkillLibrary(remote)}).catch(()=>{});
@@ -291,6 +306,17 @@ function App(){
     return()=>{active=false};
   },[auth,role]);
   const navigate=(p)=>{setPage(p);setMobileNav(false);window.scrollTo(0,0)};
+  /**
+   * 记一条审计日志（[US-013] 第 5 条）：先落本机镜像（立刻能在管理端读到），再推云端
+   * （`audit_logs` 表还没建时会被拒 —— 只影响「跨设备可见」，本机这条照样成立）。
+   * 返回值就是这条日志（调用方拿它渲染「已写入审计日志」的回执）。
+   */
+  const recordAudit=(input)=>{
+    const entry=buildAuditEntry(input);
+    setAuditLog(current=>appendAuditEntry(current,entry));
+    void appendRemoteAuditEntry(entry).catch(()=>{});
+    return entry;
+  };
   const login=async(nextRole, phone='', code='')=>{
     if(nextRole==='parent'&&phone!=='demo'){
       try{const session=await createParentSession(phone,code);setParentStudents(session.studentNames);setParentStudent(session.studentNames[0]);setParentPhone(phone);setParentSession(session.token);}catch(error){setToast(error.message||'家长登录失败，请稍后重试。');return false;}
@@ -304,7 +330,7 @@ function App(){
     <main className="main">
       <Topbar role={role} onMenu={()=>setMobileNav(true)} onSwitch={(r)=>login(r,'demo')} onGuide={()=>navigate('guide')} onLogout={()=>setAuth(false)}/>
       <div className="content">
-        <PageRouter {...{page,role,navigate,setToast,setModal,apps,setApps,tasks,setTasks,demoState,setDemoState,records,setRecords,parentStudent,parentStudents,parentPhone,parentSession,setParentStudent,teacherProfiles,setTeacherProfiles,framingPresets,setFramingPresets,skillLibrary,setSkillLibrary,galleryVenues,setGalleryVenues,galleryExhibitions,setGalleryExhibitions,lessons,setLessons,courses,setCourses}}/>
+        <PageRouter {...{page,role,navigate,setToast,setModal,apps,setApps,tasks,setTasks,demoState,setDemoState,records,setRecords,parentStudent,parentStudents,parentPhone,parentSession,setParentStudent,teacherProfiles,setTeacherProfiles,framingPresets,setFramingPresets,skillLibrary,setSkillLibrary,galleryVenues,setGalleryVenues,galleryExhibitions,setGalleryExhibitions,lessons,setLessons,courses,setCourses,auditLog,recordAudit}}/>
       </div>
     </main>
     {toast?<div className="toast panda-toast"><img src={pandaWave} alt="熊猫鼓励"/><span><CircleCheck size={18}/>{toast}</span></div>:null}
@@ -445,7 +471,7 @@ function IntakeSlotGroups({listKey,rows,collapsedKeys,onToggle,renderRow,classNa
   </div>;
 }
 
-function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramingPresets=()=>{},teacherProfiles=[],skillLibrary=[],courses=[],lessons=[],setLessons=()=>{},role='teacher'}){
+function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramingPresets=()=>{},teacherProfiles=[],skillLibrary=[],courses=[],lessons=[],setLessons=()=>{},role='teacher',auditLog=[],recordAudit=()=>{}}){
   const management=loadStudentManagement();
   const availableClasses=management.classes||[];
   // 当前登录老师：原型阶段只有一个老师身份（见 roleMeta.teacher），班级数据里存的是老师姓名。
@@ -519,6 +545,42 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
   // 否则换一个老师登录会看到上一位老师的个人模板。
   // 顺序也用 `sortFramingPresets`（管理员在后台调过的排序就是老师看到的顺序）。
   const teacherFrameViewer={role:'teacher',teacherName:currentTeacherName,orgId:DEFAULT_ORG_ID};
+  // ---- 写权限与审计（[US-013]）------------------------------------------------------
+  // 老师端的写权限判定与会话身份都从这一份来：`teacherWriteActor` 是审计日志里的「操作人」，
+  // `teacherFrameViewer` 同时是写权限的入参（个人模板的 ownerKey 命中本人身份串才可写）。
+  const teacherWriteActor=framingActor(teacherFrameViewer);
+  // 最近一次「另存为我的模板」/「保存图片」写下的审计条目（面板上的回执读它，而不是去猜）。
+  const [templateAuditEntry,setTemplateAuditEntry]=useState(null);
+  const [artworkAuditEntry,setArtworkAuditEntry]=useState(null);
+  /** 记一条老师端审计（操作人四件套由这里补齐：身份串 / 姓名 / 角色 / 机构）。 */
+  const auditTeacherEntry=(input)=>{
+    const entry=recordAudit({...input,actorId:teacherWriteActor.actorId,actorName:teacherWriteActor.actorName,actorRole:teacherWriteActor.role,actorRoleLabel:teacherWriteActor.roleLabel,orgId:DEFAULT_ORG_ID});
+    if(entry.action===AUDIT_ACTIONS.templateSave) setTemplateAuditEntry(entry);
+    if(entry.action===AUDIT_ACTIONS.artworkSave) setArtworkAuditEntry(entry);
+    return entry;
+  };
+  /**
+   * 老师端写模板的唯一通道（另存为 / 重命名 / 删除都走它）：
+   *   ① 先用同一份规则判权限（不合格：记一条「被拒绝」的审计 + 可读提示，且**不做任何乐观更新**）；
+   *   ② 再把写入推到云端（服务层会再判一次，越权在那里抛 403）。
+   * 先判后写是刻意的：乐观更新一旦落下，界面就已经把越权结果画出来了。
+   */
+  const writeTeacherPreset=async(preset,{action='保存模板'}={})=>{
+    const issue=framingPresetWriteIssue(preset,teacherFrameViewer);
+    if(issue){
+      auditTeacherEntry({
+        action:AUDIT_ACTIONS.templateWriteDenied,
+        templateId:preset?.id||'',
+        templateName:preset?.name||'',
+        scope:normalizeFramingPreset(preset).scope,
+        outcome:'denied',
+        detail:`${action}被拒绝：${issue}`
+      });
+      setToast(framingWriteDeniedMessage(preset,teacherFrameViewer));
+      throw new Error(issue);
+    }
+    return saveRemoteFramingPreset(preset,teacherFrameViewer);
+  };
   const visibleFrames=filterFramingPresetsForViewer(framingPresets,teacherFrameViewer);
   const enabledFrames=selectableFramingPresets(visibleFrames);
   // 默认选谁（US-011b）：按课程绑定 → 默认模板 → 第一套；老师手动点过卡片就以老师的选择为准
@@ -1303,6 +1365,15 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
     if(problem){setMyTemplateNotice(problem);setToast(problem);return}
     const spec=framePresetSpecFromRenderView(frameSpecRenderView(effectiveFrameSpec));
     const preset=buildTeacherFramingPreset({name:myTemplateForm.name,description:myTemplateForm.description,spec,viewer:teacherFrameViewer});
+    // [US-013] 写权限先判：个人模板只允许本人写（buildTeacherFramingPreset 落的就是本人 ownerKey，
+    // 所以这条路正常都能过；判定留在前面是为了「老师端不会把越权 payload 发出去」这条不变量）。
+    const writeIssue=framingPresetWriteIssue(preset,teacherFrameViewer);
+    if(writeIssue){
+      auditTeacherEntry({action:AUDIT_ACTIONS.templateWriteDenied,templateId:preset.id,templateName:preset.name,scope:preset.scope,outcome:'denied',detail:`另存为我的模板被拒绝：${writeIssue}`});
+      setMyTemplateNotice(framingWriteDeniedMessage(preset,teacherFrameViewer));
+      setToast(framingWriteDeniedMessage(preset,teacherFrameViewer));
+      return;
+    }
     // 先落进受控列表（本地镜像由 main.jsx 的 persistFramingPresets effect 负责），云端不通时 catch 里保留。
     setFramingPresets([...framingPresets,preset]);
     // 保存后直接选用这一套，并把「本次微调」清掉：微调已经并进模板 spec，留着只会让面板显示「已微调」
@@ -1313,9 +1384,17 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
     setFramePickedManually(true);
     setMyTemplateForm({name:'',description:''});
     setMyTemplateNotice(`已保存我的模板「${preset.name}」：含 ${framePresetSpecGroupLabels(spec).join(' · ')}，不含对单幅作品的旋转与裁剪。`);
+    // [US-013] 审计日志（第 5 条）：另存为我的模板 → 操作人 / 时间 / 模板 id（这条路没有学员）。
+    const audit=auditTeacherEntry({
+      action:AUDIT_ACTIONS.templateSave,
+      templateId:preset.id,
+      templateName:preset.name,
+      scope:preset.scope,
+      detail:`另存为我的模板（含 ${framePresetSpecGroupLabels(spec).join(' · ')}）`
+    });
     setMyTemplateSaving(true);
-    try{ await saveRemoteFramingPreset(preset); setToast(`我的模板「${preset.name}」已保存，下次进入可直接选用`); }
-    catch{ setToast('已保存到本机；云端暂未连通，稍后可重试。'); }
+    try{ await writeTeacherPreset(preset,{action:'另存为我的模板'}); setToast(`我的模板「${preset.name}」已保存，下次进入可直接选用`); }
+    catch{ setToast(`已保存到本机；云端暂未连通，稍后可重试（审计已记录 ${audit.id}）。`); }
     finally{ setMyTemplateSaving(false); }
   };
   const startRenamePreset=(preset)=>{
@@ -1332,7 +1411,7 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
     setFramingPresets(framingPresets.map(item=>item.id===next.id?next:item));
     setRenamingPresetId('');
     setMyTemplateNotice(`已把我的模板重命名为「${next.name}」；模板 id 与参数都没变，已产出的成品图不受影响。`);
-    try{ await saveRemoteFramingPreset(next); setToast(`我的模板已重命名为「${next.name}」`); }
+    try{ await writeTeacherPreset(next,{action:'重命名我的模板'}); setToast(`我的模板已重命名为「${next.name}」`); }
     catch{ setToast('已在本机重命名；云端暂未同步。'); }
   };
   const removeMyPreset=async(preset)=>{
@@ -1342,7 +1421,7 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
     if(renamingPresetId===preset.id) setRenamingPresetId('');
     if(activeFrameId===preset.id){setFrame('');setFramePickedManually(false)}
     setMyTemplateNotice(`已删除我的模板「${preset.name}」。${FRAMING_PRESET_DELETE_NOTE}`);
-    try{ await deleteRemoteFramingPreset(preset.id); setToast(`已删除我的模板「${preset.name}」`); }
+    try{ await deleteRemoteFramingPreset(preset,teacherFrameViewer); setToast(`已删除我的模板「${preset.name}」`); }
     catch{ setToast('已从本机删除；云端删除未成功。'); }
   };
   // ---- 水印 · 落款 · 时间面板（US-007）的写入与素材上传 -----------------------------
@@ -3023,6 +3102,18 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
           <button type="button" data-frame-preset-action="save" disabled={myTemplateSaving} onClick={saveAsMyTemplate}>{myTemplateSaving?'保存中…':'保存为我的模板'}</button>
         </div>
         {myTemplateNotice?<p className="frame-preset-notice" data-frame-preset-notice="true">{myTemplateNotice}</p>:null}
+        {/* 审计留痕（[US-013] 第 5 条）：另存为我的模板是一次要留痕的动作 —— 界面如实写出
+            这次记下的操作人 / 时间 / 模板 id（学员 id 为空，这条路没有学员）。 */}
+        {templateAuditEntry?<p className="frame-preset-audit" data-frame-preset-audit={templateAuditEntry.id}
+          data-audit-action={templateAuditEntry.action}
+          data-audit-actor={templateAuditEntry.actorId}
+          data-audit-student={templateAuditEntry.studentId}
+          data-audit-template={templateAuditEntry.templateId}
+          data-audit-at={templateAuditEntry.at}
+          data-audit-trace={auditTraceText(templateAuditEntry)}
+          data-audit-missing={auditEntryMissingFields(templateAuditEntry).join(',')}>
+          已写入审计日志：{auditTraceText(templateAuditEntry)} · 模板「{templateAuditEntry.templateName}」
+        </p>:null}
       </div>
     </section>
   );
@@ -3276,6 +3367,8 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
   const writeBackFresh=artworkWriteBackIsFresh(writeBackRecord,writeBackKey);
   const writeBackStale=Boolean(writeBackRecord)&&!writeBackFresh;
   const writeBackProvenance=writeBackRecord?artworkWriteBackProvenanceEntries(writeBackRecord):[];
+  // 溯源四项的完整性读数（[US-013] 第 3 条）：参数快照 / 原图 / 操作人 / 生成时间，缺一项就点名。
+  const writeBackTrace=artworkWriteBackTraceability(writeBackRecord);
   // 五维点评页 / 成长档案该显示哪一张成品图（US-008b 的验收：「保存后点评页立即使用新图」）：
   // 写过回且没过期就用写回的那张；过期（老师改过参数）时退回实时渲染的 framedUrl —— 过期图不冒充新图。
   // 窗口内所有消费点都读这两个派生值，别各自去读 media.artwork.framedUrl。
@@ -3405,7 +3498,20 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
       setSaveImagePreview({url:createArtworkExportUrl(result),filename:result.filename,bytes:result.bytes,width:result.width,height:result.height,hint:strategy.hint,quality:entry.id});
       setSaveImageState({status:'preview',quality:entry.id,message:`已合成本图（${measure}）——${strategy.hint}`});
     }
-    // ② 写回作品位 + 溯源记录（US-008b）：await 它只是为了让提示有序，
+    // ② 审计留痕（[US-013] 第 5 条）：保存图片是一次要留痕的动作 —— 操作人 / 学员 id / 时间 / 模板 id。
+    //    记在**下载成功之后**（这一步才是「保存图片」这个动作本身）；写回失败不影响这条回执。
+    auditTeacherEntry({
+      action:AUDIT_ACTIONS.artworkSave,
+      studentId:writeBackStudentId,
+      studentName:saveImagePlaque.student,
+      lessonId:currentLessonId,
+      lessonDate:lessonDateDots,
+      templateId:activeFrameId,
+      templateName:activeFrame?.name||'',
+      scope:normalizeFramingPreset(activeFrame).scope,
+      detail:`保存图片「${entry.label}」（${measure}）${result.filename?`· ${result.filename}`:''}`
+    });
+    // ③ 写回作品位 + 溯源记录（US-008b）：await 它只是为了让提示有序，
     //    失败也**不影响**上面已经完成的下载（内部自己 catch 并给「可重试」）。
     await performArtworkWriteBack({result,entry,plaque:saveImagePlaque,source:saveImageSource});
   };
@@ -3455,6 +3561,26 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
         </p>
         {writeBackRecord&&artworkWriteBackContextText(writeBackRecord)?<p className="save-image-writeback-context" data-save-image-writeback-context={artworkWriteBackContextText(writeBackRecord)}>这份成品图属于：{artworkWriteBackContextText(writeBackRecord)}</p>:null}
         <p className="save-image-writeback-note">{artworkWriteBackImageRulesText()}</p>
+        {/* 溯源完整性（[US-013] 第 3 条）：任意一张成品图都要能说出
+            「哪张原图 + 哪套参数 + 谁生成的 + 什么时候」。缺项就在这里点名，不粉饰。 */}
+        {writeBackRecord?<p className={`save-image-writeback-trace${writeBackTrace.complete?' is-ok':' is-missing'}`}
+          data-save-image-writeback-trace="true"
+          data-save-image-trace-complete={writeBackTrace.complete?'true':'false'}
+          data-save-image-trace-missing={writeBackTrace.missing.join(',')}
+          data-save-image-trace-text={artworkWriteBackTraceText(writeBackRecord)}>
+          {artworkWriteBackTraceText(writeBackRecord)}
+        </p>:null}
+        {/* 审计留痕（[US-013] 第 5 条）：保存图片 → 操作人 / 学员 id / 时间 / 模板 id。 */}
+        {artworkAuditEntry?<p className="save-image-audit" data-save-image-audit={artworkAuditEntry.id}
+          data-audit-action={artworkAuditEntry.action}
+          data-audit-actor={artworkAuditEntry.actorId}
+          data-audit-student={artworkAuditEntry.studentId}
+          data-audit-template={artworkAuditEntry.templateId}
+          data-audit-at={artworkAuditEntry.at}
+          data-audit-trace={auditTraceText(artworkAuditEntry)}
+          data-audit-missing={auditEntryMissingFields(artworkAuditEntry).join(',')}>
+          已写入审计日志：{auditTraceText(artworkAuditEntry)}
+        </p>:null}
         {writeBackAttempt.status==='failed'?<p className="save-image-writeback-error" data-save-image-writeback-error={writeBackAttempt.message}>{writeBackAttempt.message}</p>:null}
         {writeBackAttempt.message&&writeBackAttempt.status!=='failed'&&(writeBackAttempt.status==='writing'||writeBackRecord)?<p className="save-image-writeback-message" data-save-image-writeback-message={writeBackAttempt.message}>{writeBackAttempt.message}</p>:null}
         {writeBackProvenance.length?<div className="save-image-writeback-provenance" data-save-image-writeback-provenance="true">
@@ -4780,9 +4906,37 @@ function OverlayPositionPad({value,onChange,label,field,offsets,onSelect,onOffse
   </div>;
 }
 
-function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast,records=[],courses=[]}){
+function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast,records=[],courses=[],auditLog=[],recordAudit=()=>{}}){
   // 后台每一次变更的操作人（原型阶段没有账号体系，会话身份串就是操作人 —— 与课次 teacherId 同一口径）。
   const adminName=roleMeta.admin.name;
+  // [US-013] 写权限：后台这个会话是**平台管理员**（角色组见「权限设置」页）。
+  // 三层模板里它只能写 platform 层 —— org 层归本机构管理员、teacher 层归老师本人，
+  // 界面上对这两层不显示写入入口（`FRAMING_PRESET_READONLY_NOTE` 说明去哪儿改），
+  // 服务层（`saveRemoteFramingPreset` / `deleteRemoteFramingPreset`）再拦一道 403。
+  const adminFrameViewer={role:'admin',adminTier:'platform',orgId:DEFAULT_ORG_ID,actorName:adminName,actorId:adminName};
+  const adminActor=framingActor(adminFrameViewer);
+  const adminPermissionRows=framingPermissionRows(adminFrameViewer);
+  // 审计：后台只**写**两类事件（模板写入被拒 / 顺便把管理端自己的动作也留痕），列表读全局日志。
+  const auditDenied=(preset,action)=>{
+    const issue=framingPresetWriteIssue(preset,adminFrameViewer);
+    if(!issue) return '';
+    recordAudit(buildAuditEntry({
+      action:AUDIT_ACTIONS.templateWriteDenied,
+      actorId:adminActor.actorId,
+      actorName:adminActor.actorName,
+      actorRole:adminActor.role,
+      actorRoleLabel:adminActor.roleLabel,
+      orgId:DEFAULT_ORG_ID,
+      templateId:preset?.id||'',
+      templateName:preset?.name||'',
+      scope:normalizeFramingPreset(preset).scope,
+      outcome:'denied',
+      detail:`${action}被拒绝：${issue}`
+    }));
+    setToast(framingWriteDeniedMessage(preset,adminFrameViewer));
+    return issue;
+  };
+  const [mediaSinkProbe,setMediaSinkProbe]=useState(null);
   // 排序的唯一来源（`sortOrder`）：列表、上移 / 下移、老师端的网格读的都是它。
   const library=sortFramingPresets(framingPresets);
   const defaultPreset=defaultFramingPreset(library);
@@ -4981,7 +5135,10 @@ function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast,recor
   // ---- 保存（「保存到云端」）------------------------------------------------------------
   // 保存 = 把草稿写回模板库：这一次变更同样记进 updated_by / updated_at / 变更历史
   // （US-011b 的「模板变更记录」），并把改动内容写进历史行的 detail。
+  // [US-013] 写权限先判：平台管理员只写 platform 层（`draftWritable`），不合格的写入
+  // **不做任何乐观更新**、记一条「被拒绝」的审计，界面上的按钮也据此关闭。
   const commit=async(next)=>{
+    if(auditDenied(next,'保存参数')) return;
     const summary=framingPresetChangeSummary(editing,next);
     const stamped=stampFramingPresetUpdate(next,{by:adminName,action:'保存参数',detail:summary.join(' · ')});
     const list=library.some(item=>item.id===stamped.id)?library.map(item=>item.id===stamped.id?stamped:item):[...library,stamped];
@@ -4989,7 +5146,7 @@ function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast,recor
     setDraft({...stamped});
     setSaving(true);
     try{
-      await saveRemoteFramingPreset(stamped);
+      await saveRemoteFramingPreset(stamped,adminFrameViewer);
       setToast(`装裱「${stamped.name}」已保存，老师端即可选用${summary.length?`（本次改动：${summary.join(' · ')}）`:''}`);
     }
     catch{ setToast('已保存到本机；云端暂未连通，稍后可重试。'); }
@@ -4999,13 +5156,22 @@ function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast,recor
   // 这四件事不经过「保存到云端」那一按钮（点一下就该生效），但仍然走同一条写入口径：
   // 过 `stampFramingPresetUpdate` 记 updated_by / updated_at / 变更历史，再把**这次真的变了**
   // 的那几条推云端。编辑草稿里对应字段也同步过去（老师写了一半的名称 / 描述不能被这些点击冲掉）。
+  // [US-013]：库里若有不属于当前管理员那一层的模板（机构 / 老师个人），这里逐条判权限 ——
+  // 不合格的那几条**跳过**并把原因说出来，其余照常生效。
   const commitLibrary=async(next,{message=''}={})=>{
     const before=new Map(library.map(item=>[item.id,item]));
     const changed=next.filter(item=>before.get(item.id)?.updatedAt!==item.updatedAt);
+    const writable=changed.filter(item=>!framingPresetWriteIssue(item,adminFrameViewer));
+    const denied=changed.filter(item=>framingPresetWriteIssue(item,adminFrameViewer));
     setFramingPresets(next);
     if(message) setToast(message);
-    if(!changed.length) return;
-    try{ for(const item of changed) await saveRemoteFramingPreset(item); }
+    if(denied.length){
+      denied.forEach(item=>auditDenied(item,'库级设置'));
+      setToast(`已跳过 ${denied.length} 套不属于平台管理员维护范围的模板：${denied.map(item=>`「${item.name}」`).join('')}${FRAMING_PRESET_READONLY_NOTE.org}`);
+      return;
+    }
+    if(!writable.length) return;
+    try{ for(const item of writable) await saveRemoteFramingPreset(item,adminFrameViewer); }
     catch{ setToast('已保存在本机；云端暂未连通，稍后可重试。'); }
   };
   // 只把这几个字段同步进编辑草稿（别整条覆盖：草稿承载着还没保存的改名 / 改描述）。
@@ -5066,15 +5232,26 @@ function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast,recor
   const remove=async()=>{
     const target=library.find(item=>item.id===confirmDeleteId);
     if(!target) return;
+    // [US-013] 删除也是写：不属于这一层的模板连删除都不允许（按钮侧已关闭，这里再拦一道）。
+    if(auditDenied(target,'删除模板')){ setConfirmDeleteId(''); return; }
     const next=library.filter(item=>item.id!==target.id);
     setConfirmDeleteId('');
     setDeleteNotice('');
     setFramingPresets(next);
     setEditingId(next[0]?.id||'');
     setDraft(next[0]?{...next[0]}:null);
-    try{ await deleteRemoteFramingPreset(target.id); setToast(`装裱「${target.name}」已删除`); }
+    try{ await deleteRemoteFramingPreset(target,adminFrameViewer); setToast(`装裱「${target.name}」已删除`); }
     catch{ setToast('已从本机移除，云端删除未成功。'); }
   };
+  // 当前草稿能不能由这个会话写（界面据此关掉「保存到云端」与「删除」两个入口）。
+  const draftWritable=Boolean(draft)&&!framingPresetWriteIssue(draft,adminFrameViewer);
+  const draftWritableNote=Boolean(draft)&&!draftWritable?framingPresetWriteIssue(draft,adminFrameViewer):'';
+  // 儿童素材的存储落点探测（[US-013] 第 4 条）：合规面板挂载时探一次开发适配器声明，
+  // 不抛错（未启动时如实显示「未连接」）；探测结果只用于展示，上传侧的策略由服务层强制。
+  useEffect(()=>{let active=true;probeChildMediaSink().then(result=>{if(active)setMediaSinkProbe(result)});return()=>{active=false}},[]);
+  const auditStats=auditLogStats(auditLog);
+  const recentAudit=(Array.isArray(auditLog)?auditLog:[]).slice(0,8);
+  const storageRows=mediaStoragePolicyRows();
 
   return <>
     <PageHeader title="装裱设置" desc="后台维护装裱方案：新增一套样式只需填参数（不用改代码），可以设为默认模板、按课程绑定、启停与排序；被引用的模板只允许停用。" prd="PRD-11 / F-FRAME-ADM-01"
@@ -5082,24 +5259,28 @@ function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast,recor
     <div className="split-page framing-settings">
       <div className="panel persona-list">
         <div className="panel-head"><h2>装裱方案</h2><small data-frame-library-count={library.length}>{library.length} 套 · 默认 {defaultPreset?.name||'未设置'} · 可选 {selectableFramingPresets(library).length}</small></div>
-        {library.map((preset,index)=><div key={preset.id} className={`frame-library-row${preset.id===editingId?' active':''}`}
+        {library.map((preset,index)=>{const rowWritable=!framingPresetWriteIssue(preset,adminFrameViewer);return <div key={preset.id} className={`frame-library-row${preset.id===editingId?' active':''}`}
           data-frame-library-row={preset.id}
           data-frame-preset-default={preset.isDefault===true?'true':'false'}
           data-frame-preset-enabled={preset.enabled===false?'false':'true'}
           data-frame-preset-scope={preset.scope||'platform'}
+          data-frame-preset-writable={rowWritable?'true':'false'}
+          data-frame-preset-writer={framingPresetWriteOwnerText(preset)}
           data-frame-preset-order={index+1}>
           <button type="button" className="frame-library-pick" data-frame-library-pick={preset.id} onClick={()=>{setEditingId(preset.id);setDeleteNotice('');setConfirmDeleteId('')}}>
             <span className="frame-dot" style={{background:frameSpecView(preset.spec).outer||'#cfa52e'}}/>
             <div><b>{preset.name}</b><small>{preset.spec?.atmosphere||preset.description||'未生成参数'}</small></div>
             {preset.isDefault===true?<em className="frame-library-default" data-frame-default-badge="true">默认</em>:null}
+            {rowWritable?null:<em className="frame-library-readonly" data-frame-library-readonly={preset.id} title={`由${framingPresetWriteOwnerText(preset)}维护`}>只读</em>}
             <em>{preset.builtin?'内置':preset.enabled===false?'已停用':'启用中'}</em>
           </button>
+          {/* [US-013] 不属于当前会话那一层的模板（机构 / 老师个人）关掉写入口：本会话是平台管理员。 */}
           <div className="frame-library-ops">
-            <button type="button" title="上移" disabled={index===0} data-frame-move-up={preset.id} onClick={()=>move(preset,-1)}><ArrowUp size={13}/></button>
-            <button type="button" title="下移" disabled={index===library.length-1} data-frame-move-down={preset.id} onClick={()=>move(preset,1)}><ArrowDown size={13}/></button>
-            <button type="button" title={preset.enabled===false?'启用':'停用'} data-frame-enable-toggle={preset.id} onClick={()=>toggleEnabled(preset)}>{preset.enabled===false?'启用':'停用'}</button>
+            <button type="button" title="上移" disabled={index===0||!rowWritable} data-frame-move-up={preset.id} onClick={()=>move(preset,-1)}><ArrowUp size={13}/></button>
+            <button type="button" title="下移" disabled={index===library.length-1||!rowWritable} data-frame-move-down={preset.id} onClick={()=>move(preset,1)}><ArrowDown size={13}/></button>
+            <button type="button" title={rowWritable?(preset.enabled===false?'启用':'停用'):`由${framingPresetWriteOwnerText(preset)}维护`} disabled={!rowWritable} data-frame-enable-toggle={preset.id} onClick={()=>toggleEnabled(preset)}>{preset.enabled===false?'启用':'停用'}</button>
           </div>
-        </div>)}
+        </div>})}
         {library.length?null:<p className="persona-empty">装裱方案还是空的：点右上角「新增装裱」建第一套（只填参数，不用改代码）。</p>}
         {missingBuiltins.length?<div className="frame-library-restore" data-frame-missing-builtins={missingBuiltins.length}>
           <span>内置样式库缺 {missingBuiltins.length} 套（{missingBuiltins.map(item=>item.name).join('、')}）</span>
@@ -5109,12 +5290,18 @@ function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast,recor
       </div>
       <div className="panel persona-editor">
         {draft?<>
-          <div className="panel-head"><div><h2>{draft.name||'未命名装裱'}</h2><p>描述需求 → 大模型给出参数 → 老师端按参数精确绘制。</p></div>
+          <div className="panel-head" data-frame-draft-writable={draftWritable?'true':'false'} data-frame-draft-owner={framingPresetWriteOwnerText(draft)}>
+            <div><h2>{draft.name||'未命名装裱'}</h2><p>描述需求 → 大模型给出参数 → 老师端按参数精确绘制。</p></div>
             <div className="row-actions">
-              <button className="text-link" disabled={saving} onClick={()=>commit(draft)}>{saving?'保存中…':'保存到云端'}</button>
-              <button className="icon-btn danger-text" title="删除" data-frame-delete={draft.id} onClick={()=>requestRemove(draft)}><Trash2 size={16}/></button>
+              <button className="text-link" disabled={saving||!draftWritable} title={draftWritable?'':draftWritableNote} onClick={()=>commit(draft)}>{saving?'保存中…':'保存到云端'}</button>
+              <button className="icon-btn danger-text" title={draftWritable?'删除':draftWritableNote} data-frame-delete={draft.id} disabled={!draftWritable} onClick={()=>requestRemove(draft)}><Trash2 size={16}/></button>
             </div>
           </div>
+          {/* 不可写的模板在编辑区顶部说明「谁维护、为什么关掉了入口」（FR-44 的「其余角色只读」）。 */}
+          {draftWritable?null:<p className="frame-preset-readonly" data-frame-draft-readonly="true"
+            data-frame-draft-readonly-reason={draftWritableNote}>
+            只读：{draftWritableNote}这套模板由{framingPresetWriteOwnerText(draft)}维护，本会话（{adminActor.roleLabel}）没有写入入口。
+          </p>}
           {/* 模板的库级设置（US-011b）：默认标记 / 启停 / 最后变更 / 按课程绑定 / 变更历史 /
               引用范围与删除门槛。这几项点一下就生效（不经过「保存到云端」），
               但仍然走同一条变更记录口径。 */}
@@ -5507,6 +5694,84 @@ function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast,recor
         </>:<p className="persona-empty">选择左侧的一套装裱，或新增一套。</p>}
       </div>
     </div>
+    {/* 合规面板（[第二步 US-013]）：模板写权限矩阵 + 审计日志 + 儿童素材存储策略。
+        三块都读同一份零依赖规则（`data/framingPermissions` / `data/auditLog` / `data/mediaStoragePolicy`），
+        与管理端动作、服务层校验共用一份判据 —— 界面上写的「谁能写」就是服务层真正放行的那些角色。 */}
+    <section className="panel compliance-panel" data-compliance-panel="true"
+      data-compliance-actor={adminActor.actorId} data-compliance-actor-role={adminActor.role}
+      data-compliance-summary={FRAMING_PERMISSION_SUMMARY}>
+      <div className="panel-head">
+        <div>
+          <h2>权限与合规</h2>
+          <p>{FRAMING_PERMISSION_SUMMARY}</p>
+        </div>
+        <em className="compliance-actor" data-compliance-actor-label={adminActor.roleLabel}>当前会话：{adminActor.actorName}（{adminActor.roleLabel}）</em>
+      </div>
+      <div className="compliance-grid">
+        <div className="compliance-block" data-compliance-matrix="true">
+          <h3>模板写权限</h3>
+          <ul className="compliance-matrix">
+            {adminPermissionRows.map(row=><li key={row.scope} data-compliance-scope={row.scope}
+              data-compliance-scope-label={row.label}
+              data-compliance-writer-role={row.writerRole}
+              data-compliance-writer={row.writer}
+              data-compliance-readable-by={row.readers}
+              data-compliance-allowed={row.allowed?'true':'false'}>
+              <b>{row.label}</b>
+              <span>可写：{row.writer}</span>
+              <small>{row.note}其他角色（{row.readers}）只读。</small>
+              <em className={row.allowed?'ok':'muted'} data-compliance-verdict={row.allowed?'allowed':'readonly'}>{row.allowed?'本会话可写':'本会话只读'}</em>
+            </li>)}
+          </ul>
+          <p className="compliance-note">
+            写入在服务层再拦一道：services/framingPresetsApi.js 的保存 / 删除都会校验 scope 与操作人，
+            越权写入直接抛 403（FramingPresetWriteError），不会先落库再发现。
+          </p>
+        </div>
+        <div className="compliance-block" data-compliance-audit="true" data-audit-log-count={auditStats.total}>
+          <h3>审计日志</h3>
+          <p className="compliance-note">
+            留痕的两个动作：{AUDIT_ACTION_LABELS[AUDIT_ACTIONS.templateSave]} 与 {AUDIT_ACTION_LABELS[AUDIT_ACTIONS.artworkSave]}；
+            每条记下操作人 / 学员 id / 时间 / 模板 id。共 {auditStats.total} 条（被拒绝的写入 {auditStats.denied} 条）。
+          </p>
+          {recentAudit.length?<ul className="compliance-audit">
+            {recentAudit.map(entry=><li key={entry.id} data-audit-entry={entry.id}
+              data-audit-entry-action={entry.action}
+              data-audit-entry-outcome={entry.outcome}
+              data-audit-entry-actor={entry.actorId}
+              data-audit-entry-student={entry.studentId}
+              data-audit-entry-template={entry.templateId}
+              data-audit-entry-at={entry.at}
+              data-audit-entry-missing={auditEntryMissingFields(entry).join(',')}>
+              <b>{auditEntryText(entry)}</b>
+              <small>{auditTraceText(entry)}</small>
+              {entry.outcome==='denied'?<em className="denied">被拒绝</em>:null}
+            </li>)}
+          </ul>:<p className="persona-empty" data-audit-log-empty="true">{AUDIT_LOG_EMPTY_TEXT}</p>}
+        </div>
+        <div className="compliance-block" data-media-storage-policy="true"
+          data-media-storage-auth={`${CHILD_MEDIA_UPLOAD_AUTH.roleHeader}=${CHILD_MEDIA_UPLOAD_AUTH.requiredRole} · ${CHILD_MEDIA_UPLOAD_AUTH.consentHeader}=${CHILD_MEDIA_UPLOAD_AUTH.requiredConsent}`}
+          data-media-storage-probe-state={mediaSinkProbe?(mediaSinkProbe.ok?'ok':(mediaSinkProbe.reachable?'blocked':'unreachable')):'pending'}
+          data-media-storage-probe-sink={mediaSinkProbe?.sinkId||''}
+          data-media-storage-probe-declared={mediaSinkProbe?.declared||''}>
+          <h3>儿童素材存储</h3>
+          <p className="compliance-note">{MEDIA_STORAGE_POLICY_SUMMARY}</p>
+          <ul className="compliance-matrix">
+            {storageRows.map(row=><li key={row.id} data-media-sink={row.id} data-media-sink-allowed={row.allowed?'true':'false'}>
+              <b>{row.label}</b>
+              <em className={row.allowed?'ok':'muted'} data-media-sink-verdict={row.allowed?'allowed':'forbidden'}>{row.allowed?'允许':'禁止'}</em>
+              <small>{row.note}</small>
+            </li>)}
+          </ul>
+          <p className="compliance-note" data-media-storage-credential={MEDIA_STORAGE_CREDENTIAL_NOTE}>{MEDIA_STORAGE_CREDENTIAL_NOTE}</p>
+          <p className={`compliance-probe is-${mediaSinkProbe?(mediaSinkProbe.ok?'ok':(mediaSinkProbe.reachable?'blocked':'unreachable')):'pending'}`} data-media-storage-probe={mediaSinkProbe?.note||'正在探测开发适配器声明的落点…'}>
+            {mediaSinkProbe
+              ? `开发适配器（${CHILD_MEDIA_API_BASE}）：${mediaSinkProbe.reachable?`声明的落点 ${mediaSinkProbe.declared} → ${mediaSinkProbe.sinkLabel}`:'未连接'}。${mediaSinkProbe.note}`
+              : '正在探测开发适配器声明的落点…'}
+          </p>
+        </div>
+      </div>
+    </section>
   </>;
 }
 
