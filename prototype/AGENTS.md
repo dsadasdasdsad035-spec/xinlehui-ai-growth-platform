@@ -1993,6 +1993,63 @@ US-110b 给同一张页面加了四件事，写侧规则**全部落在** `data/r
   `组序号:原条数` 那个索引；写死 `0:0` 会把这组的第一个真词删掉（本轮真踩，症状是后续独立重算
   的参照系与面板差一个词）。
 
+## 点评轨迹的留档审计与隐私（US-112 / F-REVIEW-TRACE-03、FR-110、FR-114）
+
+「轨迹留档」（US-102 写、US-103 展示）到这里变成**可审计、可清理、有权重**的一层：管理端「生成日志」
+能查任意一次点评的完整轨迹，而家长端连入口都不存在、服务端还会直接拒绝家长会话的查询。
+判据集中在两份模块里，界面只渲染产物：
+
+| 关注点 | 位置 | 说明 |
+|---|---|---|
+| 留存期 / 披露开关 / 可见性 / 筛选 / 清理预览 | `src/data/reviewTracePolicy.js` | 零依赖纯函数 + 常量，可 Node 直跑 |
+| 轨迹留档结构（含老师 / 机构 / 学员 / 参数 / 技能） | `src/data/reviewTrace.js` | 白名单构造，见下 |
+| 六分区载荷（轨迹 → 老师端那套 payload） | `src/data/reviewDetailPanel.js` 的 `reviewTracePayload()` | 管理端不另拼一套文案 |
+| 平台开关的遮罩 | `src/data/reviewDetailPanel.js` 的 `reviewPromptDisclosureMask()` | 界面与两种导出读同一份 |
+| 管理端面板 | `src/admin/ReviewTraceLogsPanel.jsx` | 挂在 `LogsPage`（`main.jsx`）里 |
+| 系统配置（保留期 + 清除预览） | `main.jsx` 的 `TraceRetentionSection` | 在 `SettingsPage` 的 `settings-stack` 里 |
+| 服务端查询 / 提交通道 | `server/index.mjs` 的 `/api/review-traces` + `services/reviewTraceApi.js` | 家长会话 403 |
+
+- **轨迹字段分两类，别混**：`reviewTrace` 原本只有 `studentId`；US-112 补了 `studentName / teacherId /
+  teacherName / orgId`（**筛选与可见性都要它**）与 `params`（本次真正发出去的参数表）与
+  `loaded.skills`（逐项技能行）。加字段时三处都要动：`REVIEW_TRACE_FIELDS` 白名单、`createReviewTrace`
+  的归一、`services/reviewTraceApi.js` 的 `rowToTrace` / `traceToRow`（snake_case 列）。
+- **「谁经手的」决定可见性**：`reviewTraceVisibleTo(trace, viewer)` 是唯一判据 —— 家长恒 false；
+  平台管理员全看；机构管理员看本机构（轨迹没写机构的历史记录按本机构算）；老师必须**同机构 + 本人**
+  （`actorId` 命中或姓名命中）；**没写老师的旧轨迹对老师不可见**（fail-safe，别为了「看起来有数据」放宽它）。
+- **「平台开关」与「本会话能不能看」是两件事**：`reviewPromptDisclosureAllowed(policy, { role })` 里
+  管理员恒 true（开关面向老师端：管理员要能审计自己关掉的是什么）。所以面板上要用
+  `normalizeReviewTracePolicy(policy).allowPromptDisclosure` 单独读**开关状态**来写文案，
+  拿 `promptAllowed` 写「开关当前开启/关闭」在管理端会说反（US-112 真踩，浏览器断言当场抓到）。
+- **关闭披露 = 遮罩载荷，不是 `display:none`**：`reviewPromptDisclosureMask(payload, { allowed })`
+  清空 prompt 分区的 `system` / `user`（字数留下），并给分区挂 `restricted` + 那句话；
+  `reviewDetailMarkdown()` 认这个标记 —— 所以「界面上看不到」与「复制 / 导出里也没有」是同一份判据。
+  `allowed` 为真时**原样返回同一个对象**（默认开启逐字符不变）。
+- **日期筛选按本地时间折算**（真踩）：轨迹的 `createdAt` 是 `new Date().toISOString()`（UTC），
+  直接 `slice(0,10)` 会把「本地今天凌晨」的记录算成昨天，管理端「按今天筛」就漏它。
+  `reviewTraceDateKey()`（服务端 `traceDay` 同口径）只有**纯日期字符串**才原样取。
+- **家长会话查询在服务端被拒**：`GET /api/review-traces` 先过 `requireTraceAudience()` ——
+  带有效家长令牌 → 403「家长会话不能查询点评轨迹」；带**认不出的令牌**（家长端的会话令牌由云端签发，
+  开发适配器验证不了）→ 同样 403（fail-safe）；`X-Actor-Role: parent` → 403；缺身份 → 401。
+  客户端 `reviewTraceQueryHeaders()` 在本地也会拦住 `role === 'parent'`（不发请求），
+  两条路一起才是「服务端直接拒绝 + 界面无入口」。
+- **适配器上的轨迹只驻留内存**（与儿童素材同一条纪律）：`POST /api/review-traces` 落内存 Map（上限 500），
+  服务端再复核一次「不含 `data:image/` / `base64` / `blob:`」；老师的查询按 `X-Actor-Id` 只返回本人经手的。
+  **中文身份串要百分号编码**（HTTP 头只安全承载 ASCII，原型里的老师身份就是姓名），
+  服务端用 `decodeHeaderValue()` 解。
+- **复制 / 导出轨迹必须留痕**：`AUDIT_ACTIONS.traceCopy / traceExport`，必填 `actorId / at / traceId`，
+  导出范围写进 `scope`（`reviewTraceAuditScopeText()` → 「导出 Markdown · 6 个分区 · 学员 陈一诺」，
+  提示词受限时点名）。`AUDIT_ENTRY_FIELDS` 与 `buildAuditEntry` **两处**都要加 `traceId`
+  （白名单是给云端 payload 用的，构造是显式列字段的 —— 只改一处，entry 上就没有这个字段）。
+- **到期清理必须先预览影响范围**：`reviewTraceCleanupPreview()` 与 `applyReviewTraceCleanup()` 是同一份口径
+  （预览说几条就删几条），预览的行要**点名**（时间 / 学员 / 模型 / 状态）；`retentionDays: 0` = 长期保留
+  （预览明说「不会删除任何轨迹」）。清理写回本机镜像走 `persistReviewTraces()`（整体写，逐条过素材守卫）。
+- **验证要点（本故事实测）**：管理端面板的六分区与老师端是**同一份载荷结构**，断言直接用
+  `data-review-trace-section="reasoning|loaded|prompt|model|usage|output"` 数它与顺序；
+  老师端那侧要**先点 `[data-detail-toggle]` 展开**（默认折叠，US-103a）——否则 `[data-detail-section]`
+  根本不存在，断言会以「Cannot read properties of null」的形式炸掉（本轮真踩）。
+  注入历史轨迹做清理断言时，**注入后要先回「生成日志」页**（面板在挂载时刷新 App 的轨迹账），
+  否则系统配置里的预览读的是注入前的旧账，会看到「到期 0 条」。
+
 ## 容易踩的坑
 
 - **派生值（`const x = f(state)`）必须排在被它读的 state 之后**（US-108b 真踩）：把

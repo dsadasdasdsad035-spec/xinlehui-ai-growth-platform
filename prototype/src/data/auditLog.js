@@ -35,7 +35,10 @@ export const AUDIT_ACTIONS = {
   templateWriteDenied: 'framing.template.write-denied',
   keywordCandidates: 'keyword.candidates.generate',
   keywordAdopt: 'keyword.candidates.adopt',
-  keywordDiscard: 'keyword.candidates.discard'
+  keywordDiscard: 'keyword.candidates.discard',
+  // [第三步 US-112] 第 6 条：复制 / 导出点评轨迹必须留痕（操作人、时间、轨迹 id、导出范围）。
+  traceCopy: 'trace.copy',
+  traceExport: 'trace.export'
 };
 
 export const AUDIT_ACTION_LABELS = {
@@ -44,8 +47,13 @@ export const AUDIT_ACTION_LABELS = {
   'framing.template.write-denied': '模板写入被拒绝',
   'keyword.candidates.generate': 'AI 生成观察词候选',
   'keyword.candidates.adopt': 'AI 采纳观察词（写入草稿）',
-  'keyword.candidates.discard': 'AI 丢弃观察词候选'
+  'keyword.candidates.discard': 'AI 丢弃观察词候选',
+  'trace.copy': '复制点评轨迹',
+  'trace.export': '导出点评轨迹'
 };
+
+/** 复制 / 导出轨迹的两个动作（合规面板与断言按它们筛选，导出范围写在 `scope` 里）。 */
+export const TRACE_AUDIT_ACTIONS = ['trace.copy', 'trace.export'];
 
 /** 观察词 AI 补充的三个动作（面板上的「AI 补充留痕」按它们筛选，验收原文「候选、采纳与丢弃都留痕」）。 */
 export const KEYWORD_AI_AUDIT_ACTIONS = [
@@ -67,7 +75,10 @@ export const AUDIT_ACTION_REQUIRED = {
   'framing.template.write-denied': ['actorId', 'at'],
   'keyword.candidates.generate': ['actorId', 'at', 'templateId'],
   'keyword.candidates.adopt': ['actorId', 'at', 'templateId'],
-  'keyword.candidates.discard': ['actorId', 'at', 'templateId']
+  'keyword.candidates.discard': ['actorId', 'at', 'templateId'],
+  // 复制 / 导出轨迹：操作人 / 时间 / 轨迹 id 必填；导出范围写在 `scope`（可为空 = 整条轨迹）。
+  'trace.copy': ['actorId', 'at', 'traceId'],
+  'trace.export': ['actorId', 'at', 'traceId']
 };
 
 /** PRD 点名的四项溯源字段（面板上给它们一个明确位置，验证脚本点名核对）。 */
@@ -87,6 +98,8 @@ export const AUDIT_ENTRY_FIELDS = [
   'studentName',
   'lessonId',
   'lessonDate',
+  // 轨迹 id（[第三步 US-112]）：「复制 / 导出轨迹」这两条动作要能指回被复制的那一条轨迹。
+  'traceId',
   'templateId',
   'templateName',
   'scope',
@@ -132,6 +145,8 @@ export function buildAuditEntry(input = {}) {
     studentName: str(source.studentName),
     lessonId: str(source.lessonId),
     lessonDate: str(source.lessonDate),
+    // 轨迹 id（US-112）：「复制 / 导出轨迹」这两条动作指回被操作的那一条留档。
+    traceId: str(source.traceId),
     templateId: str(source.templateId),
     templateName: str(source.templateName),
     scope: str(source.scope),
@@ -227,7 +242,7 @@ export function auditEntryText(entry) {
   const actor = item.actorName || item.actorId || '未知操作人';
   const target = item.studentName
     ? `${item.studentName}${item.templateName ? ` · ${item.templateName}` : ''}`
-    : (item.templateName || item.templateId || '');
+    : (item.templateName || item.templateId || item.traceId || '');
   const outcome = item.outcome === 'denied' ? '（被拒绝）' : '';
   return [item.actionLabel, actor, target, auditTimeText(item.at)].filter(Boolean).join(' · ') + outcome;
 }

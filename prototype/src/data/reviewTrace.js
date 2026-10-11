@@ -68,7 +68,14 @@ export const REVIEW_TRACE_FIELDS = [
   'task',
   'taskLabel',
   'studentId',
+  // 学员姓名与课次 / 老师 / 机构（[第三步 US-112]）：生成日志要**按学员 / 老师筛**、
+  // 并按「老师只看自己经手点评的轨迹、跨机构不可见」判可见性 —— 光有 id 说不出「谁的哪一节」。
+  // 旧轨迹没有这几个字段，读出来是空串（可见性判据对「没写老师的旧记录」一律不可见，fail-safe）。
+  'studentName',
   'lessonId',
+  'teacherId',
+  'teacherName',
+  'orgId',
   'model',
   // 模型来源（US-107a 第 5 条）：'teacher-pick' = 老师指定，'pool-route' = 由模型池自动路由。
   // 只存原始值（不存中文标签）：标签口径在 `data/reviewModels.js` 的
@@ -76,6 +83,9 @@ export const REVIEW_TRACE_FIELDS = [
   'modelSource',
   'timing',
   'usage',
+  // 本次真正发出去的模型参数（US-112）：管理端「生成日志」的「模型与参数」分区读它 ——
+  // 参数表是部署级常量、会变，轨迹里留一份才不会出现「用今天的参数解释上个月的账单」。
+  'params',
   'loaded',
   'prompts',
   'reasoning',
@@ -312,6 +322,44 @@ const normalizeLoadedFiles = (list) => (Array.isArray(list) ? list : []).map((en
   };
 });
 
+/**
+ * 逐项技能清单（[第三步 US-112]）：轨迹里存**技能加载清单的行**（`skillLoadout().rows` 的白名单子集），
+ * 管理端「生成日志」用它复现「这次用了哪几项技能、没用的为什么没用」；
+ * 只留能重算出行文案的字段（`description` 就是进入提示词的那一行正文）。
+ * 没写 `reasonKey` 的旧记录读出来是 included（与 `skillLoadRow` 的缺省一致）。
+ */
+const normalizeLoadedSkills = (list) => (Array.isArray(list) ? list : []).map((entry) => {
+  const source = entry && typeof entry === 'object' ? entry : {};
+  return {
+    id: str(source.id || source.name),
+    name: str(source.name),
+    category: str(source.category),
+    source: str(source.source),
+    version: str(source.version),
+    updatedAt: str(source.updatedAt),
+    description: typeof source.description === 'string' ? source.description : '',
+    reasonKey: str(source.reasonKey)
+  };
+});
+
+/** 轨迹里的模型参数（白名单）：只留字符串 / 数字 / 布尔与一层对象的原始值，认不出的丢掉。 */
+const normalizeTraceParams = (raw) => {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const primitive = (value) => value === null || ['string', 'number', 'boolean'].includes(typeof value);
+  const out = {};
+  Object.keys(raw).forEach((key) => {
+    const value = raw[key];
+    if (primitive(value)) { out[key] = value; return; }
+    if (Array.isArray(value)) { out[key] = value.filter(primitive); return; }
+    if (value && typeof value === 'object') {
+      const nested = {};
+      Object.keys(value).forEach((inner) => { if (primitive(value[inner])) nested[inner] = value[inner]; });
+      out[key] = nested;
+    }
+  });
+  return out;
+};
+
 /** 轨迹里的加载摘要（不带正文）：预算、上限、截断位置与文件版本指纹。 */
 const normalizeLoadedAgentFiles = (raw) => {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
@@ -386,18 +434,26 @@ export function createReviewTrace(seed = {}) {
     task,
     taskLabel: str(source.taskLabel) || REVIEW_TRACE_TASK_LABELS[task] || task,
     studentId: str(source.studentId),
+    studentName: str(source.studentName),
     lessonId: str(source.lessonId),
+    // 老师与机构（US-112）：**谁经手的、哪个机构的** —— 生成日志的筛选与可见性判据读它们。
+    teacherId: str(source.teacherId),
+    teacherName: str(source.teacherName),
+    orgId: str(source.orgId),
     model: str(source.model),
     // 模型来源（US-107a）：认不出的值一律存空串 —— 历史轨迹没有这个字段时读出来是空的，
     // 「不知道来源」比「编一个 teacher-pick」诚实（与 task 的原样保留同一条纪律）。
     modelSource: str(source.modelSource),
     timing: normalizeTiming({ ...(source.timing || {}), queuedAt: (source.timing && source.timing.queuedAt) || str(source.queuedAt) || now }),
     usage: normalizeUsage(source.usage),
+    params: normalizeTraceParams(source.params),
     loaded: {
       modules: normalizeModules(source.modules || (source.loaded && source.loaded.modules)),
       // agent.md 与记忆文件的加载结果（US-105）：逐文件行（只有加载了的带正文）+ 预算摘要。
       files: normalizeLoadedFiles(source.files || (source.loaded && source.loaded.files)),
-      agentFiles: normalizeLoadedAgentFiles(source.agentFiles || (source.loaded && source.loaded.agentFiles))
+      agentFiles: normalizeLoadedAgentFiles(source.agentFiles || (source.loaded && source.loaded.agentFiles)),
+      // 技能加载清单（US-112）：逐项技能行（含没加载的原因），管理端审计用。
+      skills: normalizeLoadedSkills(source.skills || (source.loaded && source.loaded.skills))
     },
     prompts: {
       system: str(source.system || (source.prompts && source.prompts.system)),
@@ -616,6 +672,26 @@ export function persistReviewTrace(trace) {
     try { window.localStorage.setItem(REVIEW_TRACE_STORAGE_KEY, JSON.stringify(appendReviewTrace(loadReviewTraces(), item))); } catch { /* 配额满时不动本机镜像 */ }
   }
   return item;
+}
+
+/**
+ * 整体写回本机镜像（**到期清理**用，[第三步 US-112]）：先逐条过 `sanitizeReviewTrace` 与归一，
+ * 认不出的条目丢掉，再按时间倒序截到上限。返回真正写下去的那一份列表。
+ * 单条追加仍走 `persistReviewTrace`（归档路径），两者共用同一个键与同一条素材守卫。
+ */
+export function persistReviewTraces(traces) {
+  const list = (Array.isArray(traces) ? traces : [])
+    .map((trace) => {
+      const { trace: safe } = sanitizeReviewTrace(trace);
+      return normalizeReviewTrace(safe);
+    })
+    .filter(Boolean)
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+    .slice(0, REVIEW_TRACE_LIMIT);
+  if (typeof window !== 'undefined' && window.localStorage) {
+    try { window.localStorage.setItem(REVIEW_TRACE_STORAGE_KEY, JSON.stringify(list)); } catch { /* 配额满时不动本机镜像 */ }
+  }
+  return list;
 }
 
 /** 最近一条轨迹（本机镜像读取；管理端/面板用作「上一次生成」的对照）。 */

@@ -25,6 +25,10 @@ const maxImageBytes = Number(process.env.MEDIA_MAX_IMAGE_BYTES || 20 * 1024 * 10
 const media = new Map();
 const tasks = new Map();
 const parentSessions = new Map();
+// 点评轨迹的审计存储（[第三步 US-112]）：**只驻留内存**（与儿童素材同一条纪律 ——
+// 轨迹本身按 `data/reviewTrace.js` 的守卫不含素材正文，也不落服务端本地磁盘）。
+const reviewTraces = new Map();
+const reviewTraceLimit = 500;
 const managementFile = path.join(dirname, 'data', 'student-management.json');
 const feedbackRecordsFile = path.join(dirname, 'data', 'feedback-records.json');
 // 儿童素材的存储落点（[第二步 US-013] / FR-46）：开发适配器只声明「内存」这一个落点。
@@ -60,7 +64,7 @@ function send(response, status, payload, extraHeaders = {}) {
     'Content-Type': 'application/json; charset=utf-8',
     'Access-Control-Allow-Origin': corsOrigin,
     'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Actor-Role, X-Media-Consent, X-Media-Kind, X-Media-Name',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Actor-Role, X-Actor-Id, X-Media-Consent, X-Media-Kind, X-Media-Name',
     'Access-Control-Max-Age': '600',
     ...extraHeaders
   });
@@ -86,6 +90,105 @@ function requireTeacherWithConsent(request, response) {
 function requireTeacher(request, response) {
   if (requestContext(request).role !== 'teacher') { sendError(response, 403, 'Only a teacher can manage students and classes.'); return false; }
   return true;
+}
+
+// 轨迹查询与提交的**服务端主体判定**（[第三步 US-112] / FR-114）：
+//   · 带上有效的家长会话令牌 → 403（家长会话不能查询点评轨迹，服务端直接拒绝，不看界面）；
+//   · `X-Actor-Role: parent` → 403；缺身份 / 其他角色 → 401；
+//   · 老师只会拿到**自己经手**的轨迹（按 `X-Actor-Id` 过滤），管理员可看本存储里的全部。
+function requireTraceAudience(request, response) {
+  const token = String(request.headers.authorization || '').replace(/^Bearer\s+/i, '');
+  if (token) {
+    const session = parentSessions.get(token);
+    if (session && session.expiresAt >= Date.now()) {
+      sendError(response, 403, '家长会话不能查询点评轨迹：轨迹只对老师与管理员开放。');
+      return '';
+    }
+    // 带了令牌但这一层认不出的会话：**不可能是老师 / 管理员的凭据** → 一样拒绝
+    // （家长端的会话令牌由云端签发，开发适配器只负责「不认就不放行」这一条 fail-safe）。
+    sendError(response, 403, '无法验证的会话不能查询点评轨迹：轨迹只对老师与管理员开放。');
+    return '';
+  }
+  const { role } = requestContext(request);
+  if (role === 'parent') { sendError(response, 403, '家长会话不能查询点评轨迹：轨迹只对老师与管理员开放。'); return ''; }
+  if (role !== 'admin' && role !== 'teacher') { sendError(response, 401, '查询点评轨迹需要老师或管理员身份。'); return ''; }
+  return role;
+}
+
+const traceText = (value) => (value === null || value === undefined ? '' : String(value).trim());
+
+/** 头里的身份串（百分号编码；解不开就原样用 —— 宁可当成认不出的身份，也不猜）。 */
+function decodeHeaderValue(raw) {
+  const text = String(raw || '');
+  if (!text) return '';
+  try { return decodeURIComponent(text).trim(); } catch { return text.trim(); }
+}
+
+/** 轨迹正文里不允许出现素材正文（与 `data/reviewTrace.js` 的守卫同一条纪律，服务端再核一次）。 */
+function tracePayloadHasMedia(payload) {
+  const text = JSON.stringify(payload || {});
+  return /(data:image\/|;base64,|blob:)/i.test(text);
+}
+
+/** 收到的一条轨迹 → 存储行（snake_case 列只放检索键，整条按白名单进 payload）。 */
+function sanitizeTraceRow(raw) {
+  const row = raw && typeof raw === 'object' ? raw : {};
+  const payload = row.payload && typeof row.payload === 'object' ? row.payload : {};
+  const traceKey = traceText(row.trace_key || payload.traceId).slice(0, 120);
+  if (!traceKey) throw Object.assign(new Error('点评轨迹缺少 trace_key。'), { status: 400 });
+  if (tracePayloadHasMedia(payload)) throw Object.assign(new Error('点评轨迹不能包含素材正文（data URL / base64 / blob:）。'), { status: 400 });
+  return {
+    trace_key: traceKey,
+    task: traceText(row.task || payload.task).slice(0, 60),
+    student_id: traceText(row.student_id || payload.studentId).slice(0, 80),
+    student_name: traceText(row.student_name || payload.studentName).slice(0, 80),
+    lesson_id: traceText(row.lesson_id || payload.lessonId).slice(0, 120),
+    teacher_id: traceText(row.teacher_id || payload.teacherId).slice(0, 120),
+    teacher_name: traceText(row.teacher_name || payload.teacherName).slice(0, 80),
+    org_id: traceText(row.org_id || payload.orgId).slice(0, 80),
+    model: traceText(row.model || payload.model).slice(0, 80),
+    status: traceText(row.status || payload.status).slice(0, 30),
+    created_at: traceText(row.created_at || payload.createdAt).slice(0, 40),
+    payload
+  };
+}
+
+// 日期键与客户端同一口径：带时间的 ISO 时间戳按**本地时间**折算（UTC 戳直接切前 10 位会差一天）。
+const traceDay = (value) => {
+  const text = traceText(value);
+  if (!text) return '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+  const date = new Date(text);
+  if (Number.isNaN(date.getTime())) return text.slice(0, 10);
+  const pad = (input) => String(input).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+};
+
+/** 服务端筛选（与客户端 `filterReviewTraces` 同一组维度；空串 = 该维度不过滤）。 */
+function filterTraceStore(filters, { role, actorId }) {
+  const student = traceText(filters.student);
+  const teacher = traceText(filters.teacher);
+  const model = traceText(filters.model);
+  const status = traceText(filters.status);
+  const from = traceText(filters.from);
+  const to = traceText(filters.to);
+  return [...reviewTraces.values()]
+    .filter((row) => {
+      // 老师只看自己经手的：身份串对不上就不返回（拿不到身份串时返回空，fail-safe）。
+      if (role === 'teacher') {
+        if (!actorId || row.teacher_id !== actorId) return false;
+      }
+      if (student && !(row.student_name.includes(student) || row.student_id.includes(student))) return false;
+      if (teacher && !(row.teacher_name.includes(teacher) || row.teacher_id.includes(teacher))) return false;
+      if (model && row.model.toLowerCase() !== model.toLowerCase()) return false;
+      if (status && row.status !== status) return false;
+      const day = traceDay(row.created_at);
+      if (from && (!day || day < from)) return false;
+      if (to && (!day || day > to)) return false;
+      return true;
+    })
+    .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)))
+    .slice(0, reviewTraceLimit);
 }
 
 function parentStudentNames(request, response) {
@@ -288,6 +391,34 @@ http.createServer(async (request, response) => {
       const names = parentStudentNames(request, response);
       if (!names) return;
       return send(response, 200, { records: loadFeedbackRecords().filter(record => names.includes(record.student)) });
+    }
+    // 点评轨迹（[第三步 US-112]）：查询与提交都先过 `requireTraceAudience` ——
+    // 家长会话在这里被**直接拒绝**（403），不看界面有没有入口。
+    if (request.method === 'GET' && url.pathname === '/api/review-traces') {
+      const role = requireTraceAudience(request, response);
+      if (!role) return;
+      // 身份串在头里是百分号编码的（HTTP 头只安全承载 ASCII，原型里的老师身份是中文姓名）。
+      const actorId = decodeHeaderValue(request.headers['x-actor-id']);
+      const traces = filterTraceStore({
+        student: url.searchParams.get('student') || '',
+        teacher: url.searchParams.get('teacher') || '',
+        model: url.searchParams.get('model') || '',
+        status: url.searchParams.get('status') || '',
+        from: url.searchParams.get('from') || '',
+        to: url.searchParams.get('to') || ''
+      }, { role, actorId });
+      return send(response, 200, { traces, count: traces.length, audience: role });
+    }
+    if (request.method === 'POST' && url.pathname === '/api/review-traces') {
+      const role = requireTraceAudience(request, response);
+      if (!role) return;
+      const row = sanitizeTraceRow(await readJson(request));
+      reviewTraces.set(row.trace_key, row);
+      if (reviewTraces.size > reviewTraceLimit) {
+        const oldest = [...reviewTraces.values()].sort((a, b) => String(a.created_at).localeCompare(String(b.created_at))).slice(0, reviewTraces.size - reviewTraceLimit);
+        oldest.forEach((item) => reviewTraces.delete(item.trace_key));
+      }
+      return send(response, 201, { saved: true, traceKey: row.trace_key });
     }
     if (request.method === 'POST' && url.pathname === '/api/media') {
       if (!requireTeacherWithConsent(request, response)) return;

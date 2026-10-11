@@ -1135,3 +1135,112 @@ p.framing-coverage-bad { margin: 0; padding: 10px 18px; font-size: 12px; line-he
   .keyword-ai-row { flex-direction: column; align-items: stretch; }
   .keyword-ai-row .framing-enable { min-height: 44px; display: flex; align-items: center; }
 }
+
+/* ---------------------------------------------------------------------------
+   点评轨迹（[第三步 US-112]）：管理端生成日志的轨迹面板 + 系统配置里的保留期与披露开关。
+   结构：筛选条 / 左列表右详情 / 六分区只读展示 / 轨迹操作留痕。
+   窄屏（≤430px）：一切挤成一列，可点区域不小于 44×44px（与其它管理页同一条纪律）。
+   --------------------------------------------------------------------------- */
+.review-trace-panel { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.review-trace-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 10px; min-width: 0; }
+.review-trace-head h2 { margin: 0; font-size: 14px; color: var(--navy); }
+.review-trace-head p { margin: 4px 0 0; font-size: 10.5px; line-height: 1.65; color: var(--muted); max-width: 72ch; }
+.review-trace-head-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.review-trace-head-actions small { font-size: 10px; color: var(--muted); overflow-wrap: anywhere; }
+.review-trace-policy { display: flex; flex-direction: column; gap: 3px; border-radius: 10px; padding: 9px 11px; background: var(--soft); font-size: 10.5px; line-height: 1.65; color: #514a38; }
+.review-trace-policy em { font-style: normal; color: #857a64; }
+.review-trace-policy[data-review-trace-disclosure="restricted"] { background: #fdf3d6; color: #6b4c00; }
+.review-trace-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; padding: 10px 11px; border: 1px solid var(--border); border-radius: 12px; min-width: 0; }
+.review-trace-filters label { display: flex; flex-direction: column; gap: 4px; font-size: 10.5px; color: var(--muted); }
+.review-trace-filters input, .review-trace-filters select { min-height: 32px; border: 1px solid var(--border); border-radius: 8px; padding: 0 8px; font-size: 11px; color: var(--ink); background: #fff; }
+.review-trace-filter-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.review-trace-filter-actions button { border: 1px solid var(--border); background: #fff; border-radius: 8px; padding: 6px 10px; font-size: 10.5px; font-weight: 700; color: #514a38; cursor: pointer; }
+.review-trace-filter-actions small { font-size: 10.5px; color: var(--muted); overflow-wrap: anywhere; }
+.review-trace-body { display: grid; grid-template-columns: minmax(220px, 300px) minmax(0, 1fr); gap: 12px; align-items: start; min-width: 0; }
+.review-trace-list { display: flex; flex-direction: column; gap: 8px; max-height: 640px; overflow: auto; padding-right: 2px; min-width: 0; }
+.review-trace-row { display: flex; flex-direction: column; gap: 3px; text-align: left; border: 1px solid var(--border); border-radius: 12px; padding: 9px 10px; background: #fff; cursor: pointer; min-width: 0; }
+.review-trace-row.is-active { border-color: #d9a600; background: #fffaf0; }
+.review-trace-row-top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; }
+.review-trace-row-top b { font-size: 11.5px; color: var(--navy); }
+.review-trace-row-meta { font-size: 10px; color: var(--muted); overflow-wrap: anywhere; }
+.review-trace-row-foot { font-size: 10px; color: #857a64; }
+.review-trace-row-id { font-style: normal; font-size: 9.5px; color: #a9a29a; overflow-wrap: anywhere; }
+.review-trace-status { font-size: 9.5px; font-weight: 800; border-radius: 999px; padding: 2px 8px; background: #eef0f4; color: #3f4b6b; white-space: nowrap; }
+.review-trace-status.is-success { background: #eef7ec; color: #1b7f34; }
+.review-trace-status.is-failed { background: #fdece7; color: #8a2f20; }
+.review-trace-status.is-aborted { background: #fdf3d6; color: #8a6100; }
+.review-trace-status.is-running { background: var(--blue-50); color: #1c3f8f; }
+.review-trace-detail { display: flex; flex-direction: column; gap: 10px; border: 1px solid var(--border); border-radius: 12px; padding: 11px 12px; min-width: 0; }
+.review-trace-detail-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.review-trace-detail-head b { font-size: 13px; color: var(--navy); }
+.review-trace-detail-head small { display: block; margin-top: 2px; font-size: 10px; color: var(--muted); overflow-wrap: anywhere; }
+.review-trace-readouts { display: flex; flex-wrap: wrap; gap: 8px 14px; font-size: 10.5px; color: #514a38; font-variant-numeric: tabular-nums; }
+.review-trace-readout b { margin-right: 5px; color: var(--muted); font-weight: 700; }
+.review-trace-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.review-trace-tools button { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--border); background: #fff; border-radius: 8px; padding: 6px 10px; font-size: 10.5px; font-weight: 700; color: #514a38; cursor: pointer; }
+.review-trace-tools small { font-size: 10px; color: var(--muted); overflow-wrap: anywhere; }
+.review-trace-receipt { margin: 0; border-radius: 10px; padding: 8px 10px; background: #eef7ec; color: #1b7f34; font-size: 10.5px; line-height: 1.6; overflow-wrap: anywhere; }
+.review-trace-error { display: flex; align-items: center; gap: 6px; margin: 0; border-radius: 10px; padding: 8px 10px; background: #fdece7; color: #8a2f20; font-size: 10.5px; overflow-wrap: anywhere; }
+.review-trace-empty { margin: 0; font-size: 10.5px; line-height: 1.65; color: var(--muted); }
+.review-trace-blocked { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 11px; color: #8a2f20; }
+.review-trace-sections { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.review-trace-section { border: 1px solid var(--border); border-radius: 12px; padding: 10px 11px; min-width: 0; }
+.review-trace-block-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px; }
+.review-trace-block-head b { font-size: 11.5px; color: var(--navy); }
+.review-trace-block-head small { font-size: 10px; color: var(--muted); }
+.review-trace-section pre { margin: 8px 0 0; padding: 8px 10px; border-radius: 8px; background: var(--soft); font-size: 10px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto; }
+.review-trace-section ul { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.review-trace-section li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; font-size: 10.5px; color: #514a38; min-width: 0; }
+.review-trace-section li b { font-size: 10.5px; color: var(--ink); }
+.review-trace-section li span { min-width: 0; overflow-wrap: anywhere; }
+.review-trace-section li em { font-style: normal; font-size: 10px; color: #8a6100; }
+.review-trace-section li.is-off { color: #9a927f; }
+.review-trace-section li.is-off b { color: #9a927f; }
+.review-trace-section details summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; cursor: pointer; font-size: 10.5px; }
+.review-trace-section details summary em { font-style: normal; font-size: 10px; color: #8a6100; }
+.review-trace-body, .review-trace-params, .review-trace-usage, .review-trace-attachments { margin-top: 6px; }
+.review-trace-body small { display: block; margin-top: 6px; font-size: 10px; line-height: 1.6; color: var(--muted); }
+.review-trace-prompt b { display: block; margin-top: 8px; font-size: 10.5px; color: var(--muted); }
+.review-trace-restricted { display: flex; align-items: center; gap: 6px; margin: 8px 0 0; border-radius: 10px; padding: 9px 11px; background: #fdf3d6; color: #6b4c00; font-size: 10.5px; font-weight: 700; overflow-wrap: anywhere; }
+.review-trace-note { margin: 8px 0 0; font-size: 10px; line-height: 1.65; color: var(--muted); overflow-wrap: anywhere; }
+.review-trace-audit { border-top: 1px dashed var(--border); padding-top: 10px; min-width: 0; }
+.review-trace-audit ul { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.review-trace-audit li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; border: 1px solid var(--border); border-radius: 10px; padding: 7px 9px; min-width: 0; }
+.review-trace-audit li b { font-size: 10.5px; color: var(--navy); }
+.review-trace-audit li span { font-size: 10px; color: var(--muted); overflow-wrap: anywhere; }
+
+/* 系统配置：轨迹保留期 + 披露开关 + 到期清理的预览 */
+.trace-policy .config-note { margin: 4px 0 0; font-size: 10.5px; line-height: 1.65; color: var(--muted); }
+.trace-policy .config-check { display: flex; align-items: center; gap: 8px; font-size: 11px; color: #514a38; }
+.trace-policy-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 10px; }
+.trace-policy-actions small { font-size: 10.5px; color: var(--muted); overflow-wrap: anywhere; }
+.trace-policy-note { display: block; margin-top: 8px; border-radius: 10px; padding: 8px 10px; background: #fdf3d6; color: #6b4c00; font-size: 10.5px; font-weight: 700; overflow-wrap: anywhere; }
+.trace-cleanup-preview { margin-top: 10px; border-radius: 10px; padding: 9px 11px; background: var(--soft); font-size: 10.5px; line-height: 1.65; color: #514a38; min-width: 0; }
+.trace-cleanup-preview p { margin: 0; overflow-wrap: anywhere; }
+.trace-cleanup-preview ul { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.trace-cleanup-preview li { font-size: 10px; color: #857a64; overflow-wrap: anywhere; }
+.trace-cleanup-preview small { display: block; margin-top: 6px; font-size: 10px; color: var(--muted); }
+
+/* 老师端第三步：平台开关关闭时的提示词分区 */
+.review-detail-prompt-restricted { display: flex; align-items: center; gap: 6px; margin: 8px 0 0; border-radius: 10px; padding: 9px 11px; background: #fdf3d6; color: #6b4c00; font-size: 11px; font-weight: 700; overflow-wrap: anywhere; }
+
+@media (max-width: 1100px) {
+  .review-trace-body { grid-template-columns: minmax(0, 1fr); }
+  .review-trace-list { max-height: 320px; }
+}
+@media (max-width: 430px) {
+  /* 窄屏 44×44px 纪律：筛选控件、行、工具按钮一律撑到 44px（列表行本身也当按钮点）。 */
+  .review-trace-filters input, .review-trace-filters select,
+  .review-trace-filter-actions button, .review-trace-row,
+  .review-trace-tools button { min-height: 44px; }
+  .review-trace-filter-actions button { min-width: 44px; }
+  .review-trace-tools button { min-width: 44px; }
+  .review-trace-section details summary { min-height: 44px; align-items: center; }
+  .review-trace-filters { grid-template-columns: minmax(0, 1fr); }
+  .review-trace-panel { gap: 12px; }
+}
+
+@media (max-width: 430px) {
+  /* 面板里的通用 Button（刷新轨迹等）与系统配置里的按钮同样要撑到 44px。 */
+  .review-trace-panel .review-trace-head-actions button, .trace-policy .trace-policy-actions button { min-height: 44px; }
+}

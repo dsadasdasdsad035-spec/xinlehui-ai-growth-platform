@@ -332,6 +332,9 @@ export async function streamArtworkReview({ profile, skillLibrary, subject, stud
     model: requestModel,
     // 来源标注（US-107a）：由模型池自动路由时是 'pool-route'，老师在选择器里点的是 'teacher-pick'。
     modelSource: requestModelSource,
+    // 本次真正发出去的模型参数（US-112）：参数表是部署级常量、会随版本变，
+    // 轨迹里留一份，「模型与参数」分区才不会用今天的参数去解释上个月的那一次点评。
+    params: REVIEW_MODEL_PARAMS,
     system: prompt.system,
     user: String(userContent[0]?.text || ''),
     modules: prompt.modules,

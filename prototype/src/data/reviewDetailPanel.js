@@ -14,7 +14,10 @@
 //  - 文件名（非法字符 / 课次日期）复用 `data/artworkExport.js`（与「保存图片」同一个文件名口径）。
 // 本模块仍然不碰 DOM、不发请求，可以直接用 Node 跑断言（见 prototype/AGENTS.md）。
 import { artworkExportDateText, artworkExportSizeText, sanitizeArtworkExportSegment } from './artworkExport';
-import { reviewTraceMediaViolations, reviewTraceSecondsText } from './reviewTrace';
+import { REVIEW_TRACE_STATUS, reviewTraceMediaViolations, reviewTraceSecondsText } from './reviewTrace';
+// 平台开关「允许老师查看提示词正文」（[第三步 US-112]）：关闭时那句话的唯一真源在
+// `data/reviewTracePolicy.js`，这里只转出给面板与两种导出（三处读同一句，不各写一份）。
+import { REVIEW_TRACE_DISCLOSURE_NOTE } from './reviewTracePolicy';
 // 逐项技能清单（US-104）：技能行的构造器与「一项都没启用」的文案来自技能库那一份唯一真源，
 // 面板与导出都渲染它的产物（`skillLoadout()` 的 rows），不在这里另写一套。
 import { SKILL_EMPTY_TEXT, SKILL_LOAD_REASON_KEYS, skillLoadRow } from './skillLibrary';
@@ -810,6 +813,90 @@ export function reviewDetailPayload(input = {}) {
   return payload;
 }
 
+/** 轨迹状态 → 面板阶段（同一套词汇：`success/failed/aborted/running` → `done/error/stopped/running`）。 */
+export function reviewTracePhase(status) {
+  const key = str(status);
+  if (key === REVIEW_TRACE_STATUS.success) return REVIEW_DETAIL_PHASES.done;
+  if (key === REVIEW_TRACE_STATUS.failed) return REVIEW_DETAIL_PHASES.error;
+  if (key === REVIEW_TRACE_STATUS.aborted) return REVIEW_DETAIL_PHASES.stopped;
+  if (key === REVIEW_TRACE_STATUS.running) return REVIEW_DETAIL_PHASES.running;
+  return REVIEW_DETAIL_PHASES.done;
+}
+
+/**
+ * 一条留档轨迹 → 六分区载荷的输入（[第三步 US-112] / FR-110）。
+ *
+ * 管理端「生成日志」要看的是**任意一次点评的完整轨迹**，而六分区的展示口径只有一份：
+ * 这里把轨迹（白名单留档的结构）翻译成 `reviewDetailPayload` 认得的输入，
+ * 不在管理端另拼一套文案 —— 于是「管理端看到的六个分区」与「老师端当时看到的」结构逐项一致。
+ */
+export function reviewTracePayloadInput(trace) {
+  const item = trace && typeof trace === 'object' ? trace : {};
+  const loaded = item.loaded && typeof item.loaded === 'object' ? item.loaded : {};
+  return {
+    phase: reviewTracePhase(item.status),
+    student: str(item.studentName),
+    lessonDate: '',
+    model: str(item.model),
+    modelSource: str(item.modelSource),
+    params: item.params && typeof item.params === 'object' ? item.params : {},
+    message: str(item.error?.message),
+    // 加载清单：模块清单 + 逐项技能行 + 逐项 agent 文件行与预算摘要，全部来自轨迹本身。
+    loaded: reviewDetailLoaded({
+      modules: loaded.modules,
+      skills: loaded.skills,
+      agentFiles: { rows: loaded.files, summary: loaded.agentFiles }
+    }),
+    prompt: {
+      system: str(item.prompts?.system),
+      user: str(item.prompts?.user),
+      attachments: Array.isArray(item.prompts?.attachments) ? item.prompts.attachments : [],
+      modules: loaded.modules
+    },
+    reasoning: typeof item.reasoning === 'string' ? item.reasoning : '',
+    output: str(item.output?.raw),
+    usage: item.usage && typeof item.usage === 'object' ? item.usage : null,
+    timing: item.timing && typeof item.timing === 'object' ? item.timing : null,
+    traceId: str(item.traceId),
+    taskLabel: str(item.taskLabel)
+  };
+}
+
+/** 一条留档轨迹 → 六分区载荷（管理端「生成日志」详情读它，与老师端面板同一份结构）。 */
+export function reviewTracePayload(trace, { exportedAt = '' } = {}) {
+  return reviewDetailPayload({ ...reviewTracePayloadInput(trace), exportedAt });
+}
+
+/** 提示词受限时的那句话（唯一真源在 `data/reviewTracePolicy.js`，这里只做转出）。 */
+export const REVIEW_DETAIL_PROMPT_RESTRICTED_NOTE = REVIEW_TRACE_DISCLOSURE_NOTE;
+
+/**
+ * 平台开关 `allowPromptDisclosure` 关闭时的提示词分区（[第三步 US-112] 第 5 条）：
+ * **只留清单** —— 模块清单 / 附件引用 / 字数读数原样保留，`system` 与 `user` 正文清空，
+ * 并且把那一句「管理员已限制查看，仅显示清单」挂到分区上。
+ *
+ * 界面渲染、Markdown 导出与 JSON 导出都读这一份产物：所以「界面上看不到正文」与
+ * 「导出里也没有正文」是同一个判据，不会出现「面板遮住了、导出还是原样」的漏法。
+ * `allowed` 为真时**原样返回同一个对象**（不复制、不改写：默认开启时逐字符不变）。
+ */
+export function reviewPromptDisclosureMask(payload, { allowed = true, note = REVIEW_DETAIL_PROMPT_RESTRICTED_NOTE } = {}) {
+  const source = payload && typeof payload === 'object' ? payload : {};
+  if (allowed) return source;
+  const sections = (Array.isArray(source.sections) ? source.sections : []).map((entry) => {
+    const section = entry && typeof entry === 'object' ? entry : {};
+    if (str(section.key) !== 'prompt') return section;
+    return {
+      ...section,
+      restricted: true,
+      restrictionNote: note,
+      // 正文一个字都不留（字数读数留着 —— 「仅显示清单」要能看出「本来有多少字」）。
+      system: '',
+      user: ''
+    };
+  });
+  return { ...source, promptRestricted: true, promptRestrictedNote: note, sections };
+}
+
 /** 代码块围栏：正文里已经有三个反引号时自动加长，避免导出文本被自己的内容截断。 */
 function reviewDetailFence(text) {
   const runs = str(text).match(/`+/g) || [];
@@ -873,8 +960,15 @@ export function reviewDetailMarkdown(payload) {
       }
       lines.push('');
     } else if (key === 'prompt') {
-      lines.push(`### system（${section.systemChars || 0} 字）`, '', reviewDetailFence(section.system || '（空）'), '');
-      lines.push(`### user（${section.userChars || 0} 字）`, '', reviewDetailFence(section.user || '（空）'), '');
+      // 提示词受限（US-112）：导出里同样只写那句限制说明与清单口径，正文一个字都不出现 ——
+      // 「面板上遮住了、导出还是原样」不算做到。
+      if (section.restricted) {
+        lines.push(`- ${section.restrictionNote || REVIEW_DETAIL_PROMPT_RESTRICTED_NOTE}`, '');
+        lines.push(`### 清单（system ${section.systemChars || 0} 字 · user ${section.userChars || 0} 字）`, '');
+      } else {
+        lines.push(`### system（${section.systemChars || 0} 字）`, '', reviewDetailFence(section.system || '（空）'), '');
+        lines.push(`### user（${section.userChars || 0} 字）`, '', reviewDetailFence(section.user || '（空）'), '');
+      }
       const attachments = section.attachments || [];
       lines.push(`### 附件（${attachments.length} 个，只记引用与 hash，不含图片正文）`, '');
       attachments.forEach((row) => lines.push(`- ${row.text}`));

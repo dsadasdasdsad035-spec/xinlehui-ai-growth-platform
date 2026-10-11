@@ -34,11 +34,18 @@ import pandaObserve from './assets/panda-gold-observe.png';
 import pandaWave from './assets/panda-poses/01-wave-paintbrush.png';
 import { createFeedbackRecord, loadFeedbackRecords, persistFeedbackRecords } from './data/feedbackRecords';
 import { createParentSession, loadParentFeedbackRecords, loadRemoteFeedbackRecords, saveRemoteFeedbackRecords } from './services/feedbackRecordsApi';
-import { REVIEW_TRACE_TASKS, makeReviewTraceId, persistReviewTrace, reviewTraceSummary } from './data/reviewTrace';
+import { REVIEW_TRACE_TASKS, loadReviewTraces, makeReviewTraceId, mergeReviewTraces, persistReviewTrace, persistReviewTraces, reviewTraceSummary } from './data/reviewTrace';
 // 两次生成的对比（US-107b）：`parentTraceId` 关联的上一次 vs 本次的模型 / 耗时 / 推理，
 // 以及「已收束轨迹只驻留内存」的小账本，全在 data 层纯函数里（界面只渲染它的产物）。
 import { archiveReviewTraces, findArchivedTrace, reviewTraceCompare } from './data/reviewTraceCompare';
-import { saveRemoteReviewTrace } from './services/reviewTraceApi';
+// 轨迹的留存 / 披露 / 可见性与筛选（[第三步 US-112]）：保留期默认 90 天、到期清理先预览影响范围、
+// 平台开关 `allowPromptDisclosure` 决定老师端能不能看提示词正文、老师只看自己经手的轨迹。
+// 判据全部在 data 层（零依赖、可 Node 断言），界面只渲染它的产物。
+import { REVIEW_TRACE_DISCLOSURE_NOTE, REVIEW_TRACE_RETENTION_OPTIONS, REVIEW_TRACE_SURFACES, applyReviewTraceCleanup, loadReviewTracePolicy, normalizeReviewTracePolicy, persistReviewTracePolicy, reviewPromptDisclosureAllowed, reviewTraceCleanupPreview, reviewTracePolicyPatch, reviewTracePolicySummary, reviewTraceRetentionText, reviewTraceSurfaceAllowed, reviewTraceViewer } from './data/reviewTracePolicy';
+import { loadRemoteReviewTraces, pushRemoteReviewTrace, queryRemoteReviewTraces, saveRemoteReviewTrace } from './services/reviewTraceApi';
+// 平台开关关闭时的提示词遮罩（US-112 第 5 条）：老师端面板与两种导出读同一份产物。
+import { reviewPromptDisclosureMask } from './data/reviewDetailPanel';
+import ReviewTraceLogsPanel from './admin/ReviewTraceLogsPanel';
 import { loadStudentManagement } from './data/studentManagement';
 import StudentArchiveData from './StudentArchiveData';
 import GrowthArchiveData from './GrowthArchiveData';
@@ -331,6 +338,12 @@ function App(){
   // 「首次上线」（本机镜像里从来没存过模板）要在第一次渲染就算出来：落盘 effect 一跑镜像就非空了。
   const keywordTemplateSeedRef=useRef(undefined);
   if(keywordTemplateSeedRef.current===undefined) keywordTemplateSeedRef.current=!reviewKeywordTemplateMirrorStored();
+  // 点评轨迹的留存与披露策略（[第三步 US-112]）：系统配置里可改，缺省「保留 90 天 + 允许老师看提示词正文」。
+  const [tracePolicy,setTracePolicy]=useState(loadReviewTracePolicy);
+  // 管理端「生成日志 → 点评轨迹」读的轨迹账：本机镜像先渲染，云端表 / 开发适配器回来后并进去
+  // （合并方向：`mergeReviewTraces` 按 traceId 去重、时间倒序）。清理（到期）也写回这一份。
+  const [traceLog,setTraceLog]=useState(loadReviewTraces);
+  const [traceSource,setTraceSource]=useState({note:'本机镜像',loading:false,at:''});
   const [demoState,setDemoState]=useState('normal');
   useEffect(()=>{ if(toast){const t=setTimeout(()=>setToast(''),2600); return()=>clearTimeout(t)}},[toast]);
   useEffect(()=>{let active=true;loadRemoteFeedbackRecords().then(remote=>{if(!active)return;setRecords(current=>mergeFeedbackRecords(current,remote));setRecordsRemoteReady(true);}).catch(()=>{});return()=>{active=false}},[]);
@@ -348,6 +361,8 @@ function App(){
   useEffect(()=>{persistLessons(lessons)},[lessons]);
   useEffect(()=>{persistCourses(courses)},[courses]);
   useEffect(()=>{persistAuditLog(auditLog)},[auditLog]);
+  // 策略落盘（保留期 + 披露开关）：本机镜像是唯一真源（云端没有这张配置表的口径）。
+  useEffect(()=>{persistReviewTracePolicy(tracePolicy)},[tracePolicy]);
   useEffect(()=>{let active=true;loadRemoteAuditLog().then(remote=>{if(active&&remote.length)setAuditLog(current=>mergeAuditLog(remote,current))}).catch(()=>{});return()=>{active=false}},[]);
   useEffect(()=>{let active=true;
     loadRemoteTeacherProfiles().then(remote=>{if(active&&remote.length)setTeacherProfiles(remote)}).catch(()=>{});
@@ -403,6 +418,48 @@ function App(){
     void appendRemoteAuditEntry(entry).catch(()=>{});
     return entry;
   };
+  // ---- 点评轨迹：身份、查询、清理（[第三步 US-112]）----------------------------------
+  // 可见性判据的入参（`reviewTraceViewer`）：老师端「老师只看自己经手的、跨机构不可见」，
+  // 管理端是平台审计（全部机构）。界面筛选与断言读同一份口径。
+  const adminTraceViewer=reviewTraceViewer({role:'admin',adminTier:'platform',orgId:DEFAULT_ORG_ID,actorId:'platform-admin',actorName:roleMeta.admin.name});
+  const teacherTraceViewer=reviewTraceViewer({role:'teacher',actorId:roleMeta.teacher.name,teacherName:roleMeta.teacher.name,orgId:DEFAULT_ORG_ID});
+  // 轨迹操作（复制 / 导出）的审计操作人四件套：按当前身份补，界面只管传「哪一条轨迹、什么范围」。
+  const traceAuditActor=role==='admin'
+    ?{actorId:'platform-admin',actorName:roleMeta.admin.name,actorRole:'platform-admin',actorRoleLabel:'平台超级管理员'}
+    :{actorId:roleMeta.teacher.name,actorName:roleMeta.teacher.name,actorRole:'teacher',actorRoleLabel:'老师'};
+  const auditTraceEntry=(input)=>recordAudit({...input,...traceAuditActor,orgId:DEFAULT_ORG_ID});
+  /**
+   * 刷新轨迹账：本机镜像（归档时写入）**先渲染**，云端 `review_traces` 表与开发适配器回来后并进去。
+   * 开发适配器那条通道带身份（`X-Actor-Role`）：家长身份会被**服务端直接拒绝**，
+   * 被拒时如实写进来源读数（不静默换一条通道，也不冒领数据）。
+   */
+  const refreshReviewTraces=async()=>{
+    setTraceSource(current=>({...current,loading:true}));
+    const notes=['本机镜像'];
+    let merged=loadReviewTraces();
+    try{
+      const cloudTraces=await loadRemoteReviewTraces();
+      if(cloudTraces.length){merged=mergeReviewTraces(cloudTraces,merged);notes.push(`云端 review_traces（${cloudTraces.length} 条）`);}
+    }catch{/* 云表还没建立：本机镜像照常（与审计日志同一套兜底口径） */}
+    // 查询身份按当前会话走：家长身份会被服务端直接拒绝（界面照实写进来源读数）；
+    // 老师只拿到自己经手的（身份串随查询带上），管理员看全部。
+    const adapterRole=role==='parent'?'parent':(role==='admin'?'admin':'teacher');
+    const adapterActor=role==='admin'?'platform-admin':(role==='teacher'?roleMeta.teacher.name:'');
+    const adapter=await queryRemoteReviewTraces({},{role:adapterRole,parentToken:parentSession||'',actorId:adapterActor});
+    if(adapter.ok){merged=mergeReviewTraces(adapter.traces,merged);notes.push(`开发适配器（${adapter.traces.length} 条）`);}
+    else if(adapter.denied)notes.push(`服务端拒绝：${adapter.message}`);
+    else if(adapter.status===0)notes.push('开发适配器未连接');
+    setTraceLog(merged);
+    setTraceSource({note:notes.join(' · '),loading:false,at:new Date().toISOString()});
+    return merged;
+  };
+  /** 到期清理（PRD：先预览影响范围，再执行）：判据与预览都读 data 层的纯函数。 */
+  const cleanupReviewTraces=()=>{
+    const {kept,removed,preview}=applyReviewTraceCleanup(traceLog,tracePolicy);
+    setTraceLog(persistReviewTraces(kept));
+    setToast(removed.length?`已按「${reviewTraceRetentionText(tracePolicy.retentionDays)}」清理 ${removed.length} 条到期轨迹`:'没有到期轨迹需要清理');
+    return {removed:removed.length,preview};
+  };
   const login=async(nextRole, phone='', code='')=>{
     if(nextRole==='parent'&&phone!=='demo'){
       try{const session=await createParentSession(phone,code);setParentStudents(session.studentNames);setParentStudent(session.studentNames[0]);setParentPhone(phone);setParentSession(session.token);}catch(error){setToast(error.message||'家长登录失败，请稍后重试。');return false;}
@@ -416,7 +473,7 @@ function App(){
     <main className="main">
       <Topbar role={role} onMenu={()=>setMobileNav(true)} onSwitch={(r)=>login(r,'demo')} onGuide={()=>navigate('guide')} onLogout={()=>setAuth(false)}/>
       <div className="content">
-        <PageRouter {...{page,role,navigate,setToast,setModal,apps,setApps,tasks,setTasks,demoState,setDemoState,records,setRecords,parentStudent,parentStudents,parentPhone,parentSession,setParentStudent,teacherProfiles,setTeacherProfiles,framingPresets,setFramingPresets,skillLibrary,setSkillLibrary,agentFiles,setAgentFiles,adminName:roleMeta.admin.name,galleryVenues,setGalleryVenues,galleryExhibitions,setGalleryExhibitions,lessons,setLessons,courses,setCourses,auditLog,recordAudit,reviewModels,reviewModelDefaults,setReviewModelDefaults,keywordTemplates,setKeywordTemplates,keywordTemplateRemote}}/>
+        <PageRouter {...{page,role,navigate,setToast,setModal,apps,setApps,tasks,setTasks,demoState,setDemoState,records,setRecords,parentStudent,parentStudents,parentPhone,parentSession,setParentStudent,teacherProfiles,setTeacherProfiles,framingPresets,setFramingPresets,skillLibrary,setSkillLibrary,agentFiles,setAgentFiles,adminName:roleMeta.admin.name,galleryVenues,setGalleryVenues,galleryExhibitions,setGalleryExhibitions,lessons,setLessons,courses,setCourses,auditLog,recordAudit,reviewModels,reviewModelDefaults,setReviewModelDefaults,keywordTemplates,setKeywordTemplates,keywordTemplateRemote,traceLog,setTraceLog,tracePolicy,setTracePolicy,traceSource,refreshReviewTraces,cleanupReviewTraces,auditTraceEntry,adminTraceViewer,teacherTraceViewer}}/>
       </div>
     </main>
     {toast?<div className="toast panda-toast"><img src={pandaWave} alt="熊猫鼓励"/><span><CircleCheck size={18}/>{toast}</span></div>:null}
@@ -533,7 +590,7 @@ function IntakeSlotGroups({listKey,rows,collapsedKeys,onToggle,renderRow,classNa
   </div>;
 }
 
-function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramingPresets=()=>{},teacherProfiles=[],skillLibrary=[],courses=[],lessons=[],setLessons=()=>{},role='teacher',auditLog=[],recordAudit=()=>{},reviewModels=[],reviewModelDefaults={},setReviewModelDefaults=()=>{},keywordTemplates=[],keywordTemplateRemote=null}){
+function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramingPresets=()=>{},teacherProfiles=[],skillLibrary=[],courses=[],lessons=[],setLessons=()=>{},role='teacher',auditLog=[],recordAudit=()=>{},reviewModels=[],reviewModelDefaults={},setReviewModelDefaults=()=>{},keywordTemplates=[],keywordTemplateRemote=null,tracePolicy=null}){
   const management=loadStudentManagement();
   const availableClasses=management.classes||[];
   // 当前登录老师：原型阶段只有一个老师身份（见 roleMeta.teacher），班级数据里存的是老师姓名。
@@ -2580,11 +2637,18 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
       task:REVIEW_TRACE_TASKS.artworkReview,
       traceId:runTraceId,
       studentId:selectedParticipant?.studentId||'',
+      // 学员姓名 / 经手老师 / 机构（US-112）：生成日志按学员与老师筛选、判可见性都读它们。
+      studentName:selectedStudentLabel==='未选择学员'?'':selectedStudentLabel,
+      teacherId:teacherWriteActor.actorId,
+      teacherName:currentTeacherName,
+      orgId:DEFAULT_ORG_ID,
       lessonId:currentLessonId,
       parentTraceId,
       queuedAt:new Date().toISOString(),
       files:agentFileLoad.files,
       agentFiles:agentFileLoad.summary,
+      // 技能加载清单（US-112）：与提示词里【已启用技能】段落同一次计算的产物，逐项留档。
+      skills:skillLoad.rows,
       images:{
         artwork:{id:media.artwork?.id,name:media.artwork?.name,mime:media.artwork?.type},
         photo:{id:media.photo?.id,name:media.photo?.name,mime:media.photo?.type}
@@ -2731,6 +2795,8 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
     const stored=persistReviewTrace({...trace,recordId,archivedAt:new Date().toISOString()});
     if(!stored) return null;
     void saveRemoteReviewTrace(stored).catch(()=>{});
+    // 开发适配器上的审计存储（US-112）：适配器没起就静默跳过（本机镜像与云端表两条路照常）。
+    void pushRemoteReviewTrace(stored,{role:'teacher'}).catch(()=>{});
     return stored;
   };
   /**
@@ -4378,7 +4444,7 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
       <FlowStepper steps={steps} step={step} flags={[intakeReadiness.ok,hasProcessedArtwork,reviewGenerated,archived]} onGo={go}/>
       <div className="scene-status"><span>当前进行：{steps[step-1][0]}</span><button onClick={()=>go(Math.max(1,step-1))} disabled={step===1}>反馈上一步</button></div>
       {step===3?<ReviewLaunchPanel profiles={teacherProfiles} skillLibrary={skillLibrary} activeProfileId={activeProfileId} setActiveProfileId={setActiveProfileId} onStart={startCloudReview} draftReady={reviewGenerated} keywordCount={keywords.length} hasArtwork={Boolean(media.artwork?.cleanUrl||media.artwork?.originalUrl)} running={reviewStream.phase===REVIEW_DETAIL_PHASES.running} modelPlan={reviewModelPlan} modelChoice={reviewModelChoice} onChooseModel={selectReviewModel} switchConfirm={reviewModelSwitch} onConfirmSwitch={confirmReviewModelSwitch} onCancelSwitch={cancelReviewModelSwitch}/>:null}
-      {step===3&&reviewStream.phase!==REVIEW_DETAIL_PHASES.idle&&reviewDetailSurfaceAllowed({surface:REVIEW_DETAIL_SURFACES.teacherFlow,role})?<ReviewDetailPanel stream={reviewStream} loaded={reviewLoaded} prompt={reviewPrompt} trace={reviewTracePanel} compare={reviewCompareParent} model={reviewModelPlan.modelId} modelSource={reviewModelPlan.source} params={REVIEW_MODEL_PARAMS} requests={reviewRequests} student={selectedStudentLabel} lessonDate={lessonDateDots} open={reviewDetailOpen} onToggle={()=>setReviewDetailOpen(value=>!value)} onStart={startCloudReview} onStop={stopCloudReview}/>:null}
+      {step===3&&reviewStream.phase!==REVIEW_DETAIL_PHASES.idle&&reviewDetailSurfaceAllowed({surface:REVIEW_DETAIL_SURFACES.teacherFlow,role})?<ReviewDetailPanel stream={reviewStream} loaded={reviewLoaded} prompt={reviewPrompt} trace={reviewTracePanel} compare={reviewCompareParent} model={reviewModelPlan.modelId} modelSource={reviewModelPlan.source} params={REVIEW_MODEL_PARAMS} requests={reviewRequests} student={selectedStudentLabel} lessonDate={lessonDateDots} promptAllowed={reviewPromptDisclosureAllowed(tracePolicy,{role})} open={reviewDetailOpen} onToggle={()=>setReviewDetailOpen(value=>!value)} onStart={startCloudReview} onStop={stopCloudReview}/>:null}
       {step===2&&mode==='班级反馈'?<ClassFramingWall artworks={batchUploads.artwork} photos={batchUploads.photo} photoGroups={photoGroups} writeBackKeyOf={classArtworkWriteBackKeyOf} onRotate={index=>rotateBatchItem('artwork',index)} onRotatePhotoEntry={uploadId=>rotateUploadEntry('photo',uploadId)}/>:null}
       {step===1?<section className="scene-panel"><div className="scene-heading"><span>第一步</span><h2>创建课后反馈信息</h2><p>先确定服务对象，再同步收集本节课素材。素材只在本次操作中保留。</p></div>{draftRestored?<div className="intake-draft-restored"><Clock3 size={14}/><div><b>已恢复上次的课次信息；素材需重新选择</b><small>{draftRestoreDetail}</small></div>{pendingTitles.length?<em>已保留 {pendingTitles.length} 个作品名，「学员作品上传位」里重新选择素材后自动填回</em>:null}<button type="button" className="text-link" onClick={()=>setDraftRestored(false)}>知道了</button></div>:null}<div className="feedback-mode"><button className={mode==='个人反馈'?'selected':''} onClick={()=>selectMode('个人反馈')}>个人反馈<small>为一位孩子完成反馈</small></button><button className={mode==='班级反馈'?'selected':''} onClick={()=>selectMode('班级反馈')}>班级反馈<small>批量处理全班素材</small></button></div>{availableClasses.length?<div className="intake-scope"><span>班级范围</span><div className="intake-scope-switch"><button type="button" className={showAllClasses?'':'active'} onClick={()=>selectClassScope(false)}>我带的班（{myClasses.length}）</button><button type="button" className={showAllClasses?'active':''} onClick={()=>selectClassScope(true)}>全部班级（{availableClasses.length}）</button></div><small>当前登录老师：{currentTeacherName}</small></div>:null}{visibleClasses.length?<div className="task-form"><label>选择班级<select value={selectedClassId} onChange={event=>selectClass(event.target.value)}>{visibleClasses.map(item=><option key={item.id} value={item.id}>{item.name}{item.teacher?`（${item.teacher}）`:''}</option>)}</select></label><label>选择学员<select value={mode==='班级反馈'?'__class__':selectedStudentName} disabled={mode==='班级反馈'} onChange={event=>{setSelectedStudentName(event.target.value);setArchived(false);setCurrentRecordId('');clearReviewTrace();setWriteBackAttempt({status:'idle',quality:'',message:''})}}>{mode==='班级反馈'?<option value="__class__">本班全部学员（{classStudents.length}人）</option>:<><option value="">请选择学员</option>{classStudents.map(item=><option key={item.name} value={item.name}>{item.name}</option>)}</>}</select></label>{courseOptions.length?<label>选择课程<select value={activeCourseId} onChange={event=>selectCourse(event.target.value)}>{courseOptions.map(item=><option key={item.courseId} value={item.courseId}>{item.name}{item.courseId===classCourseId?' · 本班课程':''}</option>)}</select></label>:<div className="intake-course-empty"><b>课程库暂时没有可选课程</b><p>{classCourseName?`本班课程「${classCourseName}」不在可选课程里，可能已被停用。`:'课程由机构管理员在「课程库」中维护。'}</p>{role==='admin'?<Button variant="secondary" onClick={()=>navigate('courseLibrary')}>去课程库添加课程</Button>:<small>请联系机构管理员在「课程库」中新增或启用课程。</small>}</div>}{lessonScheduleField}{participantField}{consentNoticeField}{mediaIntakeNotice?<p className="intake-media-notice"><ShieldAlert size={14}/><span>{mediaIntakeNotice}</span></p>:null}</div>:<div className="intake-empty"><Users size={26}/><b>{showAllClasses?'机构里还没有任何班级':'还没有属于你的班级'}</b><p>{showAllClasses?'请先在「学员管理」中新建班级，再回到这里创建课后反馈。':'可以切到「全部班级」确认是否存在其他老师名下的班级，或先去「学员管理」新建班级。'}</p><div className="intake-empty-actions">{showAllClasses?null:<button type="button" className="text-link" onClick={()=>selectClassScope(true)}>查看全部班级</button>}<Button onClick={()=>navigate('classes')}>去学员管理添加班级</Button></div></div>}{mode==='个人反馈'&&selectedClass&&!classStudents.length?<p className="intake-hint">该班级还没有学员，请先在「学员管理」里导入名单，再创建课后反馈。</p>:null}{artworkSlotField}{photoSlotField}{mode==='个人反馈'?<div className="sync-upload"><div className={media.artwork?.url?'has-file':''}><Frame/><b>学员作品 <em>必选</em></b><small>{uploadSummary('artwork')}</small><input ref={artworkInput} type="file" accept="image/jpeg,image/png,image/webp" hidden multiple={mode==='班级反馈'} onChange={e=>readFiles('artwork',e.target.files,e.currentTarget)}/><button onClick={()=>artworkInput.current?.click()}>{media.artwork?.url?'已上传 · 重新选择':'上传作品'}</button></div><div className={media.photo?.url?'has-file':''}><Image/><b>学员照片 <em>选填</em></b><small>{uploadSummary('photo')}</small><input ref={photoInput} type="file" accept="image/jpeg,image/png,image/webp" hidden multiple={mode==='班级反馈'} onChange={e=>readFiles('photo',e.target.files,e.currentTarget)}/><button onClick={()=>photoInput.current?.click()}>{media.photo?.url?'已上传 · 重新选择':'上传照片'}</button></div></div>:null}{lostSessionMedia&&!mediaLostDismissed?<div className="intake-media-lost"><ShieldAlert size={14}/><div><b>上次选择的素材已失效</b><small>作品与课堂照片只在当次会话里有效（只使用会话内 object URL，不写入 localStorage / IndexedDB）。页面刷新或重新进入后，请重新选择原始素材。</small></div><button type="button" className="text-link" onClick={()=>setMediaLostDismissed(true)}>知道了</button></div>:null}<div className="upload-privacy-note"><ShieldCheck size={14}/>{mediaRulesText(UPLOAD_SLOTS_PER_STUDENT)}</div>{intakeReadinessPanel}<div className="scene-actions"><Button variant="secondary" onClick={resetDraft}>新建草稿</Button><Button variant="secondary" icon={Save} disabled={!activeCourseId||lessonSaveState.status==='saving'} onClick={requestLessonSave}>{lessonSaveState.status==='saving'?'保存中…':'保存课次'}</Button><Button icon={ArrowRight} disabled={!intakeReadiness.ok} onClick={()=>go(2)}>进入智能装裱</Button></div></section>:null}
       {step===2?<section className="scene-panel studio-task"><div className="scene-heading"><span>第二步</span><h2>智能装裱</h2><p>先旋转完整原图并确认方向；确认后自动裁掉纸外的桌面、地面与背景，只保留作品本身。装裱方案（画框、卡纸、展签、日期与署名）由管理员在「装裱设置」中统一维护，这里直接选用。</p></div><div className="media-process"><article><div className={`mini-frame uploaded-art${media.artwork?.framedUrl&&!artworkEditor.open?' framed-preview':''}${artworkEditor.open?' is-editing':''}`}>{media.artwork?.url?<><img src={artworkEditor.open?(editorPreview||media.artwork.originalUrl):(media.artwork.framedUrl||media.artwork.cleanUrl||media.artwork.orientedUrl||media.artwork.originalUrl)} alt={artworkEditor.open?'编辑中的旋转稿预览（低分辨率画布）':media.artwork.framedUrl?`已按「${activeFrame?.name||'默认装裱'}」完成装裱的作品`:media.artwork.cleanUrl?'已裁掉纸外背景、只保留作品本身':'等待确认方向的完整原图'}/>{media.artwork?.framedUrl&&!artworkEditor.open?<span className="framed-badge">{activeFrame?.name||'默认装裱'}</span>:null}{artworkEditor.open?<span className="framed-badge editing-badge">编辑中</span>:null}<div className="frame-rotate-controls" aria-label="旋转作品"><button type="button" title="向左旋转 90°" aria-label="向左旋转作品" disabled={artworkEditor.open&&editorPreviewPending} onClick={()=>quickRotateArtwork(-1)}><RotateCcw size={18}/></button><button type="button" title="向右旋转 90°" aria-label="向右旋转作品" disabled={artworkEditor.open&&editorPreviewPending} onClick={()=>quickRotateArtwork(1)}><RotateCw size={18}/></button></div></>:'✺'}</div><div><b>学员作品</b><p>{artworkEditor.open?(editorPreviewPending?'正在生成低分辨率预览…':'编辑中：调整旋转后点「完成编辑」，再按新的方向重新裁剪与装裱。'):framingState==='processing'?(media.artwork?.cleanUrl?'正在按当前装裱方案合成装裱图…':'正在裁掉纸外的桌面与地面，只保留作品本身…'):media.artwork?.framedUrl?`已装裱：${activeFrame?.name||'默认装裱'}。作品只做等比缩放与居中，不裁切主体、不重绘、不调色。`:media.artwork?.cleanUrl?'已完成作品裁剪，正在生成装裱图…':'当前仅显示完整原图；可以先点「编辑作品」把方向摆正，再开始裁剪与装裱。'}</p>{mode==='个人反馈'?artworkEditorField:null}{!media.artwork?.cleanUrl?<button type="button" className="confirm-artwork-button" onClick={startArtworkCleanup} disabled={framingState==='rotating'||framingState==='processing'}>{framingState==='processing'?'正在裁剪作品…':'方向正确，开始裁剪与装裱'}</button>:null}<span className="frame-choice-hint">相框样式在下方「相框样式」面板里挑（缩略图用这幅作品实时渲染）→</span></div></article><article><div className="photo-card">{media.photo?.url?<><img src={media.photo.url} alt="已自然优化的课堂照片" style={{transform:`rotate(${media.photo.rotation||0}deg)`}}/><button type="button" className="frame-rotate-button photo-rotate-button" onClick={rotatePersonalPhoto}><RefreshCw size={16}/>旋转照片</button></>:<img src={pandaMascot} alt="课堂照片占位预览"/>}</div><div><b>学员照片</b><p>{media.photo?.name||'未上传课堂照片，可返回上一步补充。'}</p></div></article></div>{batchFramingPanel}{studioDrawerTrigger('frame')}{frameStylePanel}{overlayPanelTrigger}{overlayDrawerOpen?<div className="lesson-overlay-scrim" data-overlay-scrim="true" onClick={()=>setOverlayDrawerOpen(false)}/>:null}{overlayPanel}{studioDrawerTrigger('save')}{saveImagePanel}{studioDrawer?<div className="studio-drawer-scrim" data-studio-drawer-scrim={studioDrawer} onClick={()=>setStudioDrawer('')}/>:null}{framingPerfPanel}{saveImageSheet}<div className="scene-actions"><Button variant="secondary" onClick={()=>go(1)}>返回创建信息</Button><Button icon={ArrowRight} onClick={()=>go(3)}>进入五维点评</Button></div></section>:null}
@@ -4981,7 +5047,7 @@ function ReviewLaunchPanel({profiles=[],skillLibrary=[],activeProfileId,setActiv
  *     模型 / 耗时 / 推理（`data/reviewTraceCompare.js` 的产物），只在确有上一次时渲染 ——
  *     它不进 `payload.sections`，所以六个分区与「复制全部 / 导出」的口径一字不变。
  */
-function ReviewDetailPanel({stream,loaded,prompt,trace,compare=null,model,modelSource='',params,requests,student,lessonDate,open,onToggle,onStart,onStop}){
+function ReviewDetailPanel({stream,loaded,prompt,trace,compare=null,model,modelSource='',params,requests,student,lessonDate,open,onToggle,onStart,onStop,promptAllowed=true}){
   const running=stream.phase===REVIEW_DETAIL_PHASES.running;
   const phase=stream.phase;
   // 轨迹收束后以它为准（真正发出去的提示词、模型返回的用量与输出原文都在里面）；
@@ -5017,7 +5083,10 @@ function ReviewDetailPanel({stream,loaded,prompt,trace,compare=null,model,modelS
     taskLabel:trace?.taskLabel||'',
     exportedAt:exportedAtRef.current
   });
-  const sectionOf=key=>payload.sections.find(item=>item.key===key)||{};
+  // 平台开关「允许老师查看提示词正文」（US-112 第 5 条）：关闭时**只显示清单** ——
+  // 遮罩落在载荷上，所以「复制全部 / 导出 JSON / 导出 Markdown」与界面上看到的是同一份口径。
+  const shownPayload=reviewPromptDisclosureMask(payload,{allowed:promptAllowed});
+  const sectionOf=key=>shownPayload.sections.find(item=>item.key===key)||{};
   const loadedSection=sectionOf('loaded');
   // 两次对比（US-107b）：`compare` 是本次轨迹 `parentTraceId` 指到的那条**收束**轨迹；
   // 本次还没收束就用 `stream` 的流式读数当对照侧（耗时与推理字数照样实时可比）。
@@ -5030,19 +5099,19 @@ function ReviewDetailPanel({stream,loaded,prompt,trace,compare=null,model,modelS
   const progress=reviewContentProgress(output);
   const liveText=readableFromRawJson(output);
   const copyAll=async()=>{
-    const result=buildReviewDetailExport(payload,{format:'markdown',student,lessonDate});
+    const result=buildReviewDetailExport(shownPayload,{format:'markdown',student,lessonDate});
     const ok=await copyReviewDetailText(result.text);
     setReceipt(current=>({...current,copy:ok?'copied':'failed',chars:result.text.length}));
   };
   const exportDetail=format=>{
-    const result=buildReviewDetailExport(payload,{format,student,lessonDate});
+    const result=buildReviewDetailExport(shownPayload,{format,student,lessonDate});
     const filename=downloadReviewDetailExport(result);
     setReceipt(current=>({...current,export:filename||result.filename}));
   };
   const copyText=receipt.copy==='copied'?`已复制全部内容（${receipt.chars} 字）`
     :receipt.copy==='failed'?'复制失败，请手动选择文本复制'
       :'复制与导出只含提示词、推理、输出与素材引用，不含图片正文';
-  return <section className="review-detail" data-review-detail="true" data-review-detail-surface={REVIEW_DETAIL_SURFACES.teacherFlow} data-detail-open={open?'true':'false'} data-detail-phase={phase} data-detail-requests={requests} data-detail-sections={payload.sections.length}>
+  return <section className="review-detail" data-review-detail="true" data-review-detail-surface={REVIEW_DETAIL_SURFACES.teacherFlow} data-detail-open={open?'true':'false'} data-detail-phase={phase} data-detail-requests={requests} data-detail-sections={shownPayload.sections.length}>
     <div className="review-detail-head">
       <button type="button" className="review-detail-toggle" aria-expanded={open} data-detail-toggle="true" onClick={onToggle}>
         <ChevronDown size={16}/>
@@ -5145,16 +5214,18 @@ function ReviewDetailPanel({stream,loaded,prompt,trace,compare=null,model,modelS
         </details>:null}
       </section>
 
-      <section className="review-detail-section" data-detail-section="prompt">
+      <section className="review-detail-section" data-detail-section="prompt" data-detail-prompt-restricted={promptSection.restricted?'true':'false'}>
         <div className="review-detail-block-head">
           <b>{promptSection.title||'提示词'}</b>
           <small>system {promptSection.systemChars||0} 字 · user {promptSection.userChars||0} 字 · 附件 {(promptSection.attachments||[]).length} 个</small>
         </div>
         <div className="review-detail-prompt">
-          <b>system</b>
-          <pre data-detail-prompt-system="true" data-detail-prompt-system-chars={promptSection.systemChars||0}>{promptSection.system||'（本次没有 system 提示词）'}</pre>
-          <b>user</b>
-          <pre data-detail-prompt-user="true" data-detail-prompt-user-chars={promptSection.userChars||0}>{promptSection.user||'（本次没有 user 消息）'}</pre>
+          {promptSection.restricted?<p className="review-detail-prompt-restricted" data-detail-prompt-note="true"><ShieldAlert size={14}/><span>{promptSection.restrictionNote}</span></p>:<>
+            <b>system</b>
+            <pre data-detail-prompt-system="true" data-detail-prompt-system-chars={promptSection.systemChars||0}>{promptSection.system||'（本次没有 system 提示词）'}</pre>
+            <b>user</b>
+            <pre data-detail-prompt-user="true" data-detail-prompt-user-chars={promptSection.userChars||0}>{promptSection.user||'（本次没有 user 消息）'}</pre>
+          </>}
           <b>附件（只记引用与 hash）</b>
           <ul data-detail-attachments="true">
             {(promptSection.attachments||[]).length
@@ -6571,10 +6642,58 @@ function ModelTable(){const rows=[['Qwen Text Max','OpenAI Compatible','文本�
 function ModelPools({setToast}){return <div className="pool-list">{[['文本点评模型池','Qwen Text Max','GPT Text Pro','优先质量'],['图片装裱模型池','VisionArt Pro','VisionArt Edit','均衡'],['视频生成模型池','Seedance 2','MotionLite','优先成本']].map((x,i)=><div className="panel pool-card" key={x[0]}><div className="pool-title"><span className={`app-icon ${['green','blue','yellow'][i]}`}><Zap/></span><div><h3>{x[0]}</h3><p>健康检查每 60 秒 · 自动熔断已开启</p></div><Status value="正常"/></div><div className="route"><div><small>主模型</small><b>{x[1]}</b><span>权重 80%</span></div><ArrowRight/><div><small>备用模型</small><b>{x[2]}</b><span>失败自动切换</span></div></div><div className="pool-foot"><span>路由策略：{x[3]}</span><button className="text-link" onClick={()=>setToast('路由策略已保存')}>编辑策略</button></div></div>)}</div>}
 
 function UsersPage({setModal}){const rows=[['林晓','老师','星河校区 / 3 个班级','正常','今天 14:32'],['王琪','老师','星河校区 / 2 个班级','正常','今天 11:20'],['陈芳','家长','绑定：陈一诺','正常','昨天 20:41'],['赵明','家长','绑定：赵禾','待验证','—'],['平台运营','管理员','全平台','正常','今天 09:12']];return <><PageHeader title="用户管理" desc="统一管理管理员、老师、家长及其数据访问范围。" prd={PRD.users} actions={<Button icon={Plus} onClick={()=>setModal({kind:'invite-user'})}>邀请用户</Button>}/><div className="filters"><div className="search-field"><Search/><input placeholder="姓名、手机号或学员"/></div><select><option>全部角色</option><option>管理员</option><option>老师</option><option>家长</option></select></div><div className="panel table-panel"><div className="table-scroll"><table><thead><tr><th>用户</th><th>角色</th><th>数据范围</th><th>状态</th><th>最后登录</th><th></th></tr></thead><tbody>{rows.map(r=><tr key={r[0]}><td><b>{r[0]}</b><small>138****{Math.floor(Math.random()*8999+1000)}</small></td><td>{r[1]}</td><td>{r[2]}</td><td><Status value={r[3]}/></td><td>{r[4]}</td><td><button className="icon-btn"><MoreHorizontal/></button></td></tr>)}</tbody></table></div></div></>}
-function LogsPage({tasks}){return <><PageHeader title="生成日志" desc="追踪逻辑任务、供应商调用 attempt、降级、用量与成本。" prd={PRD.logs} actions={<Button variant="secondary" icon={Download}>导出日志</Button>}/><div className="log-summary"><span><b>96.7%</b>成功率</span><span><b>4.2s</b>P95 文本延迟</span><span><b>¥428.60</b>今日成本</span><span><b>18</b>自动降级</span></div><TaskTable tasks={tasks} title="任务与调用明细"/><div className="panel trace"><div className="panel-head"><h2>调用链路示例 · T-0822</h2><Status value="生成中"/></div>{[['请求校验','通过','0.12s'],['模型池路由','Seedance 2（主）','0.03s'],['供应商调用 attempt-01','超时 · 自动重试','60.0s'],['供应商调用 attempt-02','MotionLite（备用）','运行中']].map((x,i)=><div className="trace-row" key={x[0]}><span className={i<3?'done':'running'}>{i<3?<Check/>:<RefreshCw/>}</span><div><b>{x[0]}</b><small>{x[1]}</small></div><em>{x[2]}</em></div>)}</div></>}
+/**
+ * 生成日志（[第三步 US-112]）：任务明细与调用链路照旧，另接一块**点评轨迹**面板 ——
+ * 任意一次五维点评的完整轨迹（六分区）、五个筛选维度、复制 / 导出留痕。
+ * 面板自己会判位面与角色（家长端与家长分享页不存在任何轨迹入口，`reviewTraceSurfaceAllowed`）。
+ */
+function LogsPage({tasks,role='admin',traceLog=[],tracePolicy=null,traceSource=null,refreshReviewTraces=()=>{},auditTraceEntry=()=>{},adminTraceViewer=null,teacherTraceViewer=null,auditLog=[],setToast=()=>{}}){
+  const traceViewer=role==='admin'?adminTraceViewer:teacherTraceViewer;
+  const [loading,setLoading]=useState(false);
+  // 进页面就把轨迹账刷新一次（本机镜像 + 云端表 + 开发适配器）：刷新是异步的，界面先用本机镜像渲染。
+  useEffect(()=>{let active=true;setLoading(true);Promise.resolve(refreshReviewTraces()).catch(()=>{}).then(()=>{if(active)setLoading(false)});return()=>{active=false}},[]);
+  const refresh=()=>{setLoading(true);Promise.resolve(refreshReviewTraces()).catch(()=>{}).then(()=>setLoading(false))};
+  return <><PageHeader title="生成日志" desc="追踪逻辑任务、供应商调用 attempt、降级、用量与成本，并审计每一次点评的完整轨迹。" prd={PRD.logs} actions={<Button variant="secondary" icon={Download}>导出日志</Button>}/><div className="log-summary"><span><b>96.7%</b>成功率</span><span><b>4.2s</b>P95 文本延迟</span><span><b>¥428.60</b>今日成本</span><span><b>18</b>自动降级</span></div><TaskTable tasks={tasks} title="任务与调用明细"/><ReviewTraceLogsPanel role={role} viewer={traceViewer} traces={traceLog} policy={tracePolicy} sourceNote={traceSource?.note||''} loading={loading} onRefresh={refresh} recordAudit={auditTraceEntry} auditLog={auditLog} setToast={setToast}/><div className="panel trace"><div className="panel-head"><h2>调用链路示例 · T-0822</h2><Status value="生成中"/></div>{[['请求校验','通过','0.12s'],['模型池路由','Seedance 2（主）','0.03s'],['供应商调用 attempt-01','超时 · 自动重试','60.0s'],['供应商调用 attempt-02','MotionLite（备用）','运行中']].map((x,i)=><div className="trace-row" key={x[0]}><span className={i<3?'done':'running'}>{i<3?<Check/>:<RefreshCw/>}</span><div><b>{x[0]}</b><small>{x[1]}</small></div><em>{x[2]}</em></div>)}</div></>}
 function ArchiveAdmin(){return <><PageHeader title="档案管理" desc="检索、纠错、导出、删除和审计学员成长档案。" prd={PRD.archiveAdmin}/><div className="filters"><div className="search-field"><Search/><input placeholder="学员姓名、档案 ID 或班级"/></div><select><option>全部授权状态</option><option>有效</option><option>已撤回</option></select></div><div className="archive-admin-grid">{['陈一诺','林小满','赵禾','周子墨','苏西','陆一白'].map((s,i)=><div className="archive-admin-card" key={s}><span className={`avatar lg a${i}`}>{s[0]}</span><div><b>{s}</b><small>档案 A-2026-00{i+12}</small></div><span>{12+i} 条记录</span><Status value={i===4?'待授权':'正常'}/><button className="icon-btn"><MoreHorizontal/></button></div>)}</div></>}
 function PermissionsPage({setToast}){const perms=[['课后反馈','创建课次','上传素材','审核发布'],['AI 创作','使用生图','使用视频','使用点评'],['成长档案','查看','导出','纠错','删除'],['平台治理','应用管理','供应商密钥','模型启停','生成日志']];return <><PageHeader title="角色与权限" desc="功能权限与机构、校区、班级、学员数据范围同时生效。" prd={PRD.permissions} actions={<Button icon={Plus}>新建权限组</Button>}/><div className="permission-layout"><div className="panel role-list"><h2>角色/权限组</h2>{['平台超级管理员','机构管理员','老师','家长'].map((x,i)=><button className={i===2?'active':''} key={x}><ShieldCheck/><div><b>{x}</b><small>{[2,3,28,86][i]} 位用户</small></div></button>)}</div><div className="panel permission-matrix"><div className="panel-head"><div><h2>老师</h2><p>默认角色 · 仅访问被授权班级和学员</p></div><Button onClick={()=>setToast('权限配置已保存')}>保存更改</Button></div>{perms.map((g,gi)=><div className="permission-group" key={g[0]}><b>{g[0]}</b><div>{g.slice(1).map((p,pi)=><label key={p}><input type="checkbox" defaultChecked={gi<3||pi===0}/><span/>{p}</label>)}</div></div>)}</div></div></>}
-function SettingsPage({setToast}){return <><PageHeader title="系统配置" desc="管理上传阈值、任务超时、数据保存和通知策略。" prd="PRD-8.3 / F-CONFIG-01"/><div className="settings-stack"><div className="panel config-section"><h2>上传与任务阈值</h2><div className="form-grid"><label>每班学员上限<input defaultValue="60"/></label><label>单任务作品图上限<input defaultValue="30"/></label><label>单任务照片上限<input defaultValue="100"/></label><label>单个视频上限（分钟）<input defaultValue="10"/></label></div></div><div className="panel config-section"><h2>数据保存与隐私</h2><div className="form-grid"><label>原始素材默认保存<select><option>365 天</option><option>180 天</option><option>长期</option></select></label><label>删除冷静期<select><option>7 天</option><option>立即删除</option><option>30 天</option></select></label></div></div><div><Button onClick={()=>setToast('系统配置已保存')}>保存配置</Button></div></div></>}
+/**
+ * 点评轨迹的保留期与披露开关（[第三步 US-112] / F-REVIEW-TRACE-03）。
+ *
+ * 三条口径都在这里落地，判据一律来自 `data/reviewTracePolicy.js`（页面不自己算日期）：
+ *  1. **保留期可配置**（默认 90 天；「长期保留」= 不清理）；
+ *  2. **到期清理先预览影响范围**：先看清楚「截止哪天、将删几条、是哪几条」，再执行 ——
+ *     预览与执行读同一份纯函数，所以不会出现「预览说 3 条、执行删掉 5 条」；
+ *  3. **平台开关 `allowPromptDisclosure`**：关闭后老师端提示词分区显示
+ *     「管理员已限制查看，仅显示清单」（那句话的唯一真源在 data 层，界面只转出）。
+ */
+function TraceRetentionSection({policy,setPolicy,traces=[],onCleanup=()=>{},setToast=()=>{}}){
+  const [preview,setPreview]=useState(null);
+  const current=normalizeReviewTracePolicy(policy);
+  const change=patch=>{setPolicy(prev=>reviewTracePolicyPatch(prev,patch,{updatedBy:roleMeta.admin.name}));setPreview(null)};
+  const runPreview=()=>{const next=reviewTraceCleanupPreview(traces,current);setPreview(next);setToast(next.expiredCount?`预览完成：${next.expiredCount} 条到期，${next.keepCount} 条保留`:'预览完成：没有到期轨迹');return next};
+  const runCleanup=()=>{const result=onCleanup();setPreview(result.preview)};
+  return <div className="panel config-section trace-policy" data-trace-policy-section="true" data-trace-policy-retention-value={current.retentionDays} data-trace-policy-disclosure-value={current.allowPromptDisclosure?'on':'off'}>
+    <h2>点评轨迹：保留期与披露</h2>
+    <p className="config-note">轨迹按白名单留档（图片只记引用与 hash）；到期清理需先预览影响范围，确认后再执行。</p>
+    <div className="form-grid">
+      <label>轨迹保留期<select data-trace-policy-retention="true" value={current.retentionDays} onChange={event=>change({retentionDays:Number(event.target.value)})}>{REVIEW_TRACE_RETENTION_OPTIONS.map(option=><option key={option.days} value={option.days}>{option.label}</option>)}</select></label>
+      <label className="config-check"><input type="checkbox" data-trace-policy-disclosure="true" checked={current.allowPromptDisclosure} onChange={event=>change({allowPromptDisclosure:event.target.checked})}/><span>允许老师查看提示词正文（关闭后老师端只显示清单）</span></label>
+    </div>
+    <div className="trace-policy-actions">
+      <Button variant="secondary" onClick={runPreview}>预览到期清理影响范围</Button>
+      <Button variant="secondary" disabled={!preview||preview.expiredCount===0} onClick={runCleanup}>执行清理{preview&&preview.expiredCount?`（${preview.expiredCount} 条）`:''}</Button>
+      <small data-trace-policy-summary="true">{reviewTracePolicySummary(current)}</small>
+    </div>
+    {current.allowPromptDisclosure?null:<small className="trace-policy-note" data-trace-policy-note="true">关闭后老师端提示词分区显示「{REVIEW_TRACE_DISCLOSURE_NOTE}」；管理端仍可审计。</small>}
+    {preview?<div className="trace-cleanup-preview" data-trace-cleanup-preview="true" data-trace-cleanup-expired={preview.expiredCount} data-trace-cleanup-keep={preview.keepCount} data-trace-cleanup-total={preview.total} data-trace-cleanup-cutoff={preview.cutoff||''}>
+      <p data-trace-cleanup-text="true">{preview.text}</p>
+      {preview.expired.length?<ul data-trace-cleanup-rows="true">{preview.expired.slice(0,10).map(row=><li key={row.traceId} data-trace-cleanup-row={row.traceId}>{row.text}</li>)}</ul>:null}
+      {preview.expired.length>10?<small>另有 {preview.expired.length-10} 条同样到期，执行清理时一并处理。</small>:null}
+    </div>:null}
+  </div>;
+}
+
+function SettingsPage({setToast,tracePolicy=null,setTracePolicy=()=>{},traceLog=[],cleanupReviewTraces=()=>{}}){return <><PageHeader title="系统配置" desc="管理上传阈值、任务超时、数据保存和通知策略。" prd="PRD-8.3 / F-CONFIG-01"/><div className="settings-stack"><div className="panel config-section"><h2>上传与任务阈值</h2><div className="form-grid"><label>每班学员上限<input defaultValue="60"/></label><label>单任务作品图上限<input defaultValue="30"/></label><label>单任务照片上限<input defaultValue="100"/></label><label>单个视频上限（分钟）<input defaultValue="10"/></label></div></div><div className="panel config-section"><h2>数据保存与隐私</h2><div className="form-grid"><label>原始素材默认保存<select><option>365 天</option><option>180 天</option><option>长期</option></select></label><label>删除冷静期<select><option>7 天</option><option>立即删除</option><option>30 天</option></select></label></div></div><TraceRetentionSection policy={tracePolicy} setPolicy={setTracePolicy} traces={traceLog} onCleanup={cleanupReviewTraces} setToast={setToast}/><div><Button onClick={()=>setToast('系统配置已保存')}>保存配置</Button></div></div></>}
 
 function GuidePage({navigate}){const sections=[
  ['公共认证',['登录','注册','表单校验','角色快速体验'],PRD.auth,'从登录页开始'],
