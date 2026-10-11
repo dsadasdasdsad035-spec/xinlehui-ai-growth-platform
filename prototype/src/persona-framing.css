@@ -173,8 +173,19 @@
 .review-detail-tools small[data-detail-copy-state="copied"] { color: var(--blue); }
 .review-detail-tools small[data-detail-copy-state="failed"] { color: var(--coral); }
 .review-detail-section { padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
-.review-detail-section pre { margin: 0; padding: 12px; max-height: 260px; overflow: auto; border-radius: 10px; background: var(--soft); font-family: inherit; font-size: 12px; line-height: 1.7; color: var(--muted); white-space: pre-wrap; word-break: break-word; }
+.review-detail-section pre { margin: 0; padding: 12px; max-height: 260px; overflow: auto; border-radius: 10px; background: var(--soft); font-family: inherit; font-size: 12px; line-height: 1.7; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal; }
 .review-detail-section > pre + .review-detail-live { margin-top: 12px; }
+/* 分区正文本体（US-113）：六个分区各自包一层 body，桌面端与包装前的层级差一层，
+   原来那两条 `> ...` 的直接子元素间距规则要按新的层级补一份（老规则留着，兼容未包装的旧结构）。 */
+.review-detail-section-body { display: grid; gap: 0; }
+.review-detail-section-body[hidden] { display: none; }
+.review-detail-section-body > pre + .review-detail-live { margin-top: 12px; }
+.review-detail-section-body > small.review-detail-note { display: block; margin-top: 8px; color: var(--muted); font-size: 12px; }
+/* 分区标题（US-113 手风琴）：只在 ≤430px 渲染成按钮（`sectionHead` 决定）；桌面端还是原来的块头。 */
+.review-detail-section-toggle { display: flex; align-items: flex-start; gap: 8px; width: 100%; margin: 0; padding: 2px 0; border: 0; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+.review-detail-section-toggle > svg { flex: none; margin-top: 3px; color: var(--muted); transform: rotate(-90deg); transition: transform .18s; }
+.review-detail-section-toggle[aria-expanded="true"] > svg { transform: none; }
+.review-detail-section-toggle .review-detail-block-head { flex: 1; min-width: 0; margin-bottom: 0; }
 .review-detail-loaded, .review-detail-modules ul, .review-detail-prompt ul, .review-detail-rows { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
 .review-detail-loaded li { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 10px; font-size: 13px; }
 .review-detail-loaded li b { flex: none; }
@@ -1243,4 +1254,37 @@ p.framing-coverage-bad { margin: 0; padding: 10px 18px; font-size: 12px; line-he
 @media (max-width: 430px) {
   /* 面板里的通用 Button（刷新轨迹等）与系统配置里的按钮同样要撑到 44px。 */
   .review-trace-panel .review-trace-head-actions button, .trace-policy .trace-policy-actions button { min-height: 44px; }
+}
+
+/* ---------------------------------------------------------------------------
+   点评性能（[第三步 US-113]）：批量 flush / 展开折叠响应 / 主线程长任务 / 长推理滚动 /
+   390px 手风琴 / 内存峰值六项读数。与第二步的「装裱性能」面板同一套长相与状态色。
+   窄屏（≤430px）：读数一列、六个分区走手风琴（正文收起时 `hidden`，标题撑到 44px）。
+   --------------------------------------------------------------------------- */
+.review-perf-panel { display: flex; flex-direction: column; gap: 10px; margin-top: 18px; border: 1px solid #eadfbd; border-radius: 18px; background: #fffdf7; padding: 16px 18px; }
+.review-perf-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+.review-perf-head b { font-size: 13px; color: #292720; }
+.review-perf-head em { font-style: normal; font-size: 10px; font-weight: 800; color: #3f5a1e; background: #e6f0d6; border-radius: 999px; padding: 3px 10px; }
+.review-perf-head .review-perf-summary[data-review-perf-summary*='超标'] { color: #9a3529; background: #fadad5; }
+.review-perf-head small { flex: 1 1 100%; font-size: 10px; line-height: 1.6; color: #857a64; word-break: break-word; }
+.review-perf-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 0; padding: 0; list-style: none; }
+.review-perf-list li { display: flex; flex-direction: column; gap: 3px; border: 1px solid #ece1c6; border-radius: 11px; background: #fffdf7; padding: 8px 10px; min-width: 0; }
+.review-perf-list li[data-review-perf-state=ok] { border-color: #cfe1b4; background: #f6fbef; }
+.review-perf-list li[data-review-perf-state=over] { border-color: #eebdb6; background: #fdeceb; }
+.review-perf-list li[data-review-perf-state=pending] { opacity: .85; }
+.review-perf-list li b { font-size: 11px; color: #292720; }
+.review-perf-list li em { font-style: normal; font-size: 10px; line-height: 1.6; color: #857a64; word-break: break-word; }
+
+@media (max-width: 430px) {
+  /* 390px：读数挤成一列；六个分区的标题是可点区域（≥44×44px），正文收起时完全不显示。 */
+  .review-perf-list { grid-template-columns: minmax(0, 1fr); }
+  .review-perf-panel { padding: 14px; }
+  .review-detail-body { padding: 12px; gap: 10px; }
+  .review-detail-section { padding: 10px 12px; }
+  /* 长推理（US-113 第 4 条）：展开后给更高的滚动区，滚动仍然限制在格子里不撑破页面。 */
+  .review-detail-section-body pre { max-height: 320px; overscroll-behavior: contain; }
+  .review-detail-section-toggle { min-height: 44px; align-items: center; }
+  .review-detail-section-toggle > svg { margin-top: 0; }
+  .review-detail-tools button, .review-detail-actions button { min-height: 44px; }
+  .review-detail-toggle { min-height: 44px; }
 }

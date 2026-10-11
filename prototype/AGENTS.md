@@ -1402,6 +1402,58 @@ DOM/canvas 部分在 `src/services/artworkWriteBack.js`，编排在 `main.jsx` �
   US-103a 的 52 项浏览器断言作为回归全绿。
 
 
+## 第三步「五维点评」的移动端与流式渲染性能（US-113）
+
+六项预算（批量 flush 100ms / 展开折叠 100ms / 主线程长任务 200ms / 长推理 10000 字 / 手风琴 430px /
+内存 300MB）的唯一真源是 `src/data/reviewStreamPerformance.js`（零依赖、可 Node 直跑）；
+浏览器侧的执行（增量缓冲、长任务观测、响应计时、滚动测量、内存采样）在
+`src/services/reviewStreamPerformance.js`。界面的「点评性能」读数面板、浏览器断言与 Node 断言
+读的都是 `reviewPerformanceChecks()` 的同一份 `rows` —— **不要在面板或脚本里另写一套阈值**。
+
+- **推理 / 正文增量按 ≥100ms 批量 flush**：`createReviewStreamBuffer()` 接在
+  `streamArtworkReview` 的 `onReasoning` / `onContent` 上（`main.jsx` 的 `startCloudReview`），
+  逐 chunk 进来的只是攒着（`push*`），距上次渲染够 `intervalMs` 才写 state；到点未渲染的登记一次
+  补渲染（多个 chunk 只登记一次）。**首字立刻渲染**（第一次 push 就是开头），收尾（成功 / 失败 / 中止）
+  在 `finally` 里 `flushNow('settle')` + `stop()`，并把原始计数交给 `setReviewStreamStats`。
+  被新一次生成顶掉的那一代由 `reviewStreamBufferRef.current===streamBuffer` 拦住，绝不回写界面。
+- **「还没 flush 过」不能用 0 当哨兵**（本轮真踩，Node 断言当场抓到）：注入时钟 / 相对时间下第一次
+  flush 就发生在 0，`if(!lastFlushAt)` 会让**每一次 push 都立刻渲染** —— 逐 chunk 渲染的 bug 原样回来。
+  服务层用 `lastFlushAt = null` 表示「还没 flush 过」。
+- **收尾补渲染不计入「相邻渲染间隔」**：settle 那一次可能紧跟最后一次周期渲染（实测差 1ms），
+  算进去会把「流结束」误判成「渲染太快」。`reviewStreamFlushStats({chunks,times,reasons})` 因此
+  只对 `push` / `timer` 两类算间隔（`cadenceGaps` / `intervalOk`），`settleFlushes` 单列并在文案里写明。
+  「不逐 chunk」的判据是 `batched = chunks > 1 && flushCount < chunks`。
+- **摘要里的「已用时」按 `startedAt` 当场推算**（`ReviewDetailPanel` 的 `elapsedMs`），不再只读 1 秒一次的
+  tick：批量 flush 之后渲染节奏本来就是 ≥100ms 一次，只读 tick 会让读数卡在上一秒（US-103a 的
+  「已用时随时间增长」断言会因此变红）。收束后仍读冻住的 `stream.elapsedMs`（共 N 秒）。
+- **响应时间 = 点一下 → 界面提交**（`createResponseProbe`：点击处 `start()`，`useEffect` 里 `end()`；
+  面板展开收起与分区手风琴共用一个探针，报最慢的一次）。验证脚本用 `MutationObserver` 独立量同一个时刻
+  （微任务回调 = DOM 改完的那一刻）。**注意**：headless Chromium 里首次挂载 / 首次卸载整块正文本体要现算
+  这套子树的样式（实测 60~70ms 提交 + 首帧 ~150ms 的一次性开销，272 个节点），二次起 5~17ms；
+  读数里如实分开记这两件事，别把「首帧慢」当成「React 慢」。
+- **长推理（>10000 字）展开后可滚动**：面板量自己那个 `<pre>` 的 `scrollHeight / clientHeight`
+  （`measureReasoningScroll`）后报给上层；键里带上 `requests`，重新生成后会重报一次（否则读数会停在
+  「等展开后量一次滚动区」）。`scrollable` 为 null（折叠中 / 量不到）时这一行给 `ok: null`，不写成
+  「滚不动」。
+- **390px 六个分区走手风琴**：`reviewAccordionMode({viewportWidth})`（≤430px）+ `reviewSectionOpenPlan()`
+  （手风琴只展开第一个分区，桌面六个平铺）+ `toggleReviewSection()`（手风琴同时只展开一个，允许六个全收起）。
+  展开集合住在 `TeacherFlowV2` 的 `reviewOpenSections`（视口口径一变就重置成该口径的初始计划）。
+  每个分区：只有 `accordion` 为真时标题才是按钮（`data-detail-section-toggle`），正文本体包在
+  `data-detail-section-body` 里、收起时挂 `hidden`（**DOM 还在**，所以文案 / 导出断言不受影响；
+  「折叠态不挂载正文 DOM」指的是面板整体折叠那一条）。桌面端不渲染标题按钮，六个分区与 US-103b 一字不变。
+- **读数探针**：面板根 `data-review-perf` / `-measured` / `-total` / `-all-ok` / `-summary`，
+  批量 flush 的原始证据 `data-review-flush-chunks` / `-count` / `-batched` / `-per-flush` / `-min-gap` /
+  `-max-gap` / `-interval-ok` / `-settle`，六行 `data-review-perf-row="<id>"` + `-state`（ok/over/pending）。
+  只读调试钩子 `window.__xinlehuiReviewStream={flush,thread}`（原始 flush 时刻与观测方式，供脚本独立重算）。
+- **验证方式（本轮实测）**：`pnpm run build` 通过；Node 直跑 `data/reviewStreamPerformance.js` +
+  `services/reviewStreamPerformance.js` **143 项**（常量 / flush 延迟 / 批量读数与结论 / 响应 / 长任务 /
+  长推理 / 手风琴计划与切换 / 六项汇总 / 零依赖检查 / **注入时钟下的缓冲批量行为**）；
+  浏览器 **81 项**（headless Chrome + CDP + 慢速与快速两种替身：折叠态不挂载正文 DOM → 批量 flush 的
+  间隔与次数（收尾补渲染单列）→ 长任务（产品与脚本各测一次）→ 12600 字推理滚动 → 展开折叠响应提交 →
+  内存峰值 → 快速流批量倍数 → 桌面六分区平铺回归 → 390px 手风琴逐个展开 + 44px + 不横向溢出 → 0 异常），
+  截图 242~244 留档；回归 US-103a 浏览器 52、US-103b 浏览器 51、US-107b 浏览器 63、US-112 浏览器 101 全绿。
+
+
 ## 第三步「五维点评」的技能加载清单（US-104 / F-REVIEW-SKILL-01）
 
 「这次点评用了哪几项技能、没用上的又是为什么」的唯一真源是 `src/data/skillLibrary.js` 的
