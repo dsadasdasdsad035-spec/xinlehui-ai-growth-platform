@@ -17,6 +17,7 @@ import {
 } from './overlayLayout';
 import { qrMatrix, QR_DEFAULT_ECC } from './qrCode';
 import { resolveQrTargetUrl } from '../data/qrTargets';
+import { artworkExportPlan } from '../data/artworkExport';
 
 /** 合成画布的固定尺寸（装裱输出口径：1800×1360 JPEG 0.92）。几何与遮挡统计都从这里取，别各写一份。 */
 const FRAME_CANVAS_WIDTH = 1800;
@@ -30,7 +31,12 @@ const FRAME_STYLES = {
   '东方雅境': { outer: '#27241f', inner: '#eee8dd', plaque: '#27241f' }
 };
 
-function loadImage(source) {
+/**
+ * 读一张图（导出侧也要用同一份：先拿到原图尺寸才能算导出画布的倍数）。
+ * 每次调用都是一个新的 `Image`，不缓存解码结果 —— 拿到的 `naturalWidth/naturalHeight` 一定
+ * 与这次传进来的地址一致（换作品、换方向都不会读到上一张的尺寸）。
+ */
+export async function loadImage(source) {
   return new Promise((resolve, reject) => {
     const image = new Image();
     image.onload = () => resolve(image);
@@ -1001,6 +1007,14 @@ function buildFramingLayout({ view, imageWidth = 1, imageHeight = 1, rotation })
 }
 
 /**
+ * 合成到 canvas（装裱的唯一绘制入口）。
+ *
+ * 默认就是成品图那一档：1800×1360、逻辑坐标 1:1。`scale` 是给「保存图片」（US-008a）用的：
+ * 画布按倍数放大、绘制坐标系不变（`ctx.scale`），因此高清导出图与成品图是同一张构图的不同分辨率。
+ * 返回 `{ canvas, layout, imageWidth, imageHeight, scale }` —— 导出侧要拿真实图片尺寸去算倍数
+ * （`planFrameExport`）、拿画布去编码 PNG / JPEG。
+ * 编码与体积口径不在这里：本函数只画，不做任何 `toDataURL` / `toBlob`。
+ *
  * 叠加元素的变量上下文（US-003a）：`{机构名}` / `{学员名}` / `{作品名}` / `{老师姓名}` / `{课次日期}`
  * 由 `orgName` / `student` / `title` / `teacherName` / `date` 拼出来，也可以用 `variables` 直接覆盖
  * （批量套用与另存模板时用得上）。上下文里的空值替换成空串，因此不会把 `{机构名}` 原样印在画面上。
@@ -1014,7 +1028,7 @@ function buildFramingLayout({ view, imageWidth = 1, imageHeight = 1, rotation })
  *     时间元素 `source: 'lesson'` 与变量 `{课次日期}` 读 `lessonDate`，缺省回落 `date`（老调用方一字不变）。
  *     US-038 会把展签日期也改成课次日期，在那之前这两个入口保持分开。
  */
-export async function renderFramedArtwork({ source, spec = {}, student = '', title = '', date = '', lessonDate, rotation, orgName = '', teacherName = '', variables = null, today, qrValues = null }) {
+export async function renderFramedArtworkToCanvas({ source, spec = {}, student = '', title = '', date = '', lessonDate, rotation, orgName = '', teacherName = '', variables = null, today, qrValues = null, scale = 1 }) {
   const image = await loadImage(source);
 
   const view = frameSpecRenderView(spec);
@@ -1034,9 +1048,16 @@ export async function renderFramedArtwork({ source, spec = {}, student = '', tit
     deg, sideways, renderedWidth, renderedHeight, drawScale
   } = layout;
 
+  // 导出（US-008a）：画布按 scale 放大，但绘制坐标系保持 1800×1360 逻辑坐标（一次 ctx.scale 搞定）。
+  // 于是展签字号、水印位置、框带宽度这些「相对短边的比例」在任意导出尺寸下都完全一致 ——
+  // FR-25 的 4000px 导出图与 1800px 成品图是同一张构图的两种分辨率，不是两个版式。
+  // scale = 1（默认）走原路径：不调 ctx.scale，与改动前的输出逐字节相同。
   const canvas = document.createElement('canvas');
-  canvas.width = width; canvas.height = height;
+  const renderScale = Number(scale) > 0 ? Number(scale) : 1;
+  canvas.width = Math.max(1, Math.round(width * renderScale));
+  canvas.height = Math.max(1, Math.round(height * renderScale));
   const ctx = canvas.getContext('2d');
+  if (canvas.width !== width || canvas.height !== height) ctx.scale(canvas.width / width, canvas.height / height);
 
   // 最外圈是展墙，用卡纸色的浅色版本，避免出现纯白死边。
   ctx.fillStyle = matColor; ctx.fillRect(0, 0, width, height);
@@ -1134,5 +1155,27 @@ export async function renderFramedArtwork({ source, spec = {}, student = '', tit
     });
   }
 
+  // 返回画布而不是编码结果：导出侧要自己决定 PNG / JPEG 与质量（US-008a 的两档输出）。
+  return { canvas, layout, imageWidth: image.naturalWidth, imageHeight: image.naturalHeight, scale: renderScale };
+}
+
+/**
+ * 成品图（既有口径，一字不变）：1800×1360 JPEG 质量 0.92。
+ * 调用方传进来的任何 `scale` 都会被忽略 —— 这一档的分辨率是验收写死的（US-002b 的输出口径），
+ * 想导出更大的图请走 `renderFramedArtworkToCanvas`（保存图片 US-008a）。
+ */
+export async function renderFramedArtwork(args = {}) {
+  const { canvas } = await renderFramedArtworkToCanvas({ ...args, scale: 1 });
   return canvas.toDataURL('image/jpeg', 0.92);
+}
+
+/**
+ * 导出画布计划（US-008a）：只算几何、不绘制。`artworkExportPlan` 需要两个输入 ——
+ * 装裱几何里的 `ratio`（画布 1800×1360 下作品被缩放到的比例）与画布尺寸，两者都由
+ * `buildFramingLayout` 给出：「算出多大」与「真正渲染多大」因此用的是同一份几何，
+ * 换模板（框更宽 / 卡纸更厚 / 拱形）时导出尺寸会跟着变，不会拿写死的常数硬套。
+ */
+export function planFrameExport({ spec = {}, imageWidth = 1, imageHeight = 1, rotation, quality } = {}) {
+  const layout = buildFramingLayout({ view: frameSpecRenderView(spec), imageWidth, imageHeight, rotation });
+  return artworkExportPlan({ quality, ratio: layout.ratio, canvasWidth: layout.width, canvasHeight: layout.height });
 }

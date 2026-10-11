@@ -501,3 +501,42 @@
   .lesson-overlay-foot button{flex:1 1 auto;min-height:44px}
   .lesson-overlay-done{display:block}
 }
+
+/* ---- 保存图片（[第二步 US-008a]）--------------------------------------------------
+   两档输出（高清 PNG / 微信 JPG）与保存方式说明。面板本身很薄：口径（长边上限 / 质量 / 体积）
+   全部来自 `data/artworkExport.js`，这里只负责排版；iOS Safari 与微信内置浏览器不执行 blob 下载，
+   改用 `.save-image-sheet` 这一层「长按保存」提示页（图 + 怎么存的说明）。 */
+.save-image-panel{display:flex;flex-direction:column;gap:10px;margin-top:22px;border:1px solid #eadfbd;border-radius:18px;background:#fffdf7;padding:20px}
+.save-image-head{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.save-image-head b{font-size:13px;color:#292720}
+.save-image-subject{font-style:normal;font-size:10px;font-weight:800;color:#7a5b00;background:#fff2c8;border-radius:999px;padding:3px 10px}
+.save-image-head small{flex:1 1 100%;font-size:10px;line-height:1.6;color:#857a64}
+.save-image-hint{margin:0;font-size:10px;line-height:1.6;color:#a5761a;background:#fff8e3;border:1px dashed #ecd9a5;border-radius:10px;padding:8px 10px}
+.save-image-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.save-image-action{display:flex;flex-direction:column;gap:5px;border:1px solid #e3d7b5;background:#fff;border-radius:13px;padding:11px 12px;text-align:left;cursor:pointer}
+.save-image-action:hover{border-color:#d8c184}
+.save-image-action.is-active{border-color:#c99908;box-shadow:0 0 0 2px #fff0bd;background:#fffdf3}
+.save-image-action b{font-size:12px;color:#292720}
+.save-image-action small{font-size:10px;line-height:1.55;color:#857a64}
+.save-image-action:disabled{opacity:.5;cursor:default;box-shadow:none}
+.save-image-name{margin:0;font-size:10px;color:#857a64;word-break:break-all}
+.save-image-name code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;color:#514a38;background:#f7f1de;border-radius:6px;padding:2px 6px}
+.save-image-platform{margin:0;font-size:10px;line-height:1.6;color:#857a64}
+.save-image-message{margin:0;font-size:10px;line-height:1.6;border-radius:10px;padding:8px 10px;background:#f4f1e7;color:#514a38;word-break:break-all}
+.save-image-message.is-saved{background:#edf5e2;color:#3f5a1e}
+.save-image-message.is-error{background:#fdeceb;color:#9a3529}
+.save-image-message.is-preview{background:#fff8e3;color:#7a5b00}
+.save-image-sheet{position:fixed;inset:0;z-index:80;display:grid;place-items:center;background:rgba(41,39,32,.55);padding:16px;overflow:auto}
+.save-image-sheet-card{display:flex;flex-direction:column;gap:10px;width:min(520px,100%);max-height:92vh;overflow:auto;background:#fffdf7;border-radius:18px;padding:16px}
+.save-image-sheet-head{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.save-image-sheet-head b{font-size:12px;color:#292720;word-break:break-all}
+.save-image-sheet-head small{font-size:10px;color:#857a64}
+.save-image-sheet-card img{display:block;width:100%;height:auto;border-radius:10px;border:1px solid #eadfbd;background:#fff}
+.save-image-sheet-hint{margin:0;font-size:11px;line-height:1.7;font-weight:700;color:#7a5b00;background:#fff2c8;border-radius:10px;padding:9px 11px}
+.save-image-sheet-actions{display:flex;justify-content:flex-end;gap:9px}
+@media(max-width:800px){
+  .save-image-panel{padding:14px}
+  .save-image-actions{grid-template-columns:1fr}
+  .save-image-action{min-height:44px}
+  .save-image-sheet-card button{min-height:44px}
+}

@@ -501,6 +501,36 @@ DSH 的 `browser_*` 工具**没有 selectOption 能力**：`browser_type` 走的
   在底部条带（y ≥ 1150）的指纹不同、切回课次日期后与前一版**逐字节一致**；④ 断言前先让成品图**稳定**
   （连续 3 次采样不变）再当基线 —— 否则会拿中间态当基线，得到「复位后与基线不一致」这种假失败。
 
+## 保存图片：两档导出与保存路径（US-008a / FR-25 / FR-26）
+
+第二步「保存图片」把成品图导出成两个**不同的分辨率口径**，规则全部集中在
+`src/data/artworkExport.js`（零依赖纯函数），执行在 `src/services/artworkExport.js`：
+
+| | 高清 PNG | 微信 JPG |
+|---|---|---|
+| 格式 / 质量 | `image/png` 无损 | `image/jpeg` 质量 0.85（超 1MB 按阶梯降质重编） |
+| 尺寸 | 先让作品画到 **1:1**（`scale ≥ 1/ratio`），再受长边 ≤ 4000px 约束 | 画布长边收敛到 1600px（不做无意义放大） |
+| 体积 | 无上限（体积随像素走） | ≤ 1MB（`ARTWORK_EXPORT_JPEG_QUALITY_LADDER` 兜底） |
+
+- **「保留裁剪后的原始像素」是结构性质，不是观感**：`artworkExportPlan()` 用装裱几何的 `ratio`
+  反推倍数（`scale ≥ 1/ratio`），返回 `keepsOriginalPixels` 作为**诚实的标记** —— 当 1:1 会顶穿
+  4000px 上限（例如班级反馈直接拿手机原图当作品）时它是 `false`；界面与断言都读这一个字段，
+  不要另写一套「画布够大就算保留像素」的判断。
+- 渲染入口是 `renderFramedArtworkToCanvas({..., scale})`（`services/framing.js`）：画布按 scale
+  放大，但**绘制坐标系仍是 1800×1360 逻辑坐标**（一次 `ctx.scale`），所以展签字号、水印位置、
+  框带宽度这些「相对短边的比例」在 4000px 导出图上与成品图完全一致 —— 导出图不是「另一套版式」。
+  `renderFramedArtwork` 是它的薄包装（固定 `scale: 1` + JPEG 0.92），**老调用方逐字节不变**。
+- 新增档位/改规则只改 `ARTWORK_EXPORT_QUALITIES` 一处：界面按钮文案、`artworkExportRulesText()`、
+  导出计划与断言全读它。文件名规则 `artworkExportFilename()` = `学员名_作品名_课次日期_装裱.{png|jpg}`：
+  空格（含全角）与非法字符一律去掉、下划线是分隔符因此片段内的下划线也去掉、**空片段直接不参与拼接**
+  （不会出现 `__装裱.png`），日期复用 `formatLessonDateDots`。
+- 保存路径按 UA 分流（`artworkExportSaveStrategy`）：桌面 / Android 走 `<a download>`；
+  **iOS 全系与微信内置浏览器会忽略 blob 下载**，因此降级为 `.save-image-sheet` 那一层
+  「长按图片 → 保存图片 / 存储到照片」的提示页（页面内用 object URL 显示真图，关闭时 `revoke`）。
+  判据是纯函数，验证时用 CDP `Emulation.setUserAgentOverride` 真的切 UA 就能端到端跑通两条路径。
+- **本故事不写回课次**（FR-27 的 (b) 是 US-008b）：`composeArtworkExport()` 返回
+  `{blob, filename, width, height, plan, qualityUsed}` 就是写回侧要的输入，别在 UI 里再渲染第二次。
+
 ## 装裱参数 spec：v1 平面结构 / v2 分组结构
 
 `src/services/frameSpec.js` 同时持有两代结构，动装裱参数前先确认自己在哪一代：
@@ -861,6 +891,15 @@ DSH 的 `browser_*` 工具**没有 selectOption 能力**：`browser_type` 走的
   `ReferenceError`（拼错的常量 / 没导入的标识符）表现成「功能一直不出效果」，而控制台一个错都没有。
   容错的 catch 至少要把失败原因落到界面或 state 上（US-007 的 `overlayPreviewError`），
   否则调试时只能靠打补丁数 `toDataURL` 才知道「那段代码到底跑没跑」。
+- **`pnpm run build` 不检查未定义的标识符**：渲染里引用一个没定义的变量（本轮 `saveImageStrategy`）
+  构建完全正常，直到浏览器渲染到那一行才 `ReferenceError`，React 直接把整棵树卸载成白屏。
+  这类错误只有「真的把页面点到那一步」才会暴露 —— UI 故事的最小验证是把改动的界面**渲染出来**
+  （截图 + 断言），不要只看构建与 Node 断言。
+- **验证「后台改模板 → 老师端生效」时要挑一套不在本机云端表里的模板**：本机云端
+  `framing_presets` 表存着最早的 4 套（`frame-starlight / frame-oak / frame-ink / frame-ai-shuimo`），
+  它们是**真源**且本机写不回去，登录老师端时会把后台刚改的本机值顶掉（表现：后台明明保存成功、
+  老师端却还是旧值）。要验证改动生效，改**其余 7 套**里的任意一套（如「深棕展框」），
+  或在老师端点一下那套样式再断言。
 - 旧数据兼容的写法：`normalize<X>(raw)` 永不抛错，缺字段补默认值，**无法映射的原始对象挂到 `legacy` 字段上原样保留**，
   宁可多带一个字段也不要丢数据；不要为了让旧数据「看起来完整」而编造日期或序号。
 
@@ -1105,3 +1144,35 @@ service 模块也能在 Node 里测：`cloud.database` 是**可写属性**，导
   指纹要拿 `window.__us026strHash(url)`（页面内重算同一套 FNV）**交叉验证**，别直接信 DOM 里的值。
 - 守卫函数要在**真实运行中的应用模块实例**上验：`await import('/src/data/artworkLayers.js')` 然后
   `applyArtworkLayerPatch({originalUrl:'ORIG'},{originalUrl:'HACKED'})` → 值不变 + `blocked:['originalUrl']`。
+
+### 验证「导出 / 下载」类功能（US-008a 起）
+
+- **下载是真的假的，靠打补丁数**：页面内给 `HTMLAnchorElement.prototype.click` 打补丁记录
+  `{download, href}`、给 `HTMLCanvasElement.prototype.toBlob` / `toDataURL` 记录
+  `{type, quality, width, height}`（`PNG` 的质量参数必须是 `null`）。判据写成
+  「`toBlob` 只被调用一次 + 画布尺寸 = 计划尺寸 + `<a download>` 的文件名 = 面板预览的名字」，
+  比只断言「有个 toast 说保存成功」强得多 —— 假下载（`console.log('已保存')`）也能弹出 toast。
+- **下载到的字节要能读回来**：`downloadArtworkExport` 里的 object URL 是**延后 30s 回收**的，
+  所以断言里可以 `await fetch(window.__dw[0].href)` 拿回 blob，再解码比尺寸、采样颜色、
+  算 SHA-256（两条路径各自解码比尺寸、采样颜色、算 SHA-256）；「同一份输入重跑两次产物逐字节相同」
+  用 `crypto.subtle.digest('SHA-256', bytes)` 比对，比比长度可靠。
+- **「没有被缩小」用同一特征在两图里的跨度之比来证**：夹具做成「深蓝桌面 + 米白画纸 + 四象限色块」，
+  在画心与导出图里各自找**色块的外接框**，`k = 导出跨度 / 画心跨度` 就是作品在导出图里的实际缩放倍数 ——
+  高清档应当 `k ≈ 1`（1:1，既没缩水也没无谓放大），微信档应当 `k < 1`。
+  这比「拿裁剪检测器算出来的尺寸去比 bbox」稳：检测器的边界有 ±几像素浮动，而同一个特征在两图里的
+  相对跨度不受它影响。
+- **UA 分支用 CDP `Emulation.setUserAgentOverride` 真跑**：切到
+  `... MicroMessenger/8.0.49 ...`（微信）与 `... iPhone OS 17_5 ...`（iOS Safari）后 reload，
+  断言面板标成「长按保存」、点保存后出现提示页、并且 `<a download>` 计数**保持 0**。
+
+### 只读探针读 React state 的两个坑（US-008a 起）
+
+- **同名 key 的两个 hook 别读错**：`media = {artwork, photo}` 与 `batchUploads = {artwork: [], photo: []}`
+  的 key 完全一样，遍历 `memoizedState` 取「最后一个匹配」会拿到 `batchUploads`，
+  表现是「画心一直为空、装裱永远没完成」。判据要加上**值的类型**：
+  `artwork === null || (typeof artwork === 'object' && !Array.isArray(artwork))`。
+- **fiber 探针只读它一次写死的 state 是安全的，读会频繁变的对象要谨慎**：本轮的 `media` 在
+  装裱两段 effect 里被替换多次，`host[__reactFiber$]` 与 `fiber.alternate` 都可能读到上一次提交
+  （两条都读过、都是旧的）；装配上仍然能读到「上传那一刻」的 media。
+  要用「最终值」做断言时，一律以 **DOM 上的只读属性**为准（本轮面板把状态落成
+  `data-save-image-status/ready/strategy/filename`，断言全读它们）。
