@@ -1558,6 +1558,64 @@ DOM/canvas 部分在 `src/services/artworkWriteBack.js`，编排在 `main.jsx` �
   复制为副本（新 id / 名称去重）、刷新后仍在、删除的引用范围提示、老数据补当前快照、390px 单列与 44px；
   截图 176~178 留档。
 
+## 管理端「Agent 指令与记忆」：拼装预览与敏感内容校验（US-106b）
+
+两个新模块 + 页面上一块面板：**拼装预览**（选一位学员与一节课 → 实时显示会发出去的 system 提示词）
+与**敏感内容校验**（正文含手机号 / 微信号 / QQ 号 / 邮箱时阻断写入）。页面仍是 `src/admin/AgentFilesPage.jsx`。
+
+- **预览必须调老师端那两个函数，不许自己拼**（验收原文「拼装预览与老师端实际加载使用同一个拼装函数」）：
+  页面里就是 `agentFileLoadout()`（`data/agentFiles.js`）+ `buildPersonaPrompt()`（`services/llmReview.js`），
+  与 `main.jsx` 的 `startCloudReview` 逐字同参。页面**不得**出现 `【agent.md】` / `【长期记忆` 这类段落字面量
+  （浏览器断言会去 fetch 页面源码点名这两件事），也不得自己按 `enabled` / scope 过滤一遍文件。
+- `src/data/agentFilePreview.js`（零依赖，只 import 同层 `lessons.js`）= 界面到上下文的翻译：
+  课次候选（`sortLessons` 顺序、没有日期的脏数据不进候选）、学员候选（`participants` → `studentId` 用
+  `makeStudentId()` 口径）、`agentFilePreviewContext()`、下拉标签 / 上下文一句话 / 空态文案、
+  `agentFilePreviewTargetForFile()`（打开「学员记忆（陈一诺）」时预览自动停在她所在的课）。
+  **上下文的九个键要与 `main.jsx` 的 `startCloudReview` 保持一致**（机构 id/名、老师 id/姓名、
+  班级 id/名、学员 id/姓名、课次日期）—— 那边改了这里要跟着改，预览的断言会拿面板上的
+  `data-agent-file-preview-*-id/-name` 独立重算一次并**逐字符**比 system。
+  课次日期用 `formatLessonDateDots()`（`2026.08.11`，与老师端传的同一个口径）；观察词候选用
+  `keywordCandidatesPrompt('个人反馈')`（选一位学员 = 个人反馈分支）。
+- **预览文件库 = 已保存的文件库 + 编辑器当前草稿**（`isNew` 时追加），所以改一个字预览就变；
+  面板上写清当前是「含未保存的改动」还是「按已保存的文件库拼装」（`data-agent-file-preview-source`）。
+  老师端的真源仍是 `loadAgentFiles()`（本机镜像；`agent_files` 云表未建）。
+- **没有人设时预览走兜底分支**（`agent.md` / 记忆文件不进 system）—— 与老师端行为一致，面板上如实说明，
+  不要为了「预览好看」而伪造一个人设。
+- `src/data/agentFileSensitive.js`（零依赖）= 「什么算联系方式、怎么给可读提示」的唯一真源：
+  四条规则（微信号 / QQ 号 / 手机号 / 邮箱，顺序即报告顺序），手机号额外做**边界校验**
+  （前后不紧邻数字、去分隔符后必须 11 位或 86+11 位），`wxid_` / 「微信号」/「加微信」/ 显式冒号
+  多种写法都认。同一段文字被多条规则命中时**只报一次**（按靠前规则 + 重叠区间去重）。
+- **提示里一律遮蔽、连所在行也遮蔽**：`maskSensitiveText()` 按长度分档（≥11 位露头 3 尾 4，
+  8~10 位露头尾各 2，≤7 位露头尾各 1，邮箱只露前两位 + 域名）；`scanAgentFileSensitive()` 还会
+  从后往前把**全部命中**替换一遍得到 `maskedText`，每行的 `lineText` 取自它 ——
+  否则「一行里既有微信号又有邮箱」时，微信号那一行会把邮箱原样带出来（本轮真踩，浏览器断言抓住）。
+  带捕获组的规则（微信号 / QQ）只把**账号本身**当片段（`hit.value` / `hit.masked`），
+  命中 `微信：abc12345` 的报告是 `微信号（ab****45）` 而不是把「微信：」也当成号码。
+- **闸门点：三条会「把正文写成一个新版本」的路径** —— `save`（保存）、`duplicate`（复制为副本）、
+  `rollback`（回滚到某一版，用该版快照的正文判）。三处共用页面里的 `contentBlocked(content, 动作名)`：
+  被拦时**不落库、不推云端、不改 state**，只 `setNotice(agentFileSensitiveIssue(...))`（文案里点明动作名）。
+  「停用 / 启用」不写正文，因此不校验。判据要的是「版本与快照都没动」——浏览器断言同时查
+  `version` / `content` / `versions.length` 三项，而不是只看版本号。
+- **验收探针**：面板 `[data-agent-file-assembly]`（`data-agent-file-preview-lesson/-student/-profile/-dirty/
+  -summary/-chars/-loadout-hash` + 九个上下文字段 `-org-id / -org-name / -teacher-id / -teacher-name /
+  -class-id / -class-name / -student-name / -lesson-date`）、下拉 `[data-agent-file-preview-lesson-select]` /
+  `[data-agent-file-preview-student-select]`、上下文 `[data-agent-file-preview-context]`、
+  来源 `[data-agent-file-preview-source]`（`draft|saved`）、逐文件行 `[data-agent-file-preview-file]`
+  （`-included` / `-reason`，行文案复用 `agentFileRowText`）、正文 `[data-agent-file-preview-system]`；
+  敏感块 `[data-agent-file-sensitive]`（`-rules` / `-lines`）、逐行 `[data-agent-file-sensitive-row]` /
+  `-line`、读数 `[data-agent-file-sensitive-note]`、提示 `[data-agent-file-notice]`。
+- **拼装预览面板在 `.agent-files-page` 之外**（它是并排布局之后的整块），所以 430px 下那条
+  「可点区域 ≥44px」的规则要单独补一遍（`.agent-file-assembly select/button`），否则 390px 断言会红。
+- 验证方式（本轮实测）：Node 直跑两个新模块 **109 项**断言全绿（四条规则的正例与误报例、边界与
+  11 位校验、重叠去重、行号与遮蔽、四动作文案、课次/学员候选与回退、上下文九键、上下文一句话、
+  跟着文件选目标、空态与脏输入、七份种子正文全干净）；回归 US-106a 数据 153 全绿、
+  US-044（= US-105）数据 53 全绿；浏览器（headless Chrome + CDP）**55 项**全绿、0 未捕获异常 /
+  0 console error —— 面板默认选中一节课一位学员、system 与**独立重算逐字符一致**（含版本指纹）、
+  换学员/换课次/改正文都实时反映、编辑器源码不含自拼段落、手机号/微信号/邮箱的实时告警与遮蔽、
+  保存与复制被拦下且版本与快照都没动、改干净后保存成功、停用后预览清单标「未加载」且正文退出 system、
+  390px 不横向溢出且下拉 ≥44px；另回归 US-106a 浏览器 65 项、US-044 浏览器 41 项全绿；
+  截图 179~182 留档。
+
 ## 容易踩的坑
 
 - **写接口抛错时「await 之后就没了」**：`save<X>/create<X>/update<X>` 是「先写本地镜像再推云端」，
@@ -1601,6 +1659,17 @@ DOM/canvas 部分在 `src/services/artworkWriteBack.js`，编排在 `main.jsx` �
   `bound_course_types` 列、带新列的写入会被整条拒掉（400 `DATABASE_PGRST204`），模板改动只在本机落地。
   所以后台改模板 → 老师端看得见（刷新也在）；反过来说，**想让改动同步到别的设备目前做不到**，
   这是云表补列之前的口径。旧写法（「要挑一套不在云端表里的模板」）已不成立。
+- **JSX 里少一个 `<` 会报成完全无关的 `Expected } but found Identifier`**（US-106b 真踩，耗了大半个
+  iteration）：`<div className="x">{CircleAlert size={16}/>{notice}</div>` 里丢掉那个 `<`，报错行指向
+  外层 `{notice ? <div …` 那个容器、列位置落在一个属性名上，信息是「Expected `}` but found `Identifier`」——
+  看起来像 oxc 的 JSX 解析器坏了。更坑的是**错误行会跟着文件里的行数一起挪**：删掉报错那一行，错误就跳到
+  「下一个 `{…}` 容器」（`{versionRows.map(...)}` 等），于是「挨个删块」的二分永远是红的、看起来处处都错。
+  正确的排查顺序：① 拿一份**确定能过**的版本（`git stash` / 只加一块）做基线；② 用
+  `createServer({server:{middlewareMode:true}}).transformRequest('/src/x.jsx')` 在 Node 里拿精确的
+  行列号（比全量 build 快得多，也是唯一能一眼看出「报错位置其实是 JSX 子节点位置」的手段）；
+  ③ 比字节时别只 `diff` 行文本，用 `difflib.SequenceMatcher` 看 opcodes（本轮真正的差异就是
+  一个 `{` ↔ `<`，行文本打印出来一模一样）。
+  顺手记一条：`diff` 输出被 `head -N` 截断会让你误判「只有空行差异」——比字节之前先确认没截断。
 - 旧数据兼容的写法：`normalize<X>(raw)` 永不抛错，缺字段补默认值，**无法映射的原始对象挂到 `legacy` 字段上原样保留**，
   宁可多带一个字段也不要丢数据；不要为了让旧数据「看起来完整」而编造日期或序号。
 

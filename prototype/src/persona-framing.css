@@ -831,3 +831,40 @@ p.framing-coverage-bad { margin: 0; padding: 10px 18px; font-size: 12px; line-he
 /* 列表行：名称允许折行（中文名长），右侧只放短时间 —— 一整串「谁 · 什么时候」会把名字挤成竖排。 */
 .agent-file-groups button b { line-height: 1.35; overflow-wrap: anywhere; }
 .agent-file-groups button em { font-variant-numeric: tabular-nums; }
+
+/* 拼装预览（US-106b）：选一位学员 + 一节课 → 实时显示会发出去的 system 提示词。 */
+.agent-file-assembly { margin-top: 16px; min-width: 0; }
+.agent-file-assembly h3 { font-size: 13px; margin: 0; }
+.agent-file-assembly .panel-head p { margin: 3px 0 0; font-size: 10.5px; line-height: 1.65; color: var(--muted); }
+.agent-file-assembly-controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin: 12px 0 10px; }
+.agent-file-assembly-controls label { display: flex; flex-direction: column; gap: 5px; font-size: 10.5px; color: var(--muted); min-width: 0; }
+.agent-file-assembly-controls select { min-width: 220px; max-width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; font-size: 12px; color: var(--ink); background: #fff; }
+.agent-file-assembly-controls small { font-size: 10.5px; color: #857a64; font-variant-numeric: tabular-nums; padding-bottom: 10px; }
+.agent-file-assembly-context { margin: 0 0 6px; padding: 8px 11px; border-radius: 10px; background: var(--soft); font-size: 10.5px; line-height: 1.7; color: #514a38; overflow-wrap: anywhere; }
+.agent-file-assembly-note { margin: 0 0 4px; font-size: 10.5px; line-height: 1.65; color: var(--muted); }
+.agent-file-assembly-note.is-warn { color: #8a6100; background: #fff3cf; border-radius: 9px; padding: 7px 10px; font-weight: 700; }
+.agent-file-assembly-body { display: grid; grid-template-columns: minmax(0, 320px) minmax(0, 1fr); gap: 12px; align-items: start; margin-top: 10px; }
+.agent-file-assembly-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 420px; overflow: auto; }
+.agent-file-assembly-rows li { border: 1px solid var(--border); border-radius: 10px; padding: 7px 10px; font-size: 10.5px; line-height: 1.6; color: #514a38; overflow-wrap: anywhere; }
+.agent-file-assembly-rows li.is-off { color: var(--muted); background: #faf9f6; }
+.agent-file-assembly-system { margin: 0; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: #fffdf8; max-height: 420px; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; line-height: 1.75; color: var(--ink); white-space: pre-wrap; overflow-wrap: anywhere; }
+.agent-file-assembly-foot { margin: 8px 0 0; font-size: 10px; line-height: 1.7; color: #857a64; overflow-wrap: anywhere; }
+
+/* 敏感内容（联系方式）实时告警：与保存闸门同一份扫描结果。 */
+.agent-file-sensitive { margin-top: 10px; border: 1px solid #e6b8a8; border-radius: 10px; padding: 9px 11px; background: #fdece7; }
+.agent-file-sensitive-head { display: flex; align-items: center; gap: 6px; color: #8a2f20; }
+.agent-file-sensitive-head b { font-size: 11px; line-height: 1.5; }
+.agent-file-sensitive ul { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.agent-file-sensitive li { font-size: 10.5px; line-height: 1.6; color: #8a2f20; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+.agent-file-sensitive p { margin: 6px 0 0; font-size: 10.5px; line-height: 1.65; color: #8a2f20; }
+.agent-file-sensitive-note { font-variant-numeric: tabular-nums; }
+
+@media (max-width: 900px) {
+  .agent-file-assembly-body { grid-template-columns: 1fr; }
+  .agent-file-assembly-controls label { flex: 1 1 100%; }
+  .agent-file-assembly-controls select { min-width: 0; width: 100%; }
+}
+@media (max-width: 430px) {
+  /* 拼装预览不在 .agent-files-page 里（它是并排布局之后的整块），单独补一遍 44px 纪律。 */
+  .agent-file-assembly select, .agent-file-assembly button { min-height: 44px; }
+}

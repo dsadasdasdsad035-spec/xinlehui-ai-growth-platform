@@ -11,7 +11,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { CircleAlert, Copy, FileText, Plus, RotateCcw, Trash2 } from 'lucide-react';
 import { Button, PageHeader } from '../ui';
-import { AGENT_FILE_CHAR_LIMIT, AGENT_FILE_KINDS, AGENT_FILE_KIND_LABELS, AGENT_FILE_SCOPE_LABELS, AGENT_FILE_VARIABLES, renderAgentFileContent } from '../data/agentFiles';
+import {
+  AGENT_FILE_CHAR_LIMIT, AGENT_FILE_KINDS, AGENT_FILE_KIND_LABELS, AGENT_FILE_SCOPE_LABELS,
+  AGENT_FILE_VARIABLES, agentFileLoadout, agentFileSummaryText, renderAgentFileContent
+} from '../data/agentFiles';
 import {
   AGENT_FILE_BUDGET_NOTE, AGENT_FILE_DELETE_NOTE, AGENT_FILE_EDITABLE_FIELDS, AGENT_FILE_EMPTY_NOTE,
   AGENT_FILE_KIND_HINTS, AGENT_FILE_RESTORE_NOTE, AGENT_FILE_SAVE_NOTE, AGENT_FILE_SCOPES_BY_KIND,
@@ -21,6 +24,19 @@ import {
   groupAgentFiles, normalizeAgentFileRecord, rollbackAgentFileRecord, saveAgentFileRecord,
   setAgentFileEnabledRecord
 } from '../data/agentFileAdmin';
+import {
+  AGENT_FILE_PREVIEW_DRAFT_NOTE, AGENT_FILE_PREVIEW_EMPTY_LESSON, AGENT_FILE_PREVIEW_EMPTY_STUDENT,
+  AGENT_FILE_PREVIEW_NO_PROFILE_NOTE, AGENT_FILE_PREVIEW_NOTE, AGENT_FILE_PREVIEW_SAVED_NOTE,
+  agentFilePreviewContext, agentFilePreviewContextText, agentFilePreviewLessonOptions,
+  agentFilePreviewPick, agentFilePreviewStudentOptions, agentFilePreviewTargetForFile
+} from '../data/agentFilePreview';
+import {
+  AGENT_FILE_SENSITIVE_EMPTY_NOTE, AGENT_FILE_SENSITIVE_NOTE, agentFileSensitiveIssue,
+  agentFileSensitiveRows, agentFileSensitiveText, scanAgentFileSensitive
+} from '../data/agentFileSensitive';
+import { buildPersonaPrompt } from '../services/llmReview';
+import { keywordCandidatesPrompt } from '../data/reviewKeywords';
+import { skillLoadout } from '../data/skillLibrary';
 import { markdownStats, markdownStatsText, parseMarkdownBlocks } from '../data/markdown';
 import { deleteRemoteAgentFile, saveRemoteAgentFile } from '../services/agentFilesApi';
 import { loadReviewTraces } from '../data/reviewTrace';
@@ -54,7 +70,7 @@ function MarkdownPreview({ text }) {
   </div>;
 }
 
-export default function AgentFilesPage({ agentFiles = [], setAgentFiles, setToast, teacherProfiles = [], adminName = '' }) {
+export default function AgentFilesPage({ agentFiles = [], setAgentFiles, setToast, teacherProfiles = [], adminName = '', lessons = [], skillLibrary = [] }) {
   // 后台这个会话是「平台管理员」（原型阶段没有账号体系，会话身份串就是操作人 —— 与课次 teacherId 同一口径）。
   const operator = String(adminName || '平台管理员');
   const records = useMemo(() => (Array.isArray(agentFiles) ? agentFiles : []).map(normalizeAgentFileRecord).filter(item => item.id), [agentFiles]);
@@ -68,6 +84,8 @@ export default function AgentFilesPage({ agentFiles = [], setAgentFiles, setToas
   const [compareVersion, setCompareVersion] = useState('');
   const [confirmRollback, setConfirmRollback] = useState('');
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [previewLessonId, setPreviewLessonId] = useState('');
+  const [previewStudentId, setPreviewStudentId] = useState('');
   const contentRef = useRef(null);
 
   const editing = isNew ? null : records.find(item => item.id === editingId) || null;
@@ -81,20 +99,83 @@ export default function AgentFilesPage({ agentFiles = [], setAgentFiles, setToas
     setCompareVersion('');
     setConfirmRollback('');
     setConfirmDelete(false);
-  }, [editingKey, isNew]);
+    // 拼装预览默认跟着当前编辑的文件走（学员记忆 → 那位学员；班级记忆 → 那个班的第一节课）：
+    // 打开「学员记忆（陈一诺）」时预览已经停在陈一诺，不用手工再选一遍。
+    const target = editing ? agentFilePreviewTargetForFile(editing, lessons, { classes: loadStudentManagement().classes }) : null;
+    if (target) {
+      if (target.lessonId) setPreviewLessonId(target.lessonId);
+      if (target.studentId) setPreviewStudentId(target.studentId);
+    }
+  }, [editingKey, isNew, lessons]);
 
-  const scopeSources = useMemo(() => {
-    const management = loadStudentManagement();
-    return {
-      orgId: DEFAULT_ORG_ID,
-      orgName: DEFAULT_ORG_NAME,
-      teachers: (Array.isArray(teacherProfiles) ? teacherProfiles : []).map(item => ({ id: item.id, name: item.name })),
-      students: management.students.map(item => ({ name: item.name })),
-      classes: management.classes.map(item => ({ id: item.id, name: item.name }))
-    };
-  }, [teacherProfiles]);
+  const management = useMemo(() => loadStudentManagement(), []);
+  const scopeSources = useMemo(() => ({
+    orgId: DEFAULT_ORG_ID,
+    orgName: DEFAULT_ORG_NAME,
+    teachers: (Array.isArray(teacherProfiles) ? teacherProfiles : []).map(item => ({ id: item.id, name: item.name })),
+    students: management.students.map(item => ({ name: item.name })),
+    classes: management.classes.map(item => ({ id: item.id, name: item.name }))
+  }), [teacherProfiles, management]);
 
   const patchDraft = (key, value) => setDraft(current => (current ? { ...current, [key]: value } : current));
+
+  /**
+   * 拼装预览（US-106b）：把「一位学员 + 一节课」换成上下文，再调**老师端那两个函数**
+   * （`agentFileLoadout` → `buildPersonaPrompt`）算出真正会发出去的 system 提示词。
+   * 这一层不许自己过滤文件、不许自己拼段落 —— 这里只提供目标与上下文。
+   */
+  const previewLessonOptions = useMemo(() => agentFilePreviewLessonOptions(lessons, { classes: management.classes }), [lessons, management]);
+  const previewLesson = agentFilePreviewPick(previewLessonOptions, previewLessonId);
+  const previewStudentOptions = useMemo(() => (previewLesson ? agentFilePreviewStudentOptions(previewLesson.lesson) : []), [previewLesson]);
+  const previewStudent = agentFilePreviewPick(previewStudentOptions, previewStudentId);
+  const previewProfile = useMemo(() => (previewLesson
+    ? (teacherProfiles.find(item => item.id === previewLesson.lesson.teacherId) || teacherProfiles[0] || null)
+    : null), [previewLesson, teacherProfiles]);
+  const previewContext = useMemo(() => (previewLesson ? agentFilePreviewContext({
+    lesson: previewLesson.lesson,
+    student: previewStudent,
+    classRecord: previewLesson.classRecord,
+    profile: previewProfile,
+    orgId: DEFAULT_ORG_ID,
+    orgName: DEFAULT_ORG_NAME
+  }) : null), [previewLesson, previewStudent, previewProfile]);
+  // 预览文件库 = 已保存的文件库 + 编辑器当前草稿（所以改一个字就实时反映在下面的 system 里；
+  // 面板上写明「含未保存的改动」）。
+  const previewFiles = useMemo(() => {
+    if (!draft) return records;
+    if (isNew) return [...records, draft];
+    return records.map(item => (item.id === draft.id ? draft : item));
+  }, [records, draft, isNew]);
+  const previewLoadout = useMemo(() => (previewContext ? agentFileLoadout({ files: previewFiles, context: previewContext }) : null), [previewFiles, previewContext]);
+  const previewSkillLoadout = useMemo(() => skillLoadout({
+    skillKeys: previewProfile?.skillKeys,
+    library: skillLibrary,
+    legacySkills: previewProfile?.skills
+  }), [previewProfile, skillLibrary]);
+  const previewPrompt = useMemo(() => (previewLoadout ? buildPersonaPrompt(previewProfile, {
+    subject: previewLesson?.lesson?.topic || '',
+    skillLibrary,
+    // 与老师端「个人反馈」同口径：一位学员 = 作品观察词，候选清单来自同一个目录。
+    keywordCandidates: keywordCandidatesPrompt('个人反馈'),
+    keywordScope: '作品观察词',
+    skillLoadout: previewSkillLoadout,
+    agentFiles: previewLoadout
+  }) : null), [previewLoadout, previewProfile, previewLesson, skillLibrary, previewSkillLoadout]);
+  const previewContextText = previewContext ? agentFilePreviewContextText(previewContext, { topic: previewLesson?.lesson?.topic || '' }) : '';
+  const previewSummaryText = previewLoadout ? agentFileSummaryText(previewLoadout) : '';
+  const previewPromptText = previewPrompt ? previewPrompt.system : '';
+
+  /** 编辑器里的实时敏感内容告警（保存闸门读同一份扫描结果）。 */
+  const draftSensitive = useMemo(() => scanAgentFileSensitive(draft?.content || ''), [draft?.content]);
+  const draftSensitiveRows = useMemo(() => agentFileSensitiveRows(draft?.content || ''), [draft?.content]);
+
+  /** 保存 / 复制 / 回滚都会把正文写成新的一版：三处共用同一道闸门（正文不许带联系方式）。 */
+  const contentBlocked = (content, actionLabel) => {
+    const issue = agentFileSensitiveIssue(content, { action: actionLabel });
+    if (!issue) return false;
+    setNotice(issue);
+    return true;
+  };
 
   /** 换类型：范围收敛到该类型的合法值，否则文件会落在「不会被加载」的组合上。 */
   const selectKind = (kind) => setDraft(current => {
@@ -152,6 +233,8 @@ export default function AgentFilesPage({ agentFiles = [], setAgentFiles, setToas
     if (!draft) return;
     const name = String(draft.name || '').trim();
     if (!name) { setNotice('请先填写名称：加载清单与推理轨迹里都靠它认人。'); return; }
+    // 保存闸门（US-106b）：正文里带联系方式时**不落库、不推云端、不改 state**，只给可读提示。
+    if (contentBlocked(draft.content, '保存')) return;
     const wasNew = isNew;
     // 保存的基准是**上一次落盘的那一条**（isNew 时还没有，就用草稿自己），
     // patch 才是草稿里手改的字段 —— 变更历史里的「改动：…」是这两者比出来的。
@@ -184,7 +267,9 @@ export default function AgentFilesPage({ agentFiles = [], setAgentFiles, setToas
 
   const duplicate = async () => {
     if (!editing) return;
-    const record = duplicateAgentFileRecord(recordWithDraftFields(editing), { existing: records, by: operator, at: Date.now() });
+    const base = recordWithDraftFields(editing);
+    if (contentBlocked(base.content, '复制为副本')) return;
+    const record = duplicateAgentFileRecord(base, { existing: records, by: operator, at: Date.now() });
     setIsNew(false);
     setEditingId(record.id);
     setDraft({ ...record });
@@ -193,6 +278,9 @@ export default function AgentFilesPage({ agentFiles = [], setAgentFiles, setToas
 
   const rollback = async (version) => {
     if (!editing) return;
+    // 回滚会把那一版的正文写成一个新版本：同样先过敏感内容闸门。
+    const target = versionRows.find(row => row.versionLabel === version);
+    if (target && contentBlocked(target.content, '回滚')) { setConfirmRollback(''); return; }
     const record = rollbackAgentFileRecord(editing, version, { by: operator, at: Date.now() });
     setConfirmRollback('');
     setCompareVersion('');
@@ -378,9 +466,25 @@ export default function AgentFilesPage({ agentFiles = [], setAgentFiles, setToas
                   未知占位符 {variableReport.missing.map(name => `{${name}}`).join(' ')}：加载时保留原文，可选变量为 {AGENT_FILE_VARIABLES.map(name => `{${name}}`).join(' ')}。
                 </p>
               : null}
+            <p className="agent-file-sensitive-note" data-agent-file-sensitive-note="true">
+              {draftSensitive.count ? `联系方式校验：${agentFileSensitiveText(draftSensitive)} —— ${AGENT_FILE_SENSITIVE_NOTE}` : `联系方式校验：${AGENT_FILE_SENSITIVE_EMPTY_NOTE}`}
+            </p>
           </div>
 
-          {notice ? <div className="form-error"><CircleAlert size={16}/>{notice}</div> : null}
+          {draftSensitive.count ? <div className="agent-file-sensitive" data-agent-file-sensitive={draftSensitive.count} data-agent-file-sensitive-rules={draftSensitive.rules.join(',')} data-agent-file-sensitive-lines={draftSensitive.lines.join(',')}>
+            <div className="agent-file-sensitive-head">
+              <CircleAlert size={16}/>
+              <b>{agentFileSensitiveText(draftSensitive)}：保存、复制与回滚都会被拦下</b>
+            </div>
+            <ul>
+              {draftSensitiveRows.map(row => <li key={row.key} data-agent-file-sensitive-row={row.ruleKey} data-agent-file-sensitive-line={row.line}>
+                {row.text} · {row.lineText}
+              </li>)}
+            </ul>
+            <p>{AGENT_FILE_SENSITIVE_NOTE}请改成不含联系方式的说法（例如「通过机构前台转达」）。</p>
+          </div> : null}
+
+          {notice ? <div className="form-error" data-agent-file-notice><CircleAlert size={16}/>{notice}</div> : null}
 
           <div className="agent-file-history" data-agent-file-versions={versionRows.length} data-agent-file-history={draft.history.length}>
             <div className="panel-head">
@@ -456,5 +560,74 @@ export default function AgentFilesPage({ agentFiles = [], setAgentFiles, setToas
         </> : <p className="persona-empty"><FileText size={16}/> 选择左侧的一份文件，或点右上角新增一份。</p>}
       </div>
     </div>
+
+    <section className="panel agent-file-assembly" data-agent-file-assembly="true"
+      data-agent-file-preview-lesson={previewLesson ? previewLesson.value : ''}
+      data-agent-file-preview-student={previewStudent ? previewStudent.value : ''}
+      data-agent-file-preview-dirty={dirty ? 'true' : 'false'}
+      data-agent-file-preview-summary={previewSummaryText}
+      data-agent-file-preview-chars={previewPromptText.length}
+      data-agent-file-preview-loadout-hash={previewLoadout ? previewLoadout.loadoutHash : ''}
+      data-agent-file-preview-profile={previewProfile ? previewProfile.id : ''}
+      data-agent-file-preview-org-id={previewContext ? previewContext.orgId : ''}
+      data-agent-file-preview-org-name={previewContext ? previewContext.orgName : ''}
+      data-agent-file-preview-teacher-id={previewContext ? previewContext.teacherId : ''}
+      data-agent-file-preview-teacher-name={previewContext ? previewContext.teacherName : ''}
+      data-agent-file-preview-class-id={previewContext ? previewContext.classId : ''}
+      data-agent-file-preview-class-name={previewContext ? previewContext.className : ''}
+      data-agent-file-preview-student-name={previewContext ? previewContext.studentName : ''}
+      data-agent-file-preview-lesson-date={previewContext ? previewContext.lessonDate : ''}>
+      <div className="panel-head">
+        <div>
+          <h3>拼装预览</h3>
+          <p>{AGENT_FILE_PREVIEW_NOTE}</p>
+        </div>
+      </div>
+      {previewLessonOptions.length ? <div className="agent-file-assembly-controls">
+        <label>学员
+          <select
+            data-agent-file-preview-student-select
+            value={previewStudent ? previewStudent.value : ''}
+            disabled={!previewStudentOptions.length}
+            onChange={event => setPreviewStudentId(event.target.value)}>
+            {previewStudentOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+        </label>
+        <label>课次
+          <select
+            data-agent-file-preview-lesson-select
+            value={previewLesson ? previewLesson.value : ''}
+            onChange={event => { setPreviewLessonId(event.target.value); setPreviewStudentId(''); }}>
+            {previewLessonOptions.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+        </label>
+        <small data-agent-file-preview-summary-text>{previewSummaryText}</small>
+      </div> : null}
+      {!previewLessonOptions.length
+        ? <p className="persona-empty" data-agent-file-preview-empty="lesson">{AGENT_FILE_PREVIEW_EMPTY_LESSON}</p>
+        : !previewStudent ? <p className="persona-empty" data-agent-file-preview-empty="student">{AGENT_FILE_PREVIEW_EMPTY_STUDENT}</p>
+        : <>
+          <p className="agent-file-assembly-context" data-agent-file-preview-context={previewContextText}>{previewContextText}</p>
+          <p className="agent-file-assembly-note" data-agent-file-preview-source={dirty ? 'draft' : 'saved'}>
+            {dirty ? AGENT_FILE_PREVIEW_DRAFT_NOTE : AGENT_FILE_PREVIEW_SAVED_NOTE}
+          </p>
+          {previewProfile ? null : <p className="agent-file-assembly-note is-warn" data-agent-file-preview-no-profile="true">{AGENT_FILE_PREVIEW_NO_PROFILE_NOTE}</p>}
+          <div className="agent-file-assembly-body">
+            <ol className="agent-file-assembly-rows" data-agent-file-preview-file-count={previewLoadout.rows.length}>
+              {previewLoadout.rows.map(row => <li key={row.fileId} className={row.included ? '' : 'is-off'}
+                data-agent-file-preview-file={row.fileId}
+                data-agent-file-preview-included={row.included ? 'true' : 'false'}
+                data-agent-file-preview-reason={row.reasonKey}>
+                {row.text}
+              </li>)}
+            </ol>
+            <pre className="agent-file-assembly-system" data-agent-file-preview-system>{previewPromptText}</pre>
+          </div>
+          <p className="agent-file-assembly-foot" data-agent-file-preview-chars-text={previewPromptText.length}>
+            这段 system 提示词共 {previewPromptText.length} 字 · 文件版本指纹 {previewLoadout.loadoutHash} ·
+            与老师端生成点评时调的是同一份拼装函数（`agentFileLoadout()` → `buildPersonaPrompt()`）。
+          </p>
+        </>}
+    </section>
   </>;
 }
