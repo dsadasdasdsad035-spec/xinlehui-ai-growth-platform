@@ -1233,6 +1233,39 @@ DOM/canvas 部分在 `src/services/artworkWriteBack.js`，编排在 `main.jsx` �
   真实部署时要把它搬到服务端函数里（本故事的判定函数可直接复用）；
   ③ 机构管理员角色目前只在权限层与「权限设置」页的角色组里存在，还没有机构管理员的登录入口。
 
+## 第三步「五维点评」的 system 提示词：模块化与逐字符兼容（US-101 / F-REVIEW-PROMPT-01）
+
+第三步生成点评的 system 提示词由**有名字、有版本、有来源、有字符数**的模块拼成。
+模块名与拼装顺序的唯一真源是 `src/data/promptModules.js`（零依赖，可 Node 直跑）：
+拼装本身、「加载了哪些提示词」的展示（US-103）与轨迹留档（US-102 的 `loaded.modules`）都读这一份，
+**不要在 `llmReview` 或界面里另写一套模块名 / 顺序**。
+
+- 两个入口（都在 `src/services/llmReview.js`）：
+  - `buildPersonaSystemPrompt(profile, extra)` → **字符串**（向后兼容入口，`streamArtworkReview` 仍在用）；
+  - `buildPersonaPrompt(profile, extra)` → `{ system, modules }`，每项含
+    `id / title / content / version / source / chars / included`。
+    两者的 `system` 永远相同（前者就是后者的 `.system`）。
+- **目录顺序 = 老师人设分支的拼装顺序**（也是加载清单的展示顺序）：
+  `base_role → identity → beliefs → tone → boundaries → agent_md → skills → memory → task
+  → keyword_candidates → writing_rules → keyword_rules → output_format → subject`
+  （对应 US-105 的加载顺序：agent.md → 技能 → 记忆 → 观察词候选 → 写作与输出）。
+  新增模块插进 `PROMPT_MODULE_DEFS` 的对应位置，**不要另开一个顺序常量**。
+- **没有老师人设时的兜底分支是另一套历史顺序**（`PROMPT_MODULE_ORDER_FALLBACK` =
+  `base_role → writing_rules → keyword_candidates → keyword_rules → output_format`）：
+  它是 US-101 的逐字符兼容承诺（改造前就是这个顺序），**不要为了「顺序统一」去改它**。
+- **每段正文 = 「原样进入 system」的那一段**（含 `【…】` 小标题与换行）：两个分支各有一个内容表函数
+  （`fallbackModuleContents` / `personaModuleContents`）。改文案只改这两处，并**同时抬高模块的 `version`**
+  —— 轨迹留档靠版本复现「当时用的是哪一版」。
+- **没进入本次提示词的模块也留在 `modules` 里**（`included:false`、`content:''`），排在参与拼接的模块之后，
+  界面才能说明「这个模块为什么没加载」；拼接与字符数只算 `included`
+  （恒等式 `assemblePromptText(modules) === system`）。
+- 模块 id 必须登记在 `PROMPT_MODULE_DEFS`：`createPromptModule('未登记的 id')` **直接抛错**
+  —— 未登记的 id 拼不进 system，静默兜底会让提示词悄悄少一段。
+- `agent_md` 目前只有入口（不传 `extra.agentMd` 就完全不出现；位置在 `boundaries` 与 `skills` 之间）；
+  加载规则、版本化与 8000 字符预算属 US-105。
+- 验证方式（本轮实测）：改造**前**先抓一份 13 组输入的 system 快照，改造后逐字符比对 +
+  `streamArtworkReview` 真发的 `messages[0].content` 比对；Node **172 项** + 浏览器 **15 项**断言全绿。
+
 ## 容易踩的坑
 
 - **写接口抛错时「await 之后就没了」**：`save<X>/create<X>/update<X>` 是「先写本地镜像再推云端」，
@@ -1287,6 +1320,19 @@ service 模块也能在 Node 里测：`cloud.database` 是**可写属性**，导
 （builder 需要 `then()` 才能被 `await`）即可覆盖「唯一性 / 状态机 / 云端失败回落」这些关键分支。
 写内存表替身时 `delete()` 必须**真的**把命中行从表里移除：只实现 `select` / `upsert`、让 `delete` 返回
 一个空 thenable，会让「删除课程/课次」的断言假通过。
+
+### 证明「提示词逐字符不变」（重构类改动，US-101 起）
+
+- **基线要在改代码之前抓**：`buildPersonaSystemPrompt` 是纯函数，先跑一个脚本把多组输入
+  （兜底分支 / 完整人设 / 只有名字 / 老式内嵌技能 / 停用技能 / 空 keywordScope …）的 system 输出落成 JSON，
+  改完再跑同一份输入逐字符比对（用 `git stash` 事后抓也行，顺序反过来更省事）。
+- **服务层也能在 Node 里跑**：`services/llmReview.js` 只 import `cloud` 与 data 模块，
+  配上扩展名补全 loader 就能直接 import；把 `cloud.llm.chat.completions.create` 换成
+  **异步生成器替身**（同一个 ESM 单例，直接赋值即可）就能抓到「真正发给模型的 `messages`」——
+  这是「调用方不传新参数时提示词逐字符一致」的硬证据，比只比纯函数产物更强（把调用点也覆盖了）。
+  替身记得 `yield` 一段合法 JSON 与一条 `usage`，顺带断言解析结果不变。
+- 浏览器里再核一遍：`await import('/src/services/llmReview.js')` 拿页面内的实现重算同一组输入，
+  与 Node 侧基线比对 —— 证明构建产物没有第二套行为。
 
 ### 需要「真的选择文件」时的浏览器验证（US-406a 起）
 

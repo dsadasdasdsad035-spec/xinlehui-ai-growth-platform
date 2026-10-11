@@ -1,5 +1,8 @@
 import { cloud } from '../cloud';
 import { resolveSkills } from '../data/skillLibrary';
+// 提示词模块化（US-101）：system 提示词由有名字、有版本、有来源的模块拼成，
+// 「加载了哪些提示词」的展示与轨迹留档都读模块清单（模块名/顺序的唯一真源在 data 层）。
+import { composePromptModules, PROMPT_MODULE_IDS, PROMPT_MODULE_ORDER_FALLBACK } from '../data/promptModules';
 
 // 云端流式点评：把人设 + 技能库 + 大模型记忆拼进 system 提示词，
 // 把作品/照片作为 image_url 传给视觉模型。
@@ -29,53 +32,62 @@ const DIMENSION_SPEC = [
   ['家长建议', '80-150 字：给出 1-3 条与本次观察有关、家长今晚就能尝试的具体行动，最好包含一句可以直接照着说的问话。']
 ];
 
-/** 把人设 / 技能库 / 记忆组装成 system 提示词。 */
-export function buildPersonaSystemPrompt(profile, extra = {}) {
-  const scope = extra.keywordScope || '作品观察词';
-  if (!profile) {
-    const parts = [FALLBACK_SYSTEM, DIMENSION_SPEC.map(([k, v]) => `- ${k}：${v}`).join('\n')];
-    if (extra.keywordCandidates) {
-      parts.push(`【${scope}候选清单】\n${extra.keywordCandidates}`);
-      parts.push(`【${scope}选择要求】\n选 3-6 个画面里真的能被指出来的词，必须逐字复制候选清单里的词。`);
-    }
-    parts.push(`【输出格式】\n只输出 JSON：{"evidence":[...],"keywords":[...],"reviews":{"美术能力":"...","上课状态":"...","行为能力":"...","内在状态":"...","家长建议":"..."}}`);
-    return parts.join('\n\n');
-  }
+/** 写作要求里的五维说明：兜底分支与老师人设分支共用同一份文本。 */
+const dimensionLines = () => DIMENSION_SPEC.map(([key, value]) => `- ${key}：${value}`).join('\n');
 
-  const parts = [];
-  const identity = [profile.name, profile.roleLabel, profile.campus].filter(Boolean).join(' · ');
-  parts.push(`你是${identity || '一位美术老师'}${profile.years ? `，教龄 ${profile.years} 年` : ''}。`);
+/** 兜底分支（没有老师人设）的模块内容：正文与拼装顺序都保持改造前的样子。 */
+function fallbackModuleContents(extra, scope) {
+  return {
+    base_role: FALLBACK_SYSTEM,
+    writing_rules: dimensionLines(),
+    keyword_candidates: extra.keywordCandidates ? `【${scope}候选清单】\n${extra.keywordCandidates}` : undefined,
+    keyword_rules: extra.keywordCandidates ? `【${scope}选择要求】\n选 3-6 个画面里真的能被指出来的词，必须逐字复制候选清单里的词。` : undefined,
+    output_format: `【输出格式】\n只输出 JSON：{"evidence":[...],"keywords":[...],"reviews":{"美术能力":"...","上课状态":"...","行为能力":"...","内在状态":"...","家长建议":"..."}}`
+  };
+}
 
-  if (profile.beliefs) parts.push(`【教学信念】\n${profile.beliefs}`);
-  if (profile.tone) parts.push(`【说话风格】\n${profile.tone}`);
-  if (profile.boundaries) parts.push(`【安全与伦理边界】\n${profile.boundaries}`);
-
+/** 老师人设分支的模块内容：每段正文都是「原样进入 system 提示词」的那一段。 */
+function personaModuleContents(profile, extra, scope) {
   // 技能来自独立的技能库：人设只持有被勾选的 id，真正的描述从库里取。
   // 库里停用某项后，这里会自动过滤掉，无需回头改每一份人设。
   const skills = resolveSkills(profile.skillKeys, extra.skillLibrary || [], profile.skills);
-  if (skills.length) {
-    parts.push(`【已启用技能】\n${skills.map(skill => `- ${skill.name}${skill.description ? `：${skill.description}` : ''}`).join('\n')}`);
-  }
+  const identity = [profile.name, profile.roleLabel, profile.campus].filter(Boolean).join(' · ');
+  return {
+    identity: `你是${identity || '一位美术老师'}${profile.years ? `，教龄 ${profile.years} 年` : ''}。`,
+    beliefs: profile.beliefs ? `【教学信念】\n${profile.beliefs}` : undefined,
+    tone: profile.tone ? `【说话风格】\n${profile.tone}` : undefined,
+    boundaries: profile.boundaries ? `【安全与伦理边界】\n${profile.boundaries}` : undefined,
+    // agent.md 的加载规则与版本化属 US-105；本故事只提供入口（不传就完全不出现）。
+    agent_md: extra.agentMd ? `【agent.md】\n${extra.agentMd}` : undefined,
+    skills: skills.length ? `【已启用技能】\n${skills.map(skill => `- ${skill.name}${skill.description ? `：${skill.description}` : ''}`).join('\n')}` : undefined,
+    memory: profile.memory ? `【长期记忆（本班本阶段，点评时必须结合并回访）】\n${profile.memory}` : undefined,
+    task: `【本次任务】\n先看清上传的作品与素材里真实存在什么，再生成五维点评草稿，供老师审阅后编辑发布。`,
+    // 观察词由模型自己挑：老师不勾选时也要能选出贴合画面的词。
+    // 候选清单与前端面板共用同一份目录（src/data/reviewKeywords.js），
+    // 所以这里必须强调「逐字来自候选」，否则前端认不出模型自造的同义词。
+    keyword_candidates: extra.keywordCandidates ? `【${scope}候选清单】\n${extra.keywordCandidates}` : undefined,
+    writing_rules: `【写作要求】\n${dimensionLines()}\n- 只使用图片与老师观察中真实可见的证据，不要虚构课堂细节。\n- 证据不足的维度必须明确写出「本次证据不足」，而不是编造。\n- 若长期记忆中提到的回访点（例如上一次给出的练习建议）在本次素材里无法判断，要说明无法判断。`,
+    keyword_rules: extra.keywordCandidates ? `【${scope}选择要求】\n- 看完作品后再选词，只选画面或素材里真的能被指出来的，不要按「好看」堆词。\n- 选 3-6 个，覆盖不同分组（例如画面主题 + 色彩感受 + 线条笔触），不要全挤在同一组。\n- 必须**逐字复制**候选清单里的词，不要改写、不要造同义词。候选中没有合适的就少选几个。\n- keywords 数组里**只写词本身**，不要带分组名、不要写成「色彩感受：暖色调」、不要带括号解释。` : undefined,
+    output_format: `【输出格式】\n只输出一个 JSON 对象，不要 Markdown、不要代码块、不要任何解释文字。结构：\n{"evidence":["可核验的观察依据 1","可核验的观察依据 2"],"keywords":["${scope}"],"reviews":{"美术能力":"...","上课状态":"...","行为能力":"...","内在状态":"...","家长建议":"..."}}\n其中 keywords 是数组，元素必须逐字来自【${scope}候选清单】。`,
+    subject: extra.subject ? `【本次课题】${extra.subject}` : undefined
+  };
+}
 
-  if (profile.memory) parts.push(`【长期记忆（本班本阶段，点评时必须结合并回访）】\n${profile.memory}`);
+/**
+ * 组装 system 提示词：返回 `{ system, modules }`。
+ * `modules` 是本次拼装的模块清单（每项含 id / title / content / version / source / chars），
+ * 没进入本次提示词的模块补在数组尾部（included:false）—— 界面据此说明「为什么没加载」。
+ * 同样的输入永远得到逐字符相同的 system 字符串与逐字段相同的模块清单。
+ */
+export function buildPersonaPrompt(profile, extra = {}) {
+  const scope = extra.keywordScope || '作品观察词';
+  if (!profile) return composePromptModules(fallbackModuleContents(extra, scope), PROMPT_MODULE_ORDER_FALLBACK);
+  return composePromptModules(personaModuleContents(profile, extra, scope), PROMPT_MODULE_IDS);
+}
 
-  parts.push(`【本次任务】\n先看清上传的作品与素材里真实存在什么，再生成五维点评草稿，供老师审阅后编辑发布。`);
-
-  // 观察词由模型自己挑：老师不勾选时也要能选出贴合画面的词。
-  // 候选清单与前端面板共用同一份目录（src/data/reviewKeywords.js），
-  // 所以这里必须强调「逐字来自候选」，否则前端认不出模型自造的同义词。
-  if (extra.keywordCandidates) {
-    parts.push(`【${scope}候选清单】\n${extra.keywordCandidates}`);
-  }
-
-  parts.push(`【写作要求】\n${DIMENSION_SPEC.map(([k, v]) => `- ${k}：${v}`).join('\n')}\n- 只使用图片与老师观察中真实可见的证据，不要虚构课堂细节。\n- 证据不足的维度必须明确写出「本次证据不足」，而不是编造。\n- 若长期记忆中提到的回访点（例如上一次给出的练习建议）在本次素材里无法判断，要说明无法判断。`);
-  if (extra.keywordCandidates) {
-    parts.push(`【${scope}选择要求】\n- 看完作品后再选词，只选画面或素材里真的能被指出来的，不要按「好看」堆词。\n- 选 3-6 个，覆盖不同分组（例如画面主题 + 色彩感受 + 线条笔触），不要全挤在同一组。\n- 必须**逐字复制**候选清单里的词，不要改写、不要造同义词。候选中没有合适的就少选几个。\n- keywords 数组里**只写词本身**，不要带分组名、不要写成「色彩感受：暖色调」、不要带括号解释。`);
-  }
-  parts.push(`【输出格式】\n只输出一个 JSON 对象，不要 Markdown、不要代码块、不要任何解释文字。结构：\n{"evidence":["可核验的观察依据 1","可核验的观察依据 2"],"keywords":["${scope}"],"reviews":{"美术能力":"...","上课状态":"...","行为能力":"...","内在状态":"...","家长建议":"..."}}\n其中 keywords 是数组，元素必须逐字来自【${scope}候选清单】。`);
-
-  if (extra.subject) parts.push(`【本次课题】${extra.subject}`);
-  return parts.join('\n\n');
+/** 向后兼容入口：只要 system 字符串（拼接结果与模块化改造前逐字符一致）。 */
+export function buildPersonaSystemPrompt(profile, extra = {}) {
+  return buildPersonaPrompt(profile, extra).system;
 }
 
 function buildUserContent({ subject, studentName, keywords = [], teacherObservation = '', artworkDataUrl, photoDataUrl }) {
