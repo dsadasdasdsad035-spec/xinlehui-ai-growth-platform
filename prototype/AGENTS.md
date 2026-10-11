@@ -1270,6 +1270,39 @@ DOM/canvas 部分在 `src/services/artworkWriteBack.js`，编排在 `main.jsx` �
 - 验证方式（本轮实测）：改造**前**先抓一份 13 组输入的 system 快照，改造后逐字符比对 +
   `streamArtworkReview` 真发的 `messages[0].content` 比对；Node **172 项** + 浏览器 **15 项**断言全绿。
 
+## 第三步「五维点评」的课次上下文：课题与课次日期（[第三步到第一步联通] US-057）
+
+第三步点评的**课题**与**课次日期**不是界面自己编的，它们与第一步的课次实体是同一份数据：
+
+- 领域规则全在 `src/data/reviewSubject.js`（零依赖纯函数，可 Node 直跑）。
+  `reviewLessonContext()` 一次产出 `{ lessonId, classId, courseId, courseName, courseLabel,
+  lessonNo, lessonDate, lessonDateDots, topic, contextSource, usesLesson, options }`；
+  `resolveReviewSubject()` 产出下拉的选中值；`reviewSubjectContextNote()` 产出面板那一行说明。
+  **界面下拉、点评提示词（`【本次课题】` 与 user 内容里的课次日期）与轨迹留档三处读同一份产物**，
+  不要在别处再算一遍「这次课题是什么」。
+- **课次实体优先，但只在自然键一致时**（`classId + lessonDate + lessonNo` 三项齐全且逐项相等）。
+  对不上（换班 / 改日期 / 改序号）或这次课次还没保存时以**第一步表单**为准 ——
+  否则「补录上节课」的点评会印着上一条课次的日期（US-038 修过的同一类错配）。
+  判断本身是纯函数 `reviewLessonMatches()`，缺任一项一律**不认**（认不出来比认错一次课安全）。
+- **下拉选项 = 本次课次的课题 + 课程库**（`课程名（年龄段）`，`selectableCourses()` 过滤停用的）。
+  本次课次的那门课程即使已停用也留在列表里（历史课次不能因为课程停用就丢名字）。
+  **US-057 起没有任何写死的课题 / 课程类型字符串**：新加选项只能从课程库来。
+- **老师手选过就以老师为准**（`subjectPicked` + `subjectPick`，与 `lessonNoDirty` / `framePickedManually`
+  同一套「派生值 + 手改标记」写法）；手选的值不在选项里（例如课程被删了）时自动落回派生值，
+  受控下拉不会出现空选中。标记在**换班 / 换课 / 新建草稿**时清掉（那些动作等于换了课次上下文），
+  改日期 / 改序号时保留（课题仍按课程 + 课时序号取）。
+- **课次日期进提示词有两个口径**：展签口径 `2026.08.04`（`formatLessonDateDots`）进 user 提示词的那一行
+  `课次日期：…` 与 `{课次日期}` 变量（`agentFileLoadout` 的 context）；ISO 口径进轨迹留档
+  （`REVIEW_TRACE_FIELDS` 的 `lessonDate` → 管理端生成日志详情面板的「课次日期」）。
+- `buildReviewPromptBundle()` / `streamArtworkReview()` 新增可选入参 `lessonDate`：
+  **不传时那一行完全不出现**（老调用方 / 回归夹具的 user 文本逐字符不变）；日期认不出时也不印半行。
+- 观察词模板的匹配输入仍是 `[本次课程名, 第三步选中的课题]`：课程库的课程名（如「色彩启蒙」）
+  照样能命中绑到那门课的模板，只是「课程类型」不再是写死的字符串（见 US-109 一节）。
+- 验证方式（本轮实测）：Node **70 项**断言（data 52 / 提示词 10 / 轨迹 8）+ 浏览器 **54 项**断言 +
+  观察词匹配回归 **10 项**；回归 US-113 81 项、US-112 102 项全绿。**注意**：US-110a / US-110b
+  当时的本机脚本依赖「在第三步下拉里选到 `通用美术` / `国画（6-18岁）`」，那些字符串已按本故事删除
+  （要复现那两条回归，改为选课程库里的课程标签，例如 `色彩启蒙（4-5岁）`）。
+
 ## 第三步「五维点评」的推理轨迹 reviewTrace（US-102 / F-REVIEW-TRACE-01）
 
 一次点评生成的全部关键信息结构化留档（模型与参数、加载清单、提示词、推理过程、输出原文、

@@ -73,6 +73,10 @@ export const REVIEW_TRACE_FIELDS = [
   // 旧轨迹没有这几个字段，读出来是空串（可见性判据对「没写老师的旧记录」一律不可见，fail-safe）。
   'studentName',
   'lessonId',
+  // 课次日期（[第三步到第一步联通] US-057）：`lesson.lessonDate`（ISO 口径）。光有 lessonId 说不出
+  // 「哪一天的那节课」—— 管理端「生成日志」详情面板的「课次日期」一行与老师端读同一份留档。
+  // 旧轨迹没有这个字段，读出来是空串（认不出就不编造日期）。
+  'lessonDate',
   'teacherId',
   'teacherName',
   'orgId',
@@ -436,6 +440,8 @@ export function createReviewTrace(seed = {}) {
     studentId: str(source.studentId),
     studentName: str(source.studentName),
     lessonId: str(source.lessonId),
+    // 课次日期（US-057）：原样存 `lesson.lessonDate`（ISO）。旧轨迹 / 没传时是空串。
+    lessonDate: str(source.lessonDate),
     // 老师与机构（US-112）：**谁经手的、哪个机构的** —— 生成日志的筛选与可见性判据读它们。
     teacherId: str(source.teacherId),
     teacherName: str(source.teacherName),

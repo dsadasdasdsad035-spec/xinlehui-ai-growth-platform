@@ -23,6 +23,9 @@ import {
 } from '../data/reviewTrace';
 
 import { REVIEW_MODEL_DEFAULT_ID, REVIEW_MODEL_SOURCES } from '../data/reviewModels';
+// 课次日期的口径（[第三步到第一步联通] US-057）：user 提示词里的「课次日期」用展签口径
+// （`2026.08.04`），与展签 / 成长档案 / 文件名同一个写法（唯一真源在 data/lessons.js）。
+import { formatLessonDateDots } from '../data/lessons';
 
 /**
  * 云端流式点评：把人设 + 技能库 + 大模型记忆拼进 system 提示词，
@@ -180,7 +183,9 @@ export function buildPersonaSystemPrompt(profile, extra = {}) {
  * 返回 `{ system, user, modules, attachments }`：
  *  - `system` / `modules`：`buildPersonaPrompt()` 的产物（模块清单就是「加载了什么」）；
  *  - `user`：user 消息里的**纯文本部分**（图片以 data URL 单独作为 content 项，绝不进这里的字符串）；
- *  - `attachments`：附件的**引用与 hash**（`buildReviewTraceAttachments`，不含图片正文）。
+ *    `lessonDate`（[第三步到第一步联通] US-057）给出时，user 里多一行「课次日期：…」，
+ *    值取课次数据（`lesson.lessonDate`）—— 不传时这一行不出现（老调用方逐字符不变）；
+ *  - `attachments`：附件的**引用 + hash**（`buildReviewTraceAttachments`，不含图片正文）。
  *
  * 详情面板（US-103b 的「提示词」分区）与 `streamArtworkReview` 都调它：面板上看到的就是实际发出去的，
  * 且导出内容里不可能有素材正文（这是隐私口径的结构保证）。
@@ -201,10 +206,12 @@ export function buildReviewPromptBundle({
   keywordTemplate,
   agentMd,
   agentFiles,
-  images
+  images,
+  // 课次日期（US-057）：`lesson.lessonDate`（展签口径），进 user 提示词的那一行「课次日期：…」。
+  lessonDate
 } = {}) {
   const prompt = buildPersonaPrompt(profile, { subject, skillLibrary, keywordCandidates, keywordScope, keywordTemplate, agentMd, agentFiles });
-  const userContent = buildUserContent({ subject, studentName, keywords, teacherObservation, artworkDataUrl, photoDataUrl });
+  const userContent = buildUserContent({ subject, studentName, keywords, teacherObservation, lessonDate, artworkDataUrl, photoDataUrl });
   const media = images && typeof images === 'object' ? images : {};
   const attachments = buildReviewTraceAttachments([
     { kind: 'artwork', role: '主要美术能力依据', fileId: media.artwork?.id, name: media.artwork?.name, mime: media.artwork?.mime, content: artworkDataUrl },
@@ -218,9 +225,14 @@ export function buildReviewPromptBundle({
   };
 }
 
-function buildUserContent({ subject, studentName, keywords = [], teacherObservation = '', artworkDataUrl, photoDataUrl }) {
+function buildUserContent({ subject, studentName, keywords = [], teacherObservation = '', lessonDate = '', artworkDataUrl, photoDataUrl }) {
+  // 课次日期（[第三步到第一步联通] US-057）：变量取 `lesson.lessonDate`，由调用方（老师端第三步）解析好
+  // 传进来，这里只按展签口径（`2026.08.04`）落进正文 —— **不传 / 认不出日期时这一行完全不出现**，
+  // 老调用方与回归夹具的 user 文本因此逐字符不变。
+  const lessonDateText = formatLessonDateDots(lessonDate);
   const lines = [
     `学员：${studentName || '未指定'}`,
+    ...(lessonDateText ? [`课次日期：${lessonDateText}`] : []),
     `课题：${subject || '通用美术'}`,
     `老师补充观察：${teacherObservation || '未提供'}`,
     // 老师可能一个词都没勾（现在默认由模型自己识别），此时要求模型自行判断并选词。
@@ -294,10 +306,12 @@ export function readableFromRawJson(raw) {
  * @param {string} [options.modelSource] 模型来源标注（'teacher-pick' / 'pool-route'，US-107a 第 5 条）：
  *   原样写进轨迹的 `modelSource`；不传就是空串（不编造来源）。
  * @param {object} [options.trace] 轨迹种子（谁 / 哪节课 / 上一代轨迹 / 附件引用），缺省也能生成
+ * @param {string} [options.lessonDate] 课次日期（[第三步到第一步联通] US-057）：取课次数据
+ *   `lesson.lessonDate`，展签口径写进 user 提示词（「课次日期：2026.08.04」）；不传时不出现这一行。
  * @param {(trace:object)=>void} [options.onTrace] 轨迹收束回调：成功 / 失败 / 中止都恰好调一次
  * @returns {Promise<{reviews:object,evidence:string[],keywords:string[],reasoning:string,usage:object|null,raw:string,trace:object}>}
  */
-export async function streamArtworkReview({ profile, skillLibrary, subject, studentName, keywords, teacherObservation, artworkDataUrl, photoDataUrl, keywordCandidates, keywordScope, keywordTemplate, agentMd, agentFiles, model, modelSource, onReasoning, onContent, signal, trace: traceSeed, onTrace }) {
+export async function streamArtworkReview({ profile, skillLibrary, subject, studentName, keywords, teacherObservation, artworkDataUrl, photoDataUrl, lessonDate, keywordCandidates, keywordScope, keywordTemplate, agentMd, agentFiles, model, modelSource, onReasoning, onContent, signal, trace: traceSeed, onTrace }) {
   // 模型与来源：老师的选择（或模型池路由的结果）由调用方给，缺省回落实测可用的默认模型。
   const requestModel = String(model || '').trim() || REVIEW_MODEL;
   const requestModelSource = String(modelSource || '').trim();
@@ -313,6 +327,7 @@ export async function streamArtworkReview({ profile, skillLibrary, subject, stud
     teacherObservation,
     artworkDataUrl,
     photoDataUrl,
+    lessonDate,
     keywordCandidates,
     keywordScope,
     keywordTemplate,
@@ -321,7 +336,9 @@ export async function streamArtworkReview({ profile, skillLibrary, subject, stud
     images
   });
   const prompt = { system: bundle.system, modules: bundle.modules };
-  const userContent = buildUserContent({ subject, studentName, keywords, teacherObservation, artworkDataUrl, photoDataUrl });
+  // user 正文与 `buildReviewPromptBundle` 内部同一份写法（含课次日期那一行，US-057）——
+  // 面板上看到的 user 与真正发出去的一个字都不差。
+  const userContent = buildUserContent({ subject, studentName, keywords, teacherObservation, lessonDate, artworkDataUrl, photoDataUrl });
   const attachments = bundle.attachments;
   // 轨迹：**只驻留内存**（调用方拿到 `onTrace` 的结果之后才可能在归档时提交云端）。
   // 图片只进 attachments 的「引用 + hash」（`buildReviewTraceAttachments`），正文一个字都不进轨迹。

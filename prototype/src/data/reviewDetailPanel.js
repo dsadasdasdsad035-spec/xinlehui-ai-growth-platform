@@ -836,7 +836,9 @@ export function reviewTracePayloadInput(trace) {
   return {
     phase: reviewTracePhase(item.status),
     student: str(item.studentName),
-    lessonDate: '',
+    // 课次日期（[第三步到第一步联通] US-057）：轨迹里留了 `lesson.lessonDate` 就用它 ——
+    // 管理端生成日志的「课次日期」一行与老师端读同一份留档；旧轨迹没有这个字段时仍为空串。
+    lessonDate: str(item.lessonDate),
     model: str(item.model),
     modelSource: str(item.modelSource),
     params: item.params && typeof item.params === 'object' ? item.params : {},

@@ -383,6 +383,9 @@ export function reviewTraceRow(trace) {
     teacherName: str(item.teacherName),
     orgId: str(item.orgId),
     lessonId: str(item.lessonId),
+    // 课次日期（[第三步到第一步联通] US-057）：轨迹留档里的 `lesson.lessonDate`（ISO 口径）。
+    // 审计行与详情面板的「课次日期」读它；旧轨迹读出来是空串（不编造）。
+    lessonDate: str(item.lessonDate),
     model: str(item.model),
     modelSource: str(item.modelSource),
     status,

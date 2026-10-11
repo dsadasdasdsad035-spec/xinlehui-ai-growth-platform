@@ -249,6 +249,45 @@
   grid-column: 1 / -1;
 }
 
+/* 第三步「本次课题」（[第三步到第一步联通] US-057）：选项来自课程库与本次课次的课题（lesson.topic），
+   所以它是一整行 = 标签 + 下拉 + 一行说明（说明里点名课题 / 课程 / 课次日期从哪来）。 */
+.feedback-flow-v2 .coach-review > .review-subject-field {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  min-width: 0;
+}
+
+.feedback-flow-v2 .coach-review > .review-subject-field label {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #504a3c;
+}
+
+.feedback-flow-v2 .coach-review > .review-subject-field select {
+  width: auto;
+  min-width: 174px;
+  margin-top: 0;
+}
+
+.feedback-flow-v2 .coach-review > .review-subject-field > small {
+  flex: 1 1 100%;
+  font-size: 9.5px;
+  line-height: 1.6;
+  color: #857a64;
+}
+
+.feedback-flow-v2 .coach-review > .review-subject-field .review-subject-empty {
+  font-size: 11px;
+  color: #a1730a;
+}
+
 .feedback-flow-v2 .coach-review .coach-card {
   margin: 0;
   padding: 9px 10px;
