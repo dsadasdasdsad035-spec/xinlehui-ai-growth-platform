@@ -518,7 +518,7 @@ function fillShapePath(ctx, shape, fill) {
  * 形状不可用（半径 / 开口被收敛到 0，例如画布过扁）时也返回 null，调用方回落到直角路径 —— 宁可画平框，
  * 也不能画崩或把作品裁掉。
  */
-function buildShapedGeometry({ shape, frameRect, outer, mat, plaqueHeight }) {
+function buildShapedGeometry({ shape, frameRect, outer, mat, plaqueHeight, plaqueAtTop = false }) {
   // **只有 arch / bevel 走这条路径**：square / rounded 是 US-002a 的既有渲染路径，
   // 一旦被这里接管就会换形状（踩过的坑：漏了形状判断，`rounded` 与 v1 平面 spec 全被画成斜角）。
   if (shape !== 'arch' && shape !== 'bevel') return null;
@@ -530,6 +530,9 @@ function buildShapedGeometry({ shape, frameRect, outer, mat, plaqueHeight }) {
   if (!(box.width > 0) || !(box.height > 0)) return null;
   // 拱形的开口必须还剩正半径，否则拱顶已经吃到直边，回落到直角更稳。
   if (shape === 'arch' && !(windowShape.r > 0)) return null;
+  // 展签带占开口的顶部或底部 96px（关掉展签时 `plaqueHeight` 是 0，整条开口都留给作品）。
+  const artTop = box.y + (plaqueAtTop ? plaqueHeight : 0);
+  const artBottom = box.y + box.height - (plaqueAtTop ? 0 : plaqueHeight);
   return {
     base,
     matShape,
@@ -537,8 +540,9 @@ function buildShapedGeometry({ shape, frameRect, outer, mat, plaqueHeight }) {
     // 卡纸内细分隔线画在开口外沿 6px 处（与直角分支的 strokeRect(area-6, +12) 同一个口径）。
     innerLineShape: inset(windowShape, -6),
     box,
-    // 展签与直角分支一样占开口底部 96px。
-    artBottom: box.y + box.height - plaqueHeight
+    // 展签与直角分支一样占开口 96px 的一条带子（作品区 = 开口扣掉这条带子）。
+    artTop,
+    artBottom
   };
 }
 
@@ -912,6 +916,7 @@ export async function measureFramingCoverage({
  *   shape / cornerRadiusRatio                        形状与圆角半径（相对画布短边）
  *   lighting                                         { highlight, shadow, angle } 或 null（不画光影）
  *   matVisible                                       卡纸开关
+ *   plaqueVisible / plaquePosition                    展签开关与位置（bottom | top，US-011a）
  *   overlays                                         v2 的水印 / 落款 / 时间分组；v1 平面 spec 为 null
  */
 /**
@@ -938,31 +943,41 @@ function buildFramingLayout({ view, imageWidth = 1, imageHeight = 1, rotation })
   // 框宽 / 卡纸宽的收敛在渲染层再做一次：v1 平面 spec 原样进来，没有收敛器兜着。
   const outer = Math.max(4, Math.round(shortEdge * clampRatio(view.outerWidthRatio, FRAME_WIDTH_RATIO_RANGE, 0.0412)));
   const mat = view.matVisible === false ? 0 : Math.max(6, Math.round(shortEdge * clampRatio(view.matWidthRatio, MAT_WIDTH_RATIO_RANGE, 0.0647)));
-  const plaqueHeight = PLAQUE_HEIGHT;
+  // 展签带（v2 的 `plaque.visible` / `plaque.position`，US-011a）：关掉展签时这条带子整条还给作品区，
+  // 位置为 top 时带子挪到开口顶部、作品区跟着下移。v1 平面 spec 的渲染视图是「显示 + 贴底」，
+  // 因此老模板的几何与升级前逐值相同。
+  const plaqueVisible = view.plaqueVisible !== false;
+  const plaqueAtTop = plaqueVisible && view.plaquePosition === 'top';
+  const plaqueHeight = plaqueVisible ? PLAQUE_HEIGHT : 0;
 
   const frameRect = { x: wall, y: wall, width: width - wall * 2, height: height - wall * 2 };
   const matRect = {
     x: frameRect.x + outer, y: frameRect.y + outer,
     width: frameRect.width - outer * 2, height: frameRect.height - outer * 2
   };
-  // 卡纸开口：直角 / 圆角分支的固定作品区就是它的上半部分（扣掉展签）。
+  // 卡纸开口：直角 / 圆角分支的固定作品区就是它扣掉展签带之后的那块。
   const windowRect = {
     x: matRect.x + mat, y: matRect.y + mat,
     width: matRect.width - mat * 2, height: matRect.height - mat * 2
   };
-  const area = { x: windowRect.x, y: windowRect.y, width: windowRect.width, height: windowRect.height - plaqueHeight };
+  const area = {
+    x: windowRect.x,
+    y: windowRect.y + (plaqueAtTop ? plaqueHeight : 0),
+    width: windowRect.width,
+    height: windowRect.height - plaqueHeight
+  };
 
   // rotation 显式传入时优先（老师手动旋转）；否则用 spec 里的 artRotateDeg。
   const deg = Number.isFinite(rotation) ? rotation : (Number(view.artRotateDeg) === 90 ? 90 : 0);
   const sideways = ((deg % 360) + 360) % 360 % 180 !== 0;
 
   // arch / bevel：形状不可用时 geometry 为 null，两个分支都回落到直角路径（不画崩）。
-  const geometry = buildShapedGeometry({ shape: view.shape, frameRect, outer, mat, plaqueHeight });
+  const geometry = buildShapedGeometry({ shape: view.shape, frameRect, outer, mat, plaqueHeight, plaqueAtTop });
   const shaped = !!geometry;
   const shapedArt = shaped
     ? inscribeAspectRect(geometry.windowShape, {
       aspect: sideways ? imageH / imageW : imageW / imageH,
-      top: geometry.box.y,
+      top: geometry.artTop,
       bottom: geometry.artBottom
     })
     : null;
@@ -972,6 +987,10 @@ function buildFramingLayout({ view, imageWidth = 1, imageHeight = 1, rotation })
   const artRegionBottom = shaped ? geometry.artBottom : area.y + area.height;
   const plaqueX = shaped ? geometry.box.x : area.x;
   const plaqueW = shaped ? geometry.box.width : area.width;
+  // 展签带的**上沿**（绘制时在它下面留 10px 缝再铺底色，与改造前的 `artRegionBottom + 10` 同值）。
+  const plaqueTop = plaqueAtTop
+    ? (shaped ? geometry.box.y : windowRect.y)
+    : (shaped ? geometry.box.y + geometry.box.height - plaqueHeight : area.y + area.height);
 
   // 圆角半径的三条上限，缺一条就会踩到红线：
   //   ① 越界值收敛到 0~0.5（相对短边）；
@@ -1000,6 +1019,7 @@ function buildFramingLayout({ view, imageWidth = 1, imageHeight = 1, rotation })
     width, height, shortEdge, wall, outer, mat, plaqueHeight,
     frameRect, matRect, windowRect, area,
     geometry, shaped, artRect, artRegionBottom, plaqueX, plaqueW,
+    plaqueVisible, plaqueAtTop, plaqueTop,
     outerRadius, matRadius,
     deg, sideways, ratio, renderedWidth, renderedHeight, drawScale,
     subjectRect
@@ -1041,7 +1061,7 @@ export async function renderFramedArtworkToCanvas({ source, spec = {}, student =
 
   const layout = buildFramingLayout({ view, imageWidth: image.naturalWidth, imageHeight: image.naturalHeight, rotation });
   const {
-    width, height, outer, mat, plaqueHeight,
+    width, height, outer, mat, plaqueHeight, plaqueVisible, plaqueTop,
     frameRect, matRect, area,
     geometry, shaped, artRect, artRegionBottom, plaqueX, plaqueW,
     outerRadius, matRadius,
@@ -1085,13 +1105,13 @@ export async function renderFramedArtworkToCanvas({ source, spec = {}, student =
   }
 
   // 作品底色固定为白，保证透明底 PNG 不会露出墙色。
-  // arch / bevel：白底按形状铺、只铺到展签上沿，形状外的部分一律不碰（不露底、不越界）。
+  // arch / bevel：白底按形状铺、只铺展签带以外的那一段，形状外的部分一律不碰（不露底、不越界）。
   ctx.fillStyle = '#ffffff';
   if (shaped) {
     ctx.save();
     traceShape(ctx, geometry.windowShape);
     ctx.clip();
-    ctx.fillRect(geometry.box.x, geometry.box.y, geometry.box.width, geometry.artBottom - geometry.box.y);
+    ctx.fillRect(geometry.box.x, geometry.artTop, geometry.box.width, geometry.artBottom - geometry.artTop);
     ctx.restore();
   } else {
     ctx.fillRect(area.x, area.y, area.width, area.height);
@@ -1105,24 +1125,26 @@ export async function renderFramedArtworkToCanvas({ source, spec = {}, student =
   ctx.drawImage(image, -renderedWidth * drawScale / 2, -renderedHeight * drawScale / 2, renderedWidth * drawScale, renderedHeight * drawScale);
   ctx.restore();
 
-  // 展签：只在有内容时绘制。
+  // 展签：开关打开且**有内容**时才绘制（v2 的 `plaque.visible`，US-011a）。
   // 必须先把 plaqueBg 铺成一块展签底色再写字——旧实现只画了 2px 分隔线，
   // 于是 plaqueText（多数预设是浅色）直接落在浅色卡纸上，落款几乎看不见。
-  const plaqueTop = artRegionBottom + 10;
+  // `plaqueTop` 是展签带的**上沿**（贴底时 = 作品区下沿、贴上时 = 开口上沿），
+  // 底色从它下面 10px 起铺 —— 与改造前那句 `artRegionBottom + 10` 逐值相同。
   const line1 = [student, title ? `《${title}》` : ''].filter(Boolean).join('  ·  ');
   const line2 = date ? `创作于 ${date}` : '';
-  if (line1 || line2) {
+  if (plaqueVisible && (line1 || line2)) {
+    const plaqueY = plaqueTop + 10;
     if (shaped) { ctx.save(); traceShape(ctx, geometry.windowShape); ctx.clip(); }
     ctx.fillStyle = plaqueBg;
-    ctx.fillRect(plaqueX, plaqueTop, plaqueW, plaqueHeight - 10);
+    ctx.fillRect(plaqueX, plaqueY, plaqueW, plaqueHeight - 10);
     const drawWithSpacing = (text, x, y, font, color) => {
       ctx.font = font; ctx.fillStyle = color; ctx.textBaseline = 'alphabetic';
       if (!letterSpacing) { ctx.fillText(text, x, y); return; }
       let cursor = x;
       for (const char of text) { ctx.fillText(char, cursor, y); cursor += ctx.measureText(char).width + letterSpacing; }
     };
-    if (line1) drawWithSpacing(line1, plaqueX, plaqueTop + 36, `600 28px ${plaqueFont}`, plaqueText);
-    if (line2) drawWithSpacing(line2, plaqueX, plaqueTop + 70, `21px ${plaqueFont}`, plaqueText);
+    if (line1) drawWithSpacing(line1, plaqueX, plaqueY + 36, `600 28px ${plaqueFont}`, plaqueText);
+    if (line2) drawWithSpacing(line2, plaqueX, plaqueY + 70, `21px ${plaqueFont}`, plaqueText);
     if (shaped) ctx.restore();
   }
 

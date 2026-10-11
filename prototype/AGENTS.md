@@ -1010,6 +1010,37 @@ DOM/canvas 部分在 `src/services/artworkWriteBack.js`，编排在 `main.jsx` �
 - US-006 的微调与 US-007 的叠加元素仍是「本次选用的一层补丁」：保存成我的模板后会把两层补丁清掉
   （内容已经并进新模板的 spec），面板因此不再显示「已微调」。
 
+## 管理端装裱参数面板：六组参数的覆盖矩阵与实时预览（US-011a）
+
+后台「装裱设置」页顶部的参数区（`main.jsx` 的 `FramingSettingsPage` 里 `.framing-params`：
+左侧控件、右侧 sticky 预览）。验收原文是「覆盖相框、卡纸、展签、水印、落款、时间的**全部 v2 参数**」，
+靠人记一定会漏，所以这里把「覆盖了什么」变成数据：
+
+- **覆盖矩阵是数据，不是记忆**：`data/framingPanel.js` 的 `FRAMING_PANEL_FIELDS` 列出每个 v2 叶子参数
+  （点分路径与 `normalizeFrameSpecV2()` 的产物逐字对应，`{机构名}` 这类值当叶子）与它的控件类型；
+  界面上的控件一律带 `data-frame-param="<路径>"`。`framingPanelMissingFields(spec)` 拿**收敛后的 v2 spec**
+  逐叶子比对，空数组才算覆盖完整；面板右上角「已覆盖 N / N 个参数」的徽标与浏览器断言读同一份。
+  **以后新增 v2 参数要同时补三处**：`normalizeFrameSpecV2`、`FRAMING_PANEL_FIELDS`、面板上的控件
+  （漏了会被 `framingPanelMissingFields` 在浏览器断言里当场抓住）。
+- **改一个字段只写一组 + version**（`framingPanelGroupSpec`）：混写结构在 v2 收敛器里是合法输入
+  （v2 分组优先、v1 平面字段兜底），所以后台调相框不会动到落款，老 v1 模板也不必先迁移。
+  **面板改的是内存草稿**：只有点「保存到云端」才写回 `framingPresets`。
+- **光影的开关就是「有没有 `frame.lighting` 这个键」**（`framingPanelFrameGroup`）：关掉时**删掉键**，
+  不是写 `lighting: null` —— 渲染层 `frameSpecRenderView` 的判据是「`frame.lighting` 是对象才算显式给出」，
+  两边必须逐字对应，否则会出现「面板显示关着、画面却有渐变」。
+- **预览与老师端成品图必须是同一个渲染函数**：`services/framePreview.js` 只做两件事 —— 造占位作品
+  （`FRAME_PREVIEW_ARTWORK_SIZE` 900×680）与调 `renderFramedArtwork()`。任何「预览专用画法」最后都会变成
+  「面板上好看、老师端不是这样」。占位作品也搬到了这个模块（原先在 `main.jsx` 里），
+  这样浏览器脚本能 `await import()` 同一份来做独立重算。
+- **展签的 `plaqueVisible` / `plaquePosition` 已接进绘制层**（本故事顺带补的）：`buildFramingLayout`
+  用它们决定展签带占开口的哪一端（`plaqueTop` / `area.y` / shaped 的 `artTop`），关掉展签时整条带子还给
+  作品区；v1 平面 spec 的渲染视图回落「显示 + 贴底」，所以老模板逐像素不变。arch / bevel 下展签带仍会被
+  形状裁剪（这是有意的：宁可裁，也不能越界）。
+- **窄屏**：`.framing-settings > .persona-list / .persona-editor` 需要 `min-width: 0`，否则内容的
+  min-content 会把分割页那一列顶宽（表现是整个管理页横向滚动，不是参数区自己的问题）。
+- `Button`（`src/ui.jsx`）现在会 `...rest` 透传额外属性 —— 面板用它给按钮挂 `data-frame-param`
+  （上传类参数的控件就是按钮）。老调用方不传就一个属性都不多。
+
 ## 容易踩的坑
 
 - **写接口抛错时「await 之后就没了」**：`save<X>/create<X>/update<X>` 是「先写本地镜像再推云端」，
@@ -1348,3 +1379,28 @@ service 模块也能在 Node 里测：`cloud.database` 是**可写属性**，导
   断言 `framedBy === 'teacher'`（写回图直接挂）与对照组 `framedBy === 'exhibition'`（老记录行为不变）。
 - 跑这类脚本前先 `localStorage.clear()` + reload：上一跑留下的草稿 / 课次 / 归档会让
   「保存前是 idle」这类断言读成上一轮的状态（本轮真踩，第一次跑挂了这一条）。
+
+### 验证「参数面板 = 真实渲染」与跨会话可见（US-011a 起）
+
+- **「预览与真实渲染是同一个函数」要这样证**：脚本自己按**同一份写入口径**推算期望 spec
+  （`framingPanelGroupSpec` / `framingPanelFrameGroup` 都是零依赖纯函数，页面里 `await import()` 拿到的是
+  与 app 同一个模块实例），再用 `renderFramePreview()` 重画一次，与面板 `<img>` 的 src **比字节**；
+  只断言「预览变了」证明不了它用的是同一个函数（换一套画法也会变）。
+- **期望 spec 要自己推算，别去 `loadFramingPresets()` 里读**：`FramingSettingsPage` 改的是内存草稿，
+  只有点「保存到云端」才落库 —— 保存前从本机镜像读到的是**旧**的那一份（本轮真踩，断言整片变红）。
+- **老师端缩略图的底图地址在页面里读不到**（`frameThumbSource = cleanUrl || orientedUrl || originalUrl`，
+  DOM 上只有列表缩略图与成品图）。可行做法：脚本开跑前给 `HTMLCanvasElement.prototype.toDataURL` 与
+  `URL.createObjectURL` 打补丁，把产出的地址收进数组；再用「四层地址」面板里
+  `[data-artwork-layer="cleanUrl"]` 的 `data-layer-fingerprint` 反查 —— `artworkUrlFingerprint` 是零依赖
+  纯函数，两边算同一份，命中的那个地址就是 app 用的底图。拿它 + 保存下来的 spec 重算缩略图，
+  与卡片 `<img>` 逐字符比对（US-011a 用这一招把老师端缩略图钉死在「真实画心 + 保存的 spec」上）。
+- **上传会造两个 blob 地址**：`downsampleImageFile` / `createThumbnail` 各 `createObjectURL` 一个探针地址并
+  在 `finally` 里 revoke，所以 `createObjectURL` 记录里**第一个是已失效的探针**（加载会抛
+  「作品图片暂时无法读取」），真实的那个在后面 —— 别按「第一个」取。
+- **新会话可见性分三层证**：① 数据层 `loadFramingPresets()` 里那条记录的
+  `frameSpecRenderKey(spec)` 与保存前逐字符相同；② 刷新后走真实路径 —— 管理端列表里有它、老师端第二步
+  「相框样式」网格里有卡片（`data-frame-style-shape` / `data-frame-style-mat` 就是新 spec 的值）；
+  ③ 点一下卡片断言 `data-frame-style-active` 与面板 `data-frame-active`。
+- 面板自身的窄屏断言要**只量面板**：管理端整页在 390px 下本来就可能横向滚动（列表侧的既有行为），
+  所以判据写成 `panel.scrollWidth <= panel.clientWidth + 1` + 面板内控件 ≥44px（复选框的 44px 落在 label 上，
+  别把 checkbox 自己拉成方块）。

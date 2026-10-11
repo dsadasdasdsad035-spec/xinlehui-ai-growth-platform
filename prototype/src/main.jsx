@@ -59,7 +59,12 @@ import { MARKETPLACE_SYNCED_AT, indexStats, marketCategories, searchMarket, sear
 import { createEmptyFramingPreset, editableFramingPresets, filterFramingPresetsForViewer, framePresetEditableBy, framingPresetNameIssue, framePresetScopeLabel, framePresetSpecFromRenderView, framePresetSpecGroupLabels, FRAMING_PRESET_DELETE_NOTE, buildTeacherFramingPreset, loadFramingPresets, mergeMissingFramingPresets, normalizeFramingPreset, persistFramingPresets, renameFramingPreset } from './data/framingPresets';
 import { deleteRemoteFramingPreset, loadRemoteFramingPresets, saveRemoteFramingPreset } from './services/framingPresetsApi';
 import { DEFAULT_FRAME_SPEC, DATE_FORMATS, DATE_SOURCES, FRAMING_FONT_WHITELIST, SEAL_SHAPES, frameSpecRenderKey, frameSpecRenderView, frameSpecView, generateFrameSpec, normalizeFrameSpec, normalizeFrameSpecV2 } from './services/frameSpec';
-import { FRAME_STYLE_COLORS, FRAME_STYLE_MAT_COLORS, FRAME_STYLE_SHAPES, FRAME_STYLE_WIDTHS, applyFrameStyleTweaks, describeFrameStyleSpec, frameStyleTweakCount, frameStyleTweakSummary, normalizeFrameStyleTweaks } from './data/frameStyles';
+import { FRAME_STYLE_COLORS, FRAME_STYLE_DEFAULT_CORNER_RADIUS, FRAME_STYLE_MAT_COLORS, FRAME_STYLE_MIN_VISIBLE_CORNER_RADIUS, FRAME_STYLE_SHAPES, FRAME_STYLE_WIDTHS, applyFrameStyleTweaks, describeFrameStyleSpec, frameStyleTweakCount, frameStyleTweakSummary, normalizeFrameStyleTweaks } from './data/frameStyles';
+// 后台装裱参数面板的领域规则（[第二步 US-011a]）：覆盖矩阵（v2 的每个叶子参数 → 控件）、
+// 覆盖率判据与「只写一组 + version」的写入口径。零依赖，Node 与浏览器跑同一份。
+import { FRAMING_PANEL_GROUPS, FRAMING_PANEL_LIGHTING_DEFAULT, framingPanelCoverage, framingPanelFrameGroup, framingPanelGroupSpec, framingPanelLightingOn, framingPanelMissingFields } from './data/framingPanel';
+// 后台装裱预览：占位作品 + **成品图那一支渲染函数**（预览与老师端不可能是两种画法）。
+import { FRAME_PREVIEW_ARTWORK_SIZE, renderFramePreview } from './services/framePreview';
 import { FRAME_PREVIEW_LONG_EDGE, FRAME_THUMB_CACHE_LIMIT, frameThumbnailKey, renderFrameStyleThumbnail } from './services/frameThumbnails';
 // 叠加元素的定位与遮挡规则（US-003a/003b/003c）：九宫格枚举、字体白名单、位置中文名、
 // 时间来源与格式、印章形状与「水印遮挡作品主体 15%」的判定全在 overlayLayout.js —— 后台面板只负责渲染控件。
@@ -4490,7 +4495,7 @@ function SkillLibraryPage({skillLibrary=[],setSkillLibrary,teacherProfiles=[],se
  * 位移小于 `OVERLAY_DRAG_THRESHOLD_PX` 时仍算点击，不产生微小偏移。
  * 后台沿用旧签名（`value` + `onChange`）时行为一字不变：没有 `onOffsetChange` 就没有拖动。
  */
-function OverlayPositionPad({value,onChange,label,field,offsets,onSelect,onOffsetChange}){
+function OverlayPositionPad({value,onChange,label,field,offsets,onSelect,onOffsetChange,dataParam}){
   const padRef=useRef(null);
   const dragRef=useRef(null);
   const dragEnabled=typeof onOffsetChange==='function';
@@ -4523,7 +4528,7 @@ function OverlayPositionPad({value,onChange,label,field,offsets,onSelect,onOffse
   const dotX=Math.max(-14,Math.min(14,dir.dirX*offsetX*28));
   const dotY=Math.max(-14,Math.min(14,dir.dirY*offsetY*28));
   const shifted=Math.abs(offsetX)>0.0005||Math.abs(offsetY)>0.0005;
-  return <div className="overlay-position-pad" ref={padRef} role="group" aria-label={`${label}位置`} data-overlay-pad={field||label} data-overlay-pad-position={value} data-overlay-pad-offset={`${offsetX},${offsetY}`} data-overlay-pad-draggable={dragEnabled?'true':'false'}
+  return <div className="overlay-position-pad" ref={padRef} role="group" aria-label={`${label}位置`} data-overlay-pad={field||label} data-overlay-pad-position={value} data-overlay-pad-offset={`${offsetX},${offsetY}`} data-overlay-pad-draggable={dragEnabled?'true':'false'} data-frame-param={dataParam||undefined}
     onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag}>
     {ELEMENT_POSITIONS.filter(position=>position!==CUSTOM_ELEMENT_POSITION).map(position=>
       <button key={position} type="button" className={position===value?'active':''} aria-pressed={position===value}
@@ -4555,7 +4560,7 @@ function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast}){
   const logoInput=useRef(null);
   const signatureInput=useRef(null);
   useEffect(()=>{setDraft(editing?{...editing}:null)},[editingId,framingPresets.length]);
-  useEffect(()=>{if(!draft)return undefined;let active=true;renderFramedArtwork({source:placeholderArtwork(),spec:draft.spec||DEFAULT_FRAME_SPEC,student:draft.plaqueStudent||'陈一诺',title:draft.plaqueTitle||'向着光的花',date:draft.plaqueDate||'2026.08.11',orgName:DEFAULT_ORG_NAME,teacherName:roleMeta.teacher.name}).then(url=>{if(active)setPreview(url)}).catch(()=>{if(active)setPreview('')});return()=>{active=false}},[draft?.spec,draft?.plaqueStudent,draft?.plaqueTitle,draft?.plaqueDate]);
+  useEffect(()=>{if(!draft)return undefined;let active=true;renderFramePreview({spec:draft.spec||DEFAULT_FRAME_SPEC,student:draft.plaqueStudent||'陈一诺',title:draft.plaqueTitle||'向着光的花',date:draft.plaqueDate||'2026.08.11',orgName:DEFAULT_ORG_NAME,teacherName:roleMeta.teacher.name}).then(url=>{if(active)setPreview(url)}).catch(()=>{if(active)setPreview('')});return()=>{active=false}},[draft?.spec,draft?.plaqueStudent,draft?.plaqueTitle,draft?.plaqueDate]);
   const patch=(key,value)=>setDraft(current=>current?{...current,[key]:value}:current);
   // 面板只认识 v1 平面字段，这里统一取视图：老预设（v1）原样、v2 预设映射成平面值。
   const draftSpec=frameSpecView(draft?.spec);
@@ -4571,15 +4576,48 @@ function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast}){
   const qrWatermark={...specV2.watermark.qr,...(rawWatermark.qr||{})};
   const signatureMark={...specV2.signature,...rawSignature,seal:{...specV2.signature.seal,...(rawSignature.seal||{})}};
   const dateMark={...specV2.date,...rawDate};
+  // 相框 / 卡纸 / 展签三组（US-011a）：与上面同一个口径 —— 收敛值兜底、draft 原值优先显示。
+  const rawFrame=rawGroup('frame');
+  const frameCtl={...specV2.frame,...rawFrame,lighting:{...specV2.frame.lighting,...(rawFrame.lighting||{})}};
+  const matCtl={...specV2.mat,...rawGroup('mat')};
+  const plaqueCtl={...specV2.plaque,...rawGroup('plaque')};
+  // 光影开关 = 渲染层的同一条判据（`frame.lighting` 是对象才算显式给出）；关掉时写回去的相框分组里没有它。
+  const lightingOn=framingPanelLightingOn(draft?.spec);
+  // 覆盖率（验收原文「覆盖相框、卡纸、展签、水印、落款、时间的全部 v2 参数」）：
+  // 拿收敛后的整份 spec 逐叶子比对，缺一个都不算覆盖完整；面板上的徽标与浏览器断言读同一份。
+  const panelCoverage=framingPanelCoverage(specV2);
+  const panelMissing=framingPanelMissingFields(specV2);
 
-  // 写回某一组叠加元素：**只覆盖这一组 + version**，老模板的平面字段（outer / mat / plaque* …）一个都不动
+  // 写回一组参数：**只覆盖这一组 + version**，老模板的平面字段（outer / mat / plaque* …）一个都不动
   // —— 混写结构在 `normalizeFrameSpecV2` 里是合法输入（v2 分组优先、v1 平面字段兜底），
-  // 所以后台加落款/时间/二维码不会改变这套模板原本的长相。
+  // 所以后台改相框/卡纸/展签/落款/时间不会改变这套模板原本的其它长相。
   const patchOverlayGroup=(group,value)=>setDraft(current=>{
     if(!current) return current;
-    const base=current.spec&&typeof current.spec==='object'?current.spec:{};
-    return {...current,spec:{...base,version:2,[group]:value}};
+    return {...current,spec:framingPanelGroupSpec(current.spec,group,value)};
   });
+  // 相框组多一条口径：光影开关关着时不写 `lighting` 字段（= v1 老模板的实色框，逐像素不变）。
+  const patchFrame=(values)=>patchOverlayGroup('frame',framingPanelFrameGroup({...frameCtl,...values},lightingOn));
+  const toggleFrameLighting=(on)=>patchOverlayGroup('frame',framingPanelFrameGroup(frameCtl,on));
+  const patchMat=(values)=>patchOverlayGroup('mat',{...matCtl,...values});
+  const patchPlaque=(values)=>patchOverlayGroup('plaque',{...plaqueCtl,...values});
+  // 叠加元素的精细偏移（offsetX / offsetY，-0.5~0.5，口径见 services/overlayLayout.js 的 clampOverlayOffset）：
+  // 面板改的是**模板上的全局默认值**，老师端仍可在自己的水印面板上继续微调。
+  const offsetTargets={
+    'watermark.logo':{values:logoWatermark,patch:values=>patchWatermark({logo:{...logoWatermark,...values}})},
+    'watermark.text':{values:textWatermark,patch:values=>patchWatermark({text:{...textWatermark,...values}})},
+    'watermark.qr':{values:qrWatermark,patch:values=>patchWatermark({qr:{...qrWatermark,...values}})},
+    signature:{values:signatureMark,patch:values=>patchSignature(values)},
+    date:{values:dateMark,patch:values=>patchDate(values)}
+  };
+  // 两个偏移数字框（五支叠加元素共用同一段 JSX，就不用在五个块里各抄一遍）。
+  const offsetInputs=(target)=>{
+    const entry=offsetTargets[target];
+    return ['offsetX','offsetY'].map(key=><label key={key}>偏移 {key==='offsetX'?'X':'Y'}
+      <input type="number" data-frame-param={`${target}.${key}`} min="-0.5" max="0.5" step="0.01"
+        value={Number(entry.values[key]||0)}
+        onChange={event=>entry.patch({[key]:Number(event.target.value)})}/>
+    </label>);
+  };
   const patchWatermark=(groups)=>setDraft(current=>{
     if(!current) return current;
     const base=current.spec&&typeof current.spec==='object'?current.spec:{};
@@ -4651,8 +4689,8 @@ function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast}){
     let active=true;
     measureFramingCoverage({
       spec:draft.spec||DEFAULT_FRAME_SPEC,
-      imageWidth:PLACEHOLDER_ARTWORK_SIZE.width,
-      imageHeight:PLACEHOLDER_ARTWORK_SIZE.height,
+      imageWidth:FRAME_PREVIEW_ARTWORK_SIZE.width,
+      imageHeight:FRAME_PREVIEW_ARTWORK_SIZE.height,
       orgName:DEFAULT_ORG_NAME,
       teacherName:roleMeta.teacher.name,
       student:draft.plaqueStudent||'陈一诺',
@@ -4719,19 +4757,124 @@ function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast}){
             <Button icon={Sparkles} onClick={generate} disabled={generating||!draft.description}>{generating?'大模型正在设计…':'由大模型生成装裱参数'}</Button>
             <label className="framing-enable"><input type="checkbox" checked={draft.enabled!==false} onChange={event=>patch('enabled',event.target.checked)}/> 在老师端可选</label>
           </div>
-          {draftSpec?<div className="framing-spec">
-            <div className="framing-preview"><img src={preview} alt={`${draft.name}装裱预览`}/><small>预览使用占位作品，实际渲染时替换为学员作品</small></div>
-            <div className="framing-spec-fields">
-              <div className="spec-row"><span>外框</span><i style={{background:draftSpec.outer}}/><code>{draftSpec.outer}</code><em>宽 {Math.round((draftSpec.outerWidthRatio||0)*1000)/10}%</em></div>
-              <div className="spec-row"><span>卡纸</span><i style={{background:draftSpec.mat}}/><code>{draftSpec.mat}</code><em>宽 {Math.round((draftSpec.matWidthRatio||0)*1000)/10}%</em></div>
-              <div className="spec-row"><span>分隔线</span>{draftSpec.innerLine?<><i style={{background:draftSpec.innerLine}}/><code>{draftSpec.innerLine}</code></>:<em>无</em>}</div>
-              <div className="spec-row"><span>展签</span><i style={{background:draftSpec.plaqueBg}}/><code>{draftSpec.plaqueBg}</code><em>文字 {draftSpec.plaqueText}</em></div>
-              <div className="spec-row"><span>字体</span><code>{draftSpec.plaqueFontFamily}</code><em>字距 {draftSpec.plaqueLetterSpacing}</em></div>
-              {draftSpec.atmosphere?<p className="spec-note">氛围：{draftSpec.atmosphere}</p>:null}
-              {draftSpec.rationale?<p className="spec-note">理由：{draftSpec.rationale}</p>:null}
+          {/* 参数区（US-011a）：相框 / 卡纸 / 展签 / 水印 / 落款 / 时间六组。
+              左侧每一个控件都带 `data-frame-param="<spec 路径>"`，右侧是实时预览 ——
+              预览走的就是成品图那一支渲染函数（services/framePreview.js），改一个字段立刻重画一次。 */}
+          <div className="framing-params" data-framing-params="1">
+            <div className="framing-params-controls">
+              <div className="framing-params-head">
+                <div>
+                  <h3>装裱参数</h3>
+                  <p>改任何一个字段，右侧立刻用真实渲染函数重画一次；「保存到云端」后老师端在新会话里即可选用。</p>
+                </div>
+                <em className={panelMissing.length?'framing-coverage-bad':'framing-coverage-ok'}
+                  data-panel-coverage={panelCoverage.covered} data-panel-missing={panelMissing.length}>
+                  已覆盖 {panelCoverage.covered} / {panelCoverage.total} 个参数
+                </em>
+              </div>
+              {panelMissing.length?<p className="framing-coverage-bad" data-panel-missing-list={panelMissing.join(',')}>面板还没有这些参数的控件：{panelMissing.join('、')}</p>:null}
+
+              <div className="framing-overlay-block" data-framing-group="frame">
+                <div className="framing-overlay-title">
+                  <h3>相框</h3>
+                  <small>形状只影响外框与卡纸的收边；作品像素只做等比缩放，不裁切、不调色。</small>
+                </div>
+                <div className="framing-overlay-controls">
+                  <label>形状<select data-frame-param="frame.shape" value={frameCtl.shape}
+                    onChange={event=>{
+                      const shape=event.target.value;
+                      const bump=shape==='rounded'&&!(Number(frameCtl.cornerRadiusRatio)>=FRAME_STYLE_MIN_VISIBLE_CORNER_RADIUS);
+                      patchFrame({shape,...(bump?{cornerRadiusRatio:FRAME_STYLE_DEFAULT_CORNER_RADIUS}:{})});
+                    }}>
+                    {FRAME_STYLE_SHAPES.map(shape=><option key={shape.id} value={shape.id}>{shape.label}</option>)}
+                  </select></label>
+                  <label>框宽 %<input type="number" data-frame-param="frame.widthRatio" min="0.8" max="8" step="0.1"
+                    value={Math.round((Number(frameCtl.widthRatio)||0)*1000)/10}
+                    onChange={event=>patchFrame({widthRatio:Number(event.target.value)/100})}/></label>
+                  <label>圆角半径 %<input type="number" data-frame-param="frame.cornerRadiusRatio" min="0" max="50" step="1"
+                    value={Math.round((Number(frameCtl.cornerRadiusRatio)||0)*1000)/10}
+                    onChange={event=>patchFrame({cornerRadiusRatio:Number(event.target.value)/100})}/></label>
+                  <label>材质色<input type="color" data-frame-param="frame.color" value={frameCtl.color}
+                    onChange={event=>patchFrame({color:event.target.value})}/></label>
+                  <label>纹理<select data-frame-param="frame.texture" value={frameCtl.texture} onChange={event=>patchFrame({texture:event.target.value})}>
+                    <option value="solid">纯色</option>
+                  </select></label>
+                </div>
+                <div className="framing-overlay-controls">
+                  <label className="framing-enable"><input type="checkbox" data-frame-lighting="1" checked={lightingOn}
+                    onChange={event=>toggleFrameLighting(event.target.checked)}/> 相框光影</label>
+                  <label>高光<input type="color" data-frame-param="frame.lighting.highlight" disabled={!lightingOn} value={frameCtl.lighting.highlight}
+                    onChange={event=>patchFrame({lighting:{...frameCtl.lighting,highlight:event.target.value}})}/></label>
+                  <label>暗部<input type="color" data-frame-param="frame.lighting.shadow" disabled={!lightingOn} value={frameCtl.lighting.shadow}
+                    onChange={event=>patchFrame({lighting:{...frameCtl.lighting,shadow:event.target.value}})}/></label>
+                  <label>角度<input type="number" data-frame-param="frame.lighting.angle" min="0" max="360" step="15" disabled={!lightingOn} value={frameCtl.lighting.angle}
+                    onChange={event=>patchFrame({lighting:{...frameCtl.lighting,angle:Number(event.target.value)}})}/></label>
+                </div>
+                <p className="framing-overlay-note">光影关掉时写出去的相框分组里**没有** lighting 字段 —— 那是 v1 老模板的实色框，渲染逐像素不变（打开时用高光 + 本色 + 暗部的方向性渐变）。</p>
+              </div>
+
+              <div className="framing-overlay-block" data-framing-group="mat">
+                <div className="framing-overlay-title">
+                  <h3>卡纸</h3>
+                  <small>关掉卡纸时作品区占满卡纸开口（相框直接收在作品边上）；细分隔线画在开口外沿。</small>
+                </div>
+                <div className="framing-overlay-controls">
+                  <label className="framing-enable"><input type="checkbox" data-frame-param="mat.visible" checked={matCtl.visible!==false}
+                    onChange={event=>patchMat({visible:event.target.checked})}/> 显示卡纸</label>
+                  <label>卡纸色<input type="color" data-frame-param="mat.color" value={matCtl.color}
+                    onChange={event=>patchMat({color:event.target.value})}/></label>
+                  <label>卡纸宽 %<input type="number" data-frame-param="mat.widthRatio" min="2" max="12" step="0.1"
+                    value={Math.round((Number(matCtl.widthRatio)||0)*1000)/10}
+                    onChange={event=>patchMat({widthRatio:Number(event.target.value)/100})}/></label>
+                  <label className="framing-enable"><input type="checkbox" data-frame-matline="1" checked={!!matCtl.innerLine}
+                    onChange={event=>patchMat({innerLine:event.target.checked?(matCtl.innerLine||'#8C8578'):null})}/> 细分隔线</label>
+                  <label>分隔线色<input type="color" data-frame-param="mat.innerLine" disabled={!matCtl.innerLine} value={matCtl.innerLine||'#8C8578'}
+                    onChange={event=>patchMat({innerLine:event.target.value})}/></label>
+                </div>
+              </div>
+
+              <div className="framing-overlay-block" data-framing-group="plaque">
+                <div className="framing-overlay-title">
+                  <h3>展签</h3>
+                  <small>展签上的学员名 / 作品名 / 日期取上面「展签人名 / 作品名 / 展签日期」三项；这里只管开关、样式与位置。</small>
+                </div>
+                <div className="framing-overlay-controls">
+                  <label className="framing-enable"><input type="checkbox" data-frame-param="plaque.visible" checked={plaqueCtl.visible!==false}
+                    onChange={event=>patchPlaque({visible:event.target.checked})}/> 显示展签</label>
+                  <label>位置<select data-frame-param="plaque.position" value={plaqueCtl.position}
+                    onChange={event=>patchPlaque({position:event.target.value})}>
+                    <option value="bottom">贴在作品区下方</option>
+                    <option value="top">贴在作品区上方</option>
+                  </select></label>
+                  <label>底色<input type="color" data-frame-param="plaque.bg" value={plaqueCtl.bg}
+                    onChange={event=>patchPlaque({bg:event.target.value})}/></label>
+                  <label>文字色<input type="color" data-frame-param="plaque.text" value={plaqueCtl.text}
+                    onChange={event=>patchPlaque({text:event.target.value})}/></label>
+                  <label>字体<select data-frame-param="plaque.fontFamily" value={plaqueCtl.fontFamily}
+                    onChange={event=>patchPlaque({fontFamily:event.target.value})}>
+                    {FRAMING_FONT_WHITELIST.map(font=><option key={font} value={font}>{font}</option>)}
+                  </select></label>
+                  <label>字距<input type="number" data-frame-param="plaque.letterSpacing" min="0" max="8" step="1" value={plaqueCtl.letterSpacing}
+                    onChange={event=>patchPlaque({letterSpacing:Number(event.target.value)})}/></label>
+                </div>
+              </div>
             </div>
-          </div>:<p className="persona-empty">还没有装裱参数。写好需求描述后点「由大模型生成装裱参数」。</p>}
-          {/* 水印（US-003b）：机构 Logo + 文字水印。两项都画在成品图最上层，
+
+            <aside className="framing-params-preview">
+              <div className="framing-preview" data-preview-state={preview?'ready':'pending'}>
+                {preview?<img src={preview} alt={`${draft.name||'装裱'}预览`}/>:<div className="framing-preview-pending">正在渲染预览…</div>}
+                <small>预览使用占位作品（{FRAME_PREVIEW_ARTWORK_SIZE.width}×{FRAME_PREVIEW_ARTWORK_SIZE.height}），渲染走的是老师端成品图同一个函数；实际渲染时替换为学员作品。</small>
+              </div>
+              {draftSpec&&(draftSpec.atmosphere||draftSpec.rationale)?<div className="framing-preview-notes">
+                {draftSpec.atmosphere?<p className="spec-note">氛围：{draftSpec.atmosphere}</p>:null}
+                {draftSpec.rationale?<p className="spec-note">理由：{draftSpec.rationale}</p>:null}
+              </div>:null}
+              {coverage&&coverage.items.length?<em className={coverage.exceeds?'framing-coverage-bad':'framing-coverage-ok'} data-coverage-ratio={coverage.coveredRatio.toFixed(4)}>{coverage.summary}</em>:null}
+              {coverage&&coverage.items.length?<em className={coverage.exceeds?'framing-coverage-bad':'framing-coverage-ok'} data-coverage-ratio={coverage.coveredRatio.toFixed(4)}>{coverage.summary}</em>:null}
+            </aside>
+          </div>
+          {draft.spec?null:<p className="persona-empty">这套模板还没有装裱参数，下面各个参数用的是默认值；写好需求描述后也可以点「由大模型生成装裱参数」。</p>}
+          {/* 水印（US-003b）：机构 Logo + 文字水印 + 二维码。三项都画在成品图最上层，
               位置与尺寸走 overlayLayout 的九宫格 + 短边比例，与老师端成品图是同一套规则。 */}
           <div className="framing-overlay">
             <div className="framing-overlay-head">
@@ -4745,14 +4888,14 @@ function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast}){
 
             <div className="framing-overlay-block">
               <div className="framing-overlay-title">
-                <label className="framing-enable"><input type="checkbox" checked={logoWatermark.visible}
+                <label className="framing-enable"><input type="checkbox" data-frame-param="watermark.logo.visible" checked={logoWatermark.visible}
                   onChange={event=>patchWatermark({logo:{...logoWatermark,visible:event.target.checked}})}/> 机构 Logo</label>
                 <small>{logoWatermark.visible?'老师端成品图会盖上机构 Logo':'关闭时完全不绘制，不留空白占位'}</small>
               </div>
               <div className="framing-overlay-row">
                 <input ref={logoInput} type="file" accept="image/png,image/jpeg" hidden
                   onChange={event=>{const file=event.target.files&&event.target.files[0];event.target.value='';if(file)uploadLogo(file)}}/>
-                <Button icon={UploadCloud} onClick={()=>{if(logoInput.current)logoInput.current.click()}} disabled={logoBusy}>{logoBusy?'读取中…':'上传 Logo'}</Button>
+                <Button icon={UploadCloud} data-frame-param="watermark.logo.url" onClick={()=>{if(logoInput.current)logoInput.current.click()}} disabled={logoBusy}>{logoBusy?'读取中…':'上传 Logo'}</Button>
                 {logoWatermark.url?<img className="framing-asset-thumb" src={logoWatermark.url} alt="机构 Logo 缩略图"/>:<em className="framing-asset-empty">还没有 Logo</em>}
                 {logoWatermark.url?<button type="button" className="text-link" onClick={removeLogo}>移除</button>:null}
               </div>
@@ -4761,41 +4904,43 @@ function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast}){
               {!assetError&&logoInfo&&!logoInfo.ok?<p className="framing-asset-error">{logoInfo.message}</p>:null}
               <div className="framing-overlay-controls">
                 <div className="framing-overlay-field"><span>位置</span>
-                  <OverlayPositionPad label="机构 Logo" value={logoWatermark.position} onChange={position=>patchWatermark({logo:{...logoWatermark,position}})}/>
+                  <OverlayPositionPad label="机构 Logo" dataParam="watermark.logo.position" value={logoWatermark.position} onChange={position=>patchWatermark({logo:{...logoWatermark,position}})}/>
                 </div>
-                <label>宽度 %<input type="number" min="2" max="40" step="1" value={Number((logoWatermark.widthRatio*100).toFixed(2))}
+                <label>宽度 %<input type="number" data-frame-param="watermark.logo.widthRatio" min="2" max="40" step="1" value={Number((logoWatermark.widthRatio*100).toFixed(2))}
                   onChange={event=>patchWatermark({logo:{...logoWatermark,widthRatio:Number(event.target.value)/100}})}/></label>
-                <label>透明度 %<input type="number" min="0" max="100" step="5" value={Math.round(logoWatermark.opacity*100)}
+                <label>透明度 %<input type="number" data-frame-param="watermark.logo.opacity" min="0" max="100" step="5" value={Math.round(logoWatermark.opacity*100)}
                   onChange={event=>patchWatermark({logo:{...logoWatermark,opacity:Number(event.target.value)/100}})}/></label>
+                {offsetInputs('watermark.logo')}
               </div>
-              <p className="framing-overlay-note">精细偏移（offsetX / offsetY）由老师端的水印面板（US-007）微调，这里是全局默认值。</p>
+              <p className="framing-overlay-note">偏移（offsetX / offsetY）是模板上的全局默认值，老师端的水印面板（US-007）仍可在此基础上继续微调。</p>
             </div>
 
             <div className="framing-overlay-block">
               <div className="framing-overlay-title">
-                <label className="framing-enable"><input type="checkbox" checked={textWatermark.visible}
+                <label className="framing-enable"><input type="checkbox" data-frame-param="watermark.text.visible" checked={textWatermark.visible}
                   onChange={event=>patchWatermark({text:{...textWatermark,visible:event.target.checked}})}/> 文字水印</label>
                 <small>可用变量：{'{机构名}{学员名}{作品名}{老师姓名}{课次日期}'}</small>
               </div>
               <div className="framing-overlay-controls">
-                <label className="wide">内容<input value={textWatermark.content}
+                <label className="wide">内容<input data-frame-param="watermark.text.content" value={textWatermark.content}
                   onChange={event=>patchWatermark({text:{...textWatermark,content:event.target.value}})}/></label>
               </div>
               <div className="framing-overlay-controls">
-                <label>字体<select value={textWatermark.fontFamily} onChange={event=>patchWatermark({text:{...textWatermark,fontFamily:event.target.value}})}>
+                <label>字体<select data-frame-param="watermark.text.fontFamily" value={textWatermark.fontFamily} onChange={event=>patchWatermark({text:{...textWatermark,fontFamily:event.target.value}})}>
                   {FRAMING_FONT_WHITELIST.map(font=><option key={font} value={font}>{font}</option>)}
                 </select></label>
-                <label>字号 px<input type="number" min="8" max="200" step="1" value={textWatermark.fontSize}
+                <label>字号 px<input type="number" data-frame-param="watermark.text.fontSize" min="8" max="200" step="1" value={textWatermark.fontSize}
                   onChange={event=>patchWatermark({text:{...textWatermark,fontSize:Number(event.target.value)}})}/></label>
-                <label>颜色<input type="color" value={textWatermark.color}
+                <label>颜色<input type="color" data-frame-param="watermark.text.color" value={textWatermark.color}
                   onChange={event=>patchWatermark({text:{...textWatermark,color:event.target.value}})}/></label>
-                <label>透明度 %<input type="number" min="0" max="100" step="5" value={Math.round(textWatermark.opacity*100)}
+                <label>透明度 %<input type="number" data-frame-param="watermark.text.opacity" min="0" max="100" step="5" value={Math.round(textWatermark.opacity*100)}
                   onChange={event=>patchWatermark({text:{...textWatermark,opacity:Number(event.target.value)/100}})}/></label>
-                <label>旋转 度<input type="number" min="-180" max="180" step="5" value={textWatermark.rotateDeg}
+                <label>旋转 度<input type="number" data-frame-param="watermark.text.rotateDeg" min="-180" max="180" step="5" value={textWatermark.rotateDeg}
                   onChange={event=>patchWatermark({text:{...textWatermark,rotateDeg:Number(event.target.value)}})}/></label>
                 <div className="framing-overlay-field"><span>位置</span>
-                  <OverlayPositionPad label="文字水印" value={textWatermark.position} onChange={position=>patchWatermark({text:{...textWatermark,position}})}/>
+                  <OverlayPositionPad label="文字水印" dataParam="watermark.text.position" value={textWatermark.position} onChange={position=>patchWatermark({text:{...textWatermark,position}})}/>
                 </div>
+                {offsetInputs('watermark.text')}
               </div>
               <p className="framing-overlay-note">字体限后台白名单；渲染时会按变量替换内容，未命中的变量保留原文。</p>
             </div>
@@ -4804,55 +4949,59 @@ function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast}){
                 变量与位置口径与水印完全一致 —— 九宫格 + 短边比例，别再写第二套定位。 */}
             <div className="framing-overlay-block">
               <div className="framing-overlay-title">
-                <label className="framing-enable"><input type="checkbox" checked={signatureMark.visible}
+                <label className="framing-enable"><input type="checkbox" data-frame-param="signature.visible" checked={signatureMark.visible}
                   onChange={event=>patchSignature({visible:event.target.checked})}/> 落款</label>
                 <small>可用变量：{'{老师姓名}{机构名}{学员名}{作品名}{课次日期}'}</small>
               </div>
               <div className="framing-overlay-controls">
-                <label>形式<select value={signatureMark.mode} onChange={event=>patchSignature({mode:event.target.value})}>
+                <label>形式<select data-frame-param="signature.mode" value={signatureMark.mode} onChange={event=>patchSignature({mode:event.target.value})}>
                   <option value="text">文字落款</option>
                   <option value="image">手写签名图</option>
                 </select></label>
-                <label className="wide">姓名 / 落款文字<input value={signatureMark.teacherName}
+                <label className="wide">姓名 / 落款文字<input data-frame-param="signature.teacherName" value={signatureMark.teacherName}
                   onChange={event=>patchSignature({teacherName:event.target.value})}/></label>
               </div>
               <div className="framing-overlay-controls">
-                <label className="wide">寄语（可空）<input value={signatureMark.message} maxLength={60} placeholder="例如：继续用画笔讲你的故事"
+                <label className="wide">寄语（可空）<input data-frame-param="signature.message" value={signatureMark.message} maxLength={60} placeholder="例如：继续用画笔讲你的故事"
                   onChange={event=>patchSignature({message:event.target.value})}/></label>
               </div>
-              {signatureMark.mode==='image'?<div className="framing-overlay-row">
+              {/* 签名图行**始终渲染**（形式选「文字落款」时它照样在，只是不参与绘制）：
+                  参数面板的覆盖率是「v2 的每个参数都有控件」，条件渲染会让 `signature.imageUrl`
+                  在文字模式下整支消失 —— 面板上看不到自己的签名图是不是还在。 */}
+              <div className="framing-overlay-row">
                 <input ref={signatureInput} type="file" accept="image/png,image/jpeg" hidden
                   onChange={event=>{const file=event.target.files&&event.target.files[0];event.target.value='';if(file)uploadSignature(file)}}/>
-                <Button icon={UploadCloud} onClick={()=>{if(signatureInput.current)signatureInput.current.click()}} disabled={signatureBusy}>{signatureBusy?'读取中…':'上传签名图'}</Button>
+                <Button icon={UploadCloud} data-frame-param="signature.imageUrl" onClick={()=>{if(signatureInput.current)signatureInput.current.click()}} disabled={signatureBusy}>{signatureBusy?'读取中…':'上传签名图'}</Button>
                 {signatureMark.imageUrl?<img className="framing-asset-thumb" src={signatureMark.imageUrl} alt="手写签名图缩略图"/>:<em className="framing-asset-empty">还没有签名图，没有图时整支不绘制</em>}
                 {signatureMark.imageUrl?<button type="button" className="text-link" onClick={removeSignature}>移除</button>:null}
-              </div>:null}
-              {signatureMark.mode==='image'?<p className="framing-asset-rules">上传要求：{framingAssetRulesText()}（当前：{signatureInfo&&signatureInfo.ok?`${signatureInfo.width}×${signatureInfo.height}`:'待复核'}）</p>:null}
+              </div>
+              <p className="framing-asset-rules">上传要求：{framingAssetRulesText()}（当前：{signatureInfo&&signatureInfo.ok?`${signatureInfo.width}×${signatureInfo.height}`:'待复核'}）{signatureMark.mode==='image'?'' :'；当前形式是文字落款，签名图不会被画上。'}</p>
               {signatureError?<p className="framing-asset-error">{signatureError}</p>:null}
               {!signatureError&&signatureInfo&&!signatureInfo.ok?<p className="framing-asset-error">{signatureInfo.message}</p>:null}
               <div className="framing-overlay-controls">
-                <label>字体<select value={signatureMark.fontFamily} onChange={event=>patchSignature({fontFamily:event.target.value})}>
+                <label>字体<select data-frame-param="signature.fontFamily" value={signatureMark.fontFamily} onChange={event=>patchSignature({fontFamily:event.target.value})}>
                   {FRAMING_FONT_WHITELIST.map(font=><option key={font} value={font}>{font}</option>)}
                 </select></label>
-                <label>字号 px<input type="number" min="8" max="200" step="1" value={signatureMark.fontSize}
+                <label>字号 px<input type="number" data-frame-param="signature.fontSize" min="8" max="200" step="1" value={signatureMark.fontSize}
                   onChange={event=>patchSignature({fontSize:Number(event.target.value)})}/></label>
-                <label>颜色<input type="color" value={signatureMark.color}
+                <label>颜色<input type="color" data-frame-param="signature.color" value={signatureMark.color}
                   onChange={event=>patchSignature({color:event.target.value})}/></label>
-                {signatureMark.mode==='image'?<label>签名图宽度 %<input type="number" min="2" max="40" step="1" value={Number(((signatureMark.imageWidthRatio||0)*100).toFixed(2))}
-                  onChange={event=>patchSignature({imageWidthRatio:Number(event.target.value)/100})}/></label>:null}
+                <label>签名图宽度 %<input type="number" data-frame-param="signature.imageWidthRatio" min="2" max="40" step="1" value={Number(((signatureMark.imageWidthRatio||0)*100).toFixed(2))}
+                  onChange={event=>patchSignature({imageWidthRatio:Number(event.target.value)/100})}/></label>
                 <div className="framing-overlay-field"><span>位置</span>
-                  <OverlayPositionPad label="落款" value={signatureMark.position} onChange={position=>patchSignature({position})}/>
+                  <OverlayPositionPad label="落款" dataParam="signature.position" value={signatureMark.position} onChange={position=>patchSignature({position})}/>
                 </div>
+                {offsetInputs('signature')}
               </div>
               <div className="framing-overlay-controls">
-                <label className="framing-enable"><input type="checkbox" checked={signatureMark.seal.visible}
+                <label className="framing-enable"><input type="checkbox" data-frame-param="signature.seal.visible" checked={signatureMark.seal.visible}
                   onChange={event=>patchSeal({visible:event.target.checked})}/> 印章</label>
-                <label>印文<input value={signatureMark.seal.text} maxLength={4} placeholder="4 字以内"
+                <label>印文<input data-frame-param="signature.seal.text" value={signatureMark.seal.text} maxLength={4} placeholder="4 字以内"
                   onChange={event=>patchSeal({text:event.target.value})}/></label>
-                <label>形状<select value={signatureMark.seal.shape} onChange={event=>patchSeal({shape:event.target.value})}>
+                <label>形状<select data-frame-param="signature.seal.shape" value={signatureMark.seal.shape} onChange={event=>patchSeal({shape:event.target.value})}>
                   {SEAL_SHAPES.map(shape=><option key={shape} value={shape}>{shape==='round'?'圆形章':'方形章'}</option>)}
                 </select></label>
-                <label>颜色<input type="color" value={signatureMark.seal.color}
+                <label>颜色<input type="color" data-frame-param="signature.seal.color" value={signatureMark.seal.color}
                   onChange={event=>patchSeal({color:event.target.value})}/></label>
               </div>
               <p className="framing-overlay-note">印章贴在落款块内侧（贴左的落款章在右边）；文字模式按「姓名在上、寄语在下」排两行，图片模式按签名图原比例缩放、不拉伸。</p>
@@ -4861,30 +5010,31 @@ function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast}){
             {/* 时间（US-003c）：来源 / 格式 / 前缀 / 位置。默认取本次课次日期（PRD 原文）。 */}
             <div className="framing-overlay-block">
               <div className="framing-overlay-title">
-                <label className="framing-enable"><input type="checkbox" checked={dateMark.visible}
+                <label className="framing-enable"><input type="checkbox" data-frame-param="date.visible" checked={dateMark.visible}
                   onChange={event=>patchDate({visible:event.target.checked})}/> 时间</label>
                 <small>默认取本次课次日期（lesson.lessonDate），补录上周的课次也会跟着显示上周的日期</small>
               </div>
               <div className="framing-overlay-controls">
-                <label>来源<select value={dateMark.source} onChange={event=>patchDate({source:event.target.value})}>
+                <label>来源<select data-frame-param="date.source" value={dateMark.source} onChange={event=>patchDate({source:event.target.value})}>
                   {DATE_SOURCES.map(source=><option key={source} value={source}>{DATE_SOURCE_LABELS[source]}</option>)}
                 </select></label>
-                <label>格式<select value={dateMark.format} onChange={event=>patchDate({format:event.target.value})}>
+                <label>格式<select data-frame-param="date.format" value={dateMark.format} onChange={event=>patchDate({format:event.target.value})}>
                   {DATE_FORMATS.map(format=><option key={format} value={format}>{format}</option>)}
                 </select></label>
-                <label>前缀<input value={dateMark.prefix} maxLength={12} placeholder="例如 创作于 "
+                <label>前缀<input data-frame-param="date.prefix" value={dateMark.prefix} maxLength={12} placeholder="例如 创作于 "
                   onChange={event=>patchDate({prefix:event.target.value})}/></label>
-                <label>手填日期<input value={dateMark.manualValue} placeholder={dateMark.source==='manual'?'来源为「手动填写」时用这里的值':'仅「手动填写」时生效'}
+                <label>手填日期<input data-frame-param="date.manualValue" value={dateMark.manualValue} placeholder={dateMark.source==='manual'?'来源为「手动填写」时用这里的值':'仅「手动填写」时生效'}
                   onChange={event=>patchDate({manualValue:event.target.value})}/></label>
               </div>
               <div className="framing-overlay-controls">
-                <label>字号 px<input type="number" min="8" max="200" step="1" value={dateMark.fontSize}
+                <label>字号 px<input type="number" data-frame-param="date.fontSize" min="8" max="200" step="1" value={dateMark.fontSize}
                   onChange={event=>patchDate({fontSize:Number(event.target.value)})}/></label>
-                <label>颜色<input type="color" value={dateMark.color}
+                <label>颜色<input type="color" data-frame-param="date.color" value={dateMark.color}
                   onChange={event=>patchDate({color:event.target.value})}/></label>
                 <div className="framing-overlay-field"><span>位置</span>
-                  <OverlayPositionPad label="时间" value={dateMark.position} onChange={position=>patchDate({position})}/>
+                  <OverlayPositionPad label="时间" dataParam="date.position" value={dateMark.position} onChange={position=>patchDate({position})}/>
                 </div>
+                {offsetInputs('date')}
               </div>
               <p className="framing-overlay-note">认不出来的手填值会原样输出（例如「上周三」），不会编造日期。</p>
             </div>
@@ -4892,15 +5042,15 @@ function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast}){
             {/* 二维码（US-003c）：**内容由后台配置**（FR-23），老师端不能填任意 URL。 */}
             <div className="framing-overlay-block">
               <div className="framing-overlay-title">
-                <label className="framing-enable"><input type="checkbox" checked={qrWatermark.visible}
+                <label className="framing-enable"><input type="checkbox" data-frame-param="watermark.qr.visible" checked={qrWatermark.visible}
                   onChange={event=>patchQr({visible:event.target.checked})}/> 二维码</label>
                 <small>{qrTargetRulesText()}</small>
               </div>
               <div className="framing-overlay-controls">
-                <label>目标<select value={qrWatermark.target} onChange={event=>patchQr({target:event.target.value})}>
+                <label>目标<select data-frame-param="watermark.qr.target" value={qrWatermark.target} onChange={event=>patchQr({target:event.target.value})}>
                   {QR_TARGETS.map(target=><option key={target.key} value={target.key}>{target.label}</option>)}
                 </select></label>
-                <label className="wide">说明文字<input value={qrWatermark.caption}
+                <label className="wide">说明文字<input data-frame-param="watermark.qr.caption" value={qrWatermark.caption}
                   onChange={event=>patchQr({caption:event.target.value})}/></label>
               </div>
               <p className="framing-overlay-note" data-qr-url={qrResolved.url}>
@@ -4908,11 +5058,12 @@ function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast}){
                 {qrVersion?null:'：链接过长，二维码不会绘制，请改用更短的目标'}
               </p>
               <div className="framing-overlay-controls">
-                <label>尺寸 %<input type="number" min="3" max="25" step="1" value={Number(((qrWatermark.sizeRatio||0)*100).toFixed(2))}
+                <label>尺寸 %<input type="number" data-frame-param="watermark.qr.sizeRatio" min="3" max="25" step="1" value={Number(((qrWatermark.sizeRatio||0)*100).toFixed(2))}
                   onChange={event=>patchQr({sizeRatio:Number(event.target.value)/100})}/></label>
                 <div className="framing-overlay-field"><span>位置</span>
-                  <OverlayPositionPad label="二维码" value={qrWatermark.position} onChange={position=>patchQr({position})}/>
+                  <OverlayPositionPad label="二维码" dataParam="watermark.qr.position" value={qrWatermark.position} onChange={position=>patchQr({position})}/>
                 </div>
+                {offsetInputs('watermark.qr')}
               </div>
               <p className="framing-overlay-note">二维码会自动铺一块带静区的白底（否则落在卡纸底色上扫不出来），说明文字排在白底外侧。</p>
             </div>
@@ -4921,26 +5072,6 @@ function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast}){
       </div>
     </div>
   </>;
-}
-
-/** 装裱预览用的占位作品：只在后台设置页使用，不参与真实渲染。 */
-const PLACEHOLDER_ARTWORK_SIZE={width:900,height:680};
-let placeholderCache='';
-function placeholderArtwork(){
-  if(placeholderCache) return placeholderCache;
-  const canvas=document.createElement('canvas');
-  canvas.width=PLACEHOLDER_ARTWORK_SIZE.width; canvas.height=PLACEHOLDER_ARTWORK_SIZE.height;
-  const ctx=canvas.getContext('2d');
-  ctx.fillStyle='#fdfbf6'; ctx.fillRect(0,0,PLACEHOLDER_ARTWORK_SIZE.width,PLACEHOLDER_ARTWORK_SIZE.height);
-  ctx.fillStyle='#f6c445'; ctx.beginPath(); ctx.arc(420,300,140,0,Math.PI*2); ctx.fill();
-  ctx.fillStyle='#e2603c'; ctx.beginPath(); ctx.arc(590,215,62,0,Math.PI*2); ctx.fill();
-  ctx.strokeStyle='#2f6fbf'; ctx.lineWidth=9; ctx.lineCap='round';
-  ctx.beginPath(); ctx.moveTo(150,560); ctx.quadraticCurveTo(450,392,760,560); ctx.stroke();
-  ctx.strokeStyle='#3f8f5f'; ctx.lineWidth=7;
-  ctx.beginPath(); ctx.moveTo(420,440); ctx.quadraticCurveTo(392,540,300,596); ctx.stroke();
-  ctx.fillStyle='#6d6559'; ctx.font='26px serif'; ctx.fillText('占位作品 · 仅用于预览装裱', 300, 646);
-  placeholderCache=canvas.toDataURL('image/png');
-  return placeholderCache;
 }
 
 // 机构级基础数据页：只有管理员能进。导航已经隐藏入口，这里再拦一道，

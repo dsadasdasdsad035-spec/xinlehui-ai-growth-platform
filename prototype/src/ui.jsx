@@ -14,8 +14,10 @@ export function PageHeader({ title, desc, prd, actions }) {
   </div>;
 }
 
-export function Button({ children, variant = 'primary', icon: Icon, onClick, disabled = false, type = 'button' }) {
-  return <button type={type} disabled={disabled} onClick={onClick} className={variant}>{Icon ? <Icon size={17} /> : null}{children}</button>;
+// `...rest` 是给「面板要给按钮挂 data-* 断言属性」用的（US-011a 的装裱参数面板）：
+// 老调用方不传就一个属性都不多，行为不变。
+export function Button({ children, variant = 'primary', icon: Icon, onClick, disabled = false, type = 'button', ...rest }) {
+  return <button type={type} disabled={disabled} onClick={onClick} className={variant} {...rest}>{Icon ? <Icon size={17} /> : null}{children}</button>;
 }
 
 export function Status({ value }) {

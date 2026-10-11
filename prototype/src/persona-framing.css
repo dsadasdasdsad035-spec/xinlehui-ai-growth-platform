@@ -138,6 +138,43 @@ p.framing-coverage-bad { margin: 0; padding: 10px 18px; font-size: 12px; line-he
 .overlay-position-pad button:hover { border-color: var(--blue); color: var(--ink); }
 .overlay-position-pad button.active { border-color: var(--blue); background: #eef3fd; color: var(--blue); font-weight: 600; }
 
+/* —— 装裱参数区（US-011a）：左控件 + 右实时预览 ——
+   预览是 sticky 的：参数区比预览长得多（六组几十个控件），滚到下面改落款时
+   右侧仍然停着那张成品图，否则「改一个字段看一眼」要来回滚。
+   断点 900px 起改成单列（预览排到最前面），窄屏先看结果再改参数。 */
+.framing-params { margin-top: 18px; display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 18px; align-items: start; }
+.framing-params-controls { display: grid; gap: 14px; min-width: 0; }
+.framing-params-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; flex-wrap: wrap; padding: 14px 18px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--soft); }
+.framing-params-head h3 { margin: 0; font-size: 15px; font-weight: 600; }
+.framing-params-head p { margin: 6px 0 0; font-size: 12px; color: var(--muted); line-height: 1.6; max-width: 46ch; }
+.framing-params-head em { flex: none; font-style: normal; font-size: 12px; padding: 4px 10px; border-radius: 999px; white-space: nowrap; }
+.framing-params .framing-overlay-block { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.framing-params .framing-overlay-title h3 { margin: 0; font-size: 14px; font-weight: 600; }
+.framing-params .framing-overlay-title small { max-width: 46ch; line-height: 1.6; }
+.framing-params .framing-overlay-controls input:disabled,
+.framing-params .framing-overlay-controls select:disabled { opacity: .5; }
+.framing-params-preview { position: sticky; top: 16px; display: grid; gap: 12px; min-width: 0; }
+/* 分割页的两个落格项默认 `min-width: auto`：内容（长选项的 select / 预览图 / 说明文字）的
+   最小宽度会把整列顶宽，窄屏上就是「整页横向滚动」。置 0 让它们跟着列宽收缩，内部再换行。
+   只作用于装裱设置页，别的 split-page 页面（人设 / 技能库）不受影响。 */
+.framing-settings > .persona-list,
+.framing-settings > .persona-editor { min-width: 0; }
+.framing-params-preview .framing-preview { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); padding: 12px; }
+.framing-preview-pending { display: grid; place-items: center; min-height: 180px; border-radius: 12px; background: var(--soft); font-size: 12px; color: var(--muted); }
+.framing-preview-notes { display: grid; gap: 6px; padding: 10px 14px; border: 1px dashed var(--border); border-radius: var(--radius); }
+@media (max-width: 900px) {
+  .framing-params { grid-template-columns: minmax(0, 1fr); }
+  .framing-params-preview { position: static; order: -1; }
+  /* 电话上改参数是单手操作：控件本身 ≥44px，复选框的 44px 落在它的 label 上
+     （label 包着 input，点 label 就是点它 —— 所以别把 checkbox 自己拉成 44px 的方块）。 */
+  .framing-params .framing-overlay-controls > label { min-height: 44px; justify-content: flex-end; }
+  .framing-params .framing-overlay-controls input:not([type="checkbox"]),
+  .framing-params .framing-overlay-controls select { min-height: 44px; }
+  .framing-params .framing-overlay-controls input[type="color"] { min-width: 44px; }
+  .framing-params .overlay-position-pad { grid-template-columns: repeat(3, 44px); }
+  .framing-params .overlay-position-pad button { width: 44px; height: 44px; }
+}
+
 /* —— 技能导入面板：上传本地 / 本机发现 / 技能市场 —— */
 .skill-import { margin: 0 0 18px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); overflow: hidden; }
 .skill-import-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--border); background: var(--soft); }

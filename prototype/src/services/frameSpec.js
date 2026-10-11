@@ -424,11 +424,13 @@ const hasExplicitFrameLighting = (spec) => isPlainObject(group(group(spec).frame
  *      `visible: false` 的元素照样带着完整的类型化占位，但绘制层**只画 visible 为真的**
  *      （US-003a 的验收：完全不绘制、不留空白占位）；同时它们自动进 `frameSpecRenderKey`，
  *      两套只有水印位置不同的模板不会共用同一份画展缓存。
+ *   4. 展签也一样：`plaqueVisible` / `plaquePosition`（US-011a）由 `buildFramingLayout` 消费 ——
+ *      关掉展签时那条带子整条还给作品区，位置为 `top` 时带子挪到开口顶部（作品区跟着下移）。
  */
 export function frameSpecRenderView(spec) {
   const flat = frameSpecView(spec);
   if (!isFrameSpecV2(spec)) {
-    return { ...flat, shape: 'square', cornerRadiusRatio: 0, lighting: null, matVisible: true, overlays: null };
+    return { ...flat, shape: 'square', cornerRadiusRatio: 0, lighting: null, matVisible: true, plaqueVisible: true, plaquePosition: 'bottom', overlays: null };
   }
   const v2 = normalizeFrameSpecV2(spec);
   return {
@@ -437,6 +439,10 @@ export function frameSpecRenderView(spec) {
     cornerRadiusRatio: v2.frame.cornerRadiusRatio,
     lighting: hasExplicitFrameLighting(spec) ? { ...v2.frame.lighting } : null,
     matVisible: v2.mat.visible,
+    // 展签开关与位置（US-011a 把这两支接进绘制层）：v1 平面 spec 没有展签分组，
+    // 回落「显示 + 贴底」—— 与升级前逐像素一致。
+    plaqueVisible: v2.plaque.visible,
+    plaquePosition: v2.plaque.position,
     overlays: {
       watermark: {
         logo: { ...v2.watermark.logo },
