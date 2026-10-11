@@ -474,6 +474,34 @@ DSH 的 `browser_*` 工具**没有 selectOption 能力**：`browser_type` 走的
   不进模板。`date.source` = `lesson | today | manual`，`date.format` 三种白名单；所有位置是九宫格枚举
   + `offsetX/offsetY` 比例偏移（-0.5~0.5）；尺寸与位置一律用「相对画布短边的比例」。
 
+### 叠加元素的定位与变量替换（US-003a）
+
+定位 / 偏移 / 尺寸换算 / 变量替换的**唯一真源是 `src/services/overlayLayout.js`**（零依赖纯函数，
+与 `frameShapes.js` 同一口径，可直接 Node 断言）。渲染层、后台九宫格控件（US-007）与批量套用都读它，
+**不要在 JSX / frameSpec 里再造一套定位**。
+
+- 九宫格枚举 `ELEMENT_POSITIONS` 常驻 `overlayLayout.js`（九个格子 + `custom`，PRD 词汇表口径；
+  `custom` = 中心锚点、供拖动微调），`frameSpec.js` 只是**重新导出**；`frameSpec` 的收敛器与定位层
+  共用 `ELEMENT_OFFSET_RANGE`（-0.5~0.5）/ `clampOverlayOffset()`，**两处都不许再写 ±0.5 字面量**。
+- **偏移正值一律朝画布内侧**：右下角 `0.03` = 离右边和下边各留 3% 短边，左上角也是往右下挪；
+  负值把元素往画布外推（可出血）。做成「统一 +x/+y」的话，右下角的默认值会直接把元素推出画面。
+- 位置与尺寸一律短边比例：`overlayShortEdge = min(宽,高)`；文本用 `resolveOverlayAnchor()`
+  （直接给 `ctx.fillText` 的绘制点 + `textAlign/textBaseline`），图片 / 二维码用 `resolveOverlayBox()`，
+  字号用 `resolveOverlayFontSize()`（spec 的 `fontSize` 是基准短边 `OVERLAY_BASE_SHORT_EDGE = 1360` 下的像素）。
+- 变量替换 `applyOverlayVariables()`：五个变量 `{机构名}{学员名}{作品名}{老师姓名}{课次日期}`。
+  **不在五个变量里的占位符保留原文**并由 `overlayVariableWarnings()` 给后台警告（FR-19）；
+  **命中但上下文没值 → 空串**（空内容不绘制，不留空括号）。
+- 上下文来自 `renderFramedArtwork({ orgName, student, title, teacherName, date, variables })`
+  （`variables` 逐字段优先）。机构显示名的唯一来源是 `data/lessons.js` 的 `DEFAULT_ORG_NAME`；
+  **改传参要同步调用点的渲染缓存键**（`main.jsx` 第二步的 `styleKey` 已含 `currentTeacherName` / `DEFAULT_ORG_NAME`）。
+- **绘制门控**：只有 `visible === true` 的元素进 `framing.js` 的 `drawOverlayElements()`（画在最上层、
+  位置相对整块画布短边）。目前只接了文字水印画笔，Logo / 二维码 / 落款 / 时间的画笔由 US-003b / US-003c
+  接在同一门控后 —— 没有画笔的类别同样不画、也不留占位。
+- 叠加元素整组进 `frameSpecRenderView()`（v1 平面 spec 是 `overlays: null`），所以水印的位置 / 内容 /
+  `visible` 自动进 `frameSpecRenderKey()`：两套只有水印位置不同的模板不会共用画展缓存，**别把它摘出去**。
+- canvas 验证口径：按「可见 vs 不可见」差分找墨迹外接框；字形侧边距（~4px）与 descent（~8px）让绝对位置
+  差几个像素 → 绝对位置用 **±10px** 容差，比例精确性改用**两个偏移的差值**断言（±3px）。
+
 ## 装裱模板的三层归属：scope / ownerKey（US-001b）
 
 模板分三层「平台（platform）/ 机构（org）/ 老师个人（teacher）」，**三层共用云端 `framing_presets`

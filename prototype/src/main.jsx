@@ -58,7 +58,7 @@ import { hydrateGalleryExhibitions, hydrateGalleryVenues, loadGalleryExhibitions
 import { loadRemoteGalleryExhibitions, loadRemoteGalleryVenues } from './services/galleryVenuesApi';
 // 课次（lesson）是后续四步流程的唯一上下文实体：本地兜底 + 云端 lessons 表为真源。
 // 课次日期与课时序号的唯一性校验（US-404）走 data 层的 findLessonConflict，读写走 services/lessonApi。
-import { ATTENDANCE_LABELS, ATTENDANCE_STATES, createParticipant, DEFAULT_ORG_ID, findLessonConflict, formatLessonDateDots, loadLessons, mergeLessons, normalizeLessonDate, persistLessons } from './data/lessons';
+import { ATTENDANCE_LABELS, ATTENDANCE_STATES, createParticipant, DEFAULT_ORG_ID, DEFAULT_ORG_NAME, findLessonConflict, formatLessonDateDots, loadLessons, mergeLessons, normalizeLessonDate, persistLessons } from './data/lessons';
 // 上传素材与学员的绑定（US-406a / US-406b / US-009）：展签只读这份绑定，不做任何顺序取模推断。
 // US-406b 起班级反馈的作品走「学员乘上传位」（bindFilesToStudent：在谁的格子里选的就是谁的作品）；
 // US-009 起课堂照片也有自己的「学员课堂照片上传位」（0–10 张/人、选填），并支持一张合影分给多人。
@@ -917,7 +917,9 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
   useEffect(()=>{
     if(step!==2||!media.artwork?.cleanUrl||media.artwork?.cleanAlgorithm!==ARTWORK_CLEAN_ALGORITHM) return;
     const plaque=framePlaque();
-    const styleKey=JSON.stringify([activeFrameSpecKey,plaque.student,plaque.title,plaque.date]);
+    // 叠加元素的变量上下文（US-003a）：机构名与老师姓名是会话常量，学员名/作品名/课次日期来自展签。
+    // 它们会影响renderFramedArtwork的输出，所以必须一起进framedStyle缓存键，否则换学员不会重渲染。
+    const styleKey=JSON.stringify([activeFrameSpecKey,plaque.student,plaque.title,plaque.date,currentTeacherName,DEFAULT_ORG_NAME]);
     if(media.artwork?.framedStyle===styleKey&&media.artwork?.framedUrl) return;
     let cancelled=false;
     renderFramedArtwork({
@@ -926,14 +928,16 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
       student:plaque.student,
       title:plaque.title,
       date:plaque.date,
-      rotation:0
+      rotation:0,
+      orgName:DEFAULT_ORG_NAME,
+      teacherName:currentTeacherName
     }).then(framedUrl=>{
       if(cancelled) return;
       setMedia(current=>({...current,artwork:{...current.artwork,framedUrl,framedStyle:styleKey}}));
       setFramingState('ready');
     }).catch(()=>{if(!cancelled) setFramingState('error')});
     return()=>{cancelled=true};
-  },[step,media.artwork?.cleanUrl,media.artwork?.cleanAlgorithm,media.artwork?.framedStyle,media.artwork?.framedUrl,activeFrameSpecKey,selectedStudentLabel]);
+  },[step,media.artwork?.cleanUrl,media.artwork?.cleanAlgorithm,media.artwork?.framedStyle,media.artwork?.framedUrl,activeFrameSpecKey,selectedStudentLabel,currentTeacherName]);
   useEffect(()=>{
     if(step!==2||!media.photo?.url||media.photo?.portraitReady) return;
     let cancelled=false;
@@ -2690,7 +2694,7 @@ function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast}){
   const [preview,setPreview]=useState('');
   const [saving,setSaving]=useState(false);
   useEffect(()=>{setDraft(editing?{...editing}:null)},[editingId,framingPresets.length]);
-  useEffect(()=>{if(!draft)return undefined;let active=true;renderFramedArtwork({source:placeholderArtwork(),spec:draft.spec||DEFAULT_FRAME_SPEC,student:draft.plaqueStudent||'陈一诺',title:draft.plaqueTitle||'向着光的花',date:draft.plaqueDate||'2026.08.11'}).then(url=>{if(active)setPreview(url)}).catch(()=>{if(active)setPreview('')});return()=>{active=false}},[draft?.spec,draft?.plaqueStudent,draft?.plaqueTitle,draft?.plaqueDate]);
+  useEffect(()=>{if(!draft)return undefined;let active=true;renderFramedArtwork({source:placeholderArtwork(),spec:draft.spec||DEFAULT_FRAME_SPEC,student:draft.plaqueStudent||'陈一诺',title:draft.plaqueTitle||'向着光的花',date:draft.plaqueDate||'2026.08.11',orgName:DEFAULT_ORG_NAME,teacherName:roleMeta.teacher.name}).then(url=>{if(active)setPreview(url)}).catch(()=>{if(active)setPreview('')});return()=>{active=false}},[draft?.spec,draft?.plaqueStudent,draft?.plaqueTitle,draft?.plaqueDate]);
   const patch=(key,value)=>setDraft(current=>current?{...current,[key]:value}:current);
   // 面板只认识 v1 平面字段，这里统一取视图：老预设（v1）原样、v2 预设映射成平面值。
   const draftSpec=frameSpecView(draft?.spec);

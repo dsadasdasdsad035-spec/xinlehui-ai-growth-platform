@@ -1,5 +1,6 @@
 import { frameSpecRenderView, clampRatio, FRAME_WIDTH_RATIO_RANGE, MAT_WIDTH_RATIO_RANGE, CORNER_RADIUS_RATIO_RANGE } from './frameSpec';
 import { archShape, archInset, bevelShape, bevelInset, shapeBox, inscribeAspectRect, traceShape } from './frameShapes';
+import { overlayVariableContext, planOverlayText, visibleOverlayElements } from './overlayLayout';
 
 const FRAME_STYLES = {
   '星光展': { outer: '#cfa52e', inner: '#f3ede2', plaque: '#2b271f' },
@@ -514,6 +515,57 @@ function frameLightingFill(ctx, rect, lighting, baseColor) {
 }
 
 /**
+ * 文本类叠加元素的画笔（US-003a 的绘制层入口）。
+ *
+ * 位置、字号、对齐、透明度与旋转**全部由 `planOverlayText()`（overlayLayout.js）算好**，
+ * 这里只做 fillText —— 绘制层再做一次位置推算就会和后台面板的九宫格预览漂移。
+ * `plan` 为 null（元素不可见 / 内容替换后为空）时一个像素都不碰。
+ */
+function paintOverlayText(ctx, plan) {
+  if (!plan || !plan.text) return;
+  ctx.save();
+  ctx.globalAlpha = plan.opacity;
+  ctx.fillStyle = plan.color;
+  ctx.font = `${plan.fontSize}px ${plan.fontFamily}`;
+  ctx.textAlign = plan.textAlign;
+  ctx.textBaseline = plan.textBaseline;
+  if (plan.rotateDeg) {
+    // 绕锚点旋转：锚点就是 textAlign / textBaseline 指定的那个点，转完仍在同一格子。
+    ctx.translate(plan.x, plan.y);
+    ctx.rotate((plan.rotateDeg * Math.PI) / 180);
+    ctx.fillText(plan.text, 0, 0);
+  } else {
+    ctx.fillText(plan.text, plan.x, plan.y);
+  }
+  ctx.restore();
+}
+
+/**
+ * 叠加元素绘制层（水印 / 落款 / 时间 / 二维码），画在**最上层**，位置相对整块画布短边。
+ *
+ * **绘制门控**：只有 `visible === true` 的元素会进这一层（`visibleOverlayElements`），
+ * 不可见的元素连画笔都不会被调用 —— 所以既不会画出东西，也不会留下任何空白占位
+ * （US-003a 的验收原文）。每个元素的 `visible` 默认是 false，老模板因此完全不受影响。
+ *
+ * 目前这一层只有文字水印的画笔；机构 Logo / 二维码 / 落款（含印章）/ 时间的画笔由
+ * US-003b / US-003c 接在同一个门控后面 —— 它们在没有画笔时同样什么都不画。
+ */
+function drawOverlayElements(ctx, { width, height, overlays, context }) {
+  const elements = visibleOverlayElements([
+    { kind: 'watermark.text', element: overlays?.watermark?.text },
+    { kind: 'watermark.logo', element: overlays?.watermark?.logo },
+    { kind: 'watermark.qr', element: overlays?.watermark?.qr },
+    { kind: 'signature', element: overlays?.signature },
+    { kind: 'date', element: overlays?.date }
+  ]);
+  for (const { kind, element } of elements) {
+    if (kind === 'watermark.text') {
+      paintOverlayText(ctx, planOverlayText({ element, canvasWidth: width, canvasHeight: height, context }));
+    }
+  }
+}
+
+/**
  * 按「装裱参数」渲染装裱图（后台可配置 / 大模型生成的那套参数）。
  *
  * 与 createExhibitionFrame 的差别：这里没有硬编码样式表，颜色、框宽、形状、卡纸与光影全部来自 spec。
@@ -536,8 +588,13 @@ function frameLightingFill(ctx, rect, lighting, baseColor) {
  *   shape / cornerRadiusRatio                        形状与圆角半径（相对画布短边）
  *   lighting                                         { highlight, shadow, angle } 或 null（不画光影）
  *   matVisible                                       卡纸开关
+ *   overlays                                         v2 的水印 / 落款 / 时间分组；v1 平面 spec 为 null
+ *
+ * 叠加元素的变量上下文（US-003a）：`{机构名}` / `{学员名}` / `{作品名}` / `{老师姓名}` / `{课次日期}`
+ * 由 `orgName` / `student` / `title` / `teacherName` / `date` 拼出来，也可以用 `variables` 直接覆盖
+ * （批量套用与另存模板时用得上）。上下文里的空值替换成空串，因此不会把 `{机构名}` 原样印在画面上。
  */
-export async function renderFramedArtwork({ source, spec = {}, student = '', title = '', date = '', rotation }) {
+export async function renderFramedArtwork({ source, spec = {}, student = '', title = '', date = '', rotation, orgName = '', teacherName = '', variables = null }) {
   const image = await loadImage(source);
   const width = 1800;
   const height = 1360;
@@ -672,6 +729,26 @@ export async function renderFramedArtwork({ source, spec = {}, student = '', tit
     if (line1) drawWithSpacing(line1, plaqueX, plaqueTop + 36, `600 28px ${plaqueFont}`, plaqueText);
     if (line2) drawWithSpacing(line2, plaqueX, plaqueTop + 70, `21px ${plaqueFont}`, plaqueText);
     if (shaped) ctx.restore();
+  }
+
+  // 叠加元素（水印 / 落款 / 时间 / 二维码）永远画在最上层，位置相对**整块画布短边**
+  // （不是作品区）—— 这样同一份模板在展签、卡纸、相框上都不会因为作品比例变化而跑位。
+  // `view.overlays` 只有 v2 spec 才有；v1 平面 spec 是 null，一个像素都不碰。
+  if (view.overlays) {
+    drawOverlayElements(ctx, {
+      width,
+      height,
+      overlays: view.overlays,
+      // 显式传入的 variables 优先（批量套用 / 另存模板的场景），其余从既有入参拼。
+      context: overlayVariableContext({
+        orgName,
+        studentName: student,
+        workTitle: title,
+        teacherName,
+        lessonDate: date,
+        ...(variables && typeof variables === 'object' ? variables : {})
+      })
+    });
   }
 
   return canvas.toDataURL('image/jpeg', 0.92);

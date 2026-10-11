@@ -11,6 +11,13 @@ const STORAGE_KEY = 'xinlehui-lessons-v1';
 export const DEFAULT_ORG_ID = 'org-xinlehui';
 export const DEFAULT_CAMPUS_ID = 'campus-xinghe';
 
+/**
+ * 机构名（展示用的中文名，与 `DEFAULT_ORG_ID` 一一对应）。
+ * 装裱模板里的 `{机构名}` 占位符取这一份（US-003a 的变量替换）：
+ * 机构显示名只有这一个来源，别在水印文案里再写死一个「昕乐绘」。
+ */
+export const DEFAULT_ORG_NAME = '昕乐绘';
+
 /** status 只允许这五个值，顺序即状态机的推进顺序（不可跳变）。 */
 export const LESSON_STATUSES = ['draft', 'collecting', 'processing', 'reviewing', 'archived'];
 

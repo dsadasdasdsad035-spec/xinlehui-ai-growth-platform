@@ -1,4 +1,5 @@
 import { cloud } from '../cloud';
+import { ELEMENT_POSITIONS, clampOverlayOffset } from './overlayLayout';
 
 // 装裱方案由大模型「设计参数」，再由前端 canvas「精确绘制」。
 //
@@ -127,11 +128,10 @@ export const FRAME_TEXTURES = ['solid'];
 export const FRAME_WIDTH_RATIO_RANGE = { min: 0.008, max: 0.08 };
 export const MAT_WIDTH_RATIO_RANGE = { min: 0.02, max: 0.12 };
 export const CORNER_RADIUS_RATIO_RANGE = { min: 0, max: 0.5 };
-export const ELEMENT_POSITIONS = [
-  'top-left', 'top-center', 'top-right',
-  'middle-left', 'middle-center', 'middle-right',
-  'bottom-left', 'bottom-center', 'bottom-right'
-];
+// 九宫格位置枚举（含 `custom`）与 offset 范围（-0.5~0.5）的**唯一真源在 overlayLayout.js**：
+// 定位层、这里的收敛器与后台的九宫格控件必须读同一份，别在任一侧再抄一遍。
+// 这里重新导出，保持 `frameSpec.js` 既有调用方的 import 路径不变。
+export { ELEMENT_POSITIONS };
 export const PLAQUE_POSITIONS = ['bottom', 'top'];
 export const DATE_SOURCES = ['lesson', 'today', 'manual'];
 export const DATE_FORMATS = ['YYYY.MM.DD', 'YYYY-MM-DD', 'YYYY年MM月DD日'];
@@ -279,8 +279,8 @@ export function normalizeFrameSpecV2(raw) {
         visible: bool(logo.visible, base.watermark.logo.visible),
         url: imageUrl(logo.url),
         position: oneOf(logo.position, ELEMENT_POSITIONS, base.watermark.logo.position),
-        offsetX: clamp(logo.offsetX, -0.5, 0.5, base.watermark.logo.offsetX),
-        offsetY: clamp(logo.offsetY, -0.5, 0.5, base.watermark.logo.offsetY),
+        offsetX: clampOverlayOffset(logo.offsetX, base.watermark.logo.offsetX),
+        offsetY: clampOverlayOffset(logo.offsetY, base.watermark.logo.offsetY),
         widthRatio: clamp(logo.widthRatio, 0.02, 0.4, base.watermark.logo.widthRatio),
         opacity: clamp(logo.opacity, 0, 1, base.watermark.logo.opacity)
       },
@@ -288,8 +288,8 @@ export function normalizeFrameSpecV2(raw) {
         visible: bool(watermarkText.visible, base.watermark.text.visible),
         content: text(watermarkText.content, base.watermark.text.content, 80),
         position: oneOf(watermarkText.position, ELEMENT_POSITIONS, base.watermark.text.position),
-        offsetX: clamp(watermarkText.offsetX, -0.5, 0.5, base.watermark.text.offsetX),
-        offsetY: clamp(watermarkText.offsetY, -0.5, 0.5, base.watermark.text.offsetY),
+        offsetX: clampOverlayOffset(watermarkText.offsetX, base.watermark.text.offsetX),
+        offsetY: clampOverlayOffset(watermarkText.offsetY, base.watermark.text.offsetY),
         fontFamily: SAFE_FONTS.includes(String(watermarkText.fontFamily ?? '').trim())
           ? String(watermarkText.fontFamily).trim()
           : base.watermark.text.fontFamily,
@@ -303,8 +303,8 @@ export function normalizeFrameSpecV2(raw) {
         // 二维码内容由后台配置，老师端不可自由填 URL。
         target: text(qr.target, base.watermark.qr.target, 60),
         position: oneOf(qr.position, ELEMENT_POSITIONS, base.watermark.qr.position),
-        offsetX: clamp(qr.offsetX, -0.5, 0.5, base.watermark.qr.offsetX),
-        offsetY: clamp(qr.offsetY, -0.5, 0.5, base.watermark.qr.offsetY),
+        offsetX: clampOverlayOffset(qr.offsetX, base.watermark.qr.offsetX),
+        offsetY: clampOverlayOffset(qr.offsetY, base.watermark.qr.offsetY),
         sizeRatio: clamp(qr.sizeRatio, 0.03, 0.25, base.watermark.qr.sizeRatio),
         caption: text(qr.caption, base.watermark.qr.caption, 40)
       }
@@ -322,8 +322,8 @@ export function normalizeFrameSpecV2(raw) {
         shape: oneOf(seal.shape, SEAL_SHAPES, base.signature.seal.shape)
       },
       position: oneOf(signature.position, ELEMENT_POSITIONS, base.signature.position),
-      offsetX: clamp(signature.offsetX, -0.5, 0.5, base.signature.offsetX),
-      offsetY: clamp(signature.offsetY, -0.5, 0.5, base.signature.offsetY),
+      offsetX: clampOverlayOffset(signature.offsetX, base.signature.offsetX),
+      offsetY: clampOverlayOffset(signature.offsetY, base.signature.offsetY),
       fontFamily: SAFE_FONTS.includes(String(signature.fontFamily ?? '').trim())
         ? String(signature.fontFamily).trim()
         : base.signature.fontFamily,
@@ -337,8 +337,8 @@ export function normalizeFrameSpecV2(raw) {
       prefix: String(date.prefix ?? base.date.prefix).slice(0, 20),
       manualValue: String(date.manualValue ?? '').trim().slice(0, 40),
       position: oneOf(date.position, ELEMENT_POSITIONS, base.date.position),
-      offsetX: clamp(date.offsetX, -0.5, 0.5, base.date.offsetX),
-      offsetY: clamp(date.offsetY, -0.5, 0.5, base.date.offsetY),
+      offsetX: clampOverlayOffset(date.offsetX, base.date.offsetX),
+      offsetY: clampOverlayOffset(date.offsetY, base.date.offsetY),
       fontSize: clamp(date.fontSize, 8, 200, base.date.fontSize),
       color: hex(date.color, base.date.color)
     },
@@ -384,22 +384,27 @@ export function frameSpecView(spec) {
 const hasExplicitFrameLighting = (spec) => isPlainObject(group(group(spec).frame).lighting);
 
 /**
- * 渲染层的**唯一读入口**：v1 平面视图 + 形状 / 圆角 / 光影 / 卡纸开关。
+ * 渲染层的**唯一读入口**：v1 平面视图 + 形状 / 圆角 / 光影 / 卡纸开关 + 叠加元素。
  *
- * 这是 `renderFramedArtwork` 读 spec 的入口（不要再直接 `spec.frame.shape`），
+ * 这是 `renderFramedArtwork` 读 spec 的入口（不要再直接 `spec.frame.shape` / `spec.watermark`），
  * 也是「同 spec 只渲染一次」的缓存键原料（`frameSpecRenderKey`）。
- * 两条硬口径：
- *   1. **v1 平面结构**（含老预设、老的大模型输出）没有形状 / 光影字段，回落 v1 行为：
- *      直角、无光影、画卡纸 —— 与升级前逐像素一致。
+ * 三条硬口径：
+ *   1. **v1 平面结构**（含老预设、老的大模型输出）没有形状 / 光影 / 叠加元素字段，回落 v1 行为：
+ *      直角、无光影、画卡纸、**不画任何水印落款**（`overlays: null`）—— 与升级前逐像素一致。
  *   2. **v2 的 `frame.lighting` 只在显式给出时绘制**。US-001a 规定「缺失字段回落 v1 行为」，
  *      而 v1 本来就不画光影；如果按 DEFAULT 补一份默认光影，一份只写了 `frame.shape` 的
  *      v2 spec 会凭空多出渐变。老模板不迁移、不管，新模板由面板显式带上 lighting
  *      （内置 4 套预设与 DEFAULT_FRAME_SPEC_V2 都已显式带值，所以它们有体积感）。
+ *   3. **叠加元素整组进渲染视图**（v2 才给，v1 是 `null`）。字段本身已经是
+ *      `normalizeFrameSpecV2` 的产物（位置 / 偏移 / 字号都收敛过），所以：
+ *      `visible: false` 的元素照样带着完整的类型化占位，但绘制层**只画 visible 为真的**
+ *      （US-003a 的验收：完全不绘制、不留空白占位）；同时它们自动进 `frameSpecRenderKey`，
+ *      两套只有水印位置不同的模板不会共用同一份画展缓存。
  */
 export function frameSpecRenderView(spec) {
   const flat = frameSpecView(spec);
   if (!isFrameSpecV2(spec)) {
-    return { ...flat, shape: 'square', cornerRadiusRatio: 0, lighting: null, matVisible: true };
+    return { ...flat, shape: 'square', cornerRadiusRatio: 0, lighting: null, matVisible: true, overlays: null };
   }
   const v2 = normalizeFrameSpecV2(spec);
   return {
@@ -407,7 +412,16 @@ export function frameSpecRenderView(spec) {
     shape: v2.frame.shape,
     cornerRadiusRatio: v2.frame.cornerRadiusRatio,
     lighting: hasExplicitFrameLighting(spec) ? { ...v2.frame.lighting } : null,
-    matVisible: v2.mat.visible
+    matVisible: v2.mat.visible,
+    overlays: {
+      watermark: {
+        logo: { ...v2.watermark.logo },
+        text: { ...v2.watermark.text },
+        qr: { ...v2.watermark.qr }
+      },
+      signature: { ...v2.signature, seal: { ...v2.signature.seal } },
+      date: { ...v2.date }
+    }
   };
 }
 
