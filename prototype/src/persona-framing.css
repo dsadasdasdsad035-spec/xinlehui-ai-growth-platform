@@ -109,6 +109,38 @@
 .review-launch-actions { margin-top: 16px; display: flex; align-items: center; gap: 12px; }
 .review-launch-actions small { color: var(--muted); font-size: 12px; }
 
+/* —— US-108b：生成失败态的恢复动作（重试 / 换模型重试 / 稍后再来）+ 归档强校验清单 ——
+   失败态只提示「这次没成功、下一步怎么办」；素材、观察词与老师写下的补充观察都不会丢。 */
+.review-recovery { display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap; margin: 0 0 14px; padding: 11px 13px; border: 1px solid var(--coral); border-radius: 12px; background: var(--coral-50); }
+.review-recovery > svg { flex: none; margin-top: 2px; color: var(--coral); }
+.review-recovery-copy { flex: 1; min-width: 220px; display: grid; gap: 4px; }
+.review-recovery-copy > b { font-size: 13px; line-height: 1.6; color: var(--coral); }
+.review-recovery-copy > small { color: #7a5a52; font-size: 12px; line-height: 1.55; }
+.review-recovery-streak { display: grid; gap: 3px; margin-top: 6px; padding: 8px 10px; border: 1px dashed var(--coral); border-radius: 10px; background: var(--surface); }
+.review-recovery-streak b { font-size: 12px; line-height: 1.6; color: #8a4a3a; }
+.review-recovery-streak small { color: #7a5a52; font-size: 12px; line-height: 1.55; }
+.review-recovery-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.review-recovery-actions button { min-height: 44px; padding: 8px 14px; border: 1px solid var(--coral); border-radius: 999px; background: var(--surface); font: inherit; font-size: 13px; color: var(--coral); cursor: pointer; }
+.review-recovery-actions button:hover { background: #fff4f1; }
+.review-recovery-actions button[data-recovery-action="switch-model"] { font-weight: 600; }
+/* 归档强校验清单：通过的项只说「哪一项 OK」，没过的项写成「去哪儿补」，按钮禁用原因与它同源。 */
+.review-archive-gate { margin: 16px 0 0; padding: 11px 13px; border: 1px solid #e9dcb0; border-radius: 12px; background: #fffaf0; }
+.review-archive-gate[data-review-archive-gate="blocked"] { border-color: var(--coral); background: var(--coral-50); }
+.review-archive-gate > b { display: block; font-size: 12px; line-height: 1.6; color: #8a5a00; }
+.review-archive-gate[data-review-archive-gate="blocked"] > b { color: var(--coral); }
+.review-archive-gate ul { margin: 8px 0 0; padding: 0; list-style: none; display: grid; gap: 5px; }
+.review-archive-gate li { display: flex; align-items: flex-start; gap: 6px; font-size: 12px; line-height: 1.5; color: var(--muted); }
+.review-archive-gate li svg { flex: none; margin-top: 2px; color: #1f7a45; }
+.review-archive-gate li[data-archive-gate-ok="false"] { color: var(--coral); }
+.review-archive-gate li[data-archive-gate-ok="false"] svg { color: var(--coral); }
+.review-archive-gate li span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 430px) {
+  .review-recovery { padding: 12px; }
+  .review-recovery-copy { min-width: 0; }
+  .review-recovery-actions { width: 100%; }
+  .review-recovery-actions button { flex: 1 1 auto; }
+}
+
 /* 本次点评详情面板（US-103a 折叠态 / US-103b 六分区与导出）：默认折叠成一行摘要，
    点开才铺开六个分区（推理过程 / 加载清单 / 提示词 / 模型与参数 / 用量与耗时 / 输出原文）。
    摘要文本、分区内容与导出文本都由 src/data/reviewDetailPanel.js 算好，这里只管呈现。 */

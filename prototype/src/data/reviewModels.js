@@ -535,6 +535,61 @@ export function reviewModelResolve(models, { selection = '', orgId = '' } = {}) 
 }
 
 // ---------------------------------------------------------------------------
+// 「健康状态最好的可用模型」（US-108b 的失败恢复推荐）
+// ---------------------------------------------------------------------------
+
+/**
+ * 健康状态排序（只在**可选**模型之间比，越靠前越健康）：
+ *  ① 健康状态（`ok` 优先 —— 可选已经要求健康通过，这一步是给脏数据兜底）；
+ *  ② 近期 P95 耗时（越短越好；没有样本的排最后 —— 「未知」不该冒充「最快」）；
+ *  ③ 池优先级 → 排序号 → id（确定性：同样的目录永远给同一个推荐）。
+ */
+function compareModelHealth(a, b) {
+  const ha = a.health === REVIEW_MODEL_HEALTH.ok ? 0 : 1;
+  const hb = b.health === REVIEW_MODEL_HEALTH.ok ? 0 : 1;
+  if (ha !== hb) return ha - hb;
+  const pa = nullableNumber(a.p95Ms) ?? Number.POSITIVE_INFINITY;
+  const pb = nullableNumber(b.p95Ms) ?? Number.POSITIVE_INFINITY;
+  if (pa !== pb) return pa - pb;
+  const qa = nullableNumber(a.poolPriority) ?? 99;
+  const qb = nullableNumber(b.poolPriority) ?? 99;
+  if (qa !== qb) return qa - qb;
+  const sa = nullableNumber(a.sortOrder) ?? 99;
+  const sb = nullableNumber(b.sortOrder) ?? 99;
+  if (sa !== sb) return sa - sb;
+  return String(a.id).localeCompare(String(b.id));
+}
+
+/**
+ * 当前**健康状态最好的可用模型**（连续失败 3 次时的推荐，见 `data/reviewRecovery.js`）。
+ *
+ * 返回 `{ row, ranked, alternatives, ok, id, name, text, healthText }`：
+ *  - `ranked`：全部可选模型按健康状态的排序（面板 / 断言可以看排序依据）；
+ *  - `alternatives`：把 `excludeId`（通常 = 本次失败的模型）去掉之后的排序结果；
+ *  - `row`：推荐的那一条（没有可用模型时为 null）；`text` / `healthText` 是可直接渲染的读数。
+ *
+ * 不要把 `excludeId` 理解成「不许推荐它」：只在**有别的可用模型**时才让位给次优的，
+ * 一个可用模型都没有时 `row` 就是 null（界面按「稍后再来 / 联系管理员」处理）。
+ */
+export function reviewModelHealthiest(models, { orgId = '', excludeId = '' } = {}) {
+  const options = reviewModelOptions(models, { orgId });
+  const ranked = [...options.selectable].sort(compareModelHealth);
+  const excluded = text(excludeId);
+  const alternatives = excluded ? ranked.filter((row) => row.id !== excluded) : [...ranked];
+  const row = alternatives[0] || null;
+  return {
+    ok: Boolean(row),
+    row,
+    ranked,
+    alternatives,
+    id: row ? row.id : '',
+    name: row ? row.name : '',
+    text: row ? `${row.name}（${row.vendorText || '供应商未登记'}）` : '',
+    healthText: row ? `健康状态：${row.healthLabel} · 近期 P95 ${row.p95Text}` : ''
+  };
+}
+
+// ---------------------------------------------------------------------------
 // 老师的个人默认（「下次进入默认选中」）
 // ---------------------------------------------------------------------------
 

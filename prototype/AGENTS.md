@@ -1744,7 +1744,61 @@ DOM/canvas 部分在 `src/services/artworkWriteBack.js`，编排在 `main.jsx` �
   `.local-draft-link` 填正文的那两行老脚本自此失效 —— 那是被本故事取代的路径，不是回退）；
   截图 195~198 留档。
 
+## 第三步「五维点评」的归档强校验与生成失败三动作（US-108b / F-REVIEW-TRACE-07）
+
+归档按钮的前置校验与失败态的恢复动作都由 `src/data/reviewRecovery.js`（零依赖纯函数）说了算，
+界面只渲染它的产物 —— **不要在组件里另写一份「为什么不能归档 / 失败后该怎么办」**。
+
+- **归档强校验**：`evaluateReviewArchiveGate({ mode, reviews, generated, traceStatus })` 产出
+  `{ ok, checks, blocking, reasonText, summary, headline }`。个人反馈 = 五维逐维非空 + 一条
+  `trace.status === 'success'`（判据读 `reviewTracePanel?.status`，它是 ref 的渲染副本）；
+  班级反馈 = 一条「本次点评已生成」（班级正文来自课程模板、不是模型输出，且换模式会
+  `clearReviewTrace()`，拿轨迹卡它会把班级归档整条路堵死）。**三个消费点读同一份**：
+  清单渲染（`reviewArchiveGateField`）、归档按钮的 `disabled={!reviewArchiveGate.ok}` 与
+  `data-archive-block-reason`、以及 `go(4)` / `archiveRecord` 的第二道拦截（toast 用
+  `reasonText` + 「完整原因见「归档前的校验清单」」）。`reasonText` 只是**第一条**没过的原因，
+  完整原因在 `summary` 与面板清单里。
+- **失败态三动作**：`REVIEW_RECOVERY_ACTIONS`（`retry` / `switch-model` / `later`）在
+  `reviewStream.phase === 'error'` 时渲染成 `.review-recovery`。三个动作**只碰「生成」这一层**：
+  重试 = 原模型 `startCloudReview()`；换模型重试 = `reviewSwitchModelTarget()` 选定的模型（或池路由）
+  直接传参重启；稍后再来 = 只把 phase 收回 `idle` 并给一句「已保留…」。谁都不许在这三条路径里
+  `setReviews` / `setKeywords` / `setMedia` —— 验收点名的「失败后不丢失已填写的老师补充观察」
+  就靠这条结构性约束，验证脚本按「失败前后 textarea 值 / 勾选观察词 / 模型选择逐项相等」断言。
+- **连续失败读数**：`reviewFailureStreak` state，`startCloudReview` 的 `catch` 里 +1（老师自己点
+  「停止生成」走的是 catch 之前的 `if(controller.signal.aborted) return`，不算失败），成功一次归零，
+  `clearReviewTrace()`（换班 / 换学员 / 换模式 / 新建草稿）一并清零。
+  `reviewFailureStreakView({ failures, recommendation, currentModelId })` 到
+  `REVIEW_FAILURE_STREAK_LIMIT`（3）次时给出「可能是模型服务波动」+ 推荐文案；
+  推荐来自 `reviewModelHealthiest()`（**只从可选模型里排**：健康 ok → 近期 P95 最短 → 池优先级 /
+  排序号 / id，见 `data/reviewModels.js`）。推荐的就是当前在用的那个时，文案如实说
+  「当前已经在用…最健康」，不许建议老师「换」成他已经选着的模型。
+- **错误文案不暴露原始错误码**：`describeReviewError()` 的兜底分支现在过一次
+  `readableReviewFailureText()` —— 命中 `status code 504` / 裸 `[45]xx` / snake_case 云端码 /
+  `error code` / 整句英文（连一个汉字都没有）都换成 `REVIEW_FAILURE_FALLBACK_TEXT`。
+  新增任何「给老师看错误」的入口都走 `describeReviewError()`，不要直接把 `error.message` 渲染上去。
+- **验证方式**（本轮实测）：`/tmp/assert-us108b.mjs` 共 **152 项全绿**（数据 / 服务 73 + 浏览器 65 +
+  静态 10）。浏览器用替身云端 LLM 连造 4 次失败（先带 `code: 'gateway_timeout'`，再只给
+  `Request failed with status code 504` 原文）走遍三条动作：三动作齐全且文案可读、每次失败后
+  老师写下的补充观察 / 勾选观察词 / 模型选择逐项保留、第 3 次起出现「可能是模型服务波动」并推荐
+  GLM 5.3 视觉 Flash、换模型重试真的把 `data-review-model-resolved` 换过去并重启生成、稍后再来只收提示、
+  替身恢复后生成成功 → 校验清单全绿 / 按钮可用 / 再手动清空一维立刻被拦 → 归档成功落档（轨迹 success）。
+  回归：US-108a 47/47、US-107b 浏览器 63/63、US-103a 浏览器 52/52、US-103b 浏览器 51/51、
+  US-107a 数据 104、US-107b 数据 93、US-102 trace 数据 114 / 服务 70 / 浏览器 61、US-104 数据 26、
+  US-105 数据 53 全绿。截图 199~204 留档。
+- **被本故事取代的两条旧断言**（`/tmp/assert-us108a.mjs` 里已改成新口径）：归档按钮在未生成 / 失败时
+  变成 **disabled**，点它不再触发「请先完成线稿提取和智能点评」的 toast；判据改为
+  「按钮 disabled + `data-archive-block-reason` 有原因 + 清单点名轨迹失败」。
+
 ## 容易踩的坑
+
+- **派生值（`const x = f(state)`）必须排在被它读的 state 之后**（US-108b 真踩）：把
+  `evaluateReviewArchiveGate({… generated: reviewGenerated …})` 放在
+  `const [reviewGenerated,setReviewGenerated]=useState(false)` **之前**，运行时报
+  `ReferenceError: Cannot access 'reviewGenerated' before initialization`，**整页白屏**
+  （`#root` 为空、任何导航都渲染不出来），而 `pnpm run build` 照样通过。诊断信号：
+  `document.getElementById('root').innerHTML.length === 0` + CDP 的
+  `Runtime.exceptionThrown` 里那条 ReferenceError。修法是把 **state 声明提前**，不是把派生值
+  挪到 return 附近（`go()` 这类更早定义的函数体要读它，挪后面会换成另一个 TDZ）。
 
 - **`<table>` 会撑宽 grid 父容器**（US-107b 真踩）：`width: 100%` + `table-layout: fixed` + 单元格
   `overflow-wrap: anywhere` 都不够 —— 表格的 `min-width: auto` 在 Chrome 里给出一个**与内容无关的宽下限**
@@ -1812,6 +1866,12 @@ DOM/canvas 部分在 `src/services/artworkWriteBack.js`，编排在 `main.jsx` �
   顺手记一条：`diff` 输出被 `head -N` 截断会让你误判「只有空行差异」——比字节之前先确认没截断。
 - 旧数据兼容的写法：`normalize<X>(raw)` 永不抛错，缺字段补默认值，**无法映射的原始对象挂到 `legacy` 字段上原样保留**，
   宁可多带一个字段也不要丢数据；不要为了让旧数据「看起来完整」而编造日期或序号。
+- **`Page.captureScreenshot` + `captureBeyondViewport`（fullPage）在「长页面 + 流式重渲染」时会挂 30 秒**
+  （US-108b 实测，且 `git stash` 到 HEAD 版本同样挂 —— 是环境问题不是回归）：第三步展开点评详情、
+  模型正在流式写正文时，页面高度 5000~6000px，`captureBeyondViewport: true` 直接超时；
+  同一页面在 idle 状态（3300px）0.7 秒就截完。验证脚本默认用**视口截图**，需要长图时按块分段截
+  （或先 `scrollIntoView` 再截视口）。判断「截图挂起是不是自己改坏的」：先把改动 `git stash`
+  跑同一条路径，两边都挂就是环境。
 
 ## 验证技巧（没有测试框架时的替代方案）
 

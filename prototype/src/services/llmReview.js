@@ -4,6 +4,8 @@ import { cloud } from '../cloud';
 import { skillLoadout } from '../data/skillLibrary';
 // 维度名与顺序的唯一真源（详情面板的正文进度、写作要求与输出格式共用这一份）。
 import { REVIEW_DIMENSION_NAMES } from '../data/reviewDetailPanel';
+// 错误文案的收敛口径（US-108b：不向老师暴露原始错误码）——「可读文案」的唯一真源在 data 层。
+import { readableReviewFailureText } from '../data/reviewRecovery';
 // 提示词模块化（US-101）：system 提示词由有名字、有版本、有来源的模块拼成，
 // 「加载了哪些提示词」的展示与轨迹留档都读模块清单（模块名/顺序的唯一真源在 data 层）。
 import { composePromptModules, PROMPT_MODULE_IDS, PROMPT_MODULE_ORDER_FALLBACK } from '../data/promptModules';
@@ -383,12 +385,18 @@ export async function streamArtworkReview({ profile, skillLibrary, subject, stud
   return { ...parsed, reasoning, usage, raw: content, trace: settled };
 }
 
-/** 把云端错误码翻译成老师能看懂的话。 */
+/**
+ * 把云端错误码翻译成老师能看懂的话（US-108b：**不向老师暴露原始错误码**）。
+ *
+ * 认得出的错误码走固定文案；认不出的（没有 code、只有 SDK 原文）过一次
+ * `readableReviewFailureText()`：`status code 504`、`gateway_timeout`、整句英文堆栈
+ * 这类都换成兜底句 —— 老师看到的是「模型服务暂时不可用」，不是一串他无法处理的技术细节。
+ */
 export function describeReviewError(error) {
   const code = String(error?.error?.code || error?.code || '');
   if (code.startsWith('auth_')) return '云服务凭据校验失败，请刷新页面后重试。';
   if (code.startsWith('quota_')) return '调用额度已用尽，请稍后重试或联系管理员。';
   if (code.startsWith('request_')) return '请求参数不被模型接受，请换一个模型或减少素材后重试。';
   if (code.startsWith('gateway_') || code.startsWith('model_')) return '模型服务暂时不可用，请稍后重新生成。';
-  return error?.message || '智能点评暂时不可用，请稍后重试。';
+  return readableReviewFailureText(error?.message);
 }
