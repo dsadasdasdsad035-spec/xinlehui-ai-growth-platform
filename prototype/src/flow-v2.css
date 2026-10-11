@@ -159,3 +159,28 @@
 .intake-draft-restored em{flex:none;align-self:center;font-style:normal;font-size:10px;font-weight:700;color:#2f5b3a;background:#e3f2e6;border-radius:99px;padding:3px 9px;white-space:nowrap}
 .intake-draft-restored button{flex:none;border:0;background:none;padding:4px 2px;color:#2f5b3a;font-size:10px;font-weight:700;cursor:pointer;text-decoration:underline;white-space:nowrap}
 @media(max-width:800px){.intake-draft-restored{align-items:flex-start;flex-wrap:wrap}.intake-draft-restored em{order:3}.intake-draft-restored button{margin-left:0;min-height:44px}}
+
+/* ---- 进入下一步的前置校验（US-410）------------------------------------------------
+   六项必填逐条列出：通过的打勾，缺的那条直接写「具体原因」与去哪儿补。
+   按钮 disabled 说不出原因，所以原因必须落在清单里（验收要求：不能是笼统的「请完善信息」）；
+   校验不通过时只有「进入智能装裱」禁用，「保存课次」保持可用 —— 两个动作互不覆盖。 */
+.intake-readiness{margin-top:13px;border:1px solid #e6d9b8;border-radius:12px;background:#fffdf6;padding:11px 12px;display:flex;flex-direction:column;gap:9px}
+.intake-readiness.blocked{border-color:#e8c96a;background:#fffaf0}
+.intake-readiness.ready{border-color:#bcd6c0;background:#f5fbf6}
+.intake-readiness-head{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;color:#6d4e0c}
+.intake-readiness.ready .intake-readiness-head{color:#2f5b3a}
+.intake-readiness-head svg{flex:none;align-self:center}
+.intake-readiness-head b{font-size:12px}
+.intake-readiness-head small{font-size:10px;font-weight:400;color:#857a64}
+.intake-readiness-list{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:1fr 1fr;gap:6px 10px}
+.intake-readiness-list li{display:flex;align-items:flex-start;gap:7px;border:1px solid #eee3c8;border-radius:9px;background:#fff;padding:6px 8px}
+.intake-readiness-list li.todo{border-color:#f0c7bd;background:#fff8f6}
+.intake-readiness-list li>div{min-width:0;display:flex;flex-direction:column;gap:2px}
+.intake-readiness-list b{font-size:11px;color:#3d382d}
+.intake-readiness-list li.ok b{color:#2f5b3a}
+.intake-readiness-list small{font-size:10px;line-height:1.6;color:#8a4a3c}
+.intake-readiness-mark{flex:none;width:16px;height:16px;margin-top:1px;border-radius:50%;display:grid;place-items:center;background:#f2efe6;color:#8a8071}
+.intake-readiness-list li.ok .intake-readiness-mark{background:#e3f2e6;color:#3f8f5f}
+.intake-readiness-list li.todo .intake-readiness-mark{background:#fbe4de;color:#b03a2e}
+.intake-readiness-note{margin:0;border-left:3px solid #d5bd71;background:#fff8e2;border-radius:8px;padding:8px 10px;font-size:10px;line-height:1.65;color:#6f6242}
+@media(max-width:800px){.intake-readiness-list{grid-template-columns:1fr}}

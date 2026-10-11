@@ -97,9 +97,11 @@ React + Vite 单页原型（`src/main.jsx` 是主入口，另按模块拆出 `sr
   只有「清空」才清掉全部。
 - **换班 = 换名单**：`selectClass()` 里 `setParticipants(rosterParticipants(nextStudents))` 重建（默认全部出席），
   临时学员不跨班保留。`rosterParticipants(students, previous)` 会保留已有出席标记，避免重算时抹掉刚标的缺课。
-- **进入下一步的门槛放在 `go()` 里**（`requireAttendedParticipant()`），不要只把按钮 `disabled`：
-  disabled 的按钮没法说明「为什么不能走」。全部缺课/名单为空时要给出具体原因，并且**保留「保存课次」这条独立动作**
-  （老师可以先存草稿）。到场口径 = 出席 + 补课，只有「一位到场的都没有」才拦。
+- **进入下一步的门槛放在 `go()` 里**，不要只把按钮 `disabled`：
+  disabled 的按钮没法说明「为什么不能走」。US-410 起这六项校验统一由 `data/lessonReadiness.js` 判定
+  （见下节「进入下一步的前置校验」），**原因文案与拦截都读那一份结果**，这里不要再单独维护一份；
+  全部缺课/名单为空时仍要保留「保存课次」这条独立动作（老师可以先存草稿）。
+  到场口径 = 出席 + 补课，只有「一位到场的都没有」才拦。
 - 保存课次时 `participants` 直接进 `performLessonSave` 的 patch，由 `createEmptyLesson` → `normalizeParticipants`
   收敛；`temporary` 也在 `createParticipant` 里归一化，因此插班学员不会在往返中丢掉标记。
 
@@ -156,7 +158,7 @@ React + Vite 单页原型（`src/main.jsx` 是主入口，另按模块拆出 `sr
 |---|---|---|
 | 面板 | `artworkSlotField` | `photoSlotField` |
 | 上限 | 1–5 幅/人（必填） | 0–10 张/人（**选填**） |
-| 参与下一步校验 | 是（`hasUploadedArtwork`） | **否** |
+| 参与下一步校验 | 是（US-410 的六项之一，见下节） | **否** |
 | 字段 | `participant.artworkIds` | `participant.photoIds` |
 | 界面 | 班级反馈一人一行；个人反馈单一上传位 | 仅班级反馈一人一行；个人反馈仍是 `media.photo` 单张 |
 
@@ -264,6 +266,36 @@ React + Vite 单页原型（`src/main.jsx` 是主入口，另按模块拆出 `sr
   填回的条目要从待填队列里扣掉（`titles` 返回值），否则同一位学员的第二批素材会再领一遍同样的名字。
 - **恢复提示条的文案是验收原文**：`.intake-draft-restored` 的 `<b>` 必须含
   「已恢复上次的课次信息；素材需重新选择」（`.intake-media-lost` 是 US-408 的另一条提示，两条并存不要合并掉）。
+
+### 进入下一步的前置校验（US-410）
+
+第一步 → 第二步的六项必填（班级 / 课程 / 课次日期 / 课时序号 / 至少一位出席学员 / 至少一幅作品）
+由 `src/data/lessonReadiness.js` 的 `evaluateIntake()` 统一判定。**零依赖纯函数**（不 import 任何模块），
+所以能直接 `node /tmp/xxx.mjs` import 它跑断言。
+
+- **规则与文案只有一份**：`INTAKE_CHECK_ORDER` / `INTAKE_CHECK_LABELS` 是校验项清单，
+  缺项的具体原因（「还没有上传任何学员作品：请在…」）也在同一个文件里。
+  界面的校验清单（`intakeReadinessPanel`）、`go()` 的拦截、按钮的 `disabled` 全部读
+  `intakeReadiness`（`main.jsx` 里由 `evaluateIntake({...})` 得到的派生值），
+  **不要**在 JSX 或 `go()` 里再写一份 `if (!xxx)` 判断，否则会出现「按钮说不行、其实能走」的漂移。
+- **按钮 `disabled` 与「说清原因」要同时做**：disabled 的按钮没法解释为什么不能走，所以原因必须
+  渲染在按钮旁边的 `.intake-readiness` 清单里（验收明确禁止笼统的「请完善信息」）。
+  `go()` 里再拦一道是给**顶部流程导航**（`FlowStepper` 也能直接调 `go()`）兜底。
+- **校验失败必须「一个 state 都不改」**：`go()` 在 `intakeReadiness.ok` 为假时立刻 `return`，
+  不能 `setStep`、不能碰 `media`；否则「不跳步、不丢失已填内容」就不成立。
+- **保存草稿与进入下一步是两个独立动作**：「保存课次」只受 `!activeCourseId` 与 saving 影响，
+  **不要**把 `intakeReadiness.ok` 加进它的 `disabled`。校验不通过时老师仍要能把课次存成草稿
+  （这是 US-405/US-410 一致的诉求）。
+- **作品数按模式取不同的源**：班级反馈数 `batchUploads.artwork.length`（乘上传位里的绑定条目），
+  个人反馈只有 `media.artwork` 一个上传位（`hasUploadedArtwork ? 1 : 0`）。
+  照片**永远不参与**这六项校验（US-009 的选填口径）。
+- `FlowStepper` 的 `flags[0]` 用 `intakeReadiness.ok`（不再只是 `hasUploadedArtwork`）：
+  第一步只有六项都齐了才在顶部导航上显示「已完成 / 可点击回看」。
+- 校验清单在第一步**最底部**（`.scene-actions` 之前）；浏览器截图要先把 `.intake-readiness`
+  `scrollIntoView({block:'center'})`，否则截到的是视口顶部、看不见这张卡片。
+- 验证方式（本轮实测）：Node 直跑 `data/lessonReadiness.js` 31 项断言；CDP 浏览器 54 项断言
+  （逐项去掉作品 / 出席 / 日期 / 序号，走管理端「课程库」停用全部课程验证「课程」一项，
+  覆盖截断路径、`disabled` 按钮真实点击、顶部导航点击、以及「保存课次」在两种校验状态下的可用性）。
 
 ### 浏览器验证原生 `<select>` 的坑（重要）
 
