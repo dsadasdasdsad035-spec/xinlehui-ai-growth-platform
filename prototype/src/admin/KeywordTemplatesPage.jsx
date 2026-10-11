@@ -13,17 +13,25 @@
 // 写入一律走 `services/reviewKeywordTemplatesApi.js`（云端 `review_keyword_templates` 表还没建，
 // 推不上去时只提示「已保存到本机」—— 本机镜像才是老师端当前真正读的那一份）。
 
-import React, { useEffect, useMemo, useState } from 'react';
-import { ArrowDown, ArrowUp, CircleAlert, ListChecks, Plus, Trash2 } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { ArrowDown, ArrowUp, CircleAlert, Copy, Download, GripVertical, ListChecks, Plus, RotateCcw, Trash2, Upload } from 'lucide-react';
 import { Button, PageHeader } from '../ui';
 import {
+  KEYWORD_TEMPLATE_COPY_NOTE,
   KEYWORD_TEMPLATE_DELETE_NOTE,
   KEYWORD_TEMPLATE_EMPTY_NOTE,
+  KEYWORD_TEMPLATE_EXPORT_NOTE,
+  KEYWORD_TEMPLATE_IMPORT_NOTE,
+  KEYWORD_TEMPLATE_ORDER_NOTE,
   KEYWORD_TEMPLATE_RESOLVE_NOTE,
+  KEYWORD_TEMPLATE_ROLLBACK_NOTE,
   KEYWORD_TEMPLATE_SAVE_NOTE,
   KEYWORD_TEMPLATE_TERMS_PER_GROUP_LIMIT,
   applyKeywordTemplateDefault,
+  buildKeywordTemplateExport,
+  copyKeywordTemplateName,
   createKeywordTemplateDraft,
+  duplicateKeywordTemplateRecord,
   keywordGroupAdd,
   keywordGroupMove,
   keywordGroupRemove,
@@ -37,17 +45,26 @@ import {
   keywordTemplateDuplicateIndex,
   keywordTemplateDuplicateTerms,
   keywordTemplateEditGroups,
+  keywordTemplateExportFilename,
+  keywordTemplateExportText,
   keywordTemplateListMeta,
+  keywordTemplateOrderText,
   keywordTemplateSaveGate,
+  keywordTemplateTimeText,
   keywordTemplateVersionRows,
   keywordTermAdd,
   keywordTermMove,
   keywordTermRemove,
   keywordTermSet,
   keywordTermSetEnabled,
+  mergeKeywordTemplateImport,
   moveKeywordTemplate,
+  moveKeywordTemplateTo,
   normalizeKeywordTemplateRecord,
+  parseKeywordTemplateCourseTypes,
+  parseKeywordTemplateImport,
   removeKeywordTemplate,
+  rollbackKeywordTemplateRecord,
   saveKeywordTemplateRecord,
   setKeywordTemplateEnabledRecord,
   sortKeywordTemplates
@@ -63,6 +80,21 @@ function modeGroups(records) {
     label: KEYWORD_TEMPLATE_MODES[mode] || mode,
     records: records.filter((item) => item.mode === mode)
   }));
+}
+
+/** JSON 导出走浏览器原生下载（与「保存图片」同一套 `<a download>`）。 */
+function downloadJsonFile(text, filename) {
+  const blob = new Blob([text], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.rel = 'noopener';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  // 下载是异步取字节，晚一点再回收 object URL。
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
 }
 
 export default function KeywordTemplatesPage({
@@ -84,6 +116,16 @@ export default function KeywordTemplatesPage({
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [courseInput, setCourseInput] = useState('');
+  // ---- US-110b：拖拽排序 / 复制为派生模板 / 导出导入 / 回滚 ----------------
+  const [confirmRollback, setConfirmRollback] = useState('');
+  const [copyOpen, setCopyOpen] = useState(false);
+  const [copyName, setCopyName] = useState('');
+  const [copyCourse, setCopyCourse] = useState('');
+  const [importReport, setImportReport] = useState(null);
+  // 拖拽排序的选中项（松手即提交）。指针可能离开手柄，所以拖动期间在 window 上收 move/up。
+  const dragRef = useRef(null);
+  const [dragView, setDragView] = useState(null);
+  const importRef = useRef(null);
 
   const editing = isNew ? null : records.find((item) => item.templateKey === editingKey) || null;
   const editingStamp = editing ? `${editing.templateKey}@${editing.templateVersion}@${editing.updatedAt}` : '';
@@ -95,7 +137,55 @@ export default function KeywordTemplatesPage({
     setNotice('');
     setConfirmDelete(false);
     setCourseInput('');
+    setConfirmRollback('');
+    setCopyOpen(false);
   }, [editingStamp, isNew]);
+
+  /**
+   * 拖拽排序（US-110b）：按住手柄把这一套拖到同模式另一套的位置上，松手立刻落盘。
+   * 指针抬起的位置用 `elementFromPoint` 找落点行 —— 拖动过程中高亮的那一行不一定是松手那一行。
+   */
+  useEffect(() => {
+    if (!dragView) return undefined;
+    const overKeyOf = (x, y) => {
+      const element = document.elementFromPoint(x, y);
+      const row = element && element.closest ? element.closest('[data-keyword-template-pick]') : null;
+      return row ? row.getAttribute('data-keyword-template-pick') || '' : '';
+    };
+    const onMove = (event) => {
+      const overKey = overKeyOf(event.clientX, event.clientY);
+      setDragView((current) => (current && current.overKey === overKey ? current : (current ? { ...current, overKey } : current)));
+    };
+    const onUp = (event) => {
+      const current = dragRef.current;
+      const target = overKeyOf(event.clientX, event.clientY) || current?.overKey || '';
+      dragRef.current = null;
+      setDragView(null);
+      if (!current || !target || target === current.key) return;
+      const nextList = moveKeywordTemplateTo(records, current.key, target);
+      if (keywordTemplateOrderText(nextList) === keywordTemplateOrderText(records)) return;
+      const moved = nextList.find((item) => item.templateKey === current.key);
+      setKeywordTemplates(nextList);
+      // 顺序改动也推一次云端（表没建时安静失败）：改的是同一个 template_key，upsert 幂等。
+      if (moved) void saveRemoteReviewKeywordTemplate(moved).catch(() => {});
+      setToast(`「${moved?.name || ''}」的顺序已保存：老师端按新顺序解析`);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+    return () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+    };
+  }, [dragView, records, setKeywordTemplates, setToast]);
+
+  const startDrag = (event, templateKey) => {
+    if (saving) return;
+    event.preventDefault();
+    dragRef.current = { key: templateKey, overKey: '' };
+    setDragView({ key: templateKey, overKey: '' });
+  };
 
   const patch = (key, value) => setDraft((current) => (current ? { ...current, [key]: value } : current));
 
@@ -192,9 +282,7 @@ export default function KeywordTemplatesPage({
    */
   const move = (templateKey, delta) => {
     const nextList = moveKeywordTemplate(records, templateKey, delta);
-    const beforeText = records.map((item) => `${item.templateKey}:${item.sortOrder}`).join('|');
-    const afterText = nextList.map((item) => `${item.templateKey}:${item.sortOrder}`).join('|');
-    if (beforeText === afterText) {
+    if (keywordTemplateOrderText(nextList) === keywordTemplateOrderText(records)) {
       setToast(delta < 0 ? '已经是同模式里的第一套了' : '已经是同模式里的最后一套了');
       return;
     }
@@ -203,6 +291,103 @@ export default function KeywordTemplatesPage({
     // 顺序改动也推一次云端（表没建时安静失败）：改的是同一个 template_key，upsert 幂等。
     if (moved) void saveRemoteReviewKeywordTemplate(moved).catch(() => {});
     setToast(`「${moved?.name || ''}」的顺序已更新：老师端按新顺序解析`);
+  };
+
+  /** 打开「复制为派生模板」表单：名字默认「（副本）」，派生课程类型留空 = 照抄源模板的适用范围。 */
+  const openCopy = () => {
+    if (!draft) return;
+    setCopyName(copyKeywordTemplateName(draft.name, records.map((item) => item.name)));
+    setCopyCourse('');
+    setCopyOpen(true);
+    setNotice('');
+  };
+
+  /**
+   * 复制为派生模板：新 id + v1，分组 / 词条 / 适用范围照抄（可顺手把课程类型换成派生画种）。
+   * 复制的是**当前编辑的内容**，所以先过与保存同一道闸门（重复词 / 无名分组不许带进新模板）。
+   */
+  const copy = async () => {
+    if (!draft) return;
+    if (!gate.ok) { setNotice(gate.issue); return; }
+    const source = normalizeKeywordTemplateRecord({ ...draft, groups: editGroups });
+    const derived = parseKeywordTemplateCourseTypes(copyCourse);
+    const record = duplicateKeywordTemplateRecord(source, {
+      existing: records,
+      by: operator,
+      at: Date.now(),
+      name: copyName,
+      courseTypes: derived.length ? derived : null
+    });
+    setCopyOpen(false);
+    setNotice('');
+    setIsNew(false);
+    setEditingKey(record.templateKey);
+    setDraft(keywordTemplateDraftFrom(record));
+    await commit(record, sortKeywordTemplates([...records, record]), derived.length
+      ? `已派生「${record.name}」（v${record.templateVersion}，适用课程类型：${derived.join(' / ')}）`
+      : `已复制为「${record.name}」（v${record.templateVersion}）`);
+  };
+
+  /**
+   * 回滚到任一历史版本：那一版的分组与配置写成**新的**版本（版本号 +1），历史版本一条不删。
+   * 认不出的版本号 / 就是当前版本 → 一个字段都不动，只给一句提示。
+   */
+  const rollback = async (versionLabel) => {
+    if (!editing) return;
+    const record = rollbackKeywordTemplateRecord(editing, versionLabel, { by: operator, at: Date.now() });
+    setConfirmRollback('');
+    if (record.templateVersion === editing.templateVersion) {
+      setNotice(`「${versionLabel}」没有可回滚的内容（它就是当前版本，或这一版没有留下快照）。`);
+      return;
+    }
+    setNotice('');
+    setIsNew(false);
+    setEditingKey(record.templateKey);
+    setDraft(keywordTemplateDraftFrom(record));
+    const replaced = records.map((item) => (item.templateKey === record.templateKey ? record : item));
+    const nextList = sortKeywordTemplates(record.isDefault ? applyKeywordTemplateDefault(replaced, record.templateKey) : replaced);
+    await commit(record, nextList, `已回滚到 ${versionLabel}：新版本为 v${record.templateVersion}，历史版本都保留`);
+  };
+
+  /** 导出全部模板为 JSON（含分组、词条、适用范围、版本与变更历史）。 */
+  const exportJson = () => {
+    const payload = buildKeywordTemplateExport(records, { at: Date.now(), by: operator });
+    const filename = keywordTemplateExportFilename(payload);
+    downloadJsonFile(keywordTemplateExportText(payload), filename);
+    setImportReport({ kind: 'export', text: `已导出 ${records.length} 套模板：${filename}` });
+    setToast(`已导出 ${records.length} 套观察词模板（${filename}）`);
+  };
+
+  /**
+   * 导入 JSON：按 `templateKey` 合并（已存在的更新 + 自增一版，新 key 直接加入）。
+   * 解析失败只给可读原因，**一个字段都不改**（与保存闸门同一条纪律）。
+   */
+  const importJson = async (file) => {
+    if (!file) return;
+    const text = await file.text();
+    const parsed = parseKeywordTemplateImport(text);
+    if (!parsed.ok) {
+      setNotice(parsed.message);
+      setImportReport({ kind: 'error', text: parsed.message });
+      return;
+    }
+    const merged = mergeKeywordTemplateImport(records, parsed.templates, {
+      by: operator,
+      at: Date.now(),
+      source: keywordTemplateTimeText(parsed.payload?.exportedAt) || file.name
+    });
+    setNotice('');
+    setKeywordTemplates(merged.list);
+    // 逐条推云端（表没建时安静失败：本机镜像才是老师端当前真正读的那一份）。
+    [...merged.added, ...merged.updated].forEach((record) => { void saveRemoteReviewKeywordTemplate(record).catch(() => {}); });
+    setImportReport({ kind: 'ok', text: `${parsed.message}${merged.reportText}` });
+    setToast(merged.reportText);
+    const focus = merged.added[0] || merged.updated[0];
+    if (focus) {
+      setIsNew(false);
+      setEditingKey(focus.templateKey);
+      setDraft(keywordTemplateDraftFrom(focus));
+    }
   };
 
   const addCourse = () => {
@@ -227,11 +412,31 @@ export default function KeywordTemplatesPage({
       <span data-keyword-template-rule>{KEYWORD_TEMPLATE_RESOLVE_NOTE}</span>
     </div>
 
-    <div className="split-page persona-page keyword-templates-page">
+    <div className="keyword-template-toolbar">
+      <Button variant="secondary" icon={Download} onClick={exportJson} data-keyword-template-export>导出 JSON</Button>
+      <Button variant="secondary" icon={Upload} onClick={() => importRef.current?.click()} data-keyword-template-import>导入 JSON</Button>
+      <input
+        ref={importRef}
+        type="file"
+        accept=".json,application/json"
+        data-keyword-template-import-input
+        style={{ display: 'none' }}
+        onChange={(event) => {
+          const file = event.target.files && event.target.files[0];
+          event.target.value = '';
+          void importJson(file);
+        }}/>
+      <small>{KEYWORD_TEMPLATE_EXPORT_NOTE}{KEYWORD_TEMPLATE_IMPORT_NOTE}</small>
+      {importReport ? <span className={`keyword-template-import-report is-${importReport.kind}`} data-keyword-template-import-report={importReport.kind} data-keyword-template-import-report-text={importReport.text}>{importReport.text}</span> : null}
+    </div>
+
+    <div className="split-page persona-page keyword-templates-page"
+      data-keyword-template-dragging={dragView?.key || ''}
+      data-keyword-template-drop-key={dragView?.overKey || ''}>
       <div className="panel persona-list keyword-template-groups">
         <div className="panel-head">
           <h2>模板</h2>
-          <small>{records.length} 套 · 启用 {records.filter((item) => item.enabled !== false).length} 套</small>
+          <small>{records.length} 套 · 启用 {records.filter((item) => item.enabled !== false).length} 套 · 按住手柄拖拽排序</small>
         </div>
         {groups.map((group) => <div className="keyword-template-group" key={group.mode}
           data-keyword-template-mode-group={group.mode}
@@ -240,10 +445,24 @@ export default function KeywordTemplatesPage({
             <b>{group.label}</b>
             <small>{group.records.length} 套</small>
           </div>
-          {group.records.map((record) => {
+          {group.records.map((record, rowIndex) => {
             const rowMeta = keywordTemplateListMeta(record);
             const active = !isNew && record.templateKey === editingKey;
-            return <div className={`keyword-template-row ${active ? 'active' : ''}`} key={record.templateKey}>
+            const dragging = dragView?.key === record.templateKey;
+            const dropTarget = Boolean(dragView?.overKey) && dragView.overKey === record.templateKey && !dragging;
+            return <div className={`keyword-template-row ${active ? 'active' : ''}${dragging ? ' is-dragging' : ''}${dropTarget ? ' is-drop-target' : ''}`} key={record.templateKey}
+              data-keyword-template-row={record.templateKey}
+              data-keyword-template-row-index={rowIndex}
+              data-keyword-template-dragging={dragging ? 'true' : 'false'}
+              data-keyword-template-drop-target={dropTarget ? 'true' : 'false'}>
+              <button
+                type="button"
+                className="keyword-template-drag-handle"
+                title="按住拖动排序（同模式内换位）"
+                aria-label={`拖动「${record.name}」排序`}
+                data-keyword-template-drag={record.templateKey}
+                onPointerDown={(event) => startDrag(event, record.templateKey)}
+                onClick={(event) => event.preventDefault()}><GripVertical size={14}/></button>
               <button
                 type="button"
                 className="keyword-template-pick"
@@ -266,7 +485,7 @@ export default function KeywordTemplatesPage({
           })}
           {group.records.length ? null : <p className="persona-empty">这一模式还没有模板。</p>}
         </div>)}
-        <p className="persona-empty">停用的模板不出现在老师端候选里；一套都命不中时老师端回落内置兜底词表，并在面板上明示。</p>
+        <p className="persona-empty">{KEYWORD_TEMPLATE_ORDER_NOTE} 停用的模板不出现在老师端候选里；一套都命不中时老师端回落内置兜底词表，并在面板上明示。</p>
       </div>
 
       <div className="panel persona-editor"
@@ -291,11 +510,34 @@ export default function KeywordTemplatesPage({
             <div className="row-actions">
               <Button onClick={save} disabled={saving || !gate.ok} data-keyword-template-save>{saving ? '保存中…' : (isNew ? '保存新模板' : '保存（版本自增）')}</Button>
               {isNew ? null : <>
+                <button type="button" className="text-link" disabled={saving} data-keyword-template-copy onClick={() => (copyOpen ? setCopyOpen(false) : openCopy())}><Copy size={14}/>复制为派生模板</button>
                 <button type="button" className="text-link" disabled={saving} data-keyword-template-toggle onClick={toggleEnabled}>{draft.enabled === false ? '启用' : '停用'}</button>
                 <button type="button" className="icon-btn danger-text" title="删除模板" data-keyword-template-delete onClick={() => setConfirmDelete(true)}><Trash2 size={16}/></button>
               </>}
             </div>
           </div>
+
+          {copyOpen ? <div className="keyword-template-copy" data-keyword-template-copy-form>
+            <div className="panel-head">
+              <div>
+                <h3>复制为派生模板</h3>
+                <p>{KEYWORD_TEMPLATE_COPY_NOTE}</p>
+              </div>
+            </div>
+            <div className="form-grid compact">
+              <label>新模板名
+                <input data-keyword-template-copy-name value={copyName} placeholder="例如：国画 · 观察词" onChange={(event) => setCopyName(event.target.value)}/>
+              </label>
+              <label>派生课程类型（留空 = 照抄这一套的适用范围）
+                <input data-keyword-template-copy-course list="keyword-template-course-options" value={copyCourse} placeholder="例如：国画" onChange={(event) => setCopyCourse(event.target.value)}/>
+              </label>
+            </div>
+            <div className="row-actions">
+              <Button variant="secondary" onClick={() => setCopyOpen(false)}>取消</Button>
+              <Button onClick={copy} disabled={saving || !gate.ok} data-keyword-template-copy-submit>复制为派生模板</Button>
+            </div>
+            {gate.ok ? null : <small className="keyword-template-copy-block" data-keyword-template-copy-blocked="true">当前草稿还过不了保存闸门：{gate.issue}</small>}
+          </div> : null}
 
           <div className="keyword-template-facts">
             <span>{KEYWORD_TEMPLATE_SAVE_NOTE}</span>
@@ -435,7 +677,7 @@ export default function KeywordTemplatesPage({
             <div className="panel-head">
               <div>
                 <h3>变更历史（{versionRows.length} 版）</h3>
-                <p>每保存一次都留一版（快照 + 操作人 + 时间）：停用或改词条同样记一版，老师端的轨迹里能对上用的是哪一版。</p>
+                <p>每保存一次都留一版（快照 + 操作人 + 时间）：停用或改词条同样记一版，老师端的轨迹里能对上用的是哪一版。{KEYWORD_TEMPLATE_ROLLBACK_NOTE}</p>
               </div>
             </div>
             <ol>
@@ -450,9 +692,28 @@ export default function KeywordTemplatesPage({
                 </div>
                 <small>{row.changeText || '无变更记录'}</small>
                 <div className="keyword-template-version-meta">{row.countsText}</div>
+                <div className="keyword-template-version-actions">
+                  <button type="button" className="text-link" disabled={row.isCurrent || saving}
+                    data-keyword-template-rollback={row.versionLabel}
+                    onClick={() => setConfirmRollback(row.versionLabel === confirmRollback ? '' : row.versionLabel)}>
+                    <RotateCcw size={13}/>{row.isCurrent ? '当前版本' : `回滚到 ${row.versionLabel}`}
+                  </button>
+                </div>
               </li>)}
             </ol>
           </div>}
+
+          {confirmRollback ? <div className="danger-note" style={{ marginTop: 14 }} data-keyword-template-confirm-rollback={confirmRollback}>
+            <CircleAlert size={18}/>
+            <span style={{ flex: 1 }}>
+              回滚到 <b>{confirmRollback}</b>：把那一版的分组与配置写成「新的」版本（版本号继续 +1），历史版本一条不删。
+              当前草稿里没保存的修改会被丢弃。
+            </span>
+            <span style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <Button variant="secondary" onClick={() => setConfirmRollback('')}>取消</Button>
+              <Button onClick={() => rollback(confirmRollback)} disabled={saving} data-keyword-template-rollback-confirm>确认回滚</Button>
+            </span>
+          </div> : null}
 
           {confirmDelete ? <div className="danger-note" style={{ marginTop: 14 }}>
             <CircleAlert size={18}/>

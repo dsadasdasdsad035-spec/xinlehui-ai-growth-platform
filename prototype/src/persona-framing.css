@@ -984,12 +984,18 @@ p.framing-coverage-bad { margin: 0; padding: 10px 18px; font-size: 12px; line-he
   .agent-file-assembly select, .agent-file-assembly button { min-height: 44px; }
 }
 
-/* ── 管理端「作品观察词模板」（US-110a）───────────────────────────────────
+/* ── 管理端「作品观察词模板」（US-110a / US-110b）────────────────────────
    左列表按适用模式分两栏（个人 / 班级），右侧是模板属性 + 分组词条两级编辑 + 变更历史。
-   窄屏下编辑器两栏堆叠；分组卡片与词条行都按「细节列 min-width: 0」的既有纪律防横滚。 */
+   窄屏下编辑器两栏堆叠；分组卡片与词条行都按「细节列 min-width: 0」的既有纪律防横滚。
+   US-110b 新增：导出导入工具条、拖拽手柄与落点高亮、复制为派生模板的表单、版本行的回滚入口。 */
 .keyword-templates-rule { margin: 0 0 14px; padding: 10px 13px; border-radius: 12px; background: #f7f2e4; display: flex; gap: 10px; align-items: baseline; font-size: 11px; line-height: 1.7; color: #514a38; }
 .keyword-templates-rule b { flex: none; font-size: 11px; color: #8a6100; }
 .keyword-templates-rule span { min-width: 0; overflow-wrap: anywhere; }
+.keyword-template-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 14px; min-width: 0; }
+.keyword-template-toolbar small { flex: 1 1 280px; min-width: 0; font-size: 10.5px; line-height: 1.65; color: var(--muted); }
+.keyword-template-import-report { flex: 1 1 100%; border-radius: 9px; padding: 7px 10px; font-size: 10.5px; line-height: 1.65; background: #eef7ec; color: #1b7f34; overflow-wrap: anywhere; }
+.keyword-template-import-report.is-error { background: #fdece7; color: #8a2f20; }
+.keyword-template-import-report.is-export { background: var(--soft); color: #514a38; }
 .keyword-templates-page { align-items: start; }
 .keyword-templates-page > .persona-list,
 .keyword-templates-page > .persona-editor { min-width: 0; }
@@ -998,12 +1004,26 @@ p.framing-coverage-bad { margin: 0; padding: 10px 18px; font-size: 12px; line-he
 .keyword-template-group-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 0 2px; }
 .keyword-template-group-head b { font-size: 12px; color: var(--navy); }
 .keyword-template-group-head small { font-size: 10px; color: var(--muted); white-space: nowrap; }
-.keyword-template-row { display: flex; align-items: stretch; gap: 6px; }
+.keyword-template-row { display: flex; align-items: stretch; gap: 6px; border-radius: 12px; }
+/* 拖拽排序：手柄按住拖，落点行高亮；拖动中的那一行淡出（松手即换位并落盘）。
+   选择器必须带上 `.keyword-template-row`：`.persona-list button`（0,1,1）会把 width:100% 压到
+   手柄上，只手写 `.keyword-template-drag-handle`（0,1,0）压不住它 —— 手柄会变成整行宽。 */
+.keyword-template-row .keyword-template-drag-handle { flex: none; width: 26px; min-width: 26px; padding: 0; margin-bottom: 0; display: flex; align-items: center; justify-content: center; border: 1px solid transparent; border-radius: 10px; background: transparent; color: #b3a68a; cursor: grab; touch-action: none; }
+.keyword-template-row .keyword-template-drag-handle:hover { color: #8a6100; background: #f7f2e4; }
+.keyword-template-row.is-dragging .keyword-template-drag-handle { cursor: grabbing; color: #8a6100; }
+.keyword-template-row.is-dragging { opacity: .55; }
+.keyword-template-row.is-drop-target { outline: 2px dashed #b08a2e; outline-offset: -2px; }
 .keyword-template-row .keyword-template-pick { flex: 1 1 auto; min-width: 0; }
 .keyword-template-row .keyword-template-order { flex: none; display: flex; flex-direction: column; gap: 4px; justify-content: center; }
 .keyword-template-groups button b { line-height: 1.35; overflow-wrap: anywhere; }
 .keyword-template-facts { display: flex; flex-direction: column; gap: 3px; margin: 0 0 12px; padding: 9px 11px; border-radius: 10px; background: var(--soft); font-size: 10.5px; line-height: 1.6; color: #514a38; }
 .keyword-template-flags { display: flex; flex-wrap: wrap; gap: 18px; margin: 10px 0 0; }
+.keyword-template-copy { margin: 12px 0 0; border: 1px solid var(--border); border-radius: 12px; padding: 11px 12px; background: var(--soft); min-width: 0; }
+.keyword-template-copy h3 { font-size: 13px; margin: 0; }
+.keyword-template-copy .panel-head p { margin: 3px 0 0; font-size: 10.5px; line-height: 1.65; color: var(--muted); }
+.keyword-template-copy .row-actions { margin-top: 10px; }
+.keyword-template-copy-block { display: block; margin-top: 8px; font-size: 10.5px; line-height: 1.6; color: #8a2f20; overflow-wrap: anywhere; }
+.keyword-template-version-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 6px; }
 .keyword-template-courses { margin-top: 16px; }
 .keyword-template-courses h3 { font-size: 13px; margin: 0; }
 .keyword-template-courses .panel-head p { margin: 3px 0 0; font-size: 10.5px; line-height: 1.65; color: var(--muted); }
@@ -1055,8 +1075,13 @@ p.framing-coverage-bad { margin: 0; padding: 10px 18px; font-size: 12px; line-he
 }
 @media (max-width: 430px) {
   /* 与「Agent 指令与记忆」同一条 44px 纪律：窄屏下所有可点区域不小于 44×44px。
-     上移 / 下移箭头与「停用」这类文字按钮在桌面端保持紧凑，窄屏才撑到 44px。 */
-  .keyword-templates-page button, .keyword-templates-page select, .keyword-templates-page input { min-height: 44px; min-width: 44px; }
+     上移 / 下移箭头、拖拽手柄与「导出 / 导入 JSON」这类按钮在桌面端保持紧凑，窄屏才撑到 44px
+     （工具条在 `.keyword-templates-page` 外面，所以要单独带上）。 */
+  .keyword-templates-page button, .keyword-templates-page select, .keyword-templates-page input,
+  .keyword-template-toolbar button { min-height: 44px; min-width: 44px; }
+  /* 拖拽手柄：上面的宽度规则带 `.keyword-template-row`（0,2,0），会压过上面这条（0,1,1），
+     所以窄屏要写**同等特异度**的选择器才顶得回来。 */
+  .keyword-template-row .keyword-template-drag-handle { width: 44px; min-width: 44px; }
   .keyword-term { align-items: stretch; }
   .keyword-template-row .keyword-template-order { flex-direction: row; }
 }

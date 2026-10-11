@@ -1889,6 +1889,56 @@ DOM/canvas 部分在 `src/services/artworkWriteBack.js`，编排在 `main.jsx` �
   —— 那是正确行为，不是 bug。`data-keyword-template-*` 属性族（页面根 / 编辑区 / 列表行 / 分组 / 词条）
   是断言读数的入口，新增控件时顺手补同名族属性。
 
+## 管理端「作品观察词模板」：拖拽排序 / 复制 / 导入导出 / 回滚（US-110b / F-REVIEW-KW-01）
+
+US-110b 给同一张页面加了四件事，写侧规则**全部落在** `data/reviewKeywordAdmin.js`（页面只渲染与调用）：
+
+| 动作 | 唯一入口（`data/reviewKeywordAdmin.js`） | 版本 |
+|---|---|---|
+| 拖拽排序（同模式内换位） | `moveKeywordTemplateTo(list, key, targetKey)`（键盘上移 / 下移仍是 `moveKeywordTemplate`） | **不增**（与 `moveFramingPreset` 同一口径：只动顺序） |
+| 复制为派生模板 | `duplicateKeywordTemplateRecord(record, { existing, name, courseTypes })` | 新记录 = v1（快照 action `copy`） |
+| 导出 / 导入 JSON | `buildKeywordTemplateExport` / `parseKeywordTemplateImport` / `mergeKeywordTemplateImport` | 导入 = 一次写入（内容有变化的那些 +1 版） |
+| 回滚到任一历史版本 | `rollbackKeywordTemplateRecord(record, version)` | 新版本 = 当前 +1（快照 action `rollback`） |
+
+- **顺序的唯一来源仍是数组位置**：拖拽 / 上移 / 下移最后都走 `applyKeywordTemplateOrder()`（同模式的一组按位次
+  重排 `sortOrder` = 10、20、30…，别的模式一个不碰）。顺序决定老师端「多套命中取哪一套」
+  （`resolveReviewKeywordTemplate` 的 tie-break 与「都没标默认时取排序第一套」），所以顺序改动**立即生效**、
+  但**不该增版本**（它不改词条内容）；落盘 + 推云端与上移 / 下移完全一致。
+- **拖拽是指针事件，不是 HTML5 DnD**：手柄 `onPointerDown` 起手（`data-keyword-template-drag=<key>`），
+  拖动期间在 **window** 上收 `pointermove/pointerup`（指针会离开手柄），落点用
+  `document.elementFromPoint().closest('[data-keyword-template-pick]')` 判，松手时再算一次落点。
+  拖动中页面根挂 `data-keyword-template-dragging` / `-drop-key`，落点行挂 `data-keyword-template-drop-target`
+  —— 验证脚本用 CDP `Input.dispatchMouseEvent`（mousePressed → 多次 mouseMoved → mouseReleased）真拖，
+  这三个属性就是「拖到哪儿了」的读数。
+- **复制为派生模板的两条口径**：① **手写的名字原样用**（只有撞名才 `uniqueKeywordTemplateName` 补 ` 2`），
+  没给名字才派生 `源模板名（副本）`（`copyKeywordTemplateName`，与 agent 文件的副本命名同款）；
+  ② **派生课程类型留空 = 照抄源的适用范围**，填了就用填的（`parseKeywordTemplateCourseTypes` 认逗号 / 顿号 / 分号）。
+  副本永远 `isDefault: false` 且排在同模式最后（不插队改变老师端命中顺序），来源写进变更历史
+  （`来源：<源名> vN，派生课程类型：国画`）。复制取的是**当前编辑的内容**（先过同一道保存闸门）。
+- **导出封套要有 `type`**：`{ type: 'xinlehui-review-keyword-templates', version, exportedAt, exportedBy, count, templates }`。
+  `parseKeywordTemplateImport()` 靠 `type` 认出「这是谁的文件」（拿装裱 / 海报的导出文件来导入会被点名拒绝），
+  同时兼容裸数组与 `{ templates }`，解析**永不抛错**，坏文件只给一句可读原因、一个字段都不改。
+- **导入 = 按 `templateKey` 合并，且幂等**：本机没有 → 加入（沿用文件里的版本与历史 + 一条 `import`）；
+  内容有变化 → 更新并 `+1` 一版；**内容一致 → 原样跳过**（`keywordTemplateImportUnchanged()`），
+  把刚导出的文件再导一次不会让每一套都白白多出版本。报告文案把三种结果都写出来
+  （`导入完成：新增 X 套，更新 Y 套，跳过 Z 套（内容一致）。`）。导入的默认模板会把同模式原默认标记清掉。
+- **回滚恢复的是**那一版快照里的**整份内容**（名称 / 模式 / 适用范围 / 启停 / 默认 / 分组词条），
+  写法是「版本号 +1 + 写一版 `rollback` 快照」，`versions` 一条不删；**认不出的版本号或目标就是当前版本 →
+  原样返回**（`rollbackKeywordTemplateRecord` 直接 return 入参对象，一个字段都不动）。页面上当前那一版的行
+  回滚按钮是 disabled 的。
+- **CSS 特异度坑（本轮真踩两次）**：`.persona-list button { width: 100% }`（0,1,1）会压过只手写一个类的
+  `.keyword-template-drag-handle`（0,1,0）—— 手柄会变成整行宽、把「点击选中」挤成 26px 的窄条，
+  看起来像拖拽逻辑坏了。**新增列表内元素一律写成 `.keyword-template-row <元素>`（0,2,0）**；
+  窄屏 44px 兜底（`@media (max-width:430px)` 里的 `.keyword-templates-page button`，0,1,1）
+  **压不住它**，所以媒体查询里要**再写一遍同等特异度的选择器**（媒体查询本身不加特异度）。
+- **验证要点（本故事实测）**：拖拽用真鼠标事件；导出用页面内原型补丁抓
+  `URL.createObjectURL` 的 Blob（`blob.text()` 读回字节）与 `HTMLAnchorElement.prototype.click` 的
+  `download` 文件名字段，再与 `keywordTemplateExportFilename` 独立重算比对；导入用真文件
+  （`DOM.setFileInputFiles` 指向 /tmp 的 JSON），坏文件另写一份；「老师端顺序立即生效」用
+  「同一模式两套都配了同一个课程类型（score 相等）→ 谁排第一命中谁」来做，最后真的走一遍
+  第一步上传 → 第二步装裱 → 第三步，读 `.review-keyword-template` 的 `data-keyword-template-name`。
+  测试**别拿名字当主键**去镜像里找记录：回滚会把名字也退回那一版，按 `templateKey` 找。
+
 ## 容易踩的坑
 
 - **派生值（`const x = f(state)`）必须排在被它读的 state 之后**（US-108b 真踩）：把

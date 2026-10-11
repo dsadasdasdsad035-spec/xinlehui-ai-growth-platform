@@ -61,7 +61,10 @@ export const KEYWORD_TEMPLATE_ACTION_KEYS = {
   create: 'create',
   save: 'save',
   enable: 'enable',
-  disable: 'disable'
+  disable: 'disable',
+  copy: 'copy',
+  rollback: 'rollback',
+  import: 'import'
 };
 
 export const KEYWORD_TEMPLATE_ACTION_LABELS = {
@@ -69,7 +72,10 @@ export const KEYWORD_TEMPLATE_ACTION_LABELS = {
   [KEYWORD_TEMPLATE_ACTION_KEYS.create]: '新建',
   [KEYWORD_TEMPLATE_ACTION_KEYS.save]: '保存',
   [KEYWORD_TEMPLATE_ACTION_KEYS.enable]: '启用',
-  [KEYWORD_TEMPLATE_ACTION_KEYS.disable]: '停用'
+  [KEYWORD_TEMPLATE_ACTION_KEYS.disable]: '停用',
+  [KEYWORD_TEMPLATE_ACTION_KEYS.copy]: '复制为派生模板',
+  [KEYWORD_TEMPLATE_ACTION_KEYS.rollback]: '回滚',
+  [KEYWORD_TEMPLATE_ACTION_KEYS.import]: '导入'
 };
 
 /** 快照与变更历史的保留条数（够回看近几十次改动即可，本机镜像不无限膨胀）。 */
@@ -85,6 +91,11 @@ export const KEYWORD_TEMPLATE_RESOLVE_NOTE = '老师端按顺序选模板：先�
 export const KEYWORD_TEMPLATE_SAVE_NOTE = '保存即生效：老师端下一次生成点评时就用这一套（版本号会写进推理轨迹的模块来源）。';
 export const KEYWORD_TEMPLATE_EMPTY_NOTE = '一套模板至少要有一个启用的词条才会被老师端选中；停用的分组与词条不进面板、也不进提示词候选。';
 export const KEYWORD_TEMPLATE_DELETE_NOTE = '删除后老师端不再有这一套（已归档的历史点评不受影响：轨迹里留的是当时用的模板版本与词条）。';
+export const KEYWORD_TEMPLATE_ORDER_NOTE = '按住左侧的手柄拖到同模式另一套模板上即换位，松手立刻生效（顺序不增版本：它不改词条内容，但决定老师端「多套命中取哪一套」）。';
+export const KEYWORD_TEMPLATE_COPY_NOTE = '复制为派生模板：新模板拿到新的 templateKey 与 v1，分组 / 词条 / 适用范围照抄，来源写进变更历史 —— 常用来按画种派生（把「派生课程类型」填成国画，这一套就只在国画课上被命中）。';
+export const KEYWORD_TEMPLATE_ROLLBACK_NOTE = '回滚到任一历史版本：把那一版的分组与配置写成「新的」版本（版本号继续 +1），历史版本一条不删。';
+export const KEYWORD_TEMPLATE_EXPORT_NOTE = '导出的 JSON 是全部模板（含分组、词条、适用范围、版本与变更历史），可以直接导入回来。';
+export const KEYWORD_TEMPLATE_IMPORT_NOTE = '导入按 templateKey 合并：本机没有的直接加入，内容有变化的自增一版，内容一致的原样跳过（把刚导出的文件再导入一次不会白白多出版本）。';
 
 const str = (value) => (value === null || value === undefined ? '' : String(value).trim());
 
@@ -744,6 +755,20 @@ export function applyKeywordTemplateDefault(list = [], templateKey = '') {
 }
 
 /**
+ * 把某个模式的一组模板按新顺序重排 sortOrder（10、20、30…），其余模式的模板一个不碰。
+ * 返回的列表**就是新顺序**（按新的 sortOrder 排好）：调用方 setState 之后左列表直接对得上，
+ * 不要指望调用方再排一次。
+ */
+function applyKeywordTemplateOrder(ordered, peers) {
+  const positions = new Map(peers.map((entry, position) => [entry.templateKey, (position + 1) * 10]));
+  return sortKeywordTemplates(ordered.map((entry) => {
+    if (!positions.has(entry.templateKey)) return entry;
+    const sortOrder = positions.get(entry.templateKey);
+    return keywordTemplateSortOrder(entry) === sortOrder ? entry : { ...entry, sortOrder };
+  }));
+}
+
+/**
  * 上下移动一套模板：与同模式的邻居交换位置，然后按位次重排 sortOrder（10、20、30…）。
  * 与 `moveFramingPreset` 同一条纪律：**移动的是排序，不改内容**，所以不增版本号
  * （被挪动位置的那几套只改 sortOrder，快照与历史不动）。
@@ -761,14 +786,273 @@ export function moveKeywordTemplate(list = [], templateKey = '', delta = 0) {
   const movedPeers = [...peers];
   const [item] = movedPeers.splice(index, 1);
   movedPeers.splice(target, 0, item);
-  const positions = new Map(movedPeers.map((entry, position) => [entry.templateKey, (position + 1) * 10]));
-  // 返回的列表**就是新顺序**（按新的 sortOrder 排好）：调用方 setState 之后左列表直接对得上，
-  // 不要指望调用方再排一次。
-  return sortKeywordTemplates(ordered.map((entry) => {
-    if (!positions.has(entry.templateKey)) return entry;
-    const sortOrder = positions.get(entry.templateKey);
-    return keywordTemplateSortOrder(entry) === sortOrder ? entry : { ...entry, sortOrder };
-  }));
+  return applyKeywordTemplateOrder(ordered, movedPeers);
+}
+
+/**
+ * 拖拽排序（US-110b）：把 `templateKey` 拖到 `targetKey` 现在占的位置上，然后重排序号。
+ *
+ * 与 `moveKeywordTemplate` 同一口径：**只动顺序、不增版本**（内容一个字不变），
+ * 但改动会落本机镜像并推云端 —— 老师端按 `sortOrder` 解析「多套命中取哪一套」，
+ * 所以顺序改了老师端立刻按新顺序解析（验收原文「保存后老师端顺序立即生效」）。
+ *
+ * 三条边界：① 跨模式拖拽不生效（顺序只在同模式内比较）；② 拖到自己身上 = 空操作；
+ * ③ 找不到任意一端时原样返回（返回的是排好序的列表，不是入参原对象）。
+ */
+export function moveKeywordTemplateTo(list = [], templateKey = '', targetKey = '') {
+  const ordered = sortKeywordTemplates(list);
+  const key = str(templateKey);
+  const target = str(targetKey);
+  if (!key || !target || key === target) return ordered;
+  const record = ordered.find((item) => item.templateKey === key);
+  if (!record) return ordered;
+  const peers = ordered.filter((item) => item.mode === record.mode);
+  const from = peers.findIndex((item) => item.templateKey === key);
+  const to = peers.findIndex((item) => item.templateKey === target);
+  if (from < 0 || to < 0 || from === to) return ordered;
+  const movedPeers = [...peers];
+  const [item] = movedPeers.splice(from, 1);
+  movedPeers.splice(to, 0, item);
+  return applyKeywordTemplateOrder(ordered, movedPeers);
+}
+
+/** 两次排序之间有没有真的变化（拖拽 / 上下移动后判断「顺序已更新」还是「本来就在那儿」）。 */
+export function keywordTemplateOrderText(list = []) {
+  return sortKeywordTemplates(list).map((item) => `${item.templateKey}:${keywordTemplateSortOrder(item)}`).join('|');
+}
+
+// ---------------------------------------------------------------------------
+// 复制为派生模板 / 回滚 / 导出导入 JSON（US-110b）
+// ---------------------------------------------------------------------------
+
+/** 重名就去重：`X` → `X 2` → `X 3` …（管理员在复制表单里手写的名字被占用时才动它）。 */
+export function uniqueKeywordTemplateName(name, existing = []) {
+  const base = str(name) || '未命名观察词模板';
+  const taken = new Set((Array.isArray(existing) ? existing : []).map((item) => str(item)));
+  if (!taken.has(base)) return base;
+  let index = 2;
+  let candidate = `${base} ${index}`;
+  while (taken.has(candidate)) { index += 1; candidate = `${base} ${index}`; }
+  return candidate;
+}
+
+/** 同一个画种派生多套时名字不能撞：`国画 · 观察词` → `国画 · 观察词（副本）` → `（副本 2）` → …（与 agent 文件的副本命名同一口径） */
+export function copyKeywordTemplateName(name, existing = []) {
+  const base = str(name).replace(/（副本(?:\s*\d+)?）\s*$/, '').trim() || '未命名观察词模板';
+  const taken = new Set((Array.isArray(existing) ? existing : []).map((item) => str(item)));
+  let candidate = `${base}（副本）`;
+  let index = 2;
+  while (taken.has(candidate)) { candidate = `${base}（副本 ${index}）`; index += 1; }
+  return candidate;
+}
+
+/** 「派生课程类型」输入框 → 课程类型数组（逗号 / 顿号 / 分号 / 换行都能分隔）。 */
+export function parseKeywordTemplateCourseTypes(value) {
+  return String(value ?? '').split(/[\n,，、;；]+/).map((item) => str(item)).filter(Boolean);
+}
+
+/**
+ * 复制为派生模板：新 templateKey + 新名字 + v1，
+ * 分组 / 词条 / 适用范围照抄，来源与（可选的）派生课程类型写进变更历史。
+ *
+ * 名字口径（两处共用同一个去重函数）：**手写的名字原样用**（只有撞名才补 ` 2`）；
+ * 没给名字才派生 `源模板名（副本）`。副本**永远不是默认模板**
+ * （同一模式只留一套默认，交给「设为默认」去改），并排在同模式最后（不插队改变老师端命中顺序）。
+ */
+export function duplicateKeywordTemplateRecord(record, { existing = [], by = '', at = 0, name = '', courseTypes = null } = {}) {
+  const source = normalizeKeywordTemplateRecord(record);
+  const list = (Array.isArray(existing) ? existing : []).map(normalizeKeywordTemplateRecord);
+  const peers = list.filter((item) => item.mode === source.mode);
+  const maxOrder = peers.reduce((max, item) => Math.max(max, keywordTemplateSortOrder(item)), 0);
+  const names = list.map((item) => item.name);
+  const given = str(name);
+  const nextCourseTypes = courseTypes === null
+    ? source.courseTypes
+    : parseKeywordTemplateCourseTypes(courseTypes);
+  const draft = createKeywordTemplateDraft({
+    mode: source.mode,
+    name: given ? uniqueKeywordTemplateName(given, names) : copyKeywordTemplateName(source.name, names),
+    courseTypes: nextCourseTypes,
+    ageRange: source.ageRange,
+    groups: keywordTemplateEditGroups(source),
+    orgId: source.orgId,
+    isDefault: false,
+    sortOrder: maxOrder + 10
+  });
+  const derived = courseTypes === null ? '' : `，派生课程类型：${nextCourseTypes.join(' / ') || '不限'}`;
+  return stampKeywordTemplateVersion({ ...draft, templateVersion: 1 }, {
+    by,
+    at,
+    action: KEYWORD_TEMPLATE_ACTION_KEYS.copy,
+    note: `来源：${source.name} ${formatKeywordTemplateVersion(source.templateVersion)}${derived}`
+  });
+}
+
+/**
+ * 回滚到任一历史版本：**产生新版本**（版本号继续 +1），分组与配置取自那一版快照，
+ * `versions` 里一条都不删（与 `rollbackAgentFileRecord` 同一口径，验收原文「回滚本身产生新版本且不覆盖历史」）。
+ * 认不出的版本号、或目标就是当前版本 → 原样返回，一个字段都不动。
+ */
+export function rollbackKeywordTemplateRecord(record, targetVersion, { by = '', at = 0 } = {}) {
+  const source = normalizeKeywordTemplateRecord(record);
+  const number = normalizeKeywordTemplateVersion(targetVersion);
+  const current = normalizeKeywordTemplateVersion(source.templateVersion);
+  const target = keywordTemplateVersions(source).find((entry) => normalizeKeywordTemplateVersion(entry.version) === number);
+  if (!target || number === current) return source;
+  const restored = normalizeKeywordTemplateRecord({
+    ...source,
+    name: target.name || source.name,
+    mode: target.mode,
+    courseTypes: target.courseTypes,
+    ageRange: target.ageRange,
+    isDefault: target.isDefault,
+    enabled: target.enabled !== false,
+    groups: keywordTemplateEditGroups({ groups: target.groups }),
+    templateVersion: current + 1
+  });
+  return stampKeywordTemplateVersion(restored, {
+    by,
+    at,
+    action: KEYWORD_TEMPLATE_ACTION_KEYS.rollback,
+    note: `回滚到 ${formatKeywordTemplateVersion(number)}`
+  });
+}
+
+/** 导出文件的外层标识：导入时据此认出「这是观察词模板的导出文件」。 */
+export const KEYWORD_TEMPLATE_EXPORT_TYPE = 'xinlehui-review-keyword-templates';
+export const KEYWORD_TEMPLATE_EXPORT_VERSION = 1;
+
+/** 导出封套（纯数据）：`templates` 是归一化后的整份模板记录（含版本与变更历史）。 */
+export function buildKeywordTemplateExport(list = [], { at = 0, by = '' } = {}) {
+  const records = sortKeywordTemplates(list);
+  const timestamp = Number.isFinite(Number(at)) && Number(at) > 0 ? Number(at) : Date.now();
+  return {
+    type: KEYWORD_TEMPLATE_EXPORT_TYPE,
+    version: KEYWORD_TEMPLATE_EXPORT_VERSION,
+    exportedAt: new Date(timestamp).toISOString(),
+    exportedBy: str(by),
+    count: records.length,
+    templates: records
+  };
+}
+
+export function keywordTemplateExportText(payload) {
+  return JSON.stringify(payload, null, 2);
+}
+
+/** 导出文件名：`观察词模板-20261011.json`（日期取自封套，取不到就用当下）。 */
+export function keywordTemplateExportFilename(payload) {
+  const text = str(payload?.exportedAt);
+  const parsed = text ? new Date(text) : null;
+  const date = parsed && !Number.isNaN(parsed.getTime()) ? parsed : new Date();
+  const pad = (value) => String(value).padStart(2, '0');
+  return `观察词模板-${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}.json`;
+}
+
+/**
+ * 解析导入文件（**永不抛错**）：认得出就给出待导入的模板，认不出就给一句可读的拒绝原因。
+ * 兼容三种写法：本模块导出的封套、裸数组、`{ templates: [...] }`。
+ */
+export function parseKeywordTemplateImport(text) {
+  const raw = String(text ?? '');
+  if (!raw.trim()) return { ok: false, payload: null, templates: [], issues: ['文件是空的'], message: '导入文件是空的，未做任何改动。' };
+  let parsed = null;
+  try { parsed = JSON.parse(raw); } catch (error) {
+    return { ok: false, payload: null, templates: [], issues: [String(error?.message || error)], message: '这个文件不是合法的 JSON，未做任何改动。' };
+  }
+  const payload = Array.isArray(parsed)
+    ? { type: KEYWORD_TEMPLATE_EXPORT_TYPE, version: KEYWORD_TEMPLATE_EXPORT_VERSION, exportedAt: '', templates: parsed }
+    : (parsed && typeof parsed === 'object' ? parsed : null);
+  if (!payload) return { ok: false, payload: null, templates: [], issues: ['顶层不是对象'], message: '导入文件的顶层既不是对象也不是数组，未做任何改动。' };
+  const type = str(payload.type);
+  if (type && type !== KEYWORD_TEMPLATE_EXPORT_TYPE) {
+    return { ok: false, payload, templates: [], issues: [`type=${type}`], message: `这份文件是「${type}」的导出结果，不是观察词模板。` };
+  }
+  const entries = Array.isArray(payload.templates) ? payload.templates : [];
+  const templates = entries.map(normalizeKeywordTemplateRecord).filter((item) => item.templateKey);
+  const missing = entries.length - templates.length;
+  const issues = missing > 0 ? [`有 ${missing} 条记录没有 templateKey，已跳过`] : [];
+  if (!templates.length) {
+    return { ok: false, payload, templates: [], issues, message: '文件里没有带 templateKey 的模板，未做任何改动。' };
+  }
+  const exportedText = keywordTemplateTimeText(payload.exportedAt);
+  return {
+    ok: true,
+    payload,
+    templates,
+    issues,
+    message: `读到 ${templates.length} 套模板${exportedText ? `（导出于 ${exportedText}）` : ''}${issues.length ? ` · ${issues.join('；')}` : ''}。`
+  };
+}
+
+/**
+ * 导入时判断「文件里这一条与本机那一套的内容一致吗」：一致就跳过 ——
+ * 把刚导出的文件再导一次不该让每一套都白白多出一版（内容一个字都没变）。
+ * 比的口径与保存时的改动清单一致（名称 / 模式 / 适用范围 / 启停 / 默认 / 分组与词条）。
+ */
+export function keywordTemplateImportUnchanged(record, incoming) {
+  const local = normalizeKeywordTemplateRecord(record);
+  const next = normalizeKeywordTemplateRecord({ ...incoming, templateKey: local.templateKey });
+  if (str(local.name) !== str(next.name)) return false;
+  if (local.mode !== next.mode) return false;
+  if (str(local.ageRange) !== str(next.ageRange)) return false;
+  if ((local.enabled !== false) !== (next.enabled !== false)) return false;
+  if (local.isDefault !== next.isDefault) return false;
+  if (local.courseTypes.join(' / ') !== next.courseTypes.join(' / ')) return false;
+  return JSON.stringify(keywordTemplateEditGroups(local)) === JSON.stringify(keywordTemplateEditGroups(next));
+}
+
+/**
+ * 把导入的模板并进现有列表（**导入 = 一次写入**，所以也记一版）：
+ *  - 本机已有同一 `templateKey` 且内容有变化 → 用文件里的内容更新并 `+1` 一版（本地版本谱系与历史都留着）；
+ *  - 本机已有同一 `templateKey` 且内容一致 → **原样跳过**（不白白多出版本，导入是幂等的）；
+ *  - 本机没有 → 直接加入（沿用文件里的版本与历史，再补一条「导入」记录）。
+ * 导入的默认模板会把同模式原来的默认标记清掉（同一模式只留一套默认，与 `applyKeywordTemplateDefault` 同口径）。
+ */
+export function mergeKeywordTemplateImport(current = [], incoming = [], { by = '', at = 0, source = '' } = {}) {
+  let records = sortKeywordTemplates(current);
+  const added = [];
+  const updated = [];
+  const unchanged = [];
+  const note = `从 JSON 导入${str(source) ? `（${str(source)}）` : ''}`;
+  (Array.isArray(incoming) ? incoming : []).map(normalizeKeywordTemplateRecord).filter((item) => item.templateKey).forEach((item) => {
+    const index = records.findIndex((record) => record.templateKey === item.templateKey);
+    if (index < 0) {
+      const record = stampKeywordTemplateVersion(normalizeKeywordTemplateRecord({
+        ...item,
+        updatedBy: '',
+        updatedAt: ''
+      }), { by, at, action: KEYWORD_TEMPLATE_ACTION_KEYS.import, note });
+      records = [...records, record];
+      added.push(record);
+      return;
+    }
+    const before = records[index];
+    if (keywordTemplateImportUnchanged(before, item)) { unchanged.push(before); return; }
+    const merged = normalizeKeywordTemplateRecord({
+      ...before,
+      name: item.name,
+      mode: item.mode,
+      courseTypes: item.courseTypes,
+      ageRange: item.ageRange,
+      isDefault: item.isDefault,
+      groups: item.groups,
+      enabled: item.enabled !== false,
+      templateVersion: normalizeKeywordTemplateVersion(before.templateVersion) + 1
+    });
+    const record = stampKeywordTemplateVersion(merged, { by, at, action: KEYWORD_TEMPLATE_ACTION_KEYS.import, note });
+    records = records.map((entry, position) => (position === index ? record : entry));
+    updated.push(record);
+  });
+  [...added, ...updated].filter((item) => item.isDefault).forEach((item) => {
+    records = applyKeywordTemplateDefault(records, item.templateKey);
+  });
+  const list = sortKeywordTemplates(records);
+  const head = `导入完成：新增 ${added.length} 套，更新 ${updated.length} 套`;
+  const tail = unchanged.length ? `，跳过 ${unchanged.length} 套（内容一致）` : '';
+  const empty = added.length + updated.length + unchanged.length ? '' : '（文件里没有可用的模板）';
+  const reportText = `${head}${tail}${empty}。`;
+  return { list, added, updated, unchanged, reportText };
 }
 
 /** 删除一套模板（返回新列表；调用方负责推云端并提示）。 */
