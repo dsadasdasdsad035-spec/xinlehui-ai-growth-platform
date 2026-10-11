@@ -11,6 +11,7 @@
 
 import { DEMO_ARTWORKS, createDemoFramedArtwork } from './demoArtwork';
 import { renderFramedArtwork } from '../services/framing';
+import { frameSpecView } from '../services/frameSpec';
 
 /** 装裱结果缓存：同一幅作品 + 同一套参数只渲染一次。 */
 const frameCache = new Map();
@@ -30,10 +31,16 @@ async function cached(key, produce) {
 
 export function clearFramedArtworkCache() { frameCache.clear(); }
 
-const specKey = (spec = {}) => [
-  spec.outer, spec.mat, spec.innerLine, spec.plaqueBg, spec.plaqueText,
-  spec.outerWidthRatio, spec.matWidthRatio
-].join('|');
+// 缓存键只认「会影响渲染的值」。spec 可能是 v1 平面结构或 v2 结构，
+// 统一经 frameSpecView() 取平面视图；否则 v2 预设的 outer/mat 全读不到，
+// 不同模板会算出同一个键、画廊里互相串用渲染结果。
+const specKey = (spec = {}) => {
+  const view = frameSpecView(spec);
+  return [
+    view.outer, view.mat, view.innerLine, view.plaqueBg, view.plaqueText,
+    view.outerWidthRatio, view.matWidthRatio
+  ].join('|');
+};
 
 /** 课后反馈记录里的一幅作品 → 画展条目。 */
 export function artworkFromRecord(record) {

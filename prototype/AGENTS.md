@@ -414,6 +414,34 @@ DSH 的 `browser_*` 工具**没有 selectOption 能力**：`browser_type` 走的
 - 「新建」在点击保存前**不要**先塞进受控列表：`main.jsx` 的 `persist<X>` effect 会把 state 立刻落盘，
   半成品（没名字的课程）就会活过一次刷新。用 `isNew` 之类的外部草稿，保存成功后再并入列表。
 
+## 装裱参数 spec：v1 平面结构 / v2 分组结构
+
+`src/services/frameSpec.js` 同时持有两代结构，动装裱参数前先确认自己在哪一代：
+
+| | v1（已冻结） | v2（新能力只加在这里） |
+|---|---|---|
+| 形状 | 平面字段 `outer` / `outerWidthRatio` / `mat` / `matWidthRatio` / `innerLine` / `plaqueBg` / `plaqueText` / `plaqueFontFamily` / `plaqueLetterSpacing` / `artRotateDeg` / `atmosphere` / `rationale` | 分组 `canvas` / `frame` / `mat` / `plaque` / `watermark` / `signature` / `date` / `art`，加顶层 `version: 2` 与 `atmosphere` / `rationale` |
+| 收敛器 | `normalizeFrameSpec`（后台大模型入口仍在用，**不要改**） | `normalizeFrameSpecV2`（字段全可选、脏数据不抛错、非法值收敛到 v1 行为） |
+| 默认值 | `DEFAULT_FRAME_SPEC` | `DEFAULT_FRAME_SPEC_V2` |
+
+- **渲染层与后台面板只读「平面视图」**：`renderFramedArtwork` / `FramingSettingsPage` 一律经
+  `frameSpecView(spec)` 取值。v1 输入**原样返回同一个对象**（老模板渲染逐像素不变），v2 输入由
+  `frameSpecV2ToLegacy()` 映射。新写读 spec 的代码不要再直接 `spec.outer` / `spec.mat`。
+- **v2 的叠加元素（`watermark.*` / `signature` / `date` / 印章）默认 `visible: false`**：v1 本来不画
+  任何叠加元素，默认 true 会让「迁移过来的老模板」凭空多出 `{机构名}` 水印。是否绘制由面板显式开启
+  （US-003a/003b/003c），**不要为了省事把默认值改成 true**。
+- `src/data/framingPresets.js` 的内置预设已是 v2，且**故意省略 watermark / signature / date 三组**
+  （字段可选，缺省即 v1 行为）。该 data 模块保持**零依赖**（不 import services），以便 Node 直跑断言。
+- **用 spec 做缓存键的地方都必须过 `frameSpecView`**：`gallery/exhibitionArtworks.js` 的 `specKey`
+  原先直接读 `spec.outer`，v2 预设全读成 `undefined` → 不同模板算出同一个键、画廊里互相串用渲染结果。
+  v2 新增会影响渲染的分组时，缓存键要同步覆盖。
+- 状态机：`art.rotateDeg` 只允许 **0 / 90**（模板级）；任意角度微调属于单幅作品的 `artworkEdit`（US-004），
+  不进模板。`date.source` = `lesson | today | manual`，`date.format` 三种白名单；所有位置是九宫格枚举
+  + `offsetX/offsetY` 比例偏移（-0.5~0.5）；尺寸与位置一律用「相对画布短边的比例」。
+- 收敛范围（越界收敛而不是画崩）：框宽 `0.008~0.08`、圆角 `0~0.5`、卡纸宽 `0.02~0.12`、不透明度 `0~1`、
+  字号 `8~200`、面板字体走 `SAFE_FONTS` 白名单、`logo.url` / `signature.imageUrl` 只放行
+  `http(s)` / `data:image` / `blob:`。
+
 ## 容易踩的坑
 
 - **写接口抛错时「await 之后就没了」**：`save<X>/create<X>/update<X>` 是「先写本地镜像再推云端」，
@@ -491,3 +519,20 @@ service 模块也能在 Node 里测：`cloud.database` 是**可写属性**，导
 - 想证明「异步生成没有阻塞输入」时，可以在页面里装一个 **MutationObserver 记录中间态**
   （`window.__intakeTrace`：每次 DOM 变化时记下 pending/ready 数量、已上传计数、待生成图片的 naturalWidth），
   断言「条目与输入已可用、缩略图还没好」这个中间态真实出现过，比固定 sleep 可靠得多。
+
+### 证明 canvas 渲染「逐像素一致」（重构 / 兼容类改动）
+
+- **别在 Node 里比对渲染**（没有 canvas）。起一个自己控制的 headless Chrome，注意加软渲染参数
+  `--use-gl=angle --use-angle=swiftshader --enable-unsafe-swiftshader`：否则 headless 里 WebGL 不可用，
+  3D 画廊会报 `THREE.WebGLRenderer: Error creating WebGL context`（看起来像功能坏了，其实是启动参数问题）。
+- 页面里 `await import('/src/services/framing.js')` 拿到的是**与 app 同一个模块实例**，
+  可以直接调 `renderFramedArtwork`。测试图用 canvas 现画（固定坐标/颜色）→ `toDataURL('image/png')`，
+  这样不依赖任何素材文件。
+- 比对分两层：① 先比 data URL 字符串（同一份 spec 的 JPEG 编码是确定的，相等即逐字节相同）；
+  ② 不等时再解码回 canvas 用 `getImageData` 逐像素计数差异，好报告「差了多少像素」而不是只报 false。
+- **`specKey` 这类缓存键要用「渲染时会读到的平面视图」**：v2 结构下直接读 `spec.outer` 会全读成
+  `undefined`，不同模板共用同一个键 → 画廊里串用渲染结果。验证时对两套模板各跑一次
+  `resolveExhibitionArtworks`，断言产出的 `imageUrl` 不相同（同一模板两次调用则相同）。
+- console 里的既有噪音：本机云端不通的 `net::ERR` / `404`、后台装裱预览 `<img src={preview}>` 初始为 `''`
+  触发的 React `An empty string ("") was passed to the src attribute` 警告。这些在 HEAD 上就有，
+  过滤时要写清楚「是既有噪音」，不要当成新引入的问题放过去。

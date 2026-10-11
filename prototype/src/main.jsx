@@ -47,7 +47,7 @@ import { archiveSkillPackage, readSkillPackage } from './services/skillPackage';
 import { MARKETPLACE_SYNCED_AT, indexStats, marketCategories, searchMarket, searchSkillIndex } from './data/skillMarketplace';
 import { createEmptyFramingPreset, loadFramingPresets, persistFramingPresets } from './data/framingPresets';
 import { deleteRemoteFramingPreset, loadRemoteFramingPresets, saveRemoteFramingPreset } from './services/framingPresetsApi';
-import { DEFAULT_FRAME_SPEC, generateFrameSpec, normalizeFrameSpec } from './services/frameSpec';
+import { DEFAULT_FRAME_SPEC, frameSpecView, generateFrameSpec, normalizeFrameSpec } from './services/frameSpec';
 import { REVIEW_MODEL, describeReviewError, readableFromRawJson, streamArtworkReview } from './services/llmReview';
 import { keywordCandidatesPrompt, keywordCategoriesFor, keywordOptionsFor, orderKeywords, pickSupportedKeywords } from './data/reviewKeywords';
 // 三个基础展示原语抽到 ui.jsx，3D 画廊页与主文件共用同一份
@@ -2679,6 +2679,8 @@ function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast}){
   useEffect(()=>{setDraft(editing?{...editing}:null)},[editingId,framingPresets.length]);
   useEffect(()=>{if(!draft)return undefined;let active=true;renderFramedArtwork({source:placeholderArtwork(),spec:draft.spec||DEFAULT_FRAME_SPEC,student:draft.plaqueStudent||'陈一诺',title:draft.plaqueTitle||'向着光的花',date:draft.plaqueDate||'2026.08.11'}).then(url=>{if(active)setPreview(url)}).catch(()=>{if(active)setPreview('')});return()=>{active=false}},[draft?.spec,draft?.plaqueStudent,draft?.plaqueTitle,draft?.plaqueDate]);
   const patch=(key,value)=>setDraft(current=>current?{...current,[key]:value}:current);
+  // 面板只认识 v1 平面字段，这里统一取视图：老预设（v1）原样、v2 预设映射成平面值。
+  const draftSpec=frameSpecView(draft?.spec);
 
   const generate=async()=>{
     if(!draft) return;
@@ -2713,7 +2715,7 @@ function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast}){
       <div className="panel persona-list">
         <div className="panel-head"><h2>装裱方案</h2><small>{framingPresets.length} 套</small></div>
         {framingPresets.map(preset=><button key={preset.id} className={preset.id===editingId?'active':''} onClick={()=>setEditingId(preset.id)}>
-          <span className="frame-dot" style={{background:preset.spec?.outer||'#cfa52e'}}/>
+          <span className="frame-dot" style={{background:frameSpecView(preset.spec).outer||'#cfa52e'}}/>
           <div><b>{preset.name}</b><small>{preset.spec?.atmosphere||preset.description||'未生成参数'}</small></div>
           <em>{preset.builtin?'内置':preset.enabled===false?'已停用':'启用中'}</em>
         </button>)}
@@ -2737,16 +2739,16 @@ function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast}){
             <Button icon={Sparkles} onClick={generate} disabled={generating||!draft.description}>{generating?'大模型正在设计…':'由大模型生成装裱参数'}</Button>
             <label className="framing-enable"><input type="checkbox" checked={draft.enabled!==false} onChange={event=>patch('enabled',event.target.checked)}/> 在老师端可选</label>
           </div>
-          {draft.spec?<div className="framing-spec">
+          {draftSpec?<div className="framing-spec">
             <div className="framing-preview"><img src={preview} alt={`${draft.name}装裱预览`}/><small>预览使用占位作品，实际渲染时替换为学员作品</small></div>
             <div className="framing-spec-fields">
-              <div className="spec-row"><span>外框</span><i style={{background:draft.spec.outer}}/><code>{draft.spec.outer}</code><em>宽 {Math.round((draft.spec.outerWidthRatio||0)*1000)/10}%</em></div>
-              <div className="spec-row"><span>卡纸</span><i style={{background:draft.spec.mat}}/><code>{draft.spec.mat}</code><em>宽 {Math.round((draft.spec.matWidthRatio||0)*1000)/10}%</em></div>
-              <div className="spec-row"><span>分隔线</span>{draft.spec.innerLine?<><i style={{background:draft.spec.innerLine}}/><code>{draft.spec.innerLine}</code></>:<em>无</em>}</div>
-              <div className="spec-row"><span>展签</span><i style={{background:draft.spec.plaqueBg}}/><code>{draft.spec.plaqueBg}</code><em>文字 {draft.spec.plaqueText}</em></div>
-              <div className="spec-row"><span>字体</span><code>{draft.spec.plaqueFontFamily}</code><em>字距 {draft.spec.plaqueLetterSpacing}</em></div>
-              {draft.spec.atmosphere?<p className="spec-note">氛围：{draft.spec.atmosphere}</p>:null}
-              {draft.spec.rationale?<p className="spec-note">理由：{draft.spec.rationale}</p>:null}
+              <div className="spec-row"><span>外框</span><i style={{background:draftSpec.outer}}/><code>{draftSpec.outer}</code><em>宽 {Math.round((draftSpec.outerWidthRatio||0)*1000)/10}%</em></div>
+              <div className="spec-row"><span>卡纸</span><i style={{background:draftSpec.mat}}/><code>{draftSpec.mat}</code><em>宽 {Math.round((draftSpec.matWidthRatio||0)*1000)/10}%</em></div>
+              <div className="spec-row"><span>分隔线</span>{draftSpec.innerLine?<><i style={{background:draftSpec.innerLine}}/><code>{draftSpec.innerLine}</code></>:<em>无</em>}</div>
+              <div className="spec-row"><span>展签</span><i style={{background:draftSpec.plaqueBg}}/><code>{draftSpec.plaqueBg}</code><em>文字 {draftSpec.plaqueText}</em></div>
+              <div className="spec-row"><span>字体</span><code>{draftSpec.plaqueFontFamily}</code><em>字距 {draftSpec.plaqueLetterSpacing}</em></div>
+              {draftSpec.atmosphere?<p className="spec-note">氛围：{draftSpec.atmosphere}</p>:null}
+              {draftSpec.rationale?<p className="spec-note">理由：{draftSpec.rationale}</p>:null}
             </div>
           </div>:<p className="persona-empty">还没有装裱参数。写好需求描述后点「由大模型生成装裱参数」。</p>}
         </>:<p className="persona-empty">选择左侧的一套装裱，或新增一套。</p>}

@@ -1,3 +1,5 @@
+import { frameSpecView } from './frameSpec';
+
 const FRAME_STYLES = {
   '星光展': { outer: '#cfa52e', inner: '#f3ede2', plaque: '#2b271f' },
   '自然原木': { outer: '#8d6439', inner: '#f3ede2', plaque: '#3e3022' },
@@ -437,7 +439,11 @@ export async function createPortraitPrint({ source, student = '陈一诺', date 
  * 与 createExhibitionFrame 的差别：这里没有硬编码样式表，颜色与框宽全部来自 spec。
  * 不变量保持不变 —— 作品只做等比缩放与居中，不裁切、不重绘、不调色。
  *
- * spec 字段：
+ * spec 可以是 **v1 平面结构**，也可以是 **v2 结构**（`services/frameSpec.js`）；
+ * 统一由 `frameSpecView()` 取 v1 平面视图后再绘制：v1 原样返回（老模板逐像素不变），
+ * v2 由 `frameSpecV2ToLegacy()` 映射。v2 独有的形状 / 光影 / 水印 / 落款 / 时间由后续故事接入这里。
+ *
+ * 平面字段（frameSpecView 的产物）：
  *   outer / mat / innerLine / plaqueBg / plaqueText  十六进制颜色（innerLine 可为 null）
  *   outerWidthRatio / matWidthRatio                  相对画布短边的比例
  *   plaqueFontFamily / plaqueLetterSpacing           展签字体与字距
@@ -449,16 +455,17 @@ export async function renderFramedArtwork({ source, spec = {}, student = '', tit
   const height = 1360;
   const shortEdge = Math.min(width, height);
 
-  const outerColor = spec.outer || '#cfa52e';
-  const matColor = spec.mat || '#f3ede2';
-  const plaqueBg = spec.plaqueBg || '#2b271f';
-  const plaqueText = spec.plaqueText || '#fbf8f2';
-  const plaqueFont = spec.plaqueFontFamily || 'serif';
-  const letterSpacing = Number.isFinite(spec.plaqueLetterSpacing) ? spec.plaqueLetterSpacing : 1;
+  const view = frameSpecView(spec);
+  const outerColor = view.outer || '#cfa52e';
+  const matColor = view.mat || '#f3ede2';
+  const plaqueBg = view.plaqueBg || '#2b271f';
+  const plaqueText = view.plaqueText || '#fbf8f2';
+  const plaqueFont = view.plaqueFontFamily || 'serif';
+  const letterSpacing = Number.isFinite(view.plaqueLetterSpacing) ? view.plaqueLetterSpacing : 1;
 
   const wall = Math.round(shortEdge * 0.025);
-  const outer = Math.max(4, Math.round(shortEdge * (spec.outerWidthRatio ?? 0.0412)));
-  const mat = Math.max(6, Math.round(shortEdge * (spec.matWidthRatio ?? 0.0647)));
+  const outer = Math.max(4, Math.round(shortEdge * (view.outerWidthRatio ?? 0.0412)));
+  const mat = Math.max(6, Math.round(shortEdge * (view.matWidthRatio ?? 0.0647)));
   const plaqueHeight = 96;
 
   const canvas = document.createElement('canvas');
@@ -478,8 +485,8 @@ export async function renderFramedArtwork({ source, spec = {}, student = '', tit
   };
 
   // 可选：卡纸内的细分隔线，只画线，不遮挡作品。
-  if (spec.innerLine) {
-    ctx.strokeStyle = spec.innerLine;
+  if (view.innerLine) {
+    ctx.strokeStyle = view.innerLine;
     ctx.lineWidth = 2;
     ctx.strokeRect(area.x - 6, area.y - 6, area.width + 12, area.height + 12);
   }
@@ -493,7 +500,7 @@ export async function renderFramedArtwork({ source, spec = {}, student = '', tit
   const renderedHeight = image.naturalHeight * ratio;
 
   // rotation 显式传入时优先（老师手动旋转）；否则用 spec 里的 artRotateDeg。
-  const deg = Number.isFinite(rotation) ? rotation : (Number(spec.artRotateDeg) === 90 ? 90 : 0);
+  const deg = Number.isFinite(rotation) ? rotation : (Number(view.artRotateDeg) === 90 ? 90 : 0);
 
   ctx.save();
   ctx.translate(area.x + area.width / 2, area.y + area.height / 2);
