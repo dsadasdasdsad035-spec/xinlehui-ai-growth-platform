@@ -262,3 +262,34 @@
 
 /* 缩略图未就绪时的占位（US-413）：淡淡的斜纹，明说「正在生成小图」，而不是一个破图或一堆原图。 */
 .intake-upload-items figure[data-thumb=pending] img{background:repeating-linear-gradient(45deg,#fdf7e6,#fdf7e6 6px,#f7ebc8 6px,#f7ebc8 12px);border-style:dashed;opacity:.8}
+
+/* ---- 作品编辑器（US-004a）---------------------------------------------------------
+   编辑态就地展开在第二步的作品卡片里：左旋/右旋 90°、任意角度微调 ±0.5°（范围 ±15°）、
+   撤销 / 重做（至少 20 步）。编辑期间预览的是低分辨率「旋转稿」（长边 ≤ EDIT_PREVIEW_MAX_EDGE），
+   点「完成编辑」后才重新裁剪与装裱；原图 originalUrl 全程只读。 */
+.artwork-editor{display:flex;flex-direction:column;gap:8px;margin-top:10px;padding:11px 12px;border:1px solid #e6d9b8;border-radius:12px;background:#fffcf4}
+.artwork-editor.is-open{border-color:#c99908;background:#fff8e2;box-shadow:0 0 0 2px #fff0bd}
+.artwork-editor-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.artwork-editor-head b{font-size:12px;color:#292720}
+.artwork-editor-head em{font-style:normal;font-size:10px;font-weight:800;color:#8a6a20;background:#fff2c8;border-radius:999px;padding:2px 9px}
+.artwork-editor-head small{flex:1 1 100%;font-size:10px;line-height:1.6;color:#857a64}
+.artwork-editor-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.artwork-editor-row>span{width:78px;font-size:10px;font-weight:700;color:#6f6242}
+.artwork-editor-row button{display:inline-flex;align-items:center;gap:4px;border:1px solid #e3d7b5;background:#fff;border-radius:8px;padding:7px 9px;font-size:10px;font-weight:700;color:#4c4536;cursor:pointer}
+.artwork-editor-row button:hover:not(:disabled){border-color:#c99908;color:#7a5b00}
+.artwork-editor-row button:disabled{opacity:.45;cursor:not-allowed}
+.artwork-editor-row small{flex:1 1 100%;font-size:10px;color:#857a64}
+.artwork-editor-fine{min-width:52px;text-align:center;font-size:11px;font-weight:800;color:#8a6a20}
+.artwork-editor-entry{display:inline-flex;align-items:center;gap:6px;align-self:flex-start;border:1px solid #d5bd71;background:#fff;border-radius:9px;padding:8px 11px;font-size:11px;font-weight:800;color:#6b4f07;cursor:pointer}
+.artwork-editor-entry:hover:not(:disabled){border-color:#c99908;background:#fff5d1}
+.artwork-editor-entry:disabled{opacity:.5;cursor:not-allowed}
+.artwork-editor-actions{display:flex;gap:8px;flex-wrap:wrap}
+.artwork-editor-actions button{border-radius:9px;padding:9px 12px;font-size:11px;font-weight:800;cursor:pointer}
+.artwork-editor-cancel{border:1px solid #e3d7b5;background:#fff;color:#6f6242}
+.artwork-editor-confirm{border:0;background:#2d2921;color:#fff9e8}
+.artwork-editor-confirm:disabled{opacity:.6;cursor:not-allowed}
+.artwork-editor-note{margin:0;font-size:10px;line-height:1.6;color:#857a64}
+.artwork-editor-note code{background:#fff2c8;border-radius:4px;padding:1px 4px;font-size:10px}
+/* 编辑中的角标与「已装裱」角标区分开：一眼能看出现在看的是旋转稿，不是成品图 */
+.framed-badge.editing-badge{background:#b98a0b}
+@media(max-width:800px){.artwork-editor-row>span{width:100%}.artwork-editor-actions button{flex:1 1 auto}}

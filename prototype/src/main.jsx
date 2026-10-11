@@ -38,7 +38,11 @@ import { loadStudentManagement } from './data/studentManagement';
 import StudentArchiveData from './StudentArchiveData';
 import GrowthArchiveData from './GrowthArchiveData';
 import { requestAiReview, uploadControlledMedia } from './services/reviewApi';
-import { ARTWORK_CLEAN_ALGORITHM, createExhibitionFrame, createPortraitPrint, extractArtworkSurface, measureFramingCoverage, renderFramedArtwork, rotateArtworkOriginal } from './services/framing';
+import { ARTWORK_CLEAN_ALGORITHM, createExhibitionFrame, createPortraitPrint, extractArtworkSurface, measureFramingCoverage, renderFramedArtwork } from './services/framing';
+// 作品编辑器（US-004a）：单幅作品的编辑状态 `artworkEdit` 与撤销栈的唯一真源在 data 层（零依赖、可 Node 断言），
+// 「原图 → 旋转稿」的画布渲染在 services/artworkEditor.js。原图 originalUrl 全程只读，编辑结果单独一份。
+import { EDIT_PREVIEW_MAX_EDGE, FINE_ROTATION_STEP, artworkEditHistoryState, artworkEditSnapshotKey, canNudgeArtworkEditRotation, createArtworkEdit, createArtworkEditHistory, currentArtworkEdit, fineRotationOf, formatRotationDeg, normalizeArtworkEdit, nudgeArtworkEditRotation, pushArtworkEditHistory, redoArtworkEditHistory, rotateArtworkEdit, rotationSummary, undoArtworkEditHistory } from './data/artworkEdit';
+import { renderArtworkRotation } from './services/artworkEditor';
 import { createEmptyTeacherProfile, loadTeacherProfiles, persistTeacherProfiles } from './data/teacherProfiles';
 import { deleteRemoteTeacherProfile, loadRemoteTeacherProfiles, saveRemoteTeacherProfile } from './services/teacherProfileApi';
 import { createEmptySkill, loadSkillLibrary, persistSkillLibrary, resolveSkills, skillFromIndexEntry, skillFromPackage } from './data/skillLibrary';
@@ -469,6 +473,15 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
   // 只有点击「使用本地草稿」时才为 true：五维点评正文默认必须来自大模型。
   const [localDraftUsed,setLocalDraftUsed]=useState(false);
   const [framingState,setFramingState]=useState('idle');
+  // ---- 作品编辑器（US-004a）-------------------------------------------------------
+  // `open` 是编辑态开关；`draft` 是「正在编辑但还没确认」的那一版 artworkEdit（确认前不进 media，
+  // 所以错误操作不会污染已装裱的成品）；`history` 是撤销栈（至少 20 步，快照式，裁剪/缩放接进来时天然一起撤销）。
+  const [artworkEditor,setArtworkEditor]=useState(()=>({open:false,draft:createArtworkEdit(),history:createArtworkEditHistory(createArtworkEdit())}));
+  // 编辑态的低分辨率预览地址（长边 ≤ EDIT_PREVIEW_MAX_EDGE）：编辑时预览的是「旋转稿」，
+  // 确认之后才让第二步的重活（自动裁剪 + 装裱）跑一次。
+  const [editorPreview,setEditorPreview]=useState('');
+  const [editorPreviewPending,setEditorPreviewPending]=useState(false);
+  const artworkEditKey=artworkEditSnapshotKey(media.artwork?.artworkEdit);
   const [reviewState,setReviewState]=useState('idle');
   // 本次点评使用哪个老师人设（人设 + 技能库 + 大模型记忆一起进 system 提示词）。
   const [activeProfileId,setActiveProfileId]=useState('');
@@ -663,6 +676,8 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
       setBatchUploads({artwork:[],photo:[]});
       setMedia({artwork:null,photo:null});
       setMediaIntakeNotice('');
+      // 上一幅作品的编辑状态与撤销栈跟着素材一起清掉（US-004a）：换班后是另一批孩子的新素材。
+      closeArtworkEditor();
       setToast('已切换班级：上一个班级的素材已清空（素材只在当次会话内有效），请在新班级重新选择原始素材。');
     }
     setSelectedClassId(next?.id||'');
@@ -909,19 +924,27 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
     title:activeFrame?.plaqueTitle||'',
     date:activeFrame?.plaqueDate||new Date().toISOString().slice(0,10).replace(/-/g,'.')
   });
-  // 第一段：裁掉纸外的桌面/地面，得到只有作品本身的画心。
+  // 第一段：按 artworkEdit 的旋转角先生成「旋转稿」，再从中裁掉纸外的桌面/地面，得到只有作品本身的画心。
+  // 旋转放在提取**之前**：老师把作品摆正之后，裁出来的才是一张正着的画心；原图始终单独保留、只读。
+  // 缓存判据带上 artworkEdit 的快照键（cleanEditKey）：旋转角变了就必须重算，角度没变则一次都不重跑。
   useEffect(()=>{
     if(step!==2||!media.artwork?.id||!media.artwork?.processingRequested) return;
-    if(media.artwork?.cleanUrl&&media.artwork?.cleanAlgorithm===ARTWORK_CLEAN_ALGORITHM) return;
+    if(media.artwork?.cleanUrl&&media.artwork?.cleanAlgorithm===ARTWORK_CLEAN_ALGORITHM&&media.artwork?.cleanEditKey===artworkEditKey) return;
     let cancelled=false;
     setFramingState('processing');
-    extractArtworkSurface({source:media.artwork.originalUrl,rotation:media.artwork.rotation||0}).then(cleanUrl=>{
+    const rotation=normalizeArtworkEdit(media.artwork.artworkEdit).rotateDeg;
+    (async()=>{
+      // 旋转角为 0 时 renderArtworkRotation 原样返回原图地址（不重新编码），所以老流程逐字节不变。
+      const orientedUrl=await renderArtworkRotation({source:media.artwork.originalUrl,rotation});
+      const cleanUrl=await extractArtworkSurface({source:orientedUrl,rotation:0});
+      return {orientedUrl,cleanUrl};
+    })().then(({orientedUrl,cleanUrl})=>{
       if(cancelled||!cleanUrl) return;
-      // 原图、旋转预览和画心永远分开保存，任何结果都不能覆盖原图地址。
-      setMedia(current=>({...current,artwork:{...current.artwork,cleanUrl,cleanAlgorithm:ARTWORK_CLEAN_ALGORITHM,framedUrl:null,framedStyle:''}}));
+      // 原图、旋转稿和画心永远分开保存，任何结果都不能覆盖原图地址。
+      setMedia(current=>({...current,artwork:{...current.artwork,orientedUrl,cleanUrl,cleanAlgorithm:ARTWORK_CLEAN_ALGORITHM,cleanEditKey:artworkEditKey,framedUrl:null,framedStyle:''}}));
     }).catch(()=>{if(!cancelled) setFramingState('error')});
     return()=>{cancelled=true};
-  },[step,media.artwork?.id,media.artwork?.processingRequested,media.artwork?.rotation,media.artwork?.cleanUrl,media.artwork?.cleanAlgorithm]);
+  },[step,media.artwork?.id,media.artwork?.processingRequested,artworkEditKey,media.artwork?.cleanUrl,media.artwork?.cleanAlgorithm,media.artwork?.cleanEditKey]);
   // 第二段：把画心按当前装裱方案（云端预设 / 大模型生成的参数）合成成完整的装裱图。
   // 结果存进 framedUrl，step 2 的预览与 step 3 的展陈都直接读它 —— 这就是「框实时渲染到作品上」。
   const activeFrameSpecKey=activeFrame?.id||'default';
@@ -949,6 +972,24 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
     }).catch(()=>{if(!cancelled) setFramingState('error')});
     return()=>{cancelled=true};
   },[step,media.artwork?.cleanUrl,media.artwork?.cleanAlgorithm,media.artwork?.framedStyle,media.artwork?.framedUrl,activeFrameSpecKey,selectedStudentLabel,currentTeacherName]);
+  // 编辑态的实时预览（US-004a）：只画「旋转稿」，低分辨率画布（长边 ≤ EDIT_PREVIEW_MAX_EDGE）才跟手；
+  // 编辑期间**不跑**上面那两段重活（裁剪 + 装裱），确认后再跑一次 —— 于是每按一下微调不会重扫一遍像素。
+  // 120ms 的合并窗口是为了连点：同一帧内的多次点击只画最后一张。
+  const editorDraftKey=artworkEditSnapshotKey(artworkEditor.draft);
+  useEffect(()=>{
+    if(!artworkEditor.open){setEditorPreview('');setEditorPreviewPending(false);return undefined;}
+    const source=media.artwork?.originalUrl;
+    if(!source){setEditorPreview('');setEditorPreviewPending(false);return undefined;}
+    let cancelled=false;
+    setEditorPreviewPending(true);
+    const timer=setTimeout(()=>{
+      renderArtworkRotation({source,rotation:normalizeArtworkEdit(artworkEditor.draft).rotateDeg,maxEdge:EDIT_PREVIEW_MAX_EDGE})
+        .then(url=>{if(!cancelled)setEditorPreview(url||source)})
+        .catch(()=>{if(!cancelled)setEditorPreview(source)})
+        .finally(()=>{if(!cancelled)setEditorPreviewPending(false)});
+    },120);
+    return()=>{cancelled=true;clearTimeout(timer)};
+  },[artworkEditor.open,editorDraftKey,media.artwork?.id,media.artwork?.originalUrl]);
   useEffect(()=>{
     if(step!==2||!media.photo?.url||media.photo?.portraitReady) return;
     let cancelled=false;
@@ -1061,10 +1102,13 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
     const url=URL.createObjectURL(file);
     // 上一个会话内地址立刻回收：object URL 只在当次会话有效，留着只是白占内存。
     revokeMediaUrl(previousUrl);
+    // 重新上传作品 = 换了一幅画：上一幅的编辑状态与撤销栈必须一起清掉，
+    // 否则新作品会带着旧作品的旋转角与「可撤销 N 步」的历史（撤销出来的还是上一幅的步骤）。
+    if(kind==='artwork') closeArtworkEditor();
     // Show the selected file immediately. The server upload only enriches this
     // local preview for AI processing; a temporary network error must not make
     // the user think the click did nothing.
-    setMedia(current=>({...current,[kind]:{id:`local-${Date.now()}`,name:file.name,url,originalUrl:url,orientedUrl:url,rotation:0,orientationConfirmed:false,processingRequested:false,type:file.type,size:file.size,storage:'local-preview',uploadStatus:'uploading',...binding}}));
+    setMedia(current=>({...current,[kind]:{id:`local-${Date.now()}`,name:file.name,url,originalUrl:url,orientedUrl:url,rotation:0,orientationConfirmed:false,processingRequested:false,artworkEdit:createArtworkEdit(),type:file.type,size:file.size,storage:'local-preview',uploadStatus:'uploading',...binding}}));
     setUploadState(current=>({...current,[kind]:'uploading'}));
     try{
       const uploaded=await uploadControlledMedia(kind,file);
@@ -1356,6 +1400,8 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
     setBatchUploads({artwork:[],photo:[]});
     setMediaIntakeNotice('');
     setMediaLostDismissed(false);
+    // 新草稿 = 新素材：作品的编辑状态与撤销栈也回到初始态（US-004a）。
+    closeArtworkEditor();
     // 录入节奏与折叠分组也回到初始态（US-413）：新草稿的用时从零开始。
     intakeStartedAtRef.current=Date.now();
     setIntakeElapsedSeconds(0);
@@ -1396,16 +1442,88 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
     setAiKeywords(current=>current.includes(keyword)?current.filter(item=>item!==keyword):current);
     setKeywordDirty(true);
   };
-  const rotatePersonalArtwork=async(direction=1)=>{
+  // ---- 作品编辑器（US-004a「编辑器旋转与撤销重做」）-------------------------------------
+  // 编辑态 = 一份**草稿**（artworkEditor.draft）+ 撤销栈；点「完成编辑」才写进 media.artwork.artworkEdit。
+  // 因此取消 / 未确认退出不会污染已装裱的成品，而旋转结果永远落在 artworkEdit 上，
+  // 原图 originalUrl 全程只读（不覆盖、不重编码）。
+  /** 退出编辑器并清空草稿与撤销栈：换班 / 新建草稿 / 重新上传 / 移除作品时调用（别把上一幅的历史带过去）。 */
+  const closeArtworkEditor=()=>{
+    setArtworkEditor({open:false,draft:createArtworkEdit(),history:createArtworkEditHistory(createArtworkEdit())});
+    setEditorPreview('');
+    setEditorPreviewPending(false);
+  };
+  const openArtworkEditor=()=>{
     const artwork=media.artwork;
-    if(!artwork?.originalUrl||framingState==='rotating'||framingState==='processing') return;
-    const rotation=((artwork.rotation||0)+(direction>0?90:270))%360;
-    setFramingState('rotating');
-    try{
-      const orientedUrl=await rotateArtworkOriginal({source:artwork.originalUrl,rotation});
-      setMedia(current=>({...current,artwork:{...current.artwork,rotation,orientedUrl,orientationConfirmed:true,processingRequested:true,framedStyle:'',cleanUrl:null,cleanAlgorithm:null,framedUrl:null}}));
-      setFramingState('processing');
-    }catch{setFramingState('error');setToast('作品旋转失败，请重新上传原图。')}
+    if(!artwork?.originalUrl){setToast('请先上传学员作品，再进入编辑。');return;}
+    const seed=normalizeArtworkEdit(artwork.artworkEdit);
+    setArtworkEditor({open:true,draft:seed,history:createArtworkEditHistory(seed,{label:'打开编辑器'})});
+  };
+  // 统一的「提交一步编辑」入口：更新草稿 + 压入撤销栈（label 就是这一步在撤销按钮上的说明）。
+  const applyArtworkEditStep=(next,label)=>setArtworkEditor(current=>{
+    if(!current.open) return current;
+    const edit=normalizeArtworkEdit(next);
+    return {...current,draft:edit,history:pushArtworkEditHistory(current.history,edit,label)};
+  });
+  const rotateArtworkEditor=(direction=1)=>applyArtworkEditStep(
+    rotateArtworkEdit(artworkEditor.draft,direction>0?1:-1),
+    direction>0?'向右旋转 90°':'向左旋转 90°'
+  );
+  const nudgeArtworkEditorRotation=(delta=FINE_ROTATION_STEP)=>applyArtworkEditStep(
+    nudgeArtworkEditRotation(artworkEditor.draft,delta),
+    `旋转微调 ${formatRotationDeg(delta)}`
+  );
+  const undoArtworkEdit=()=>setArtworkEditor(current=>{
+    const history=undoArtworkEditHistory(current.history);
+    if(history===current.history) return current;
+    return {...current,history,draft:currentArtworkEdit(history)};
+  });
+  const redoArtworkEdit=()=>setArtworkEditor(current=>{
+    const history=redoArtworkEditHistory(current.history);
+    if(history===current.history) return current;
+    return {...current,history,draft:currentArtworkEdit(history)};
+  });
+  // 图上的快捷旋转按钮：编辑器没开就先按当前 artworkEdit 打开（这一步也进撤销栈），
+  // 之后由「完成编辑」统一提交 —— 于是连点旋转不会每一下都重扫一遍像素去重新裁剪。
+  const quickRotateArtwork=(direction=1)=>{
+    if(!media.artwork?.originalUrl) return;
+    if(artworkEditor.open){rotateArtworkEditor(direction);return;}
+    const seed=normalizeArtworkEdit(media.artwork.artworkEdit);
+    const next=rotateArtworkEdit(seed,direction>0?1:-1);
+    setArtworkEditor({open:true,draft:next,history:pushArtworkEditHistory(createArtworkEditHistory(seed),next,direction>0?'向右旋转 90°':'向左旋转 90°')});
+  };
+  // 「完成编辑」：把草稿写进 artworkEdit，并作废下游的裁剪稿/成品图（angle 变了就必须重算）。
+  // 编辑与已确认的方向一致时不做无用功 —— 直接关掉编辑态，不动已装裱的成品。
+  const confirmArtworkEdit=()=>{
+    if(!artworkEditor.open) return;
+    const edit=normalizeArtworkEdit(artworkEditor.draft);
+    const draftKey=artworkEditSnapshotKey(edit);
+    setArtworkEditor(current=>({...current,open:false}));
+    if(draftKey===artworkEditKey&&media.artwork?.cleanUrl){
+      setToast(`编辑已保存：${rotationSummary(edit)}。方向没有变化，装裱结果保持不变。`);
+      return;
+    }
+    setMedia(current=>{
+      if(!current.artwork) return current;
+      return {...current,artwork:{...current.artwork,
+        artworkEdit:edit,
+        orientationConfirmed:true,
+        processingRequested:true,
+        // 旋转稿/裁剪稿/成品图都是「按某个角度算出来的」，角度一改就必须重新生成；
+        // 原图 originalUrl 不动，编辑结果只落在 artworkEdit 上（FR-5）。
+        orientedUrl:'',
+        cleanUrl:null,
+        cleanAlgorithm:null,
+        cleanEditKey:'',
+        framedUrl:null,
+        framedStyle:''}};
+    });
+    setFramingState('processing');
+    setToast(`编辑已保存：${rotationSummary(edit)}。正在按新的方向重新裁剪与装裱。`);
+  };
+  const cancelArtworkEdit=()=>{
+    const changed=artworkEditSnapshotKey(artworkEditor.draft)!==artworkEditKey;
+    setArtworkEditor(current=>({...current,open:false}));
+    if(changed) setToast('已放弃本次编辑，作品保持确认过的方向。');
   };
   const startArtworkCleanup=()=>{
     if(!media.artwork?.originalUrl||framingState==='processing') return;
@@ -1846,6 +1964,47 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
       {intakeReadiness.ok?null:<p className="intake-readiness-note">校验没通过也可以先点「保存课次」把这次课次存成草稿：保存草稿与进入下一步是两个独立动作，互不覆盖 —— 不会跳步，也不会清掉已填内容。</p>}
     </div>
   );
+  // ---- 作品编辑器面板（US-004a）-------------------------------------------------------
+  // 编辑态就地展开在作品卡片里：左旋/右旋 90°、微调 ±0.5°（范围 ±15°）、撤销/重做（至少 20 步）。
+  // 编辑期间预览的是低分辨率「旋转稿」（长边 ≤ EDIT_PREVIEW_MAX_EDGE），确认后才重新裁剪与装裱。
+  // 折叠态显示的是**已确认**的 artworkEdit（不是刚被丢弃的草稿）：放弃编辑后摘要必须回到确认过的角度。
+  const artworkEditorShown=artworkEditor.open?artworkEditor.draft:normalizeArtworkEdit(media.artwork?.artworkEdit);
+  const artworkEditorState=artworkEditHistoryState(artworkEditor.history);
+  const artworkEditorFine=fineRotationOf(artworkEditorShown.rotateDeg);
+  const artworkEditorField=(
+    <div className={`artwork-editor${artworkEditor.open?' is-open':''}`} data-editor-open={artworkEditor.open?'true':'false'} data-edit-rotation={artworkEditorShown.rotateDeg} data-edit-fine={artworkEditorFine}>
+      <div className="artwork-editor-head">
+        <b>作品编辑器</b>
+        <em data-edit-summary={rotationSummary(artworkEditorShown)}>{rotationSummary(artworkEditorShown)}</em>
+        <small>{artworkEditor.open?'编辑中：预览为低分辨率旋转稿，点「完成编辑」后再按新方向重新裁剪与装裱。':'旋转结果写入独立的 artworkEdit，原图 originalUrl 全程只读、不会被覆盖。'}</small>
+      </div>
+      {artworkEditor.open?<>
+        <div className="artwork-editor-row">
+          <span>旋转</span>
+          <button type="button" data-edit-action="rotate-left" title="向左旋转 90°" disabled={editorPreviewPending} onClick={()=>rotateArtworkEditor(-1)}><RotateCcw size={15}/>左旋 90°</button>
+          <button type="button" data-edit-action="rotate-right" title="向右旋转 90°" disabled={editorPreviewPending} onClick={()=>rotateArtworkEditor(1)}><RotateCw size={15}/>右旋 90°</button>
+        </div>
+        <div className="artwork-editor-row">
+          <span>任意角度微调</span>
+          <button type="button" data-edit-action="fine-left" title="逆时针微调 0.5°" disabled={!canNudgeArtworkEditRotation(artworkEditor.draft,-FINE_ROTATION_STEP)} onClick={()=>nudgeArtworkEditorRotation(-FINE_ROTATION_STEP)}>-0.5°</button>
+          <b className="artwork-editor-fine" data-edit-fine-value={formatRotationDeg(artworkEditorFine)}>{formatRotationDeg(artworkEditorFine)}</b>
+          <button type="button" data-edit-action="fine-right" title="顺时针微调 0.5°" disabled={!canNudgeArtworkEditRotation(artworkEditor.draft,FINE_ROTATION_STEP)} onClick={()=>nudgeArtworkEditorRotation(FINE_ROTATION_STEP)}>+0.5°</button>
+          <small>步进 0.5°，范围 ±15°</small>
+        </div>
+        <div className="artwork-editor-row">
+          <span>撤销 / 重做</span>
+          <button type="button" data-edit-action="undo" disabled={!artworkEditorState.canUndo} onClick={undoArtworkEdit}>撤销{artworkEditorState.undoSteps?`（${artworkEditorState.undoSteps}）`:''}</button>
+          <button type="button" data-edit-action="redo" disabled={!artworkEditorState.canRedo} onClick={redoArtworkEdit}>重做{artworkEditorState.redoSteps?`（${artworkEditorState.redoSteps}）`:''}</button>
+          <small data-edit-history={artworkEditorState.undoSteps}>最多可撤销 {artworkEditorState.limit} 步{artworkEditorState.undoLabel?` · 上一步：${artworkEditorState.undoLabel}`:''}</small>
+        </div>
+        <div className="artwork-editor-actions">
+          <button type="button" className="artwork-editor-cancel" data-edit-action="cancel" onClick={cancelArtworkEdit}>放弃本次编辑</button>
+          <button type="button" className="artwork-editor-confirm" data-edit-action="confirm" disabled={editorPreviewPending} onClick={confirmArtworkEdit}>{editorPreviewPending?'正在生成预览…':'完成编辑，重新裁剪与装裱'}</button>
+        </div>
+        <p className="artwork-editor-note">编辑只改这一幅作品的旋转参数（写入 <code>artworkEdit</code>），不写入装裱模板，也不会覆盖原图。</p>
+      </>:<button type="button" className="artwork-editor-entry" data-edit-action="open" disabled={!media.artwork?.originalUrl} onClick={openArtworkEditor}><WandSparkles size={15}/>编辑作品（旋转 / 微调 / 撤销重做）</button>}
+    </div>
+  );
   return <><PageHeader title="课后反馈" desc="每一个环节都可随时进入，当前进度会同步保留。" prd="课后反馈工作流"/>
     <section className="feedback-flow-v2">
       <FlowStepper steps={steps} step={step} flags={[intakeReadiness.ok,hasProcessedArtwork,reviewGenerated,archived]} onGo={go}/>
@@ -1854,7 +2013,7 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
       {step===3&&!reviewStream.open?<ReviewLaunchPanel profiles={teacherProfiles} skillLibrary={skillLibrary} activeProfileId={activeProfileId} setActiveProfileId={setActiveProfileId} onStart={startCloudReview} onLocalDraft={fillLocalDraft} draftReady={reviewGenerated} localDraftUsed={localDraftUsed} keywordCount={keywords.length} hasArtwork={Boolean(media.artwork?.cleanUrl||media.artwork?.originalUrl)}/>:null}
       {step===2&&mode==='班级反馈'?<ClassFramingWall artworks={batchUploads.artwork} photos={batchUploads.photo} photoGroups={photoGroups} onRotate={index=>rotateBatchItem('artwork',index)} onRotatePhotoEntry={uploadId=>rotateUploadEntry('photo',uploadId)}/>:null}
       {step===1?<section className="scene-panel"><div className="scene-heading"><span>第一步</span><h2>创建课后反馈信息</h2><p>先确定服务对象，再同步收集本节课素材。素材只在本次操作中保留。</p></div>{draftRestored?<div className="intake-draft-restored"><Clock3 size={14}/><div><b>已恢复上次的课次信息；素材需重新选择</b><small>{draftRestoreDetail}</small></div>{pendingTitles.length?<em>已保留 {pendingTitles.length} 个作品名，「学员作品上传位」里重新选择素材后自动填回</em>:null}<button type="button" className="text-link" onClick={()=>setDraftRestored(false)}>知道了</button></div>:null}<div className="feedback-mode"><button className={mode==='个人反馈'?'selected':''} onClick={()=>selectMode('个人反馈')}>个人反馈<small>为一位孩子完成反馈</small></button><button className={mode==='班级反馈'?'selected':''} onClick={()=>selectMode('班级反馈')}>班级反馈<small>批量处理全班素材</small></button></div>{availableClasses.length?<div className="intake-scope"><span>班级范围</span><div className="intake-scope-switch"><button type="button" className={showAllClasses?'':'active'} onClick={()=>selectClassScope(false)}>我带的班（{myClasses.length}）</button><button type="button" className={showAllClasses?'active':''} onClick={()=>selectClassScope(true)}>全部班级（{availableClasses.length}）</button></div><small>当前登录老师：{currentTeacherName}</small></div>:null}{visibleClasses.length?<div className="task-form"><label>选择班级<select value={selectedClassId} onChange={event=>selectClass(event.target.value)}>{visibleClasses.map(item=><option key={item.id} value={item.id}>{item.name}{item.teacher?`（${item.teacher}）`:''}</option>)}</select></label><label>选择学员<select value={mode==='班级反馈'?'__class__':selectedStudentName} disabled={mode==='班级反馈'} onChange={event=>{setSelectedStudentName(event.target.value);setArchived(false)}}>{mode==='班级反馈'?<option value="__class__">本班全部学员（{classStudents.length}人）</option>:<><option value="">请选择学员</option>{classStudents.map(item=><option key={item.name} value={item.name}>{item.name}</option>)}</>}</select></label>{courseOptions.length?<label>选择课程<select value={activeCourseId} onChange={event=>selectCourse(event.target.value)}>{courseOptions.map(item=><option key={item.courseId} value={item.courseId}>{item.name}{item.courseId===classCourseId?' · 本班课程':''}</option>)}</select></label>:<div className="intake-course-empty"><b>课程库暂时没有可选课程</b><p>{classCourseName?`本班课程「${classCourseName}」不在可选课程里，可能已被停用。`:'课程由机构管理员在「课程库」中维护。'}</p>{role==='admin'?<Button variant="secondary" onClick={()=>navigate('courseLibrary')}>去课程库添加课程</Button>:<small>请联系机构管理员在「课程库」中新增或启用课程。</small>}</div>}{lessonScheduleField}{participantField}{consentNoticeField}{mediaIntakeNotice?<p className="intake-media-notice"><ShieldAlert size={14}/><span>{mediaIntakeNotice}</span></p>:null}</div>:<div className="intake-empty"><Users size={26}/><b>{showAllClasses?'机构里还没有任何班级':'还没有属于你的班级'}</b><p>{showAllClasses?'请先在「学员管理」中新建班级，再回到这里创建课后反馈。':'可以切到「全部班级」确认是否存在其他老师名下的班级，或先去「学员管理」新建班级。'}</p><div className="intake-empty-actions">{showAllClasses?null:<button type="button" className="text-link" onClick={()=>selectClassScope(true)}>查看全部班级</button>}<Button onClick={()=>navigate('classes')}>去学员管理添加班级</Button></div></div>}{mode==='个人反馈'&&selectedClass&&!classStudents.length?<p className="intake-hint">该班级还没有学员，请先在「学员管理」里导入名单，再创建课后反馈。</p>:null}{artworkSlotField}{photoSlotField}{mode==='个人反馈'?<div className="sync-upload"><div className={media.artwork?.url?'has-file':''}><Frame/><b>学员作品 <em>必选</em></b><small>{uploadSummary('artwork')}</small><input ref={artworkInput} type="file" accept="image/jpeg,image/png,image/webp" hidden multiple={mode==='班级反馈'} onChange={e=>readFiles('artwork',e.target.files,e.currentTarget)}/><button onClick={()=>artworkInput.current?.click()}>{media.artwork?.url?'已上传 · 重新选择':'上传作品'}</button></div><div className={media.photo?.url?'has-file':''}><Image/><b>学员照片 <em>选填</em></b><small>{uploadSummary('photo')}</small><input ref={photoInput} type="file" accept="image/jpeg,image/png,image/webp" hidden multiple={mode==='班级反馈'} onChange={e=>readFiles('photo',e.target.files,e.currentTarget)}/><button onClick={()=>photoInput.current?.click()}>{media.photo?.url?'已上传 · 重新选择':'上传照片'}</button></div></div>:null}{lostSessionMedia&&!mediaLostDismissed?<div className="intake-media-lost"><ShieldAlert size={14}/><div><b>上次选择的素材已失效</b><small>作品与课堂照片只在当次会话里有效（只使用会话内 object URL，不写入 localStorage / IndexedDB）。页面刷新或重新进入后，请重新选择原始素材。</small></div><button type="button" className="text-link" onClick={()=>setMediaLostDismissed(true)}>知道了</button></div>:null}<div className="upload-privacy-note"><ShieldCheck size={14}/>{mediaRulesText(UPLOAD_SLOTS_PER_STUDENT)}</div>{intakeReadinessPanel}<div className="scene-actions"><Button variant="secondary" onClick={resetDraft}>新建草稿</Button><Button variant="secondary" icon={Save} disabled={!activeCourseId||lessonSaveState.status==='saving'} onClick={requestLessonSave}>{lessonSaveState.status==='saving'?'保存中…':'保存课次'}</Button><Button icon={ArrowRight} disabled={!intakeReadiness.ok} onClick={()=>go(2)}>进入智能装裱</Button></div></section>:null}
-      {step===2?<section className="scene-panel studio-task"><div className="scene-heading"><span>第二步</span><h2>智能装裱</h2><p>先旋转完整原图并确认方向；确认后自动裁掉纸外的桌面、地面与背景，只保留作品本身。装裱方案（画框、卡纸、展签、日期与署名）由管理员在「装裱设置」中统一维护，这里直接选用。</p></div><div className="media-process"><article><div className={`mini-frame uploaded-art${media.artwork?.framedUrl?' framed-preview':''}`}>{media.artwork?.url?<><img src={media.artwork.framedUrl||media.artwork.cleanUrl||media.artwork.orientedUrl||media.artwork.originalUrl} alt={media.artwork.framedUrl?`已按「${activeFrame?.name||'默认装裱'}」完成装裱的作品`:media.artwork.cleanUrl?'已裁掉纸外背景、只保留作品本身':'等待确认方向的完整原图'}/>{media.artwork?.framedUrl?<span className="framed-badge">{activeFrame?.name||'默认装裱'}</span>:null}<div className="frame-rotate-controls" aria-label="旋转作品"><button type="button" title="向左旋转 90°" aria-label="向左旋转作品" disabled={framingState==='rotating'||framingState==='processing'} onClick={()=>rotatePersonalArtwork(-1)}><RotateCcw size={18}/></button><button type="button" title="向右旋转 90°" aria-label="向右旋转作品" disabled={framingState==='rotating'||framingState==='processing'} onClick={()=>rotatePersonalArtwork(1)}><RotateCw size={18}/></button></div></>:'✺'}</div><div><b>学员作品</b><p>{framingState==='processing'?(media.artwork?.cleanUrl?'正在按当前装裱方案合成装裱图…':'正在裁掉纸外的桌面与地面，只保留作品本身…'):media.artwork?.framedUrl?`已装裱：${activeFrame?.name||'默认装裱'}。作品只做等比缩放与居中，不裁切主体、不重绘、不调色。`:media.artwork?.cleanUrl?'已完成作品裁剪，正在生成装裱图…':'当前仅显示完整原图；请先旋转到正确方向。'}</p>{!media.artwork?.cleanUrl?<button type="button" className="confirm-artwork-button" onClick={startArtworkCleanup} disabled={framingState==='rotating'||framingState==='processing'}>{framingState==='processing'?'正在裁剪作品…':'方向正确，开始裁剪与装裱'}</button>:null}<div className="tiny-choice">{enabledFrames.length?enabledFrames.map(item=><button key={item.id} className={activeFrameId===item.id?'active':''} disabled={framingState==='processing'} onClick={()=>setFrame(item.id)} title={item.spec?.atmosphere||item.description||item.name}>{item.name}</button>):<span className="frame-loading">正在读取装裱设置…</span>}</div></div></article><article><div className="photo-card">{media.photo?.url?<><img src={media.photo.url} alt="已自然优化的课堂照片" style={{transform:`rotate(${media.photo.rotation||0}deg)`}}/><button type="button" className="frame-rotate-button photo-rotate-button" onClick={rotatePersonalPhoto}><RefreshCw size={16}/>旋转照片</button></>:<img src={pandaMascot} alt="课堂照片占位预览"/>}</div><div><b>学员照片</b><p>{media.photo?.name||'未上传课堂照片，可返回上一步补充。'}</p></div></article></div><div className="scene-actions"><Button variant="secondary" onClick={()=>go(1)}>返回创建信息</Button><Button icon={ArrowRight} onClick={()=>go(3)}>进入五维点评</Button></div></section>:null}
+      {step===2?<section className="scene-panel studio-task"><div className="scene-heading"><span>第二步</span><h2>智能装裱</h2><p>先旋转完整原图并确认方向；确认后自动裁掉纸外的桌面、地面与背景，只保留作品本身。装裱方案（画框、卡纸、展签、日期与署名）由管理员在「装裱设置」中统一维护，这里直接选用。</p></div><div className="media-process"><article><div className={`mini-frame uploaded-art${media.artwork?.framedUrl&&!artworkEditor.open?' framed-preview':''}${artworkEditor.open?' is-editing':''}`}>{media.artwork?.url?<><img src={artworkEditor.open?(editorPreview||media.artwork.originalUrl):(media.artwork.framedUrl||media.artwork.cleanUrl||media.artwork.orientedUrl||media.artwork.originalUrl)} alt={artworkEditor.open?'编辑中的旋转稿预览（低分辨率画布）':media.artwork.framedUrl?`已按「${activeFrame?.name||'默认装裱'}」完成装裱的作品`:media.artwork.cleanUrl?'已裁掉纸外背景、只保留作品本身':'等待确认方向的完整原图'}/>{media.artwork?.framedUrl&&!artworkEditor.open?<span className="framed-badge">{activeFrame?.name||'默认装裱'}</span>:null}{artworkEditor.open?<span className="framed-badge editing-badge">编辑中</span>:null}<div className="frame-rotate-controls" aria-label="旋转作品"><button type="button" title="向左旋转 90°" aria-label="向左旋转作品" disabled={artworkEditor.open&&editorPreviewPending} onClick={()=>quickRotateArtwork(-1)}><RotateCcw size={18}/></button><button type="button" title="向右旋转 90°" aria-label="向右旋转作品" disabled={artworkEditor.open&&editorPreviewPending} onClick={()=>quickRotateArtwork(1)}><RotateCw size={18}/></button></div></>:'✺'}</div><div><b>学员作品</b><p>{artworkEditor.open?(editorPreviewPending?'正在生成低分辨率预览…':'编辑中：调整旋转后点「完成编辑」，再按新的方向重新裁剪与装裱。'):framingState==='processing'?(media.artwork?.cleanUrl?'正在按当前装裱方案合成装裱图…':'正在裁掉纸外的桌面与地面，只保留作品本身…'):media.artwork?.framedUrl?`已装裱：${activeFrame?.name||'默认装裱'}。作品只做等比缩放与居中，不裁切主体、不重绘、不调色。`:media.artwork?.cleanUrl?'已完成作品裁剪，正在生成装裱图…':'当前仅显示完整原图；可以先点「编辑作品」把方向摆正，再开始裁剪与装裱。'}</p>{mode==='个人反馈'?artworkEditorField:null}{!media.artwork?.cleanUrl?<button type="button" className="confirm-artwork-button" onClick={startArtworkCleanup} disabled={framingState==='rotating'||framingState==='processing'}>{framingState==='processing'?'正在裁剪作品…':'方向正确，开始裁剪与装裱'}</button>:null}<div className="tiny-choice">{enabledFrames.length?enabledFrames.map(item=><button key={item.id} className={activeFrameId===item.id?'active':''} disabled={framingState==='processing'} onClick={()=>setFrame(item.id)} title={item.spec?.atmosphere||item.description||item.name}>{item.name}</button>):<span className="frame-loading">正在读取装裱设置…</span>}</div></div></article><article><div className="photo-card">{media.photo?.url?<><img src={media.photo.url} alt="已自然优化的课堂照片" style={{transform:`rotate(${media.photo.rotation||0}deg)`}}/><button type="button" className="frame-rotate-button photo-rotate-button" onClick={rotatePersonalPhoto}><RefreshCw size={16}/>旋转照片</button></>:<img src={pandaMascot} alt="课堂照片占位预览"/>}</div><div><b>学员照片</b><p>{media.photo?.name||'未上传课堂照片，可返回上一步补充。'}</p></div></article></div><div className="scene-actions"><Button variant="secondary" onClick={()=>go(1)}>返回创建信息</Button><Button icon={ArrowRight} onClick={()=>go(3)}>进入五维点评</Button></div></section>:null}
       {step===3?<section className="scene-panel review-task-v2"><div className="review-media"><div className="scene-heading"><span>{mode==='班级反馈'?'本班课后素材':'本次课素材'}</span><h2>{mode==='班级反馈'?'周六创意绘画 2 班 · 班级课后反馈':`${selectedStudentLabel}${activeFrame?.plaqueTitle?` · 《${activeFrame.plaqueTitle}》`:''}`}</h2></div><div className={`review-gallery ${mode==='班级反馈'?'class-review-gallery':''}`}>{mode==='班级反馈'?<><ClassMediaMosaic items={classMosaicArtworks} kind="artwork" date={lessonDateDots} onRotate={index=>rotateBatchItem('artwork',index)}/><ClassMediaMosaic items={classMosaicPhotos} kind="photo" groups={photoGroups} date={lessonDateDots} onRotateEntry={uploadId=>rotateUploadEntry('photo',uploadId)}/></>:<><div className={`review-art exhibition-art${media.artwork?.framedUrl?' framed-art':''}`}>{media.artwork?.framedUrl?<div className="framed-art-final"><img src={media.artwork.framedUrl} alt={`${selectedStudentLabel}的作品 · ${activeFrame?.name||'装裱'}`}/>{activeFrame?.name?<span className="framed-badge">{activeFrame.name}</span>:null}</div>:<><div className="artwork-mat">{media.artwork?.url?<img src={media.artwork.cleanUrl||media.artwork.originalUrl||media.artwork.url} alt={`${selectedStudentLabel}的作品`}/>:'✺'}</div><div className="artwork-plaque"><div><b>{selectedStudentLabel}</b><span>{activeFrame?.plaqueTitle?`《${activeFrame.plaqueTitle}》`:''}</span></div><time>创作于 {(activeFrame?.plaqueDate||new Date().toISOString().slice(0,10).replace(/-/g,'.'))}</time></div></>}</div><div className="review-photo portrait-print"><div className="portrait-mat">{media.photo?.url?<img src={media.photo.url} alt="陈一诺课堂照片"/>:<img src={pandaMascot} alt="课堂照片占位"/>}</div><div className="portrait-caption">{selectedStudentLabel} · {(activeFrame?.plaqueDate||new Date().toISOString().slice(0,10).replace(/-/g,'.'))}</div></div></>}</div></div><ReviewKeywordDock visible selected={keywords} onToggle={toggleKeyword} suggested={aiKeywords} suggesting={keywordSuggesting} dirty={keywordDirty} generated={reviewGenerated}/><div className={`coach-review ${mode==='班级反馈'?'class-coach-review':''}`}><div className="scene-heading"><span>第三步</span><h2>{mode==='班级反馈'?'班级课程反馈':'五维点评'}</h2></div><select value={subject} onChange={e=>setSubject(e.target.value)}><option>通用美术</option><option>创意绘画（3-6岁）</option><option>儿童画（6-9岁）</option><option>素描（9-18岁）</option><option>速写（9-18岁）</option><option>水彩 / 水粉（7-18岁）</option><option>国画（6-18岁）</option></select><p className="evidence">{mode==='班级反馈'?'以下内容基于本节课课程设计、班级素材与老师观察生成，老师可编辑确认后发布给家长。':`下列内容由大模型生成：先读懂作品与课堂素材，再结合「${activeProfileLabel}」的人设、已启用技能与长期记忆，按五个维度分别输出评语。老师可逐条修改后再发布。`}</p>{mode==='班级反馈'?<ClassReviewContent subject={subject}/>:<><div className={`review-source ${reviewGenerated?(localDraftUsed?'local':'ai'):'pending'}`}>{reviewGenerated?(localDraftUsed?<><CircleAlert size={14}/><span>当前正文来自<strong>本地草稿模板</strong>（未调用大模型），发布前请老师逐条核对。</span></>:<><Sparkles size={14}/><span>当前正文由大模型「{activeProfileLabel}」依据人设、技能与长期记忆生成，可直接编辑。</span></>):<><Sparkles size={14}/><span>五个维度等待大模型生成：点击上方「开始生成点评」，评语会逐字写入这里。</span></>}{keywordDirty&&reviewGenerated?<em>观察词已调整，建议重新生成</em>:null}</div>{Object.entries(reviews).map(([name,copy])=><article className={`coach-card${copy?'':' is-empty'}`} key={name}><b>{name}{copy?null:<em className="review-pending">待生成</em>}</b><textarea aria-label={name} value={copy} placeholder={REVIEW_DIMENSION_HINTS[name]||''} onChange={event=>setReviews(current=>({...current,[name]:event.target.value}))}/></article>)}</>}<div className="scene-actions"><Button variant="secondary" onClick={()=>go(2)}>返回智能装裱</Button><Button icon={Archive} onClick={archiveRecord}>归档并生成分享</Button></div></div></section>:null}
       {step===4?<section className="share-task scene-panel"><img src={pandaObserve} alt="熊猫成长伙伴"/><div><span>已归档至{selectedStudentLabel}的成长档案</span><h2>这一次的成长，<br/>已经被完整记录。</h2><p>作品、课堂照片与五维点评已经同步保存到本地草稿。</p><div className="share-actions"><Button icon={Archive} onClick={()=>setToast('成长集锦任务已创建，等待服务端接入')}>制作成长集锦</Button><Button variant="secondary" icon={Frame} onClick={()=>setToast('个人作品集任务已创建，等待服务端接入')}>制作作品集</Button></div><div className="scene-actions"><Button variant="secondary" onClick={()=>go(3)}>返回五维点评</Button><Button icon={FileText} onClick={()=>navigate('archives')}>进入成长档案</Button></div></div></section>:null}
     </section></>;

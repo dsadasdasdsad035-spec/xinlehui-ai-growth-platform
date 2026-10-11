@@ -583,6 +583,34 @@ DSH 的 `browser_*` 工具**没有 selectOption 能力**：`browser_type` 走的
   （落款 / 时间走它，水印仍走 `patchWatermark`），老模板的 v1 平面字段一个不动；签名图上传复用
   `readFramingAsset`（PNG/JPG、≤512×512、≤200KB，与 Logo 同一套准入）。数值 / 文本框显示 **draft 原值**。
 
+### 单幅作品的编辑状态 artworkEdit 与撤销栈（US-004a）
+
+- 单幅作品的编辑结果是**独立对象** `artworkEdit`（`rotateDeg / crop / zoom / offsetX / offsetY`，FR-5），
+  与「可复用的装裱模板 `spec`」分开存：老师摆正 / 裁了一幅画，参数不会写进机构模板（FR-39）。
+  纯规则（角度算法 + 撤销栈 + 文案）在 **`src/data/artworkEdit.js`（零依赖，可 Node 断言）**，
+  画布渲染在 `src/services/artworkEditor.js`。
+- **旋转角口径**：`rotateDeg` 归一化到 `[0,360)`，由「90° 粗旋转 + 任意角度微调」组成。
+  `fineRotationOf(deg)` = 相对**最近** 90° 整角的偏移（∈[-45,45]），微调夹在 ±15°、按 0.5° 量化；
+  换 90° 时微调量跟着一起走 —— 否则「右旋 90° + 微调 3°」会被吞成 273°，界面上看不出为什么。
+- **编辑态 = 草稿 + 撤销栈**：编辑期间只改 `artworkEditor.draft`（React state），点「完成编辑」才写进
+  `media.artwork.artworkEdit`。于是「放弃 / 未确认退出」天然不会污染已装裱的成品（US-026 的 AC 直接成立），
+  而折叠态摘要必须显示**已确认**的那一版（不是刚被丢弃的草稿）。
+- **撤销栈是快照式的**：`createArtworkEditHistory / pushArtworkEditHistory / undoArtworkEditHistory /
+  redoArtworkEditHistory`（上限 `ARTWORK_EDIT_HISTORY_LIMIT` = 40 步，验收要求 ≥20）。存整份 artworkEdit
+  而不是每步的反操作 —— US-004b/c 的裁剪 / 缩放接进来时天然一起被撤销。两条纪律：
+  ① 「没有实际变化的编辑不占一步」（否则撤销按下去画面不动）；② 到边界时返回**同一个对象**，界面据此置灰。
+- **重活只在确认后跑一次**：编辑期间第二步的两段重活（`extractArtworkSurface` → `renderFramedArtwork`）
+  **不跑**，只画低分辨率「旋转稿」（长边 ≤ `EDIT_PREVIEW_MAX_EDGE` = 900，120ms 合并连点）；
+  否则每按一下 ±0.5° 就要重扫一遍像素。
+- **四层地址**：`originalUrl`（原图，只读）→ `orientedUrl`（旋转稿）→ `cleanUrl`（裁剪稿）→
+  `framedUrl`（成品图）。`renderArtworkRotation` 在 0° 时**原样返回原图地址**（不重新编码），
+  90° 整数倍走高清精确路径（与旧 `rotateArtworkOriginal` 逐字节一致），任意角度则按旋转后的外接框放大画布、
+  四角补白（作品一个像素都不裁）。裁剪稿的缓存判据带上 `cleanEditKey`（artworkEdit 快照键）：角度变了必重算。
+- 旧数据兼容：`normalizeArtworkEdit` 仍读 `rotation` / `rotate` 两个老写法（以前的 90° 倍数角度存在
+  `media.artwork.rotation` 上）；新代码不再写那个字段。
+- 已知边界：任意角度旋转会在成品图上留下**补白的白角**（自动裁剪能识别出纸面时会被裁掉；识别失败回退
+  「不裁剪」时白角可见）。这是 PRD 开放问题 Q6 里说的「边缘补白」问题，留待 US-004b 的裁剪框处理。
+
 ## 装裱模板的三层归属：scope / ownerKey（US-001b）
 
 模板分三层「平台（platform）/ 机构（org）/ 老师个人（teacher）」，**三层共用云端 `framing_presets`
@@ -776,3 +804,24 @@ service 模块也能在 Node 里测：`cloud.database` 是**可写属性**，导
 - **放码位置有两个易错点**：① 校正图案（alignment）必须画在**定时图案之前**（v7 起校正图案的中心会落在
   第 6 行 / 第 6 列，顺序反了整块会被定时图案「占位」掉，症状是 v1–v6 正常、v7+ 全灭）；
   ② 掩码公式的 i/j 是 **行 / 列**（`i%2` 是行方向、`j%3` 是列方向），写反了矩阵照样「像二维码」。
+
+### 验证「编辑器旋转 / 撤销重做」（US-004a 起）
+
+- **只读地看 React state**（不想为验证往产品代码里塞全局变量）：从 `document.querySelector('.feedback-flow-v2')`
+  的 `__reactFiber$*` 往上找到 `TeacherFlowV2`，遍历 `memoizedState` 钩子链表按**形状**认领
+  （如 `{artwork, photo}` = `media`）。**必须排除同形状的兄弟 state**：`batchUploads`（`{artwork:[],photo:[]}`）
+  与 `uploadState`（`{artwork:'uploading'}`）都会被粗判据命中，症状是「读到的 originalUrl 哈希其实是页面 HTML 的」。
+  判据写成「`artwork` 是 `null` 或普通对象」最稳。
+- **旋转的几何断言**：上传一张**左半幅纯蓝、右半幅纯绿**的测试图（`/tmp/us023-fixtures.mjs` 用 zlib 现画 PNG），
+  把当前预览 `<img>` 解码回 canvas 后在象限中心采样：顺时针 90° 后蓝色应在**上半幅**，逆时针在**下半幅**，
+  0° 时回到左半幅。比「dataURL 变了没」可靠得多，还能顺带断言画布尺寸（900×600 ⇄ 600×900）。
+- **「原图只读」的可判定做法**：编辑前后各 `fetch(originalUrl)` 取字节算一个累加 / FNV 哈希并比对，
+  同时在页面里断言地址字符串本身没变（blob: 地址会话内仍可 fetch）。
+- **连续点击几十次**（微调到 ±15° 边界、撤销 25 步）：脚本按 ~45ms 间隔派发鼠标事件即可（React 的函数式
+  setState 不会丢），但**每次点击前重新取 rect 并跳过 disabled 的那一次** —— 到边界后按钮会置灰，
+  「点了没反应」是设计而不是 bug（断言「第 31 次点击时按钮已 disabled」）。
+- `Input.insertText` 填不进 `<input type=date>` 是已知的；**原生 `<select>` 可以**用「原型 value setter +
+  真实 `input`/`change` 事件」来选（Playwright `selectOption` 的同款做法，见本文件上面的用例），
+  个人反馈必须先选学员才能进第二步（否则「至少一位出席学员」这关过不去）。
+- 历史栈被**上限截断**后，「一直撤销」回到的是**最老的保留那一版**（不是初始态）：断言要按 limit 设计，
+  想验证「撤销回初始」就重开编辑器拿一个干净的历史栈（本故事的 88 项断言就是这么排的）。
