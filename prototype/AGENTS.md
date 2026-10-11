@@ -1319,6 +1319,42 @@ DOM/canvas 部分在 `src/services/artworkWriteBack.js`，编排在 `main.jsx` �
   归档后镜像里有轨迹且带 recordId」、重新生成的 parentTraceId 链、中止 / 失败两种收束）；
   截图 157 / 158 留档。
 
+## 第三步「五维点评」的本次点评详情面板（US-103a / F-REVIEW-TRACE-02）
+
+第三步的「本次点评详情」面板**默认折叠**：平时只占一行摘要，点摘要行才展开推理过程与正文进度。
+摘要文本、实时状态与正文进度的唯一真源是 `src/data/reviewDetailPanel.js`（**零依赖**，可 Node 直跑），
+界面（`main.jsx` 的 `ReviewDetailPanel`）不自己拼字符串。
+
+- 折叠态摘要 = `reviewDetailSummary({ loaded, model, phase, elapsedMs, reasoningChars, content, message })`：
+  `已加载 agent.md v3 · 5 项技能 · 1 个记忆文件 · 观察词模板 v1 · 模型 glm-5.3-flash · 已用时 12.3 秒 ·
+  思考 480 字 · 正文 2/5 维 · 312 字`。生成中写「已用时」，收束后写「共 N 秒」；失败再接
+  「生成失败：<可读文案>」，老师停止接「已停止生成」。
+- **「加载了什么」必须来自提示词拼装处的那一份数据**：`startCloudReview` 里先 `buildPersonaPrompt(...)`
+  拿 `modules`，再 `reviewDetailLoaded({ modules, skills, memory, keywordTerms, keywordGroups })` 落进
+  `reviewLoaded` state —— 与真正发出去的 system 是同一个函数的产物，不要在面板里另推一套。
+  `items` 每项带 `included` 与没加载的原因（US-103b 的加载清单直接渲染它）；`modules` 项不进摘要（14 项太长）。
+- **正文进度按维度解析流式半成品 JSON**（`reviewContentProgress`）：维度键已出现但字符串未闭合也算
+  「已落笔」，字数是已收到的部分；`ratio` 让「5/5 维」与「进度条满格」同时成立（写完的维度各占一格、
+  正在写的那一维按字数补）。维度名与顺序的唯一真源是 `REVIEW_DIMENSION_NAMES`：
+  `llmReview.js` 的 `DIMENSION_SPEC`（提示词与解析）与 `main.jsx` 的 `reviewDefaults`（五个编辑区）
+  都从它派生 —— 改维度名只改这一处。
+- **面板状态与流内容分开**：`reviewStream = { phase, reasoning, content, message, startedAt, elapsedMs }`
+  只管内容与阶段，折叠与否是 `reviewDetailOpen`（默认 `false`）。**折叠只影响渲染**，
+  所以「折叠后再展开不丢内容、也不重新请求模型」是结构上的结论；`data-detail-requests`
+  （`reviewRequests`，每次 `startCloudReview` +1）是这条的读数探针，别删。
+- **秒表按 `startedAt` 推算**（每 1 秒 tick 一次 `elapsedMs`），不要累加：折叠/展开、切步骤回来都不会
+  算丢或算重；收束（成功 / 失败 / 停止）时把 `elapsedMs` 冻在 `Date.now() - startedAt`，此后不再涨。
+- **推理过程不做打字机缓冲**：`<pre data-detail-reasoning>` 直接渲染 `stream.reasoning`，模型来一段就长一段
+  （缓冲会吞掉 / 滞后内容，也难断言）；`data-detail-reasoning-chars` 是当前字数，等于文本长度。
+- 面板只挂在**第三步**（`step===3 && phase!=='idle'`），跟随 `reviewStream.phase` 出现，生成前完全不渲染。
+  「停止生成」把 phase 写成 `'stopped'`（**不是**回到 `idle`）：已停止要能显示出来，停止前的增量也要留着。
+  `ReviewLaunchPanel` 在生成中把「开始生成点评」置灰、人设选择器禁用，避免误触重启（重启入口是面板上的
+  「重新生成」）。
+- 验证方式（本轮实测）：Node 直跑 `data/reviewDetailPanel.js` **24 项** + 提示词回归 **172 项**
+  （13 组输入与 HEAD 逐字符一致 + 每个维度名都出现在提示词里）+ US-102 的 114 / 70 / 58 项回归；
+  浏览器 **52 项**（headless Chrome + CDP + 替身慢速流：默认折叠 → 生成中实时读数 → 展开逐字追加 →
+  折叠再展开不丢内容且替身调用数不变 → 成功 / 失败 / 停止三态 → 归档回归 → 390px），截图 159~164 留档。
+
 ## 容易踩的坑
 
 - **写接口抛错时「await 之后就没了」**：`save<X>/create<X>/update<X>` 是「先写本地镜像再推云端」，

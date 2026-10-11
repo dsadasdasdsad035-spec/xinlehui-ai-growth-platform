@@ -123,8 +123,20 @@ import { renderBatchFramedArtwork } from './services/batchFraming';
 // 规则在 data 层（可 Node 断言），解码与读文件在 services 层。
 import { framingAssetRulesText, framingAssetSummary, MAX_FRAMING_ASSET_BYTES } from './data/framingAssets';
 import { readFramingAsset, inspectFramingAssetUrl } from './services/framingAssets';
-import { REVIEW_MODEL, describeReviewError, readableFromRawJson, streamArtworkReview } from './services/llmReview';
+import { REVIEW_MODEL, buildPersonaPrompt, describeReviewError, readableFromRawJson, streamArtworkReview } from './services/llmReview';
 import { keywordCandidatesPrompt, keywordCategoriesFor, keywordOptionsFor, orderKeywords, pickSupportedKeywords } from './data/reviewKeywords';
+// 本次点评详情面板（US-103a）：折叠态那一行摘要、生成中的实时状态与正文进度都读这一份，
+// 界面不自己拼字符串（口径要与验证脚本、与 US-103b 的展开分区完全一致）。
+import {
+  REVIEW_DETAIL_PHASES,
+  REVIEW_DIMENSION_NAMES,
+  reviewContentProgress,
+  reviewDetailLoaded,
+  reviewDetailPhaseLabel,
+  reviewDetailReasoningPlaceholder,
+  reviewDetailSummary,
+  reviewDetailToggleLabel
+} from './data/reviewDetailPanel';
 // 三个基础展示原语抽到 ui.jsx，3D 画廊页与主文件共用同一份
 import { Button, PageHeader, Status } from './ui';
 import { hydrateGalleryExhibitions, hydrateGalleryVenues, loadGalleryExhibitions, loadGalleryVenues, persistGalleryExhibitions, persistGalleryVenues } from './data/galleryVenues';
@@ -683,13 +695,8 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
   };
   // 五维点评的正文默认留空：内容只能来自大模型（人设 + 专业技能 + 记忆）。
   // 留空状态下的提示语只说明这一维要看什么，不预填任何「像点评的句子」。
-  const reviewDefaults={
-    美术能力:'',
-    上课状态:'',
-    行为能力:'',
-    内在状态:'',
-    家长建议:''
-  };
+  // 键名与顺序来自 data/reviewDetailPanel.js 的 REVIEW_DIMENSION_NAMES —— 与提示词、正文进度同一份。
+  const reviewDefaults=Object.fromEntries(REVIEW_DIMENSION_NAMES.map(name=>[name,'']));
   const [reviews,setReviews]=useState(reviewDefaults);
   const [keywords,setKeywords]=useState([]);
   // 大模型识别出的观察词（用于在面板上打「AI」标记）；keywords 是最终生效的集合。
@@ -758,7 +765,16 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
   const [reviewState,setReviewState]=useState('idle');
   // 本次点评使用哪个老师人设（人设 + 技能库 + 大模型记忆一起进 system 提示词）。
   const [activeProfileId,setActiveProfileId]=useState('');
-  const [reviewStream,setReviewStream]=useState({open:false,phase:'idle',reasoning:'',content:'',message:'',elapsed:0});
+  const [reviewStream,setReviewStream]=useState({phase:'idle',reasoning:'',content:'',message:'',startedAt:0,elapsedMs:0});
+  // 本次点评详情面板（US-103a）：默认**折叠**（open=false），点摘要行才展开。
+  // 折叠只影响渲染 —— 推理增量一直存在 reviewStream 里，所以折叠后再展开内容一字不丢、也不会重新请求模型。
+  const [reviewDetailOpen,setReviewDetailOpen]=useState(false);
+  // 本次生成「加载了什么」（人设 / 技能 / 记忆 / 观察词模板 / 提示词模块）：在开始生成时按提示词的
+  // 同一份输入算一次，折叠态摘要与展开后的加载清单都读它（不重新推导，避免面板与提示词对不上）。
+  const [reviewLoaded,setReviewLoaded]=useState(null);
+  // 本次会话里真正发起过几次模型请求（只读探针，与 data-detail-requests 一起给验证脚本用：
+  // 折叠 / 展开不能让它变化 —— 那正是「不重新请求模型」的判据）。
+  const [reviewRequests,setReviewRequests]=useState(0);
   const reviewAbort=useRef(null);
   // 本次点评的推理轨迹（[第三步 US-102]）。**生成期只驻留内存**：老师没归档就刷新页面，
   // 轨迹随之消失（与「草稿只存元数据」同一条隐私口径）；归档那一刻才由 `commitReviewTrace`
@@ -772,7 +788,9 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
   // 老师上一次手动选的那一套不再适用，清掉 frame 让它回落到新课程的绑定 / 默认模板。
   useEffect(()=>{setFrame('');setFramePickedManually(false)},[activeCourseId,selectedClassId]);
   useEffect(()=>{if(!activeProfileId&&teacherProfiles[0])setActiveProfileId(teacherProfiles[0].id)},[activeProfileId,teacherProfiles]);
-  useEffect(()=>{if(reviewStream.phase!=='running')return undefined;const timer=setInterval(()=>setReviewStream(current=>current.phase==='running'?{...current,elapsed:current.elapsed+1}:current),1000);return()=>clearInterval(timer)},[reviewStream.phase]);
+  // 生成中的秒表（折叠态摘要的「已用时」）：只按 startedAt 推算，不做累加 ——
+  // 折叠 / 展开、切步骤回来都不会把已用时算丢或算重。
+  useEffect(()=>{if(reviewStream.phase!=='running')return undefined;const timer=setInterval(()=>setReviewStream(current=>current.phase==='running'?{...current,elapsedMs:Math.max(0,Date.now()-current.startedAt)}:current),1000);return()=>clearInterval(timer)},[reviewStream.phase]);
   const [reviewGenerated,setReviewGenerated]=useState(false);
   const [artworkEvidence,setArtworkEvidence]=useState(null);
   const resolvedArtworkEvidence=artworkEvidence;
@@ -2328,7 +2346,9 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
   const stopCloudReview=()=>{
     reviewAbort.current?.abort();
     reviewAbort.current=null;
-    setReviewStream(current=>({...current,phase:'idle',message:'已停止生成'}));
+    // 停止后保留已经收到的推理增量与正文（US-103a：折叠态写「已停止」，展开还能看到失败/停止前的增量），
+    // 秒表就地冻住（再点展开不会让「共 N 秒」继续涨）。
+    setReviewStream(current=>({...current,phase:REVIEW_DETAIL_PHASES.stopped,message:'已停止生成',elapsedMs:current.startedAt?Math.max(0,Date.now()-current.startedAt):current.elapsedMs}));
   };
   // 云端流式点评：人设 + 技能库 + 大模型记忆一起进 system 提示词，作品图作为 image_url 传入。
   // 五个维度的正文与「作品观察词」都由这一个调用产出：先让模型读懂画面，再按维度写评语。
@@ -2343,7 +2363,21 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
     const activeProfile=teacherProfiles.find(item=>item.id===activeProfileId)||teacherProfiles[0]||null;
     setReviewState('processing');
     setKeywordSuggesting(true);
-    setReviewStream({open:true,phase:'running',reasoning:'',content:'',message:'',elapsed:0});
+    // 提示词的输入只在这里算一次：模型调用与「加载了什么」的展示读同一份，
+    // 面板上的 agent.md / 技能 / 记忆 / 观察词模板不会与真正发出去的那一份对不上。
+    const keywordCandidates=keywordCandidatesPrompt(mode);
+    const keywordScope=mode==='班级反馈'?'课程观察关键词':'作品观察词';
+    const promptPreview=buildPersonaPrompt(activeProfile,{subject,skillLibrary,keywordCandidates,keywordScope});
+    setReviewLoaded(reviewDetailLoaded({
+      modules:promptPreview.modules,
+      skills:resolveSkills(activeProfile?.skillKeys,skillLibrary,activeProfile?.skills),
+      memory:activeProfile?.memory||'',
+      keywordGroups:Object.keys(keywordCategoriesFor(mode)).length,
+      keywordTerms:keywordOptionsFor(mode).length
+    }));
+    setReviewRequests(count=>count+1);
+    // 面板默认折叠（open 只在老师点摘要行时切换）；新一次生成从零开始累积增量。
+    setReviewStream({phase:REVIEW_DETAIL_PHASES.running,reasoning:'',content:'',message:'',startedAt:Date.now(),elapsedMs:0});
     // 轨迹种子：谁（学员 id）/ 哪节课 / 上一代轨迹（重新生成时用 parentTraceId 关联）/
     // 附件引用（文件 id 与文件名，图片正文由 llmReview 侧只取 hash）。
     const traceSeed={
@@ -2369,8 +2403,8 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
         teacherObservation:'',
         artworkDataUrl,
         photoDataUrl,
-        keywordCandidates:keywordCandidatesPrompt(mode),
-        keywordScope:mode==='班级反馈'?'课程观察关键词':'作品观察词',
+        keywordCandidates,
+        keywordScope,
         signal:controller.signal,
         trace:traceSeed,
         onTrace:(next)=>{
@@ -2387,7 +2421,8 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
       setLocalDraftUsed(false);
       setKeywordDirty(false);
       setReviewState('ready');
-      setReviewStream(current=>({...current,phase:'done',reasoning:result.reasoning||current.reasoning,content:'',message:''}));
+      // 生成结束：保留推理增量与正文原文（面板的正文进度、输出原文都读它们），秒表就地冻住。
+      setReviewStream(current=>({...current,phase:REVIEW_DETAIL_PHASES.done,reasoning:result.reasoning||current.reasoning,message:'',elapsedMs:current.startedAt?Math.max(0,Date.now()-current.startedAt):current.elapsedMs}));
       // 模型识别出的观察词：与老师已手动勾选的取并集，再按目录顺序排好。
       const picked=pickSupportedKeywords(result.keywords,mode);
       setAiKeywords(picked);
@@ -2401,7 +2436,8 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
     }catch(error){
       if(controller.signal.aborted) return;
       setReviewState('ready');
-      setReviewStream(current=>({...current,phase:'error',message:describeReviewError(error)}));
+      // 失败同样保留失败前收到的推理增量（面板展开后能看到增量 + 错误详情），秒表冻住。
+      setReviewStream(current=>({...current,phase:REVIEW_DETAIL_PHASES.error,message:describeReviewError(error),elapsedMs:current.startedAt?Math.max(0,Date.now()-current.startedAt):current.elapsedMs}));
       setToast(describeReviewError(error));
     }finally{
       setKeywordSuggesting(false);
@@ -4049,8 +4085,8 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
     <section className="feedback-flow-v2">
       <FlowStepper steps={steps} step={step} flags={[intakeReadiness.ok,hasProcessedArtwork,reviewGenerated,archived]} onGo={go}/>
       <div className="scene-status"><span>当前进行：{steps[step-1][0]}</span><button onClick={()=>go(Math.max(1,step-1))} disabled={step===1}>反馈上一步</button></div>
-      {reviewStream.open?<ReviewStreamPanel stream={reviewStream} profiles={teacherProfiles} activeProfileId={activeProfileId} setActiveProfileId={setActiveProfileId} onStart={startCloudReview} onStop={stopCloudReview} onLocalDraft={fillLocalDraft} onClose={()=>setReviewStream(current=>({...current,open:false}))}/>:null}
-      {step===3&&!reviewStream.open?<ReviewLaunchPanel profiles={teacherProfiles} skillLibrary={skillLibrary} activeProfileId={activeProfileId} setActiveProfileId={setActiveProfileId} onStart={startCloudReview} onLocalDraft={fillLocalDraft} draftReady={reviewGenerated} localDraftUsed={localDraftUsed} keywordCount={keywords.length} hasArtwork={Boolean(media.artwork?.cleanUrl||media.artwork?.originalUrl)}/>:null}
+      {step===3?<ReviewLaunchPanel profiles={teacherProfiles} skillLibrary={skillLibrary} activeProfileId={activeProfileId} setActiveProfileId={setActiveProfileId} onStart={startCloudReview} onLocalDraft={fillLocalDraft} draftReady={reviewGenerated} localDraftUsed={localDraftUsed} keywordCount={keywords.length} hasArtwork={Boolean(media.artwork?.cleanUrl||media.artwork?.originalUrl)} running={reviewStream.phase===REVIEW_DETAIL_PHASES.running}/>:null}
+      {step===3&&reviewStream.phase!==REVIEW_DETAIL_PHASES.idle?<ReviewDetailPanel stream={reviewStream} loaded={reviewLoaded} model={REVIEW_MODEL} requests={reviewRequests} open={reviewDetailOpen} onToggle={()=>setReviewDetailOpen(value=>!value)} onStart={startCloudReview} onStop={stopCloudReview}/>:null}
       {step===2&&mode==='班级反馈'?<ClassFramingWall artworks={batchUploads.artwork} photos={batchUploads.photo} photoGroups={photoGroups} writeBackKeyOf={classArtworkWriteBackKeyOf} onRotate={index=>rotateBatchItem('artwork',index)} onRotatePhotoEntry={uploadId=>rotateUploadEntry('photo',uploadId)}/>:null}
       {step===1?<section className="scene-panel"><div className="scene-heading"><span>第一步</span><h2>创建课后反馈信息</h2><p>先确定服务对象，再同步收集本节课素材。素材只在本次操作中保留。</p></div>{draftRestored?<div className="intake-draft-restored"><Clock3 size={14}/><div><b>已恢复上次的课次信息；素材需重新选择</b><small>{draftRestoreDetail}</small></div>{pendingTitles.length?<em>已保留 {pendingTitles.length} 个作品名，「学员作品上传位」里重新选择素材后自动填回</em>:null}<button type="button" className="text-link" onClick={()=>setDraftRestored(false)}>知道了</button></div>:null}<div className="feedback-mode"><button className={mode==='个人反馈'?'selected':''} onClick={()=>selectMode('个人反馈')}>个人反馈<small>为一位孩子完成反馈</small></button><button className={mode==='班级反馈'?'selected':''} onClick={()=>selectMode('班级反馈')}>班级反馈<small>批量处理全班素材</small></button></div>{availableClasses.length?<div className="intake-scope"><span>班级范围</span><div className="intake-scope-switch"><button type="button" className={showAllClasses?'':'active'} onClick={()=>selectClassScope(false)}>我带的班（{myClasses.length}）</button><button type="button" className={showAllClasses?'active':''} onClick={()=>selectClassScope(true)}>全部班级（{availableClasses.length}）</button></div><small>当前登录老师：{currentTeacherName}</small></div>:null}{visibleClasses.length?<div className="task-form"><label>选择班级<select value={selectedClassId} onChange={event=>selectClass(event.target.value)}>{visibleClasses.map(item=><option key={item.id} value={item.id}>{item.name}{item.teacher?`（${item.teacher}）`:''}</option>)}</select></label><label>选择学员<select value={mode==='班级反馈'?'__class__':selectedStudentName} disabled={mode==='班级反馈'} onChange={event=>{setSelectedStudentName(event.target.value);setArchived(false);setCurrentRecordId('');clearReviewTrace();setWriteBackAttempt({status:'idle',quality:'',message:''})}}>{mode==='班级反馈'?<option value="__class__">本班全部学员（{classStudents.length}人）</option>:<><option value="">请选择学员</option>{classStudents.map(item=><option key={item.name} value={item.name}>{item.name}</option>)}</>}</select></label>{courseOptions.length?<label>选择课程<select value={activeCourseId} onChange={event=>selectCourse(event.target.value)}>{courseOptions.map(item=><option key={item.courseId} value={item.courseId}>{item.name}{item.courseId===classCourseId?' · 本班课程':''}</option>)}</select></label>:<div className="intake-course-empty"><b>课程库暂时没有可选课程</b><p>{classCourseName?`本班课程「${classCourseName}」不在可选课程里，可能已被停用。`:'课程由机构管理员在「课程库」中维护。'}</p>{role==='admin'?<Button variant="secondary" onClick={()=>navigate('courseLibrary')}>去课程库添加课程</Button>:<small>请联系机构管理员在「课程库」中新增或启用课程。</small>}</div>}{lessonScheduleField}{participantField}{consentNoticeField}{mediaIntakeNotice?<p className="intake-media-notice"><ShieldAlert size={14}/><span>{mediaIntakeNotice}</span></p>:null}</div>:<div className="intake-empty"><Users size={26}/><b>{showAllClasses?'机构里还没有任何班级':'还没有属于你的班级'}</b><p>{showAllClasses?'请先在「学员管理」中新建班级，再回到这里创建课后反馈。':'可以切到「全部班级」确认是否存在其他老师名下的班级，或先去「学员管理」新建班级。'}</p><div className="intake-empty-actions">{showAllClasses?null:<button type="button" className="text-link" onClick={()=>selectClassScope(true)}>查看全部班级</button>}<Button onClick={()=>navigate('classes')}>去学员管理添加班级</Button></div></div>}{mode==='个人反馈'&&selectedClass&&!classStudents.length?<p className="intake-hint">该班级还没有学员，请先在「学员管理」里导入名单，再创建课后反馈。</p>:null}{artworkSlotField}{photoSlotField}{mode==='个人反馈'?<div className="sync-upload"><div className={media.artwork?.url?'has-file':''}><Frame/><b>学员作品 <em>必选</em></b><small>{uploadSummary('artwork')}</small><input ref={artworkInput} type="file" accept="image/jpeg,image/png,image/webp" hidden multiple={mode==='班级反馈'} onChange={e=>readFiles('artwork',e.target.files,e.currentTarget)}/><button onClick={()=>artworkInput.current?.click()}>{media.artwork?.url?'已上传 · 重新选择':'上传作品'}</button></div><div className={media.photo?.url?'has-file':''}><Image/><b>学员照片 <em>选填</em></b><small>{uploadSummary('photo')}</small><input ref={photoInput} type="file" accept="image/jpeg,image/png,image/webp" hidden multiple={mode==='班级反馈'} onChange={e=>readFiles('photo',e.target.files,e.currentTarget)}/><button onClick={()=>photoInput.current?.click()}>{media.photo?.url?'已上传 · 重新选择':'上传照片'}</button></div></div>:null}{lostSessionMedia&&!mediaLostDismissed?<div className="intake-media-lost"><ShieldAlert size={14}/><div><b>上次选择的素材已失效</b><small>作品与课堂照片只在当次会话里有效（只使用会话内 object URL，不写入 localStorage / IndexedDB）。页面刷新或重新进入后，请重新选择原始素材。</small></div><button type="button" className="text-link" onClick={()=>setMediaLostDismissed(true)}>知道了</button></div>:null}<div className="upload-privacy-note"><ShieldCheck size={14}/>{mediaRulesText(UPLOAD_SLOTS_PER_STUDENT)}</div>{intakeReadinessPanel}<div className="scene-actions"><Button variant="secondary" onClick={resetDraft}>新建草稿</Button><Button variant="secondary" icon={Save} disabled={!activeCourseId||lessonSaveState.status==='saving'} onClick={requestLessonSave}>{lessonSaveState.status==='saving'?'保存中…':'保存课次'}</Button><Button icon={ArrowRight} disabled={!intakeReadiness.ok} onClick={()=>go(2)}>进入智能装裱</Button></div></section>:null}
       {step===2?<section className="scene-panel studio-task"><div className="scene-heading"><span>第二步</span><h2>智能装裱</h2><p>先旋转完整原图并确认方向；确认后自动裁掉纸外的桌面、地面与背景，只保留作品本身。装裱方案（画框、卡纸、展签、日期与署名）由管理员在「装裱设置」中统一维护，这里直接选用。</p></div><div className="media-process"><article><div className={`mini-frame uploaded-art${media.artwork?.framedUrl&&!artworkEditor.open?' framed-preview':''}${artworkEditor.open?' is-editing':''}`}>{media.artwork?.url?<><img src={artworkEditor.open?(editorPreview||media.artwork.originalUrl):(media.artwork.framedUrl||media.artwork.cleanUrl||media.artwork.orientedUrl||media.artwork.originalUrl)} alt={artworkEditor.open?'编辑中的旋转稿预览（低分辨率画布）':media.artwork.framedUrl?`已按「${activeFrame?.name||'默认装裱'}」完成装裱的作品`:media.artwork.cleanUrl?'已裁掉纸外背景、只保留作品本身':'等待确认方向的完整原图'}/>{media.artwork?.framedUrl&&!artworkEditor.open?<span className="framed-badge">{activeFrame?.name||'默认装裱'}</span>:null}{artworkEditor.open?<span className="framed-badge editing-badge">编辑中</span>:null}<div className="frame-rotate-controls" aria-label="旋转作品"><button type="button" title="向左旋转 90°" aria-label="向左旋转作品" disabled={artworkEditor.open&&editorPreviewPending} onClick={()=>quickRotateArtwork(-1)}><RotateCcw size={18}/></button><button type="button" title="向右旋转 90°" aria-label="向右旋转作品" disabled={artworkEditor.open&&editorPreviewPending} onClick={()=>quickRotateArtwork(1)}><RotateCw size={18}/></button></div></>:'✺'}</div><div><b>学员作品</b><p>{artworkEditor.open?(editorPreviewPending?'正在生成低分辨率预览…':'编辑中：调整旋转后点「完成编辑」，再按新的方向重新裁剪与装裱。'):framingState==='processing'?(media.artwork?.cleanUrl?'正在按当前装裱方案合成装裱图…':'正在裁掉纸外的桌面与地面，只保留作品本身…'):media.artwork?.framedUrl?`已装裱：${activeFrame?.name||'默认装裱'}。作品只做等比缩放与居中，不裁切主体、不重绘、不调色。`:media.artwork?.cleanUrl?'已完成作品裁剪，正在生成装裱图…':'当前仅显示完整原图；可以先点「编辑作品」把方向摆正，再开始裁剪与装裱。'}</p>{mode==='个人反馈'?artworkEditorField:null}{!media.artwork?.cleanUrl?<button type="button" className="confirm-artwork-button" onClick={startArtworkCleanup} disabled={framingState==='rotating'||framingState==='processing'}>{framingState==='processing'?'正在裁剪作品…':'方向正确，开始裁剪与装裱'}</button>:null}<span className="frame-choice-hint">相框样式在下方「相框样式」面板里挑（缩略图用这幅作品实时渲染）→</span></div></article><article><div className="photo-card">{media.photo?.url?<><img src={media.photo.url} alt="已自然优化的课堂照片" style={{transform:`rotate(${media.photo.rotation||0}deg)`}}/><button type="button" className="frame-rotate-button photo-rotate-button" onClick={rotatePersonalPhoto}><RefreshCw size={16}/>旋转照片</button></>:<img src={pandaMascot} alt="课堂照片占位预览"/>}</div><div><b>学员照片</b><p>{media.photo?.name||'未上传课堂照片，可返回上一步补充。'}</p></div></article></div>{batchFramingPanel}{studioDrawerTrigger('frame')}{frameStylePanel}{overlayPanelTrigger}{overlayDrawerOpen?<div className="lesson-overlay-scrim" data-overlay-scrim="true" onClick={()=>setOverlayDrawerOpen(false)}/>:null}{overlayPanel}{studioDrawerTrigger('save')}{saveImagePanel}{studioDrawer?<div className="studio-drawer-scrim" data-studio-drawer-scrim={studioDrawer} onClick={()=>setStudioDrawer('')}/>:null}{framingPerfPanel}{saveImageSheet}<div className="scene-actions"><Button variant="secondary" onClick={()=>go(1)}>返回创建信息</Button><Button icon={ArrowRight} onClick={()=>go(3)}>进入五维点评</Button></div></section>:null}
@@ -4513,7 +4549,7 @@ function FlowStepper({steps=[],step=1,flags=[],onGo}){
   </nav>;
 }
 
-function ReviewLaunchPanel({profiles=[],skillLibrary=[],activeProfileId,setActiveProfileId,onStart,onLocalDraft,hasArtwork,draftReady,localDraftUsed,keywordCount}){
+function ReviewLaunchPanel({profiles=[],skillLibrary=[],activeProfileId,setActiveProfileId,onStart,onLocalDraft,hasArtwork,draftReady,localDraftUsed,keywordCount,running=false}){
   const active=profiles.find(profile=>profile.id===activeProfileId)||profiles[0]||null;
   const skills=resolveSkills(active?.skillKeys,skillLibrary,active?.skills);
   return <section className="review-launch">
@@ -4522,14 +4558,14 @@ function ReviewLaunchPanel({profiles=[],skillLibrary=[],activeProfileId,setActiv
       <h3>让大模型带着老师的人设，先读懂这幅画。</h3>
       <p>一次生成会同时完成两件事：识别画面内容并自动勾选作品观察词，再按五个维度写下评语。人设、{skills.length} 项技能与长期记忆一起加载，单次约 20 秒，可随时停止。</p>
     </div>
-    <PersonaPicker profiles={profiles} activeProfileId={activeProfileId} setActiveProfileId={setActiveProfileId}/>
+    <PersonaPicker profiles={profiles} activeProfileId={activeProfileId} setActiveProfileId={setActiveProfileId} disabled={running}/>
     {active?<div className="persona-loaded">
       <div><b>已加载人设</b><span>{[active.name,active.roleLabel,active.campus].filter(Boolean).join(' · ')}</span></div>
       <div><b>长期记忆</b><span>{active.memory?`${active.memory.slice(0,46)}${active.memory.length>46?'…':''}`:'未填写'}</span></div>
       <div className="persona-skill-tags">{skills.length?skills.map(skill=><em key={skill.name}>{skill.name}</em>):<span>未启用技能</span>}</div>
     </div>:null}
     <div className="review-launch-actions">
-      <Button icon={WandSparkles} onClick={onStart} disabled={!hasArtwork}>{hasArtwork?(draftReady?'重新生成点评':'开始生成点评'):'请先上传作品'}</Button>
+      <Button icon={WandSparkles} onClick={onStart} disabled={!hasArtwork||running}>{hasArtwork?(running?'正在生成…':draftReady?'重新生成点评':'开始生成点评'):'请先上传作品'}</Button>
       {onLocalDraft?<button type="button" className="local-draft-link" onClick={onLocalDraft}>
         {localDraftUsed?'已使用本地草稿 · 重新填充模板':'云端不可用？使用本地草稿模板'}
       </button>:null}
@@ -4538,34 +4574,53 @@ function ReviewLaunchPanel({profiles=[],skillLibrary=[],activeProfileId,setActiv
   </section>;
 }
 
-function ReviewStreamPanel({stream,profiles=[],activeProfileId,setActiveProfileId,onStart,onStop,onClose,onLocalDraft}){
-  const [showThinking,setShowThinking]=useState(true);
-  const active=profiles.find(profile=>profile.id===activeProfileId)||profiles[0]||null;
-  const running=stream.phase==='running';
-  const live=readableFromRawJson(stream.content);
-  return <section className="review-stream">
-    <div className="review-stream-head">
-      <div>
-        <span>{running?'正在生成点评':'点评生成结果'}</span>
-        <h3>{active?.name||'默认人设'} 正在观察这次创作</h3>
-        <p>{running?`已用时 ${stream.elapsed} 秒 · 思考 ${stream.reasoning.length} 字 · 正文 ${stream.content.length} 字`:`共 ${stream.elapsed} 秒${stream.phase==='error'?' · 生成失败':''}`}</p>
-      </div>
-      <div className="review-stream-actions">
-        {running?<button onClick={onStop}>停止生成</button>:<button onClick={onStart}>重新生成</button>}
-        <button onClick={onClose}>收起</button>
+/**
+ * 本次点评详情面板（[第三步 US-103a] / F-REVIEW-TRACE-02）。
+ *
+ * 三条硬约定：
+ *  1. **默认折叠**：初始只占一行摘要（加载了什么 · 用了哪个模型 · 花了多久 / 生成中给实时读数），
+ *     点摘要行才展开 —— 老师平时不看这些细节，需要时一次点击就能看到全部。
+ *  2. **折叠不丢内容、不重新请求**：推理增量一直住在 `reviewStream` 里，折叠只是不渲染；
+ *     展开不触发任何模型调用（`data-detail-requests` 就是这条判据的读数）。
+ *  3. **展开后逐字流式追加**：`<pre data-detail-reasoning>` 直接渲染 `stream.reasoning`，
+ *     模型每来一段增量就长一段（生成中末尾带一个光标），不做打字机缓冲（缓冲会吞掉/滞后内容）。
+ */
+function ReviewDetailPanel({stream,loaded,model,requests,open,onToggle,onStart,onStop}){
+  const running=stream.phase===REVIEW_DETAIL_PHASES.running;
+  const summary=reviewDetailSummary({loaded,model,phase:stream.phase,elapsedMs:stream.elapsedMs,reasoningChars:stream.reasoning.length,content:stream.content,message:stream.message});
+  const progress=reviewContentProgress(stream.content);
+  const liveText=readableFromRawJson(stream.content);
+  return <section className="review-detail" data-review-detail="true" data-detail-open={open?'true':'false'} data-detail-phase={stream.phase} data-detail-requests={requests}>
+    <div className="review-detail-head">
+      <button type="button" className="review-detail-toggle" aria-expanded={open} data-detail-toggle="true" onClick={onToggle}>
+        <ChevronDown size={16}/>
+        <b data-detail-phase-label="true">{reviewDetailPhaseLabel(stream.phase)}</b>
+        <span data-detail-summary="true">{summary}</span>
+        <em>{reviewDetailToggleLabel(open)}</em>
+      </button>
+      <div className="review-detail-actions">
+        {running?<button type="button" data-detail-action="stop" onClick={onStop}>停止生成</button>
+          :<button type="button" data-detail-action="start" onClick={onStart}>重新生成</button>}
       </div>
     </div>
-    {stream.phase==='error'?<div className="review-stream-error"><CircleAlert/><span>{stream.message}</span>{onLocalDraft?<button type="button" className="local-draft-link" onClick={onLocalDraft}>改用本地草稿模板</button>:null}</div>:null}
-    {stream.reasoning?<div className={`review-thinking ${showThinking?'open':''}`}>
-      <button onClick={()=>setShowThinking(!showThinking)}>{showThinking?'收起':'展开'} AI 思考过程<ChevronDown size={16}/></button>
-      {showThinking?<pre>{stream.reasoning}</pre>:null}
+    {open?<div className="review-detail-body" data-detail-body="true">
+      {stream.phase===REVIEW_DETAIL_PHASES.error?<div className="review-detail-error" data-detail-error="true"><CircleAlert size={15}/><span>{stream.message||'生成失败'}</span></div>:null}
+      <div className="review-detail-reasoning">
+        <div className="review-detail-block-head">
+          <b>推理过程</b>
+          <small>已收到 {stream.reasoning.length} 字{running?' · 逐字追加中':' · 生成已结束'}</small>
+        </div>
+        <pre data-detail-reasoning="true" data-detail-reasoning-chars={stream.reasoning.length}>{stream.reasoning||reviewDetailReasoningPlaceholder(stream.phase)}</pre>
+      </div>
+      <div className="review-detail-live" data-detail-live="true" data-detail-done={progress.done} data-detail-total={progress.total} data-detail-chars={progress.chars} data-detail-ratio={progress.ratio.toFixed(3)}>
+        <div className="review-detail-block-head">
+          <b>正文进度</b>
+          <small>{progress.done}/{progress.total} 维 · {progress.chars} 字</small>
+        </div>
+        <div className="review-detail-bar"><i style={{width:`${Math.round(progress.ratio*100)}%`}}/></div>
+        <p>{liveText||(running?'模型正在写作，正文会在这里逐字出现…':'本次没有可展示的正文增量。')}</p>
+      </div>
     </div>:null}
-    {running?<div className="review-typing">
-      <div className="review-typing-bar"><i style={{width:`${Math.min(96,stream.content.length/6)}%`}}/></div>
-      <p>{live||stream.reasoning.slice(-160)||'正在读取作品与素材…'}</p>
-    </div>:null}
-    {!running&&stream.phase==='done'?<div className="review-stream-done"><Check/><span>点评草稿已写入下方五个维度，老师可直接编辑后再发布。</span></div>:null}
-    <div className="review-stream-persona"><PersonaPicker profiles={profiles} activeProfileId={activeProfileId} setActiveProfileId={setActiveProfileId} disabled={running}/></div>
   </section>;
 }
 

@@ -1,5 +1,7 @@
 import { cloud } from '../cloud';
 import { resolveSkills } from '../data/skillLibrary';
+// 维度名与顺序的唯一真源（详情面板的正文进度、写作要求与输出格式共用这一份）。
+import { REVIEW_DIMENSION_NAMES } from '../data/reviewDetailPanel';
 // 提示词模块化（US-101）：system 提示词由有名字、有版本、有来源的模块拼成，
 // 「加载了哪些提示词」的展示与轨迹留档都读模块清单（模块名/顺序的唯一真源在 data 层）。
 import { composePromptModules, PROMPT_MODULE_IDS, PROMPT_MODULE_ORDER_FALLBACK } from '../data/promptModules';
@@ -36,13 +38,17 @@ export const REVIEW_REASONING_EFFORT = 'low';
 
 const FALLBACK_SYSTEM = '你是一位儿童美术教育的成长观察者。只依据画面中真实可见的证据作答，证据不足时明确写出局限。';
 
-const DIMENSION_SPEC = [
-  ['美术能力', '80-150 字：只写画面里能指认的色彩、构图、造型或材料使用，先给一个具体优势，再给一个下一节课可以试的方向。'],
-  ['上课状态', '60-120 字：只写可观察到的投入、停顿后是否回到画面、是否主动补充细节。没有素材支撑就写明局限。'],
-  ['行为能力', '60-120 字：描述任务理解、表达、协作或整理等可观察行为，不给孩子贴标签。'],
-  ['内在状态', '60-120 字：仅记录本次课堂中可观察到的表达与变化，明确声明不作心理诊断。'],
-  ['家长建议', '80-150 字：给出 1-3 条与本次观察有关、家长今晚就能尝试的具体行动，最好包含一句可以直接照着说的问话。']
-];
+// 维度名与顺序的唯一真源在 `data/reviewDetailPanel.js` 的 REVIEW_DIMENSION_NAMES
+// （详情面板的正文进度按同一份键名统计，两处各写一套一定会漂移）；这里只补每维的写作说明。
+const DIMENSION_INSTRUCTIONS = {
+  美术能力: '80-150 字：只写画面里能指认的色彩、构图、造型或材料使用，先给一个具体优势，再给一个下一节课可以试的方向。',
+  上课状态: '60-120 字：只写可观察到的投入、停顿后是否回到画面、是否主动补充细节。没有素材支撑就写明局限。',
+  行为能力: '60-120 字：描述任务理解、表达、协作或整理等可观察行为，不给孩子贴标签。',
+  内在状态: '60-120 字：仅记录本次课堂中可观察到的表达与变化，明确声明不作心理诊断。',
+  家长建议: '80-150 字：给出 1-3 条与本次观察有关、家长今晚就能尝试的具体行动，最好包含一句可以直接照着说的问话。'
+};
+
+const DIMENSION_SPEC = REVIEW_DIMENSION_NAMES.map((name) => [name, DIMENSION_INSTRUCTIONS[name]]);
 
 /** 写作要求里的五维说明：兜底分支与老师人设分支共用同一份文本。 */
 const dimensionLines = () => DIMENSION_SPEC.map(([key, value]) => `- ${key}：${value}`).join('\n');
@@ -153,7 +159,7 @@ export function parseReviewJson(raw) {  const text = String(raw || '').trim();
  * 流式过程中把半成品 JSON 转成可读中文，用于「逐字显示」。
  * 只保留长度足够的字符串值，并剔除字段名本身，所以读起来就是正在写下的点评。
  */
-const JSON_KEY_WORDS = /^(美术能力|上课状态|行为能力|内在状态|家长建议|evidence|keywords|reviews|summary)$/;
+const JSON_KEY_WORDS = new RegExp(`^(${REVIEW_DIMENSION_NAMES.join('|')}|evidence|keywords|reviews|summary)$`);
 export function readableFromRawJson(raw) {
   const matches = String(raw || '').match(/"(?:[^"\\]|\\.)*"/g) || [];
   const pieces = [];
