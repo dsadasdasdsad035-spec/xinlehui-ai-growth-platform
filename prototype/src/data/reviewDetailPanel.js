@@ -15,6 +15,9 @@
 // 本模块仍然不碰 DOM、不发请求，可以直接用 Node 跑断言（见 prototype/AGENTS.md）。
 import { artworkExportDateText, artworkExportSizeText, sanitizeArtworkExportSegment } from './artworkExport';
 import { reviewTraceMediaViolations, reviewTraceSecondsText } from './reviewTrace';
+// 逐项技能清单（US-104）：技能行的构造器与「一项都没启用」的文案来自技能库那一份唯一真源，
+// 面板与导出都渲染它的产物（`skillLoadout()` 的 rows），不在这里另写一套。
+import { SKILL_EMPTY_TEXT, SKILL_LOAD_REASON_KEYS, skillLoadRow } from './skillLibrary';
 
 /** 面板阶段（与 `main.jsx` 的 `reviewStream.phase`、`reviewTrace` 的状态同一套词汇）。 */
 export const REVIEW_DETAIL_PHASES = {
@@ -100,14 +103,30 @@ export function reviewContentProgress(raw, dimensions = REVIEW_DIMENSION_NAMES) 
 }
 
 /**
+ * 逐项技能清单的归一（US-104）：`skills` 传**技能加载清单**（`skillLoadout()` 的产物，
+ * 那次计算同时产出了提示词里的【已启用技能】段落）时用它的 `rows`；
+ * 传已经解析好的技能数组（老调用方 / 断言夹具）时按「已加载」逐项构造。
+ * 两种数组都可能出现，所以数组分支要**先认已有的 reasonKey / included**，不能一律当成已加载。
+ */
+export function reviewDetailSkillRows(skills) {
+  const reasonOf = (skill) => skill.reasonKey
+    || (skill.included === false ? SKILL_LOAD_REASON_KEYS.notSelected : SKILL_LOAD_REASON_KEYS.included);
+  if (Array.isArray(skills)) {
+    return skills.filter(Boolean).map((skill) => skillLoadRow(skill, { reasonKey: reasonOf(skill) }));
+  }
+  const rows = skills && typeof skills === 'object' && Array.isArray(skills.rows) ? skills.rows : [];
+  return rows.filter(Boolean).map((row) => skillLoadRow(row, { reasonKey: reasonOf(row) }));
+}
+
+/**
  * 折叠态摘要里的「加载了什么」：本次真正进入 system 提示词的东西。
  * 输入就是提示词拼装处用的那几份数据（模块清单来自 `buildPersonaPrompt().modules`）：
  *  - `modules` —— 提示词模块清单（agent.md 与观察词模板的 version / chars 从里面取）
- *  - `skills` —— 已启用技能（`resolveSkills()` 的结果）
+ *  - `skills` —— **技能加载清单**（US-104：`skillLoadout()` 的产物；也接受已解析的技能数组）
  *  - `memory` —— 长期记忆正文（当前一位老师是一段记忆，US-105 起是文件列表）
  *  - `keywordTerms` / `keywordGroups` —— 观察词模板的词条数与分组数
  * 返回 `{ items, counts }`：`items` 是全量清单（每项带 `included` 与没加载的原因，
- * US-103b 的加载清单直接渲染它），`counts` 是面板与断言用的计数。
+ * US-103b 的加载清单直接渲染它；`skills` 那一项另带逐项 `rows`），`counts` 是面板与断言用的计数。
  */
 export function reviewDetailLoaded({ modules = [], skills = [], memory = '', keywordTerms = 0, keywordGroups = 0 } = {}) {
   const moduleList = (Array.isArray(modules) ? modules : []).map((module) => {
@@ -124,7 +143,8 @@ export function reviewDetailLoaded({ modules = [], skills = [], memory = '', key
   });
   const agentModule = moduleList.find((module) => module.id === 'agent_md') || null;
   const keywordModule = moduleList.find((module) => module.id === 'keyword_candidates') || null;
-  const skillList = (Array.isArray(skills) ? skills : []).filter(Boolean);
+  const skillRows = reviewDetailSkillRows(skills);
+  const includedSkills = skillRows.filter((row) => row.included);
   const memoryFiles = str(memory).trim() ? 1 : 0;
   const includedModules = moduleList.filter((module) => module.included).length;
   const items = [
@@ -141,10 +161,13 @@ export function reviewDetailLoaded({ modules = [], skills = [], memory = '', key
       key: 'skills',
       label: '技能',
       kind: 'skills',
-      count: skillList.length,
-      chars: skillList.reduce((sum, skill) => sum + str(skill.description).length, 0),
-      included: skillList.length > 0,
-      reason: skillList.length ? '' : '本次未启用任何技能'
+      count: includedSkills.length,
+      total: skillRows.length,
+      chars: includedSkills.reduce((sum, row) => sum + row.chars, 0),
+      included: includedSkills.length > 0,
+      reason: includedSkills.length ? '' : SKILL_EMPTY_TEXT,
+      // 逐项技能行（US-104）：全部技能 + 是否加载 + 没加载的原因 + 进入提示词的原文片段。
+      rows: skillRows
     },
     {
       key: 'memory',
@@ -182,7 +205,8 @@ export function reviewDetailLoaded({ modules = [], skills = [], memory = '', key
     counts: {
       modules: moduleList.length,
       includedModules,
-      skills: skillList.length,
+      skills: includedSkills.length,
+      skillTotal: skillRows.length,
       memoryFiles,
       keywordTerms: num(keywordTerms),
       keywordGroups: num(keywordGroups),
@@ -320,7 +344,8 @@ export function reviewDetailAttachmentRows(prompt = {}) {
 // 只写版本 / 条数 / 字符数这些小字。
 const LOADED_DETAIL_BUILDERS = {
   file: (item) => [item.version, item.chars ? `${item.chars} 字` : ''].filter(Boolean).join(' · '),
-  skills: (item) => [`${item.count} 项`, item.chars ? `${item.chars} 字` : ''].filter(Boolean).join(' · '),
+  // 技能带 total 时写「已加载/全部」：`3/5 项`（US-104 的清单在下面逐项展开）。
+  skills: (item) => [`${item.count}${item.total && item.total !== item.count ? `/${item.total}` : ''} 项`, item.chars ? `${item.chars} 字` : ''].filter(Boolean).join(' · '),
   files: (item) => [`${item.count} 个`, item.chars ? `${item.chars} 字` : ''].filter(Boolean).join(' · '),
   template: (item) => [
     item.version,
@@ -363,6 +388,12 @@ export function reviewDetailLoadedRows(loaded) {
       text: `${included ? '[已加载]' : '[未加载]'} ${label}${detailText ? ` · ${detailText}` : ''}${!included && reason ? ` —— ${reason}` : ''}`
     };
   });
+}
+
+/** 加载清单里某一项（按 key 取）—— 面板、载荷与导出读同一份 `items`。 */
+export function reviewDetailLoadedItem(loaded, key) {
+  const items = loaded && Array.isArray(loaded.items) ? loaded.items : [];
+  return items.find((item) => str(item?.key) === str(key)) || null;
 }
 
 /**
@@ -500,6 +531,9 @@ export function reviewDetailPayload(input = {}) {
   const output = str(source.output);
   const loadedRows = reviewDetailLoadedRows(source.loaded);
   const moduleRows = reviewDetailModuleRows(prompt);
+  // 逐项技能清单（US-104）：来自 `reviewDetailLoaded()` 的那一份（`skillLoadout()` 的唯一产物）。
+  const skillRows = reviewDetailSkillRows(reviewDetailLoadedItem(source.loaded, 'skills')?.rows || []);
+  const skillsIncluded = skillRows.filter((row) => row.included).length;
   const attachments = reviewDetailAttachmentRows(prompt);
   const params = reviewDetailParamRows(source.params);
   const usage = reviewDetailUsageRows(source.usage, source.timing);
@@ -531,6 +565,12 @@ export function reviewDetailPayload(input = {}) {
         title: reviewDetailSectionTitle('loaded'),
         rows: loadedRows,
         modules: moduleRows,
+        // 逐项技能清单（US-104）：全部技能 + 是否加载 + 没加载的原因 + 进入提示词的原文片段。
+        skills: skillRows,
+        skillsIncluded,
+        skillsTotal: skillRows.length,
+        skillsEmpty: skillsIncluded === 0,
+        skillsNote: skillsIncluded === 0 ? SKILL_EMPTY_TEXT : '',
         included: loadedRows.filter((row) => row.included).length,
         total: loadedRows.length,
         modulesIncluded: moduleRows.filter((row) => row.included).length,
@@ -618,6 +658,13 @@ export function reviewDetailMarkdown(payload) {
       lines.push(reviewDetailFence(section.text || '（本次没有推理增量）'), '');
     } else if (key === 'loaded') {
       (section.rows || []).forEach((row) => lines.push(`- ${row.text}`));
+      const skillRows = Array.isArray(section.skills) ? section.skills : [];
+      if (skillRows.length) {
+        const included = section.skillsIncluded ?? skillRows.filter((row) => row.included).length;
+        lines.push('', `### 技能清单（${included}/${section.skillsTotal ?? skillRows.length} 项已加载）`, '');
+        if (section.skillsNote) lines.push(`- ${section.skillsNote}`);
+        skillRows.forEach((row) => lines.push(`- ${row.text}`));
+      }
       const modules = section.modules || [];
       if (modules.length) {
         lines.push('', `### 提示词模块（${section.modulesIncluded ?? modules.filter((row) => row.included).length}/${section.modulesTotal ?? modules.length} 项）`, '');

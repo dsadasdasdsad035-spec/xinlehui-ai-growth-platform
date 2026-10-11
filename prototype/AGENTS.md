@@ -1398,6 +1398,46 @@ DOM/canvas 部分在 `src/services/artworkWriteBack.js`，编排在 `main.jsx` �
   US-103a 的 52 项浏览器断言作为回归全绿。
 
 
+## 第三步「五维点评」的技能加载清单（US-104 / F-REVIEW-SKILL-01）
+
+「这次点评用了哪几项技能、没用上的又是为什么」的唯一真源是 `src/data/skillLibrary.js` 的
+`skillLoadout({ skillKeys, library, legacySkills })`（零依赖，可 Node 直跑）。它**同时**产出三样东西：
+① 加载清单的逐项行 `rows`（全部技能 + `included` + 没加载的原因 + 进入提示词的原文片段）、
+② 提示词里【已启用技能】段落的正文 `content`（空串 = 这个模块不出现）、③ 计数 `counts`。
+面板 / 提示词 / 断言四处读的都是它 —— **不要在任何一处再按 `enabled` 过滤一遍**
+（一处按 enabled 过滤、另一处忘了，就会出现「清单说没加载、提示词里却有」）。
+
+- `services/llmReview.js` 的 `personaModuleContents` 用 `loadout.content` 拼技能段落（改造前是内联
+  `skills.map(...)`，两种写法输出**逐字符一致**，14 组输入的回归断言就是比这个）；`extra.skillLoadout`
+  可注入同一份产物 —— `main.jsx` 的 `startCloudReview` 就是这么做的（一次计算同时喂
+  `buildPersonaPrompt` 与 `reviewDetailLoaded`）。
+- **未加载原因三种，判定优先级：库中停用 > 未被人设勾选**（库的维护动作更该被看见）；人设勾了、库里
+  没有的 id 单独补一行并点名「技能 id 在库中不存在」；旧数据里**内嵌**的技能对象（不在库里但真的进了
+  提示词）也补一行，来源标「人设内嵌（旧数据）」。少的这三类，「清单 vs 提示词」就对不上了。
+- **`chars` 是技能描述的字符数**（与加载清单「技能 · N 项 · M 字」同一口径，只对已加载的求和）；
+  一整行是 `lineChars` / `excerpt`（`- 技能名：描述`）。原文片段必须**逐字符**取自
+  `skillPromptLine()`：浏览器断言就是 `system.includes(excerpt)` + 「清单里已加载的片段拼起来 == 提示词段落」。
+- `data/reviewDetailPanel.js` 只做展示归一：`reviewDetailSkillRows()` 接受 `skillLoadout()` 产物或
+  **已经解析好的技能数组**（老调用方 / 断言夹具）。数组分支要**先认已有的 `reasonKey` / `included`** ——
+  一律当成「已加载」会把停用项画成已加载（本轮真踩）。载荷的 `loaded` 分区新增
+  `skills / skillsIncluded / skillsTotal / skillsEmpty / skillsNote`，Markdown 导出多一节
+  「技能清单（N/M 项已加载）」，一项都没勾时结算 `SKILL_EMPTY_TEXT`「本次未启用任何技能」。
+- **面板读数（验收探针）**：`data-detail-skills`（+ `-included` / `-total` / `-empty`）、
+  `data-detail-skills-note`、`data-detail-skill`（= id）/ `-included` / `-reason`
+  （`included | not-selected | disabled | missing`）/ `-category` / `-source` / `-chars`，
+  每行 `<details>` 里的 `data-detail-skill-excerpt`。
+- **验证要点**：停用技能后要**重新生成**才能看到新清单（清单来自生成开始时那一次拼装）。
+  切身份必须用**顶栏「切换体验身份」**（同一会话、不刷新）：刷新会让挂载时那批云端读取
+  （`src/main.jsx` 的 `loadRemoteSkillLibrary()` / `loadRemoteTeacherProfiles()`，deps 为 `[]`）
+  把刚改的本机改动顶掉。断言「停用同步到云端」要**轮询**（写入是异步的，直接读会读到旧值）；
+  技能行的细节列在 390px 下要能被压窄换行（`flex: none` + 长文案会把面板顶出横向滚动条）。
+- 验证方式（本轮实测）：Node 直跑 `data/skillLibrary.js` + `data/reviewDetailPanel.js` **26 项**；
+  与 HEAD 版 `llmReview.js` 比对 14 组输入 **43 项**（system 逐字符 + modules 逐字段 + 注入等价）；
+  回归 US-103b 数据 26 / 服务 16、US-102 数据 114 / 服务 70 / 提示词 58、US-101 提示词 172 全绿；
+  浏览器 **38 项**（headless Chrome + CDP，替身替换云端 LLM：管理端停用 → 同一会话切身份 → 第三步
+  → 生成 → 5 行清单 / 4+1 计数 / 停用原因 / 片段与 system 逐字符同源 / 轨迹同一份 / 缺 id 点名 /
+  全部取消勾选后的空态 / 390px / 0 异常），截图 170~172 留档。
+
 ## 容易踩的坑
 
 - **写接口抛错时「await 之后就没了」**：`save<X>/create<X>/update<X>` 是「先写本地镜像再推云端」，

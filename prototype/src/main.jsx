@@ -52,7 +52,7 @@ import { CROP_ASPECT_PRESETS, CROP_BODY_HANDLE, CROP_FREE_ASPECT_ID, CROP_HANDLE
 import { renderArtworkCrop, renderArtworkRotation, ARTWORK_MANUAL_CROP_ALGORITHM } from './services/artworkEditor';
 import { createEmptyTeacherProfile, loadTeacherProfiles, persistTeacherProfiles } from './data/teacherProfiles';
 import { deleteRemoteTeacherProfile, loadRemoteTeacherProfiles, saveRemoteTeacherProfile } from './services/teacherProfileApi';
-import { createEmptySkill, loadSkillLibrary, persistSkillLibrary, resolveSkills, skillFromIndexEntry, skillFromPackage } from './data/skillLibrary';
+import { createEmptySkill, loadSkillLibrary, persistSkillLibrary, resolveSkills, skillFromIndexEntry, skillFromPackage, skillLoadout } from './data/skillLibrary';
 import { deleteRemoteSkill, loadRemoteSkillLibrary, saveRemoteSkill } from './services/skillLibraryApi';
 import { archiveSkillPackage, readSkillPackage } from './services/skillPackage';
 import { MARKETPLACE_SYNCED_AT, indexStats, marketCategories, searchMarket, searchSkillIndex } from './data/skillMarketplace';
@@ -2382,10 +2382,13 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
     // 面板上的 agent.md / 技能 / 记忆 / 观察词模板不会与真正发出去的那一份对不上。
     const keywordCandidates=keywordCandidatesPrompt(mode);
     const keywordScope=mode==='班级反馈'?'课程观察关键词':'作品观察词';
-    const promptPreview=buildPersonaPrompt(activeProfile,{subject,skillLibrary,keywordCandidates,keywordScope});
+    // 技能加载清单（US-104）：**同一次计算**既拼出提示词里的【已启用技能】段落，
+    // 又给出逐项技能清单（名称/分类/来源/版本/字符数 + 是否加载 + 没加载的原因 + 原文片段）。
+    const skillLoad=skillLoadout({skillKeys:activeProfile?.skillKeys,library:skillLibrary,legacySkills:activeProfile?.skills});
+    const promptPreview=buildPersonaPrompt(activeProfile,{subject,skillLibrary,keywordCandidates,keywordScope,skillLoadout:skillLoad});
     setReviewLoaded(reviewDetailLoaded({
       modules:promptPreview.modules,
-      skills:resolveSkills(activeProfile?.skillKeys,skillLibrary,activeProfile?.skills),
+      skills:skillLoad,
       memory:activeProfile?.memory||'',
       keywordGroups:Object.keys(keywordCategoriesFor(mode)).length,
       keywordTerms:keywordOptionsFor(mode).length
@@ -4731,6 +4734,28 @@ function ReviewDetailPanel({stream,loaded,prompt,trace,model,params,requests,stu
             <b>{row.label}</b>{row.detail?<span>{row.detail}</span>:null}{row.included?null:<em>{row.reason}</em>}
           </li>)}
         </ul>
+        {(loadedSection.skills||[]).length?<div className="review-detail-skills" data-detail-skills="true" data-detail-skills-included={loadedSection.skillsIncluded||0} data-detail-skills-total={loadedSection.skillsTotal||0} data-detail-skills-empty={loadedSection.skillsEmpty?'true':'false'}>
+          <div className="review-detail-block-head">
+            <b>技能清单</b>
+            <small>{loadedSection.skillsIncluded||0}/{loadedSection.skillsTotal||0} 项已加载 · 点开单项可看进入提示词的原文片段</small>
+          </div>
+          {loadedSection.skillsNote?<p className="review-detail-skills-empty" data-detail-skills-note="true">{loadedSection.skillsNote}</p>:null}
+          <ul>
+            {(loadedSection.skills||[]).map(row=><li key={row.id||row.name} className={row.included?'':'is-off'} data-detail-skill={row.id||row.name} data-detail-skill-included={row.included?'true':'false'} data-detail-skill-reason={row.reasonKey} data-detail-skill-category={row.category} data-detail-skill-source={row.sourceLabel} data-detail-skill-chars={row.chars}>
+              <details>
+                <summary>
+                  <b>{row.name}</b>
+                  <span data-detail-skill-detail="true">{row.detail}</span>
+                  <em data-detail-skill-state="true">{row.included?'[已加载]':`[未加载] ${row.reason}`}</em>
+                </summary>
+                <div className="review-detail-skill-body">
+                  <small>{row.included?'该技能进入提示词的原文片段（与 system 提示词里的【已启用技能】段落逐字符一致）：':'该技能未进入本次提示词；下面是它若启用会写入的原文片段：'}</small>
+                  <pre data-detail-skill-excerpt="true">{row.excerpt}</pre>
+                </div>
+              </details>
+            </li>)}
+          </ul>
+        </div>:null}
         {(loadedSection.modules||[]).length?<details className="review-detail-modules" data-detail-modules="true">
           <summary>提示词模块（{loadedSection.modulesIncluded}/{loadedSection.modulesTotal} 项）</summary>
           <ul>

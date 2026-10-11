@@ -112,6 +112,23 @@
 .review-detail-modules li { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 10px; font-size: 12px; }
 .review-detail-modules li span { color: var(--muted); font-variant-numeric: tabular-nums; }
 .review-detail-modules li.is-off b { color: var(--muted); }
+/* 技能清单（US-104）：逐项一行（名称 / 分类 · 来源 · 版本 · 字符数 / 是否加载），点开看原文片段。 */
+.review-detail-skills { margin-top: 10px; }
+.review-detail-skills > ul { margin: 8px 0 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+.review-detail-skills li { border: 1px solid var(--border); border-radius: 8px; padding: 4px 8px; font-size: 12px; }
+.review-detail-skills li.is-off { background: var(--soft); }
+.review-detail-skills summary { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 10px; cursor: pointer; }
+.review-detail-skills summary b { flex: none; }
+.review-detail-skills li.is-off summary b { color: var(--muted); }
+/* 细节列要能被压窄并逐字换行：`flex: none` + 长文案（分类 · 来源 · 更新时间 · 字符数）在 390px
+   下会顶出面板，把整块面板撑出横向滚动条。 */
+.review-detail-skills summary span { flex: 1 1 auto; min-width: 0; color: var(--muted); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.review-detail-skills summary em { flex: 0 1 auto; min-width: 0; margin-left: auto; font-style: normal; text-align: right; color: var(--blue); }
+.review-detail-skills li.is-off summary em { color: #8a5a00; }
+.review-detail-skill-body { margin-top: 6px; }
+.review-detail-skill-body small { display: block; margin-bottom: 4px; color: var(--muted); font-size: 11px; }
+.review-detail-skill-body pre { max-height: 200px; }
+.review-detail-skills-empty { margin: 8px 0 0; font-size: 12px; color: #8a5a00; }
 .review-detail-prompt { display: grid; gap: 8px; }
 .review-detail-prompt > b { font-size: 12px; color: var(--muted); }
 .review-detail-prompt li { font-size: 12px; color: var(--muted); }

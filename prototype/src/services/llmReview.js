@@ -1,5 +1,7 @@
 import { cloud } from '../cloud';
-import { resolveSkills } from '../data/skillLibrary';
+// 技能加载清单（US-104）：提示词里的【已启用技能】段落与详情面板的逐项技能清单
+// 都读 `skillLoadout()` 的产物 —— 同一份计算，不允许两处各自过滤一遍。
+import { skillLoadout } from '../data/skillLibrary';
 // 维度名与顺序的唯一真源（详情面板的正文进度、写作要求与输出格式共用这一份）。
 import { REVIEW_DIMENSION_NAMES } from '../data/reviewDetailPanel';
 // 提示词模块化（US-101）：system 提示词由有名字、有版本、有来源的模块拼成，
@@ -81,7 +83,13 @@ function fallbackModuleContents(extra, scope) {
 function personaModuleContents(profile, extra, scope) {
   // 技能来自独立的技能库：人设只持有被勾选的 id，真正的描述从库里取。
   // 库里停用某项后，这里会自动过滤掉，无需回头改每一份人设。
-  const skills = resolveSkills(profile.skillKeys, extra.skillLibrary || [], profile.skills);
+  // `skillLoadout()` 同时产出「逐项技能清单」（面板 US-104 直接渲染它的 rows）与
+  // 【已启用技能】段落正文 —— 清单与提示词来自同一次计算。
+  const loadout = extra.skillLoadout || skillLoadout({
+    skillKeys: profile.skillKeys,
+    library: extra.skillLibrary || [],
+    legacySkills: profile.skills
+  });
   const identity = [profile.name, profile.roleLabel, profile.campus].filter(Boolean).join(' · ');
   return {
     identity: `你是${identity || '一位美术老师'}${profile.years ? `，教龄 ${profile.years} 年` : ''}。`,
@@ -90,7 +98,7 @@ function personaModuleContents(profile, extra, scope) {
     boundaries: profile.boundaries ? `【安全与伦理边界】\n${profile.boundaries}` : undefined,
     // agent.md 的加载规则与版本化属 US-105；本故事只提供入口（不传就完全不出现）。
     agent_md: extra.agentMd ? `【agent.md】\n${extra.agentMd}` : undefined,
-    skills: skills.length ? `【已启用技能】\n${skills.map(skill => `- ${skill.name}${skill.description ? `：${skill.description}` : ''}`).join('\n')}` : undefined,
+    skills: loadout.content || undefined,
     memory: profile.memory ? `【长期记忆（本班本阶段，点评时必须结合并回访）】\n${profile.memory}` : undefined,
     task: `【本次任务】\n先看清上传的作品与素材里真实存在什么，再生成五维点评草稿，供老师审阅后编辑发布。`,
     // 观察词由模型自己挑：老师不勾选时也要能选出贴合画面的词。
@@ -109,6 +117,10 @@ function personaModuleContents(profile, extra, scope) {
  * `modules` 是本次拼装的模块清单（每项含 id / title / content / version / source / chars），
  * 没进入本次提示词的模块补在数组尾部（included:false）—— 界面据此说明「为什么没加载」。
  * 同样的输入永远得到逐字符相同的 system 字符串与逐字段相同的模块清单。
+ *
+ * `extra.skillLoadout` 可注入 `data/skillLibrary.js` 的 `skillLoadout()` 产物
+ * （US-104：详情面板把同一份产物同时用于【已启用技能】段落与逐项技能清单）——
+ * 不传时本函数按同一份输入自己算一次，结果逐字符相同。
  */
 export function buildPersonaPrompt(profile, extra = {}) {
   const scope = extra.keywordScope || '作品观察词';
