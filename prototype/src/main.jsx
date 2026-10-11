@@ -88,6 +88,16 @@ import { composeArtworkExport, createArtworkExportUrl, downloadArtworkExport, re
 // （零依赖，可 Node 断言）；把成品图画布编成持久副本（data URL）在 services 层；编排在本文件。
 import { ARTWORK_WRITE_BACK_IMAGE, applyWriteBackToSlot, artworkWriteBackContextText, artworkWriteBackFailureText, artworkWriteBackIsFresh, artworkWriteBackKey, artworkWriteBackOf, artworkWriteBackProblem, artworkWriteBackProvenanceEntries, artworkWriteBackSummaryText, buildArtworkWriteBack, writtenBackImageUrl } from './data/artworkWriteBack';
 import { artworkWriteBackImageRulesText, encodeArtworkWriteBackImage } from './services/artworkWriteBack';
+// 班级批量应用装裱（[第二步 US-010]）：目标分类（要装 / 已是最新 / 已单独调整）、状态机、
+// 进度与失败清单、耗时预算与「覆盖前二次确认」文案全在 data 层（零依赖，可 Node 断言）；
+// 「渲染一幅作品 → 档案持久副本」在 services 层（与单幅保存同一条渲染路径）；循环与写回编排在本文件。
+import {
+  BATCH_FRAMING_QUALITY, batchFramingBudgetText, batchFramingBudgetVerdict, batchFramingConfirmText,
+  batchFramingDisplayKeyOf, batchFramingFailureSummaryText, batchFramingFailureText, batchFramingIsRunning, batchFramingPlanText,
+  batchFramingProgressText, batchFramingReducer, batchFramingSummaryText, createBatchFramingState,
+  makeBatchFramingId, planBatchFraming
+} from './data/batchFraming';
+import { renderBatchFramedArtwork } from './services/batchFraming';
 // 装裱素材（机构 Logo）的上传准入（US-003b / FR-22）：PNG/JPG、≤512×512、≤200KB，
 // 规则在 data 层（可 Node 断言），解码与读文件在 services 层。
 import { framingAssetRulesText, framingAssetSummary, MAX_FRAMING_ASSET_BYTES } from './data/framingAssets';
@@ -548,6 +558,20 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
   // 写回档案（US-008b）最近一次尝试的状态。**持久的写回状态以作品位上的记录为准**，
   // 这个 state 只承载「正在写 / 刚失败（可重试）」这类一次性提示。
   const [writeBackAttempt,setWriteBackAttempt]=useState({status:'idle',quality:'',message:''});
+  // 班级批量应用装裱（US-010）：一次运行的进度 / 失败清单 / 耗时，面板上选中的那一套模板，
+  // 以及「覆盖已单独调整的作品」之前的二次确认条（验收原文「将覆盖 N 幅已单独调整的作品」）。
+  const [batchFramingPresetId,setBatchFramingPresetId]=useState('');
+  const [batchFraming,setBatchFraming]=useState(()=>createBatchFramingState());
+  const [batchFramingConfirm,setBatchFramingConfirm]=useState('');
+  // 取消是「老师点了取消、当前这一幅画完就停」：循环在每一幅开始前读这个标记（不打断正在渲染的一张）。
+  const batchFramingCancelRef=useRef(false);
+  // 上下文切换（换班 / 换模式 / 新建草稿）时把批量装裱的进度与失败清单一起作废：
+  // 失败项是按 uploadId 记的，换了上下文之后那些 id 已经不存在，留着只会误导。
+  const resetBatchFraming=()=>{
+    batchFramingCancelRef.current=true;
+    setBatchFraming(current=>batchFramingReducer(current,{type:'reset'}));
+    setBatchFramingConfirm('');
+  };
   // 五维点评的正文默认留空：内容只能来自大模型（人设 + 专业技能 + 记忆）。
   // 留空状态下的提示语只说明这一维要看什么，不预填任何「像点评的句子」。
   const reviewDefaults={
@@ -830,6 +854,9 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
     // 换班 = 换了档案上下文：上一次归档的记录 id 与写回提示都不能带过来（US-008b）。
     setCurrentRecordId('');
     setWriteBackAttempt({status:'idle',quality:'',message:''});
+    // 换班 = 换了一批孩子：批量装裱的进度 / 失败清单 / 二次确认条都作废（US-010），
+    // 失败项是按上一个班的 uploadId 记的，留着只会指向不存在的素材。
+    resetBatchFraming();
     setCurrentLessonId('');
     setLessonNoDirty(false);
     setFutureDateConfirmed(false);
@@ -866,6 +893,8 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
     // 档案上下文（记录 id 与写回提示）一并清掉，别把上一个模式的写回状态留在界面上（US-008b）。
     setCurrentRecordId('');
     setWriteBackAttempt({status:'idle',quality:'',message:''});
+    // 批量装裱是班级反馈专属的动作：切到个人反馈就把进度与失败清单清掉（US-010）。
+    resetBatchFraming();
   };
   // ---- 出席名单的维护（US-405）----------------------------------------------------
   const toggleParticipant=(name)=>{
@@ -1141,9 +1170,18 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
   },[step,media.artwork?.cleanUrl,media.artwork?.cleanAlgorithm,media.artwork?.framedStyle,media.artwork?.framedUrl,activeFrameSpecKey,selectedStudentLabel,currentTeacherName,lessonDateDots]);
   // ---- 相框样式缩略图（US-006）-----------------------------------------------------
   // 「缩略图用当前作品实时渲染」：个人反馈用画心（裁剪稿）当作品底图；班级反馈没有单幅「当前作品」，
-  // 退化为第一幅已上传作品（这条口径写在进度日志里，US-010 的班级批量套用会接手）。
-  const frameThumbSource=media.artwork?.cleanUrl||media.artwork?.orientedUrl||media.artwork?.originalUrl||batchUploads.artwork[0]?.url||'';
-  const frameThumbRefMedia=media.artwork?null:batchUploads.artwork[0]||null;
+  // 退化为**本班第一幅已上传作品**。
+  // US-010 修掉一个隐蔽的口径错误：班级反馈的上传路径也会写 `media.artwork`（`readFile` 的本地预览），
+  // 于是原来那句 `frameThumbRefMedia = media.artwork?null:…` 在班级反馈下**永远拿到 null**，
+  // 缩略图 / 水印预览 / 保存图片的姓名与作品名会退化成模板上的展签占位（而不是这一幅的学员）。
+  // 判据改成**按反馈模式**取，而不是按 `media.artwork` 存不存在：
+  //   班级反馈 = 第一幅已上传条目（底图 / 学员 / 作品名 / 旋转都取它）；
+  //   个人反馈 = 当前画心。
+  const classFramedEntry=batchUploads.artwork[0]||null;
+  const frameThumbRefMedia=mode==='班级反馈'?classFramedEntry:null;
+  const frameThumbSource=mode==='班级反馈'
+    ?(classFramedEntry?.url||'')
+    :(media.artwork?.cleanUrl||media.artwork?.orientedUrl||media.artwork?.originalUrl||'');
   const thumbPlaque=framePlaque();
   const frameThumbStudent=frameThumbRefMedia?(frameThumbRefMedia.studentName||frameThumbRefMedia.owners?.[0]?.studentName||''):thumbPlaque.student;
   const frameThumbTitle=frameThumbRefMedia?(frameThumbRefMedia.title||''):thumbPlaque.title;
@@ -1875,6 +1913,8 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
     setArchived(false);
     setCurrentRecordId('');
     setWriteBackAttempt({status:'idle',quality:'',message:''});
+    // 新草稿 = 新一批作品：批量装裱的进度 / 失败清单 / 二次确认条一并清掉（US-010）。
+    resetBatchFraming();
     setReviewGenerated(false);
     setStep(1);
     setShowAllClasses(false);
@@ -3245,6 +3285,205 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
       </div>
     </div>
   ):null;
+  // ---- 班级批量应用装裱（[第二步 US-010]）---------------------------------------------
+  // 老师带 18 人班时的主操作：选一套模板 → 一次应用到本班已上传的**全部**作品。
+  // 三块拼图各有各的真源，别互相抄：
+  //   ① 目标分类（要装 / 已是最新 / 已单独调整 / 素材不可读）与状态机、文案 → `data/batchFraming.js`；
+  //   ② 「渲染一幅作品 → 档案持久副本」→ `services/batchFraming.js`（与单幅保存同一条渲染路径）；
+  //   ③ 循环、进度、取消、失败清单与写回哪条素材 → 这里（串行渲染：一次只画一幅，页面始终可滚动）。
+  // 姓名与作品名一律取**作品所属学员**（`batchFramingVariablesOf`），与「当前选中的学员」无关 —— 这就是
+  // 验收里的「不串名」；未绑定学员的作品照常装裱，只是展签上不会出现姓名。
+  const batchFramingPreset=enabledFrames.find(item=>item.id===batchFramingPresetId)||activeFrame||enabledFrames[0]||null;
+  // 选中的这套若正是「当前选用」的那套，就带上本次微调与叠加元素补丁（与缩略图网格同一口径：
+  // 当前选中的那一套显示/使用「模板 + 本次微调」，其余用模板本身）。
+  const batchFramingSpec=batchFramingPreset
+    ?(batchFramingPreset.id===activeFrameId?effectiveFrameSpec:(batchFramingPreset.spec||DEFAULT_FRAME_SPEC))
+    :DEFAULT_FRAME_SPEC;
+  const batchFramingSpecKey=frameSpecRenderKey(batchFramingSpec);
+  // 展签日期与单幅口径一致（模板的 plaqueDate，缺省今天）；它不进新鲜度键（键里是课次日期）。
+  const batchFramingDate=thumbPlaque.date;
+  const batchFramingPlan=mode==='班级反馈'
+    ?planBatchFraming({entries:batchUploads.artwork,participants:effectiveParticipants,specKey:batchFramingSpecKey,lessonDate:lessonDateDots,teacherName:currentTeacherName,orgName:DEFAULT_ORG_NAME,fallbackDate:batchFramingDate})
+    :null;
+  // 每幅作品的成品图新鲜度键（按**这一幅**的学员 / 作品名 / 底图 / 旋转算）：
+  // 第二步装裱墙与第三步班级合展都读它，于是「批量装裱出来的成品图」在每一幅上都能正确命中，
+  // 而不是只有第一幅（US-008b 的 `writtenBackKey` 只算第一幅，逐幅展示是 US-010 的范围）。
+  // 键取**记录自己的参数**（`batchFramingDisplayKeyOf`）：在批量面板上换一套模板但还没应用时，
+  // 作品上那张图并没有过期；只有这一幅的作品名 / 旋转 / 底图变了才算过期。
+  const classArtworkWriteBackKeyOf=(entry)=>{
+    if(mode!=='班级反馈') return '';
+    return batchFramingDisplayKeyOf(entry,{participants:effectiveParticipants,specKey:activeFrameSpecKey,lessonDate:lessonDateDots,teacherName:currentTeacherName,orgName:DEFAULT_ORG_NAME,fallbackDate:batchFramingDate});
+  };
+  /**
+   * 把一幅作品渲染成装裱成品图并写回它的作品位（批量与「只重试这一幅」共用这一条）。
+   * 渲染入参全部来自目标本身（source / student / title / rotation），因此每幅之间互不影响。
+   */
+  const writeBatchFramedArtwork=async(target,batchId,specKey,spec)=>{
+    const variables=target.variables;
+    const image=await renderBatchFramedArtwork({
+      source:variables.source,
+      spec,
+      student:variables.studentName,
+      title:variables.title,
+      date:variables.date,
+      lessonDate:variables.lessonDate,
+      rotation:variables.rotation,
+      orgName:variables.orgName,
+      teacherName:variables.teacherName
+    });
+    const record=buildArtworkWriteBack({
+      imageUrl:image.url,
+      imageWidth:image.width,
+      imageHeight:image.height,
+      // 溯源：参数快照 + 底图 + 生成时间 + 操作人（PRD 的四项），加上批次 id 与这一幅的上下文。
+      specSnapshot:spec,
+      specKey,
+      specSummary:writeBackSpecSummary,
+      sourceUrl:variables.source,
+      generatedAt:new Date().toISOString(),
+      operatorId:currentTeacherName,
+      operatorName:currentTeacherName,
+      quality:BATCH_FRAMING_QUALITY.id,
+      qualityLabel:BATCH_FRAMING_QUALITY.label,
+      bytes:image.bytes,
+      width:image.canvasWidth,
+      height:image.canvasHeight,
+      lessonId:currentLessonId,
+      lessonDate:lessonDateDots,
+      studentId:variables.studentId,
+      studentName:variables.studentName,
+      title:variables.title,
+      // 批次 id：客户端据此区分「批量装裱的成品图」与「老师单独保存的成品图」，
+      // 下一次批量才能只对「已单独调整过」的那些先做二次确认。
+      batchId,
+      renderKey:target.key
+    });
+    const problem=artworkWriteBackProblem(record);
+    if(problem) throw new Error(problem);
+    // 写回这一条素材（走 updateUploadEntry，所以 writeBack 必须在 createUploadEntry 的白名单里）。
+    setBatchUploads(current=>({...current,artwork:updateUploadEntry(current.artwork,variables.uploadId,{writeBack:record})}));
+    return record;
+  };
+  /**
+   * 跑一次批量装裱。串行渲染（一次一幅）：内存里同一时刻只有一张 1800×1360 的位图，
+   * 页面始终可滚动；每一幅开始前读一次取消标记 —— 取消只停掉「还没开始的那些」。
+   * 单幅失败只记进失败清单（可单独重试），**不影响**同一批里已经成功的作品。
+   */
+  const runBatchFraming=async()=>{
+    if(batchFramingIsRunning(batchFraming)) return;
+    const plan=batchFramingPlan;
+    if(!plan||!plan.jobs.length){
+      setToast(plan&&plan.total?'本班作品都已经是最新成品图，不需要重复装裱。':'本班还没有已上传的作品：先回第一步给孩子们上传作品，再回来批量装裱。');
+      return;
+    }
+    const batchId=makeBatchFramingId();
+    const spec=batchFramingSpec;
+    const specKey=batchFramingSpecKey;
+    batchFramingCancelRef.current=false;
+    setBatchFramingConfirm('');
+    setBatchFraming(current=>batchFramingReducer(current,{type:'start',total:plan.jobs.length,batchId,presetId:batchFramingPreset?.id||''}));
+    let finished=0;
+    let cancelled=false;
+    for(let index=0;index<plan.jobs.length;index+=1){
+      if(batchFramingCancelRef.current){cancelled=true;break}
+      const target=plan.jobs[index];
+      setBatchFraming(current=>batchFramingReducer(current,{type:'progress',done:index,target}));
+      try{
+        await writeBatchFramedArtwork(target,batchId,specKey,spec);
+        setBatchFraming(current=>batchFramingReducer(current,{type:'item-ok',target}));
+      }catch(error){
+        setBatchFraming(current=>batchFramingReducer(current,{type:'item-failed',target,message:String(error?.message||'未知原因')}));
+      }
+      finished+=1;
+    }
+    setBatchFraming(current=>batchFramingReducer(current,{type:'finish',status:cancelled?'cancelled':'done',done:finished}));
+    setToast(cancelled?`已取消批量装裱：完成 ${finished} / ${plan.jobs.length} 幅，已完成的成品图不受影响。`:`批量装裱完成：${finished} 幅作品已按「${batchFramingPreset?.name||'当前模板'}」装裱并写回。`);
+  };
+  /** 二次确认后继续（覆盖「已单独调整过」的作品前必须确认 —— 验收原文那句话在 data 层的 confirm 文案里）。 */
+  const confirmBatchFramingApply=()=>{setBatchFramingConfirm('');runBatchFraming();};
+  /** 点「批量应用装裱」：没有单独调整过的作品就直接跑；有就先弹确认条，一个 state 都不改。 */
+  const requestBatchFraming=()=>{
+    const plan=batchFramingPlan;
+    if(!plan||!plan.total){setToast('本班还没有已上传的作品：先回第一步给孩子们上传作品，再回来批量装裱。');return;}
+    if(!plan.jobs.length){setToast(`本班 ${plan.total} 幅作品都已经是这套参数下的成品图，不需要重复装裱。`);return;}
+    if(plan.adjusted.length){setBatchFramingConfirm(batchFramingConfirmText(plan.adjusted));return;}
+    runBatchFraming();
+  };
+  /** 取消：只置标记并改状态文案，当前这一幅画完就停（已完成的作品不受影响）。 */
+  const cancelBatchFraming=()=>{
+    if(!batchFramingIsRunning(batchFraming)||batchFramingCancelRef.current) return;
+    batchFramingCancelRef.current=true;
+    setBatchFraming(current=>batchFramingReducer(current,{type:'cancel-request'}));
+  };
+  /** 失败项单独重试：只重画这一幅（用当前选用的模板），已成功的项一行都不动。 */
+  const retryBatchFramingItem=async(uploadId)=>{
+    if(batchFramingIsRunning(batchFraming)) return;
+    const target=batchFramingPlan?.targets.find(item=>item.variables.uploadId===uploadId);
+    if(!target){setToast('这幅作品已经不在本班素材里了。');return;}
+    try{
+      await writeBatchFramedArtwork(target,batchFraming.batchId||makeBatchFramingId(),batchFramingSpecKey,batchFramingSpec);
+      setBatchFraming(current=>batchFramingReducer(current,{type:'item-ok',target}));
+      setToast(`已重试成功：${target.label}`);
+    }catch(error){
+      setBatchFraming(current=>batchFramingReducer(current,{type:'item-failed',target,message:String(error?.message||'未知原因')}));
+      setToast(batchFramingFailureText(String(error?.message||'未知原因')));
+    }
+  };
+  const batchFramingVerdict=batchFramingBudgetVerdict(batchFraming);
+  const batchFramingPanel=mode==='班级反馈'?(
+    <section className="batch-framing-panel" data-batch-framing-panel="true"
+      data-batch-status={batchFraming.status}
+      data-batch-preset={batchFramingPreset?.id||''}
+      data-batch-total={batchFramingPlan.total}
+      data-batch-jobs={batchFramingPlan.jobs.length}
+      data-batch-adjusted={batchFramingPlan.adjusted.length}
+      data-batch-current={batchFramingPlan.current.length}
+      data-batch-missing={batchFramingPlan.missing.length}
+      data-batch-unbound={batchFramingPlan.unbound}
+      data-batch-done={batchFraming.done}
+      data-batch-failures={batchFraming.failures.length}
+      data-batch-elapsed={batchFraming.elapsedMs}
+      data-batch-running={batchFramingIsRunning(batchFraming)?'true':'false'}>
+      <div className="batch-framing-head">
+        <b>批量应用装裱</b>
+        <em className="batch-framing-plan" data-batch-plan-line={batchFramingPlanText(batchFramingPlan)}>{batchFramingPlanText(batchFramingPlan)}</em>
+        <small>选一套模板，一次应用到本班已上传的全部作品；落款里的 <code>{'{学员名}'}</code> 与展签姓名按作品所属学员自动替换（不串名）。单幅作品仍可在下方单独调整与保存，「已单独调整」的那些会在覆盖前先确认。</small>
+      </div>
+      {enabledFrames.length?<div className="batch-framing-templates" role="radiogroup" aria-label="批量装裱模板">
+        {enabledFrames.map(preset=><button type="button" role="radio" aria-checked={preset.id===batchFramingPreset?.id} key={preset.id} className={`batch-framing-template${preset.id===batchFramingPreset?.id?' active':''}`} data-batch-template={preset.id} data-batch-template-active={preset.id===batchFramingPreset?.id?'true':'false'} onClick={()=>setBatchFramingPresetId(preset.id)}>{preset.name}</button>)}
+      </div>:null}
+      <div className="batch-framing-actions">
+        <button type="button" data-batch-action="apply" disabled={batchFramingIsRunning(batchFraming)||!batchFramingPlan.jobs.length} onClick={requestBatchFraming}>{batchFramingIsRunning(batchFraming)?'正在批量装裱…':'批量应用装裱'}</button>
+        {batchFramingIsRunning(batchFraming)?<button type="button" className="batch-framing-cancel" data-batch-action="cancel" onClick={cancelBatchFraming} disabled={batchFraming.status==='cancelling'}>{batchFraming.status==='cancelling'?'正在取消…':'取消批量装裱'}</button>:null}
+      </div>
+      {batchFramingConfirm?<div className="batch-framing-confirm" data-batch-confirm="true" data-batch-confirm-count={batchFramingPlan.adjusted.length}>
+        <b data-batch-confirm-text={batchFramingConfirm}>{batchFramingConfirm}</b>
+        <div className="batch-framing-confirm-actions">
+          <button type="button" data-batch-action="confirm" onClick={confirmBatchFramingApply}>继续批量装裱</button>
+          <button type="button" data-batch-action="confirm-cancel" onClick={()=>setBatchFramingConfirm('')}>取消</button>
+        </div>
+      </div>:null}
+      {batchFraming.status!=='idle'?<div className="batch-framing-progress" data-batch-progress="true" data-batch-progress-done={batchFraming.done} data-batch-progress-total={batchFraming.total}>
+        <div className="batch-framing-bar"><i style={{width:`${batchFraming.total?Math.min(100,Math.round((batchFraming.done/batchFraming.total)*100)):0}%`}}/></div>
+        <em data-batch-progress-text={batchFramingIsRunning(batchFraming)?batchFramingProgressText(batchFraming):batchFramingSummaryText(batchFraming)}>{batchFramingIsRunning(batchFraming)?batchFramingProgressText(batchFraming):batchFramingSummaryText(batchFraming)}</em>
+        <small>{batchFramingBudgetText()}</small>
+      </div>:null}
+      {batchFraming.failures.length?<div className="batch-framing-failures" data-batch-failures="true">
+        <div className="batch-framing-failures-head">
+          <b>失败清单</b>
+          <small data-batch-failures-summary={batchFramingFailureSummaryText(batchFraming)}>{batchFramingFailureSummaryText(batchFraming)}</small>
+        </div>
+        <ul>
+          {batchFraming.failures.map(item=><li key={item.uploadId} data-batch-failure={item.uploadId}>
+            <b>{item.label}</b>
+            <small>{batchFramingFailureText(item.message)}</small>
+            <button type="button" data-batch-retry={item.uploadId} disabled={batchFramingIsRunning(batchFraming)} onClick={()=>retryBatchFramingItem(item.uploadId)}>只重试这一幅</button>
+          </li>)}
+        </ul>
+      </div>:null}
+      {batchFramingVerdict.text?<p className={`batch-framing-budget ${batchFramingVerdict.withinBudget?'within':'over'}`} data-batch-budget-verdict={batchFramingVerdict.withinBudget?'within':'over'}>{batchFramingVerdict.text}</p>:null}
+    </section>
+  ):null;
   const overlayPanel=(
     <section className={`lesson-overlay-panel${overlayDrawerOpen?' is-open':''}`} data-overlay-panel="true" data-overlay-open={overlayDrawerOpen?'true':'false'} data-overlay-tweak-count={overlayTweakCountValue} data-overlay-tweak-summary={overlayTweakSummaryText} data-overlay-enabled-count={overlayEnabledCountValue} data-overlay-enabled={overlayEnabledText} data-overlay-spec-fingerprint={artworkUrlFingerprint(activeFrameSpecKey)}>
       <div className="lesson-overlay-drawer-head">
@@ -3373,10 +3612,10 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
       <div className="scene-status"><span>当前进行：{steps[step-1][0]}</span><button onClick={()=>go(Math.max(1,step-1))} disabled={step===1}>反馈上一步</button></div>
       {reviewStream.open?<ReviewStreamPanel stream={reviewStream} profiles={teacherProfiles} activeProfileId={activeProfileId} setActiveProfileId={setActiveProfileId} onStart={startCloudReview} onStop={stopCloudReview} onLocalDraft={fillLocalDraft} onClose={()=>setReviewStream(current=>({...current,open:false}))}/>:null}
       {step===3&&!reviewStream.open?<ReviewLaunchPanel profiles={teacherProfiles} skillLibrary={skillLibrary} activeProfileId={activeProfileId} setActiveProfileId={setActiveProfileId} onStart={startCloudReview} onLocalDraft={fillLocalDraft} draftReady={reviewGenerated} localDraftUsed={localDraftUsed} keywordCount={keywords.length} hasArtwork={Boolean(media.artwork?.cleanUrl||media.artwork?.originalUrl)}/>:null}
-      {step===2&&mode==='班级反馈'?<ClassFramingWall artworks={batchUploads.artwork} photos={batchUploads.photo} photoGroups={photoGroups} onRotate={index=>rotateBatchItem('artwork',index)} onRotatePhotoEntry={uploadId=>rotateUploadEntry('photo',uploadId)}/>:null}
+      {step===2&&mode==='班级反馈'?<ClassFramingWall artworks={batchUploads.artwork} photos={batchUploads.photo} photoGroups={photoGroups} writeBackKeyOf={classArtworkWriteBackKeyOf} onRotate={index=>rotateBatchItem('artwork',index)} onRotatePhotoEntry={uploadId=>rotateUploadEntry('photo',uploadId)}/>:null}
       {step===1?<section className="scene-panel"><div className="scene-heading"><span>第一步</span><h2>创建课后反馈信息</h2><p>先确定服务对象，再同步收集本节课素材。素材只在本次操作中保留。</p></div>{draftRestored?<div className="intake-draft-restored"><Clock3 size={14}/><div><b>已恢复上次的课次信息；素材需重新选择</b><small>{draftRestoreDetail}</small></div>{pendingTitles.length?<em>已保留 {pendingTitles.length} 个作品名，「学员作品上传位」里重新选择素材后自动填回</em>:null}<button type="button" className="text-link" onClick={()=>setDraftRestored(false)}>知道了</button></div>:null}<div className="feedback-mode"><button className={mode==='个人反馈'?'selected':''} onClick={()=>selectMode('个人反馈')}>个人反馈<small>为一位孩子完成反馈</small></button><button className={mode==='班级反馈'?'selected':''} onClick={()=>selectMode('班级反馈')}>班级反馈<small>批量处理全班素材</small></button></div>{availableClasses.length?<div className="intake-scope"><span>班级范围</span><div className="intake-scope-switch"><button type="button" className={showAllClasses?'':'active'} onClick={()=>selectClassScope(false)}>我带的班（{myClasses.length}）</button><button type="button" className={showAllClasses?'active':''} onClick={()=>selectClassScope(true)}>全部班级（{availableClasses.length}）</button></div><small>当前登录老师：{currentTeacherName}</small></div>:null}{visibleClasses.length?<div className="task-form"><label>选择班级<select value={selectedClassId} onChange={event=>selectClass(event.target.value)}>{visibleClasses.map(item=><option key={item.id} value={item.id}>{item.name}{item.teacher?`（${item.teacher}）`:''}</option>)}</select></label><label>选择学员<select value={mode==='班级反馈'?'__class__':selectedStudentName} disabled={mode==='班级反馈'} onChange={event=>{setSelectedStudentName(event.target.value);setArchived(false);setCurrentRecordId('');setWriteBackAttempt({status:'idle',quality:'',message:''})}}>{mode==='班级反馈'?<option value="__class__">本班全部学员（{classStudents.length}人）</option>:<><option value="">请选择学员</option>{classStudents.map(item=><option key={item.name} value={item.name}>{item.name}</option>)}</>}</select></label>{courseOptions.length?<label>选择课程<select value={activeCourseId} onChange={event=>selectCourse(event.target.value)}>{courseOptions.map(item=><option key={item.courseId} value={item.courseId}>{item.name}{item.courseId===classCourseId?' · 本班课程':''}</option>)}</select></label>:<div className="intake-course-empty"><b>课程库暂时没有可选课程</b><p>{classCourseName?`本班课程「${classCourseName}」不在可选课程里，可能已被停用。`:'课程由机构管理员在「课程库」中维护。'}</p>{role==='admin'?<Button variant="secondary" onClick={()=>navigate('courseLibrary')}>去课程库添加课程</Button>:<small>请联系机构管理员在「课程库」中新增或启用课程。</small>}</div>}{lessonScheduleField}{participantField}{consentNoticeField}{mediaIntakeNotice?<p className="intake-media-notice"><ShieldAlert size={14}/><span>{mediaIntakeNotice}</span></p>:null}</div>:<div className="intake-empty"><Users size={26}/><b>{showAllClasses?'机构里还没有任何班级':'还没有属于你的班级'}</b><p>{showAllClasses?'请先在「学员管理」中新建班级，再回到这里创建课后反馈。':'可以切到「全部班级」确认是否存在其他老师名下的班级，或先去「学员管理」新建班级。'}</p><div className="intake-empty-actions">{showAllClasses?null:<button type="button" className="text-link" onClick={()=>selectClassScope(true)}>查看全部班级</button>}<Button onClick={()=>navigate('classes')}>去学员管理添加班级</Button></div></div>}{mode==='个人反馈'&&selectedClass&&!classStudents.length?<p className="intake-hint">该班级还没有学员，请先在「学员管理」里导入名单，再创建课后反馈。</p>:null}{artworkSlotField}{photoSlotField}{mode==='个人反馈'?<div className="sync-upload"><div className={media.artwork?.url?'has-file':''}><Frame/><b>学员作品 <em>必选</em></b><small>{uploadSummary('artwork')}</small><input ref={artworkInput} type="file" accept="image/jpeg,image/png,image/webp" hidden multiple={mode==='班级反馈'} onChange={e=>readFiles('artwork',e.target.files,e.currentTarget)}/><button onClick={()=>artworkInput.current?.click()}>{media.artwork?.url?'已上传 · 重新选择':'上传作品'}</button></div><div className={media.photo?.url?'has-file':''}><Image/><b>学员照片 <em>选填</em></b><small>{uploadSummary('photo')}</small><input ref={photoInput} type="file" accept="image/jpeg,image/png,image/webp" hidden multiple={mode==='班级反馈'} onChange={e=>readFiles('photo',e.target.files,e.currentTarget)}/><button onClick={()=>photoInput.current?.click()}>{media.photo?.url?'已上传 · 重新选择':'上传照片'}</button></div></div>:null}{lostSessionMedia&&!mediaLostDismissed?<div className="intake-media-lost"><ShieldAlert size={14}/><div><b>上次选择的素材已失效</b><small>作品与课堂照片只在当次会话里有效（只使用会话内 object URL，不写入 localStorage / IndexedDB）。页面刷新或重新进入后，请重新选择原始素材。</small></div><button type="button" className="text-link" onClick={()=>setMediaLostDismissed(true)}>知道了</button></div>:null}<div className="upload-privacy-note"><ShieldCheck size={14}/>{mediaRulesText(UPLOAD_SLOTS_PER_STUDENT)}</div>{intakeReadinessPanel}<div className="scene-actions"><Button variant="secondary" onClick={resetDraft}>新建草稿</Button><Button variant="secondary" icon={Save} disabled={!activeCourseId||lessonSaveState.status==='saving'} onClick={requestLessonSave}>{lessonSaveState.status==='saving'?'保存中…':'保存课次'}</Button><Button icon={ArrowRight} disabled={!intakeReadiness.ok} onClick={()=>go(2)}>进入智能装裱</Button></div></section>:null}
-      {step===2?<section className="scene-panel studio-task"><div className="scene-heading"><span>第二步</span><h2>智能装裱</h2><p>先旋转完整原图并确认方向；确认后自动裁掉纸外的桌面、地面与背景，只保留作品本身。装裱方案（画框、卡纸、展签、日期与署名）由管理员在「装裱设置」中统一维护，这里直接选用。</p></div><div className="media-process"><article><div className={`mini-frame uploaded-art${media.artwork?.framedUrl&&!artworkEditor.open?' framed-preview':''}${artworkEditor.open?' is-editing':''}`}>{media.artwork?.url?<><img src={artworkEditor.open?(editorPreview||media.artwork.originalUrl):(media.artwork.framedUrl||media.artwork.cleanUrl||media.artwork.orientedUrl||media.artwork.originalUrl)} alt={artworkEditor.open?'编辑中的旋转稿预览（低分辨率画布）':media.artwork.framedUrl?`已按「${activeFrame?.name||'默认装裱'}」完成装裱的作品`:media.artwork.cleanUrl?'已裁掉纸外背景、只保留作品本身':'等待确认方向的完整原图'}/>{media.artwork?.framedUrl&&!artworkEditor.open?<span className="framed-badge">{activeFrame?.name||'默认装裱'}</span>:null}{artworkEditor.open?<span className="framed-badge editing-badge">编辑中</span>:null}<div className="frame-rotate-controls" aria-label="旋转作品"><button type="button" title="向左旋转 90°" aria-label="向左旋转作品" disabled={artworkEditor.open&&editorPreviewPending} onClick={()=>quickRotateArtwork(-1)}><RotateCcw size={18}/></button><button type="button" title="向右旋转 90°" aria-label="向右旋转作品" disabled={artworkEditor.open&&editorPreviewPending} onClick={()=>quickRotateArtwork(1)}><RotateCw size={18}/></button></div></>:'✺'}</div><div><b>学员作品</b><p>{artworkEditor.open?(editorPreviewPending?'正在生成低分辨率预览…':'编辑中：调整旋转后点「完成编辑」，再按新的方向重新裁剪与装裱。'):framingState==='processing'?(media.artwork?.cleanUrl?'正在按当前装裱方案合成装裱图…':'正在裁掉纸外的桌面与地面，只保留作品本身…'):media.artwork?.framedUrl?`已装裱：${activeFrame?.name||'默认装裱'}。作品只做等比缩放与居中，不裁切主体、不重绘、不调色。`:media.artwork?.cleanUrl?'已完成作品裁剪，正在生成装裱图…':'当前仅显示完整原图；可以先点「编辑作品」把方向摆正，再开始裁剪与装裱。'}</p>{mode==='个人反馈'?artworkEditorField:null}{!media.artwork?.cleanUrl?<button type="button" className="confirm-artwork-button" onClick={startArtworkCleanup} disabled={framingState==='rotating'||framingState==='processing'}>{framingState==='processing'?'正在裁剪作品…':'方向正确，开始裁剪与装裱'}</button>:null}<span className="frame-choice-hint">相框样式在下方「相框样式」面板里挑（缩略图用这幅作品实时渲染）→</span></div></article><article><div className="photo-card">{media.photo?.url?<><img src={media.photo.url} alt="已自然优化的课堂照片" style={{transform:`rotate(${media.photo.rotation||0}deg)`}}/><button type="button" className="frame-rotate-button photo-rotate-button" onClick={rotatePersonalPhoto}><RefreshCw size={16}/>旋转照片</button></>:<img src={pandaMascot} alt="课堂照片占位预览"/>}</div><div><b>学员照片</b><p>{media.photo?.name||'未上传课堂照片，可返回上一步补充。'}</p></div></article></div>{frameStylePanel}{overlayPanelTrigger}{overlayDrawerOpen?<div className="lesson-overlay-scrim" data-overlay-scrim="true" onClick={()=>setOverlayDrawerOpen(false)}/>:null}{overlayPanel}{saveImagePanel}{saveImageSheet}<div className="scene-actions"><Button variant="secondary" onClick={()=>go(1)}>返回创建信息</Button><Button icon={ArrowRight} onClick={()=>go(3)}>进入五维点评</Button></div></section>:null}
-      {step===3?<section className="scene-panel review-task-v2"><div className="review-media"><div className="scene-heading"><span>{mode==='班级反馈'?'本班课后素材':'本次课素材'}</span><h2>{mode==='班级反馈'?'周六创意绘画 2 班 · 班级课后反馈':`${selectedStudentLabel}${activeFrame?.plaqueTitle?` · 《${activeFrame.plaqueTitle}》`:''}`}</h2></div><div className={`review-gallery ${mode==='班级反馈'?'class-review-gallery':''}`}>{mode==='班级反馈'?<><ClassMediaMosaic items={classMosaicArtworks} kind="artwork" date={lessonDateDots} writtenBackKey={writeBackKey} onRotate={index=>rotateBatchItem('artwork',index)}/><ClassMediaMosaic items={classMosaicPhotos} kind="photo" groups={photoGroups} date={lessonDateDots} onRotateEntry={uploadId=>rotateUploadEntry('photo',uploadId)}/></>:<><div className={`review-art exhibition-art${reviewFramedSrc?' framed-art':''}`} data-review-artwork-source={reviewWrittenBackUrl?'writeback':'framed'} data-review-artwork-fingerprint={artworkUrlFingerprint(reviewFramedSrc)}>{reviewFramedSrc?<div className="framed-art-final"><img src={reviewFramedSrc} alt={`${selectedStudentLabel}的作品 · ${activeFrame?.name||'装裱'}`} data-review-artwork="true"/>{activeFrame?.name?<span className="framed-badge">{activeFrame.name}</span>:null}{reviewWrittenBackUrl?<span className="written-back-badge" data-review-artwork-written-back="true">老师保存的成品图</span>:null}</div>:<><div className="artwork-mat">{media.artwork?.url?<img src={media.artwork.cleanUrl||media.artwork.originalUrl||media.artwork.url} alt={`${selectedStudentLabel}的作品`}/>:'✺'}</div><div className="artwork-plaque"><div><b>{selectedStudentLabel}</b><span>{activeFrame?.plaqueTitle?`《${activeFrame.plaqueTitle}》`:''}</span></div><time>创作于 {(activeFrame?.plaqueDate||new Date().toISOString().slice(0,10).replace(/-/g,'.'))}</time></div></>}</div><div className="review-photo portrait-print"><div className="portrait-mat">{media.photo?.url?<img src={media.photo.url} alt="陈一诺课堂照片"/>:<img src={pandaMascot} alt="课堂照片占位"/>}</div><div className="portrait-caption">{selectedStudentLabel} · {(activeFrame?.plaqueDate||new Date().toISOString().slice(0,10).replace(/-/g,'.'))}</div></div></>}</div></div><ReviewKeywordDock visible selected={keywords} onToggle={toggleKeyword} suggested={aiKeywords} suggesting={keywordSuggesting} dirty={keywordDirty} generated={reviewGenerated}/><div className={`coach-review ${mode==='班级反馈'?'class-coach-review':''}`}><div className="scene-heading"><span>第三步</span><h2>{mode==='班级反馈'?'班级课程反馈':'五维点评'}</h2></div><select value={subject} onChange={e=>setSubject(e.target.value)}><option>通用美术</option><option>创意绘画（3-6岁）</option><option>儿童画（6-9岁）</option><option>素描（9-18岁）</option><option>速写（9-18岁）</option><option>水彩 / 水粉（7-18岁）</option><option>国画（6-18岁）</option></select><p className="evidence">{mode==='班级反馈'?'以下内容基于本节课课程设计、班级素材与老师观察生成，老师可编辑确认后发布给家长。':`下列内容由大模型生成：先读懂作品与课堂素材，再结合「${activeProfileLabel}」的人设、已启用技能与长期记忆，按五个维度分别输出评语。老师可逐条修改后再发布。`}</p>{mode==='班级反馈'?<ClassReviewContent subject={subject}/>:<><div className={`review-source ${reviewGenerated?(localDraftUsed?'local':'ai'):'pending'}`}>{reviewGenerated?(localDraftUsed?<><CircleAlert size={14}/><span>当前正文来自<strong>本地草稿模板</strong>（未调用大模型），发布前请老师逐条核对。</span></>:<><Sparkles size={14}/><span>当前正文由大模型「{activeProfileLabel}」依据人设、技能与长期记忆生成，可直接编辑。</span></>):<><Sparkles size={14}/><span>五个维度等待大模型生成：点击上方「开始生成点评」，评语会逐字写入这里。</span></>}{keywordDirty&&reviewGenerated?<em>观察词已调整，建议重新生成</em>:null}</div>{Object.entries(reviews).map(([name,copy])=><article className={`coach-card${copy?'':' is-empty'}`} key={name}><b>{name}{copy?null:<em className="review-pending">待生成</em>}</b><textarea aria-label={name} value={copy} placeholder={REVIEW_DIMENSION_HINTS[name]||''} onChange={event=>setReviews(current=>({...current,[name]:event.target.value}))}/></article>)}</>}<div className="scene-actions"><Button variant="secondary" onClick={()=>go(2)}>返回智能装裱</Button><Button icon={Archive} onClick={archiveRecord}>归档并生成分享</Button></div></div></section>:null}
+      {step===2?<section className="scene-panel studio-task"><div className="scene-heading"><span>第二步</span><h2>智能装裱</h2><p>先旋转完整原图并确认方向；确认后自动裁掉纸外的桌面、地面与背景，只保留作品本身。装裱方案（画框、卡纸、展签、日期与署名）由管理员在「装裱设置」中统一维护，这里直接选用。</p></div><div className="media-process"><article><div className={`mini-frame uploaded-art${media.artwork?.framedUrl&&!artworkEditor.open?' framed-preview':''}${artworkEditor.open?' is-editing':''}`}>{media.artwork?.url?<><img src={artworkEditor.open?(editorPreview||media.artwork.originalUrl):(media.artwork.framedUrl||media.artwork.cleanUrl||media.artwork.orientedUrl||media.artwork.originalUrl)} alt={artworkEditor.open?'编辑中的旋转稿预览（低分辨率画布）':media.artwork.framedUrl?`已按「${activeFrame?.name||'默认装裱'}」完成装裱的作品`:media.artwork.cleanUrl?'已裁掉纸外背景、只保留作品本身':'等待确认方向的完整原图'}/>{media.artwork?.framedUrl&&!artworkEditor.open?<span className="framed-badge">{activeFrame?.name||'默认装裱'}</span>:null}{artworkEditor.open?<span className="framed-badge editing-badge">编辑中</span>:null}<div className="frame-rotate-controls" aria-label="旋转作品"><button type="button" title="向左旋转 90°" aria-label="向左旋转作品" disabled={artworkEditor.open&&editorPreviewPending} onClick={()=>quickRotateArtwork(-1)}><RotateCcw size={18}/></button><button type="button" title="向右旋转 90°" aria-label="向右旋转作品" disabled={artworkEditor.open&&editorPreviewPending} onClick={()=>quickRotateArtwork(1)}><RotateCw size={18}/></button></div></>:'✺'}</div><div><b>学员作品</b><p>{artworkEditor.open?(editorPreviewPending?'正在生成低分辨率预览…':'编辑中：调整旋转后点「完成编辑」，再按新的方向重新裁剪与装裱。'):framingState==='processing'?(media.artwork?.cleanUrl?'正在按当前装裱方案合成装裱图…':'正在裁掉纸外的桌面与地面，只保留作品本身…'):media.artwork?.framedUrl?`已装裱：${activeFrame?.name||'默认装裱'}。作品只做等比缩放与居中，不裁切主体、不重绘、不调色。`:media.artwork?.cleanUrl?'已完成作品裁剪，正在生成装裱图…':'当前仅显示完整原图；可以先点「编辑作品」把方向摆正，再开始裁剪与装裱。'}</p>{mode==='个人反馈'?artworkEditorField:null}{!media.artwork?.cleanUrl?<button type="button" className="confirm-artwork-button" onClick={startArtworkCleanup} disabled={framingState==='rotating'||framingState==='processing'}>{framingState==='processing'?'正在裁剪作品…':'方向正确，开始裁剪与装裱'}</button>:null}<span className="frame-choice-hint">相框样式在下方「相框样式」面板里挑（缩略图用这幅作品实时渲染）→</span></div></article><article><div className="photo-card">{media.photo?.url?<><img src={media.photo.url} alt="已自然优化的课堂照片" style={{transform:`rotate(${media.photo.rotation||0}deg)`}}/><button type="button" className="frame-rotate-button photo-rotate-button" onClick={rotatePersonalPhoto}><RefreshCw size={16}/>旋转照片</button></>:<img src={pandaMascot} alt="课堂照片占位预览"/>}</div><div><b>学员照片</b><p>{media.photo?.name||'未上传课堂照片，可返回上一步补充。'}</p></div></article></div>{batchFramingPanel}{frameStylePanel}{overlayPanelTrigger}{overlayDrawerOpen?<div className="lesson-overlay-scrim" data-overlay-scrim="true" onClick={()=>setOverlayDrawerOpen(false)}/>:null}{overlayPanel}{saveImagePanel}{saveImageSheet}<div className="scene-actions"><Button variant="secondary" onClick={()=>go(1)}>返回创建信息</Button><Button icon={ArrowRight} onClick={()=>go(3)}>进入五维点评</Button></div></section>:null}
+      {step===3?<section className="scene-panel review-task-v2"><div className="review-media"><div className="scene-heading"><span>{mode==='班级反馈'?'本班课后素材':'本次课素材'}</span><h2>{mode==='班级反馈'?'周六创意绘画 2 班 · 班级课后反馈':`${selectedStudentLabel}${activeFrame?.plaqueTitle?` · 《${activeFrame.plaqueTitle}》`:''}`}</h2></div><div className={`review-gallery ${mode==='班级反馈'?'class-review-gallery':''}`}>{mode==='班级反馈'?<><ClassMediaMosaic items={classMosaicArtworks} kind="artwork" date={lessonDateDots} writeBackKeyOf={classArtworkWriteBackKeyOf} onRotate={index=>rotateBatchItem('artwork',index)}/><ClassMediaMosaic items={classMosaicPhotos} kind="photo" groups={photoGroups} date={lessonDateDots} onRotateEntry={uploadId=>rotateUploadEntry('photo',uploadId)}/></>:<><div className={`review-art exhibition-art${reviewFramedSrc?' framed-art':''}`} data-review-artwork-source={reviewWrittenBackUrl?'writeback':'framed'} data-review-artwork-fingerprint={artworkUrlFingerprint(reviewFramedSrc)}>{reviewFramedSrc?<div className="framed-art-final"><img src={reviewFramedSrc} alt={`${selectedStudentLabel}的作品 · ${activeFrame?.name||'装裱'}`} data-review-artwork="true"/>{activeFrame?.name?<span className="framed-badge">{activeFrame.name}</span>:null}{reviewWrittenBackUrl?<span className="written-back-badge" data-review-artwork-written-back="true">老师保存的成品图</span>:null}</div>:<><div className="artwork-mat">{media.artwork?.url?<img src={media.artwork.cleanUrl||media.artwork.originalUrl||media.artwork.url} alt={`${selectedStudentLabel}的作品`}/>:'✺'}</div><div className="artwork-plaque"><div><b>{selectedStudentLabel}</b><span>{activeFrame?.plaqueTitle?`《${activeFrame.plaqueTitle}》`:''}</span></div><time>创作于 {(activeFrame?.plaqueDate||new Date().toISOString().slice(0,10).replace(/-/g,'.'))}</time></div></>}</div><div className="review-photo portrait-print"><div className="portrait-mat">{media.photo?.url?<img src={media.photo.url} alt="陈一诺课堂照片"/>:<img src={pandaMascot} alt="课堂照片占位"/>}</div><div className="portrait-caption">{selectedStudentLabel} · {(activeFrame?.plaqueDate||new Date().toISOString().slice(0,10).replace(/-/g,'.'))}</div></div></>}</div></div><ReviewKeywordDock visible selected={keywords} onToggle={toggleKeyword} suggested={aiKeywords} suggesting={keywordSuggesting} dirty={keywordDirty} generated={reviewGenerated}/><div className={`coach-review ${mode==='班级反馈'?'class-coach-review':''}`}><div className="scene-heading"><span>第三步</span><h2>{mode==='班级反馈'?'班级课程反馈':'五维点评'}</h2></div><select value={subject} onChange={e=>setSubject(e.target.value)}><option>通用美术</option><option>创意绘画（3-6岁）</option><option>儿童画（6-9岁）</option><option>素描（9-18岁）</option><option>速写（9-18岁）</option><option>水彩 / 水粉（7-18岁）</option><option>国画（6-18岁）</option></select><p className="evidence">{mode==='班级反馈'?'以下内容基于本节课课程设计、班级素材与老师观察生成，老师可编辑确认后发布给家长。':`下列内容由大模型生成：先读懂作品与课堂素材，再结合「${activeProfileLabel}」的人设、已启用技能与长期记忆，按五个维度分别输出评语。老师可逐条修改后再发布。`}</p>{mode==='班级反馈'?<ClassReviewContent subject={subject}/>:<><div className={`review-source ${reviewGenerated?(localDraftUsed?'local':'ai'):'pending'}`}>{reviewGenerated?(localDraftUsed?<><CircleAlert size={14}/><span>当前正文来自<strong>本地草稿模板</strong>（未调用大模型），发布前请老师逐条核对。</span></>:<><Sparkles size={14}/><span>当前正文由大模型「{activeProfileLabel}」依据人设、技能与长期记忆生成，可直接编辑。</span></>):<><Sparkles size={14}/><span>五个维度等待大模型生成：点击上方「开始生成点评」，评语会逐字写入这里。</span></>}{keywordDirty&&reviewGenerated?<em>观察词已调整，建议重新生成</em>:null}</div>{Object.entries(reviews).map(([name,copy])=><article className={`coach-card${copy?'':' is-empty'}`} key={name}><b>{name}{copy?null:<em className="review-pending">待生成</em>}</b><textarea aria-label={name} value={copy} placeholder={REVIEW_DIMENSION_HINTS[name]||''} onChange={event=>setReviews(current=>({...current,[name]:event.target.value}))}/></article>)}</>}<div className="scene-actions"><Button variant="secondary" onClick={()=>go(2)}>返回智能装裱</Button><Button icon={Archive} onClick={archiveRecord}>归档并生成分享</Button></div></div></section>:null}
       {step===4?<section className="share-task scene-panel"><img src={pandaObserve} alt="熊猫成长伙伴"/><div><span>已归档至{selectedStudentLabel}的成长档案</span><h2>这一次的成长，<br/>已经被完整记录。</h2><p>作品、课堂照片与五维点评已经同步保存到本地草稿。</p><div className="share-actions"><Button icon={Archive} onClick={()=>setToast('成长集锦任务已创建，等待服务端接入')}>制作成长集锦</Button><Button variant="secondary" icon={Frame} onClick={()=>setToast('个人作品集任务已创建，等待服务端接入')}>制作作品集</Button></div><div className="scene-actions"><Button variant="secondary" onClick={()=>go(3)}>返回五维点评</Button><Button icon={FileText} onClick={()=>navigate('archives')}>进入成长档案</Button></div></div></section>:null}
     </section></>;
 }
@@ -3440,8 +3679,19 @@ function ClassReviewContent({subject}){
  * 课堂照片是选填项，按学员分组渲染 —— **没有照片的学员也占一行并显示占位**，
  * 这样照片不会因为少了几张就整体前移，让老师误以为照片是别人家的。
  */
-function ClassFramingWall({artworks=[],photos=[],photoGroups=[],onRotate,onRotatePhotoEntry}){
-  const renderItems=(items,kind)=>{const rotate=kind==='artwork'?onRotate:onRotatePhotoEntry;const typeLabel=kind==='artwork'?'作品':'照片';return <div className="class-framing-scroll">{items.length?items.map((item,index)=><article className={`class-framing-item ${kind}`} key={`${kind}-${item.uploadId||item.name}-${index}`}><div className="class-framing-preview"><img src={item.url} alt={item.name} style={{transform:`rotate(${item.rotation||0}deg)`}}/><button type="button" onClick={()=>rotate?.(kind==='artwork'?index:item.uploadId)} title={`顺时针旋转${typeLabel}`}><RefreshCw size={14}/></button></div><div><b>{kind==='artwork'?'学员作品':'课堂照片'} {index+1}</b><small>{item.name}</small><em>{kind==='artwork'?'已按完整画面装裱':'已完成自然优化，可旋转校正'}</em></div></article>):<div className="class-framing-empty">本次未上传{kind==='artwork'?'学员作品':'课堂照片'}。</div>}</div>};
+function ClassFramingWall({artworks=[],photos=[],photoGroups=[],writeBackKeyOf=null,onRotate,onRotatePhotoEntry}){
+  // 每幅作品的装裱状态（US-010）：有新鲜的写回成品图就直接显示它，并标出是「批量装裱」还是
+  // 「老师单独保存」；写回过期（改过参数或改过这一幅）时退回原始素材并显示「待重画」。
+  // 判据只用作品位上的记录 + 这一幅的新鲜度键，不在界面上另算一套规则。
+  const framedStateOf=(item)=>{
+    const record=artworkWriteBackOf(item);
+    const fresh=typeof writeBackKeyOf==='function'?Boolean(writtenBackImageUrl(item,writeBackKeyOf(item))):false;
+    if(record&&fresh) return record.batchId?'batch':'single';
+    if(record) return 'stale';
+    return '';
+  };
+  const framedLabelOf={batch:'已批量装裱',single:'老师单独保存的成品图',stale:'参数已改动 · 待重新装裱','':'已按完整画面装裱'};
+  const renderItems=(items,kind)=>{const rotate=kind==='artwork'?onRotate:onRotatePhotoEntry;const typeLabel=kind==='artwork'?'作品':'照片';return <div className="class-framing-scroll">{items.length?items.map((item,index)=>{const framedState=kind==='artwork'?framedStateOf(item):'';const framedSrc=framedState&&framedState!=='stale'&&typeof writeBackKeyOf==='function'?writtenBackImageUrl(item,writeBackKeyOf(item)):'';const record=kind==='artwork'?artworkWriteBackOf(item):null;const planKey=kind==='artwork'&&typeof writeBackKeyOf==='function'?writeBackKeyOf(item):'';return <article className={`class-framing-item ${kind}${framedState?` is-${framedState}`:''}`} key={`${kind}-${item.uploadId||item.name}-${index}`} data-artwork-framed={kind==='artwork'?(framedState||'none'):undefined} data-artwork-writeback-student={record?.studentName||''} data-artwork-writeback-title={record?.title||''} data-artwork-writeback-batch={record?record.batchId:''} data-artwork-writeback-fingerprint={record?artworkUrlFingerprint(record.imageUrl):''} data-artwork-writeback-key={record?record.renderKey:''} data-artwork-writeback-plan-key={planKey} data-artwork-writeback-fresh={framedSrc?'true':'false'}><div className="class-framing-preview"><img src={framedSrc||item.url} alt={item.name} style={framedSrc?undefined:{transform:`rotate(${item.rotation||0}deg)`}}/><button type="button" onClick={()=>rotate?.(kind==='artwork'?index:item.uploadId)} title={`顺时针旋转${typeLabel}`}><RefreshCw size={14}/></button>{framedSrc?<em className="class-framing-framed-badge" data-artwork-framed-badge={framedState}>已装裱</em>:null}</div><div><b>{kind==='artwork'?'学员作品':'课堂照片'} {index+1}</b><small>{item.name}</small><em>{kind==='artwork'?framedLabelOf[framedState]:'已完成自然优化，可旋转校正'}</em></div></article>}):<div className="class-framing-empty">本次未上传{kind==='artwork'?'学员作品':'课堂照片'}。</div>}</div>};
   const photoSection=photoGroups.length?(
     <div className="class-framing-photo-groups">
       {photoGroups.map(group=>(
@@ -3481,7 +3731,7 @@ function ClassFramingWall({artworks=[],photos=[],photoGroups=[],onRotate,onRotat
  * US-009：课堂照片传 `groups`（按学员分组，含没有照片的学员）时按分组铺 —— 少照片的学员
  * 显示**占位**而不是让后面的照片前移错位；一张合影出现在多位学员的分组里，展签写明是共用。
  */
-function ClassMediaMosaic({items=[],kind='artwork',groups=null,onRotate,onRotateEntry,date='',writtenBackKey=''}){
+function ClassMediaMosaic({items=[],kind='artwork',groups=null,onRotate,onRotateEntry,date='',writeBackKeyOf=null}){
   const label=kind==='artwork'?'班级作品合展':'班级课堂瞬间';
   const plaqueDate=String(date||'').trim();
   const captionOf=item=>{
@@ -3496,7 +3746,9 @@ function ClassMediaMosaic({items=[],kind='artwork',groups=null,onRotate,onRotate
   const figureOf=(item,index,keyPrefix='')=>{
     // 保存图片写回档案的成品图优先（US-008b）：老师存过图之后，五维点评页立刻用新图。
     // 写回图已经是**整张成品**（自带画框与展签），所以不再叠条目上的展示旋转，只展示它本身。
-    const writtenBack=writtenBackImageUrl(item,writtenBackKey);
+    // US-010 起新鲜度键按**这一幅**算（`writeBackKeyOf`）—— 批量装裱会给每一幅写回成品图，
+    // 用「第一幅的键」去判其它幅会把它们全部判成过期（US-008b 只算第一幅是当时的口径）。
+    const writtenBack=typeof writeBackKeyOf==='function'?writtenBackImageUrl(item,writeBackKeyOf(item)):'';
     return (
     <figure key={`${keyPrefix}${item.uploadId||`${item.name}-${index}`}`}>
       <img src={writtenBack||item.url} alt={item.name} style={writtenBack?undefined:{transform:`rotate(${item.rotation||0}deg)`}} data-mosaic-src={writtenBack?'writeback':'upload'}/>

@@ -595,3 +595,53 @@
   .save-image-sheet-card button{min-height:44px}
   .save-image-writeback-actions button{min-height:44px}
 }
+/* ---- 班级批量应用装裱（[第二步 US-010]）--------------------------------------------
+   带 18 人班的老师的主操作：选一套模板 → 一次应用到本班已上传的全部作品。
+   面板是**内联**的一块（不是遮罩层），批量过程中页面照常可以滚动；进度、失败清单、
+   取消按钮都长在这块面板上（失败项可单独重试，已成功的项不受影响）。 */
+.batch-framing-panel{display:flex;flex-direction:column;gap:10px;margin-top:22px;border:1px solid #eadfbd;border-radius:18px;background:#fffdf7;padding:20px}
+.batch-framing-head{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.batch-framing-head b{font-size:13px;color:#292720}
+.batch-framing-plan{font-style:normal;font-size:10px;font-weight:800;color:#7a5b00;background:#fff2c8;border-radius:999px;padding:3px 10px}
+.batch-framing-head small{flex:1 1 100%;font-size:10px;line-height:1.6;color:#857a64}
+.batch-framing-head code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;color:#514a38;background:#f7f1de;border-radius:6px;padding:1px 5px}
+.batch-framing-templates{display:flex;gap:7px;flex-wrap:wrap}
+.batch-framing-template{border:1px solid #e3d7b5;background:#fff;border-radius:999px;padding:7px 14px;font-size:11px;font-weight:800;color:#514a38;cursor:pointer}
+.batch-framing-template:hover{border-color:#d8c184}
+.batch-framing-template.active{border-color:#c99908;background:#fff4d3;box-shadow:0 0 0 2px #fff0bd;color:#7a5b00}
+.batch-framing-actions{display:flex;gap:9px;flex-wrap:wrap;align-items:center}
+.batch-framing-actions button{border:1px solid #c99908;background:#ffe9a3;border-radius:11px;padding:9px 16px;font-size:12px;font-weight:800;color:#5c4a05;cursor:pointer}
+.batch-framing-actions .batch-framing-cancel{border-color:#e3d7b5;background:#fff;color:#514a38}
+.batch-framing-actions button:disabled{opacity:.5;cursor:default}
+.batch-framing-confirm{display:flex;flex-direction:column;gap:9px;border:1px solid #eebdb6;background:#fdeceb;border-radius:13px;padding:12px}
+.batch-framing-confirm b{font-size:11px;line-height:1.7;font-weight:700;color:#9a3529}
+.batch-framing-confirm-actions{display:flex;gap:9px;flex-wrap:wrap}
+.batch-framing-confirm-actions button{border:1px solid #e0b8b1;background:#fff;border-radius:10px;padding:7px 12px;font-size:11px;font-weight:800;color:#9a3529;cursor:pointer}
+.batch-framing-confirm-actions button:first-child{border-color:#c99908;background:#ffe9a3;color:#5c4a05}
+.batch-framing-progress{display:flex;flex-direction:column;gap:6px}
+.batch-framing-bar{height:7px;border-radius:999px;background:#f1e8cf;overflow:hidden}
+.batch-framing-bar i{display:block;height:100%;background:#e0b62c;transition:width .18s ease}
+.batch-framing-progress em{font-style:normal;font-size:11px;font-weight:700;color:#514a38}
+.batch-framing-progress small{font-size:10px;line-height:1.6;color:#857a64}
+.batch-framing-failures{display:flex;flex-direction:column;gap:8px;border:1px dashed #eebdb6;border-radius:13px;background:#fdeceb;padding:12px}
+.batch-framing-failures-head{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.batch-framing-failures-head b{font-size:12px;color:#9a3529}
+.batch-framing-failures-head small{font-size:10px;color:#9a3529}
+.batch-framing-failures ul{display:flex;flex-direction:column;gap:8px;margin:0;padding:0;list-style:none}
+.batch-framing-failures li{display:flex;align-items:center;gap:9px;flex-wrap:wrap;border-top:1px solid #f3d9d5;padding-top:8px}
+.batch-framing-failures li b{font-size:11px;color:#292720}
+.batch-framing-failures li small{flex:1 1 240px;font-size:10px;line-height:1.6;color:#9a3529}
+.batch-framing-failures li button{border:1px solid #e0b8b1;background:#fff;border-radius:10px;padding:6px 12px;font-size:11px;font-weight:800;color:#9a3529;cursor:pointer}
+.batch-framing-failures li button:disabled{opacity:.5;cursor:default}
+.batch-framing-budget{margin:0;font-size:10px;line-height:1.6;font-weight:700;color:#3f5a1e;background:#e6f0d6;border-radius:10px;padding:8px 10px}
+.batch-framing-budget.over{color:#9a3529;background:#fadad5}
+/* 装裱墙上的「这一幅已经装裱」角标（批量 / 单独保存两种来源各一种颜色）。 */
+.class-framing-framed-badge{position:absolute;left:6px;top:6px;font-style:normal;font-size:9px;font-weight:800;border-radius:999px;padding:2px 7px;background:#e6f0d6;color:#3f5a1e;border:1px solid #cfe1b4}
+.class-framing-item.is-batch .class-framing-framed-badge{background:#fff2c8;color:#7a5b00;border-color:#ecd9a5}
+@media(max-width:800px){
+  .batch-framing-panel{padding:14px}
+  .batch-framing-template{min-height:44px;padding:10px 14px}
+  .batch-framing-actions button{min-height:44px;flex:1 1 auto}
+  .batch-framing-confirm-actions button{min-height:44px;flex:1 1 auto}
+  .batch-framing-failures li button{min-height:44px}
+}

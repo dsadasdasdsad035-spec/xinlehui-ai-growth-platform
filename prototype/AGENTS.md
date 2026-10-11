@@ -566,6 +566,76 @@ DOM/canvas 部分在 `src/services/artworkWriteBack.js`，编排在 `main.jsx` �
   两个都挂在 DOM 上，断言各读各的。重试只重跑写回（复用 `composeSaveImageExport` 同一份输入），
   **不会再下载一次**。
 
+## 班级批量应用装裱（US-010）
+
+带 18 人班的老师的主操作：第二步（班级反馈）的「批量应用装裱」面板选一套模板，一次应用到
+本班**已上传的全部作品**；落款里的 `{学员名}` 与展签姓名按**作品所属学员**自动替换（不串名）。
+三块拼图各有各的真源，别互相抄：
+
+| 关注点 | 位置 |
+|---|---|
+| 目标分类（要装 / 已是最新 / 已单独调整 / 素材不可读）、状态机、进度与失败清单文案、20 秒预算、确认文案 | `data/batchFraming.js`（零依赖，Node 可直跑） |
+| 「渲染一幅作品 → 档案展示口径的持久副本」 | `services/batchFraming.js`（`renderFramedArtworkToCanvas` + `encodeArtworkWriteBackImage`，与单幅保存**同一条渲染路径**） |
+| 循环 / 进度 / 取消 / 失败重试 / 写回哪条素材 | `main.jsx` 的 `runBatchFraming` / `writeBatchFramedArtwork` / `retryBatchFramingItem` + `batchFramingPanel` |
+
+- **状态判据来自作品位上的写回记录**（US-008b 的 `writeBack`）：
+  `current`（上一次批量的成品图仍然新鲜，跳过不重画）/ `pending`（没装过，或参数变了）/
+  `adjusted`（**已单独调整过**：记录没有 `batchId`，或**同一个参数下重算键对不上**——
+  批量之后老师又改过这一幅）/ `missing`（没有可读底图）。「换一套模板再跑一次」不算单独调整
+  （记录在自己的参数下仍然对得上），否则每次换模板都要确认一遍。
+- **`writeBack.batchId` 是「批量 vs 单独保存」的唯一判据**：批量写回会带上批次 id，
+  老师的「保存图片」不带。加字段时必须同时进 `data/artworkWriteBack.js` 的
+  `ARTWORK_WRITE_BACK_FIELDS` 白名单（条目是白名单构造的，漏了就被静默丢掉）。
+- **两个新鲜度键，别混用**：
+  - `batchFramingTargetOf().key`（**计划键**）= 这一幅的变量 + **本次选用**的参数 →
+    回答「现在要不要重画」（面板的 jobs 计数）；
+  - `batchFramingDisplayKeyOf()`（**展示键**）= 这一幅的变量 + **记录自己的 `specKey`** →
+    回答「作品上那张图还能不能代表它」，第二步装裱墙与第三步班级合展都读它。
+  用计划键当展示键的后果：老师在面板上换一套模板**但还没应用**时，整面墙立刻标成
+  「待重新装裱」；反过来改了这一幅的作品名 / 旋转时必须过期（图上印的字对不上了）。
+- **落款 / 展签的姓名与作品名取作品所属学员**：`batchFramingVariablesOf` 先按条目归属、
+  再回 `participants` 名单取真实姓名，**未绑定学员就是空串**（绝不猜名字，也绝不串到
+  「当前选中的学员」）。批量面板上的「未绑定」单独计数。
+- **串行渲染 + 取消标记**：一次只画一幅（内存里同一时刻只有一张 1800×1360 的位图），
+  循环在每一幅**开始前**读 `batchFramingCancelRef` —— 取消只停掉还没开始的那些，
+  已完成的成品图不回滚。面板是**内联块**（不是固定遮罩），所以批量过程中页面照常可滚动。
+- **单幅失败不影响同一批的其它作品**：失败项进 `state.failures`（带这一幅的姓名与可读原因），
+  「只重试这一幅」走同一个 `writeBatchFramedArtwork`；`item-ok` 会顺手把这一条从失败清单里摘掉。
+- **验收里的「18 幅 ≤ 20 秒」收在 `BATCH_FRAMING_BUDGET`**（18 幅 / 20 秒，数量更多按比例放宽），
+  面板显示的结论（`batchFramingBudgetVerdict`）与断言读同一份。
+
+### 踩过的坑（本故事真踩）
+
+- **班级反馈的上传路径也会写 `media.artwork`**（`readFile` 的本地预览），于是
+  `frameThumbRefMedia = media.artwork ? null : batchUploads.artwork[0]` 在班级反馈下**永远拿到 null**：
+  样式缩略图 / 水印预览 / 保存图片的**姓名与作品名会退化成模板上的展签占位**（`.title` 成了空串），
+  而且保存出来的图其实是「最后一次上传的那份素材」而不是作品位那一幅。判据要**按反馈模式**取：
+  `mode==='班级反馈' ? batchUploads.artwork[0] : null`。这条修完，班级反馈的「单独保存」才与
+  批量装裱算得出同一个新鲜度键（US-008b 的 class 分支当时是靠模板占位恰好等于第一个学员而通过的）。
+- **上传位行数来自 `participants`，不是班级名单**：`uploadSlotParticipants(effectiveParticipants, …)`
+  渲染行。验证脚本里换班级名单而没清草稿（`xinlehui-feedback-draft-v2`）时，会出现
+  「名单里 18 人、上传位只有 3 行」——先 `localStorage.clear()` 再写种子。
+- 填作品名的输入框选择器要限定在**作品上传位容器**里
+  （`.intake-upload-slots:not(.photo-slots) .intake-upload-item …`）：照片上传位与作品上传位是同一套
+  行结构，直接 `.intake-upload-slot-head label b` 会一次取到两批（6 行而不是 3 行）。
+
+### 验证要点（本故事实测口径）
+
+- **「姓名真的印在图上」用独立重算证明**：批量完成后，用页面里**同一个** `renderBatchFramedArtwork`
+  按「这一幅的底图 + 参数 + 姓名」重算一次，与写回记录的地址指纹**逐字符比**；再做一个反证——
+  换成下一位学员的姓名重算，结果必须**不同**（否则「名字根本没起作用」也会通过）。
+  参数从应用 state 里的模板取（fiber 探针只读，云端模板与内置模板都覆盖得到），
+  与 `framePlaque()` 的 `activeFrame.plaqueDate || 今天` 同一口径。
+- 装裱墙每行都落了只读属性：`data-artwork-framed`（`none|batch|single|stale`）、
+  `-writeback-student` / `-title` / `-batch` / `-fingerprint` / `-key`（记录里的键）/
+  `-plan-key`（当前的每幅键）/ `-fresh` —— 「为什么判成 stale」在 DOM 里就能看出来。
+- **失败注入选 `HTMLCanvasElement.prototype.toDataURL` 的第 N 次调用**（批量路径每幅一次编码），
+  得到「第 2 幅失败、另两幅成功」；断言写「失败项保持上一版指纹不变 + 另两幅指纹已变 +
+  重试后失败清单清空且另两幅指纹一字不变」。
+- **「真的画了 18 幅」的数法**：数 `toDataURL` 的调用**尺寸**（批量副本固定 1600×1209；
+  缩略图是 ≤320 的那几次，不能算进来）。
+- 取消类断言放到 18 幅的场景里做（3 幅一两秒就跑完了，点击取消与完成会竞态）。
+
 ## 装裱参数 spec：v1 平面结构 / v2 分组结构
 
 `src/services/frameSpec.js` 同时持有两代结构，动装裱参数前先确认自己在哪一代：

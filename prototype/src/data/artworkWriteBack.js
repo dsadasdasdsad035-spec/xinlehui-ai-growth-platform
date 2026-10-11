@@ -94,6 +94,10 @@ export const ARTWORK_WRITE_BACK_FIELDS = [
   'studentId',
   'studentName',
   'title',
+  // 这一次写回是「哪次批量装裱」产生的（US-010）：单独「保存图片」产生的记录是空串。
+  // 班级反馈的批量装裱据此判定「这幅作品有没有被单独调整过」——
+  // 有 batchId 的记录只可能来自批量，没有的只可能来自老师对单幅作品的保存。
+  'batchId',
   'renderKey'
 ];
 
@@ -188,6 +192,8 @@ export function buildArtworkWriteBack(input = {}) {
     studentId: str(source.studentId),
     studentName: str(source.studentName),
     title: str(source.title),
+    // 批量装裱的批次 id（US-010）：空串 = 老师单独保存的这一幅。
+    batchId: str(source.batchId),
     renderKey: str(source.renderKey)
   };
   return record;
