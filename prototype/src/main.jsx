@@ -45,7 +45,9 @@ import { createEmptySkill, loadSkillLibrary, persistSkillLibrary, resolveSkills,
 import { deleteRemoteSkill, loadRemoteSkillLibrary, saveRemoteSkill } from './services/skillLibraryApi';
 import { archiveSkillPackage, readSkillPackage } from './services/skillPackage';
 import { MARKETPLACE_SYNCED_AT, indexStats, marketCategories, searchMarket, searchSkillIndex } from './data/skillMarketplace';
-import { createEmptyFramingPreset, loadFramingPresets, persistFramingPresets } from './data/framingPresets';
+// 装裱模板分三层（platform / org / teacher，US-001b）：scope + ownerKey 决定归属，
+// 老师端只显示自己可见的模板（filterFramingPresetsForViewer），管理端读全量。
+import { createEmptyFramingPreset, filterFramingPresetsForViewer, loadFramingPresets, persistFramingPresets } from './data/framingPresets';
 import { deleteRemoteFramingPreset, loadRemoteFramingPresets, saveRemoteFramingPreset } from './services/framingPresetsApi';
 import { DEFAULT_FRAME_SPEC, frameSpecView, generateFrameSpec, normalizeFrameSpec } from './services/frameSpec';
 import { REVIEW_MODEL, describeReviewError, readableFromRawJson, streamArtworkReview } from './services/llmReview';
@@ -56,7 +58,7 @@ import { hydrateGalleryExhibitions, hydrateGalleryVenues, loadGalleryExhibitions
 import { loadRemoteGalleryExhibitions, loadRemoteGalleryVenues } from './services/galleryVenuesApi';
 // 课次（lesson）是后续四步流程的唯一上下文实体：本地兜底 + 云端 lessons 表为真源。
 // 课次日期与课时序号的唯一性校验（US-404）走 data 层的 findLessonConflict，读写走 services/lessonApi。
-import { ATTENDANCE_LABELS, ATTENDANCE_STATES, createParticipant, findLessonConflict, formatLessonDateDots, loadLessons, mergeLessons, normalizeLessonDate, persistLessons } from './data/lessons';
+import { ATTENDANCE_LABELS, ATTENDANCE_STATES, createParticipant, DEFAULT_ORG_ID, findLessonConflict, formatLessonDateDots, loadLessons, mergeLessons, normalizeLessonDate, persistLessons } from './data/lessons';
 // 上传素材与学员的绑定（US-406a / US-406b / US-009）：展签只读这份绑定，不做任何顺序取模推断。
 // US-406b 起班级反馈的作品走「学员乘上传位」（bindFilesToStudent：在谁的格子里选的就是谁的作品）；
 // US-009 起课堂照片也有自己的「学员课堂照片上传位」（0–10 张/人、选填），并支持一张合影分给多人。
@@ -190,7 +192,6 @@ function App(){
   useEffect(()=>{persistCourses(courses)},[courses]);
   useEffect(()=>{let active=true;
     loadRemoteTeacherProfiles().then(remote=>{if(active&&remote.length)setTeacherProfiles(remote)}).catch(()=>{});
-    loadRemoteFramingPresets().then(remote=>{if(active&&remote.length)setFramingPresets(remote)}).catch(()=>{});
     loadRemoteSkillLibrary().then(remote=>{if(active&&remote.length)setSkillLibrary(remote)}).catch(()=>{});
     // 画廊这两个必须过 hydrate：内置展厅的实景图不进库，云端那条回来是没图的，
     // 直接 setState 顶掉会让内置展厅变成"没有实景图"。
@@ -202,6 +203,14 @@ function App(){
     loadRemoteCourses().then(remote=>{if(active&&remote.length)setCourses(remote)}).catch(()=>{});
     return()=>{active=false};
   },[]);
+  // 装裱模板单独一条 effect（US-001b）：模板分三层，读取要按 scope + owner_key 过滤，
+  // 而过滤依赖登录后的角色（管理端读全量、老师端只读自己可见的），
+  // 所以不能并进上面那组「登录前就跑、只跑一次」的 effect。
+  useEffect(()=>{let active=true;
+    const viewer=role==='admin'?null:{role:'teacher',teacherName:roleMeta.teacher.name,orgId:DEFAULT_ORG_ID};
+    loadRemoteFramingPresets(viewer).then(remote=>{if(active&&remote.length)setFramingPresets(remote)}).catch(()=>{});
+    return()=>{active=false};
+  },[auth,role]);
   const navigate=(p)=>{setPage(p);setMobileNav(false);window.scrollTo(0,0)};
   const login=async(nextRole, phone='', code='')=>{
     if(nextRole==='parent'&&phone!=='demo'){
@@ -412,7 +421,11 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],teacherPr
   const [mode,setMode]=useState(()=>draftMode(initialDraft));
   // frame 存的是云端装裱预设的 id，不再是写死的样式名。
   const [frame,setFrame]=useState('');
-  const enabledFrames=framingPresets.filter(item=>item.enabled!==false);
+  // 老师端只显示自己可见的模板（US-001b）：平台模板 + 本机构模板 + 自己的个人模板，
+  // 别人的个人模板看不到。本机兜底数据（云端不通时 state 就是 localStorage 镜像）也必须过这道过滤，
+  // 否则换一个老师登录会看到上一位老师的个人模板。
+  const teacherFrameViewer={role:'teacher',teacherName:currentTeacherName,orgId:DEFAULT_ORG_ID};
+  const enabledFrames=filterFramingPresetsForViewer(framingPresets,teacherFrameViewer).filter(item=>item.enabled!==false);
   const activeFrame=enabledFrames.find(item=>item.id===frame)||enabledFrames[0]||null;
   const activeFrameId=activeFrame?.id||'';
   const [subject,setSubject]=useState('通用美术');

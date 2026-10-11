@@ -442,6 +442,37 @@ DSH 的 `browser_*` 工具**没有 selectOption 能力**：`browser_type` 走的
   字号 `8~200`、面板字体走 `SAFE_FONTS` 白名单、`logo.url` / `signature.imageUrl` 只放行
   `http(s)` / `data:image` / `blob:`。
 
+## 装裱模板的三层归属：scope / ownerKey（US-001b）
+
+模板分三层「平台（platform）/ 机构（org）/ 老师个人（teacher）」，**三层共用云端 `framing_presets`
+一张表**，靠 `scope + owner_key` 区分归属，不另开表、不双写。`preset_key` 仍然是幂等 upsert 的冲突键
+（三层的 id 各自唯一，所以 upsert 不会跨层互相覆盖）。
+
+| | 位置 | 约定 |
+|---|---|---|
+| 层级常量与归一化 | `data/framingPresets.js` 的 `FRAMING_PRESET_SCOPES` / `normalizeFrameScope` / `normalizeFramingPreset` | 零依赖纯函数；**缺失或非法 scope 一律读成 `platform`**（老的 4 套内置预设就是全平台可见） |
+| 可见性规则 | 同文件的 `presetVisibleTo` / `filterFramingPresetsForViewer` | 规则只有这一份，界面与读取都调它 |
+| 云表列映射 | `services/framingPresetsApi.js` 的 `rowToPreset` / `presetToRow` | snake_case `scope` / `owner_key` ↔ camelCase `scope` / `ownerKey` |
+| 读取入口 | `loadRemoteFramingPresets(viewer)` | **不传 viewer = 管理端读全量**（后台要维护每一层）；传 viewer 按 `scope + owner_key` 过滤 |
+
+- 可见性口径：`platform` 所有人可见；`org` 要求 `ownerKey === viewer.orgId`；`teacher` 要求
+  `ownerKey` 命中观察者身份。**管理端（`viewer.role === 'admin'`）读全量**，否则后台看不到别的老师的
+  个人模板、也就没法清理。原型阶段的老师身份取 `roleMeta.teacher.name`（`林晓老师`），机构 id 取
+  `data/lessons.js` 的 `DEFAULT_ORG_ID`；`teacherIdentityKeys()` 同时收 id 与姓名两种写法
+  （业务数据里 `teacher-linxiao` 与姓名都出现过）。
+- **`org` / `teacher` 模板缺 `ownerKey` 时对老师不可见**（fail-safe：宁可少显示，也不越权展示），
+  所以新建个人模板必须带 `ownerKey`：`createEmptyFramingPreset({ scope: 'teacher', ownerKey: 当前老师 })`
+  （US-031 的「另存为我的模板」）。`createEmptyFramingPreset()` 默认仍是 **platform**（后台「新增装裱」），
+  且 `normalizeFramingPreset` 会把 platform 层的 `ownerKey` 强制清空。
+- **状态里存的是「全部模板」，过滤放在消费点**：`main.jsx` 的 `framingPresets` 对管理端是全量；
+  老师端在 `TeacherFlowV2` 里用 `filterFramingPresetsForViewer(framingPresets, { role:'teacher',
+  teacherName: currentTeacherName, orgId: DEFAULT_ORG_ID })` 再取 `enabledFrames`。
+  两层都要做：远端读取按 viewer 过滤（`loadRemoteFramingPresets(viewer)`，单独一条依赖 `[auth, role]`
+  的 effect，因为它依赖登录后的角色），**本机兜底路径（云端不通时 state 就是 localStorage 镜像）只能靠
+  消费点这道过滤** —— 否则换一位老师登录会看到上一位老师的个人模板。
+- 「停用」（`enabled`）与「层级」（`scope`）是两个正交维度：`enabled === false` 只影响可选列表
+  （老师端 `enabledFrames`），不影响管理端列表显示；层级过滤也不看 `enabled`。
+
 ## 容易踩的坑
 
 - **写接口抛错时「await 之后就没了」**：`save<X>/create<X>/update<X>` 是「先写本地镜像再推云端」，
