@@ -8,6 +8,10 @@
 // 挂上墙的那一刻才统一走 renderFramedArtwork 装裱。这么做有两个好处：
 //   1) 画展那一行数据很小（十几幅作品也就几百字节），不会把 text 列撑爆；
 //   2) 换一套装裱方案，整场画展的框会一起变，不会留下上一次的旧图。
+//
+// **例外**（US-008b）：记录里带了老师保存过的成品图（`record.framedArtwork.imageUrl`）时，
+// 直接挂那一张、不再套画展的框 —— 它是老师确认过的整图，再套一层会变成「框里套框」。
+// 没写过回的记录一如往常（行为逐字不变），所以这条例外不会影响既有画展。
 
 import { DEMO_ARTWORKS, createDemoFramedArtwork } from './demoArtwork';
 import { renderFramedArtwork } from '../services/framing';
@@ -80,33 +84,61 @@ export function hasArtworkSource(entry, records = []) {
   if (!entry) return false;
   if (entry.source === 'demo') return true;
   if (entry.source === 'upload') return Boolean(entry.imageUrl);
-  if (entry.source === 'record') return Boolean(records.find((r) => r.id === entry.recordId)?.artworkUrl);
+  if (entry.source === 'record') {
+    const record = records.find((r) => r.id === entry.recordId);
+    // 老师保存过成品图（US-008b）时，那张图本身就是可挂的素材。
+    return Boolean(record?.framedArtwork?.imageUrl || record?.artworkUrl);
+  }
   return false;
 }
+
+/**
+ * 记录里「老师保存过的成品图」（US-008b）：画展优先直接挂这一张 ——
+ * 它已经是装裱好的整图，再套一层画展的框会变成「框里套框」。
+ * 没写过回、或写回图已被配额降级清空的记录返回空串，画廊照旧走「原图 + 画展模板现画」。
+ */
+const framedArtworkOf = (record) => {
+  const imageUrl = record?.framedArtwork?.imageUrl;
+  return typeof imageUrl === 'string' ? imageUrl : '';
+};
 
 async function resolveOne(entry, { byId, spec }) {
   if (entry.source === 'demo') {
     const demo = DEMO_ARTWORKS.find((d) => d.variant === entry.variant) || DEMO_ARTWORKS[0];
-    return cached(`demo|${demo.variant}|${specKey(spec)}`, () => createDemoFramedArtwork({ spec }, demo));
+    const imageUrl = await cached(`demo|${demo.variant}|${specKey(spec)}`, () => createDemoFramedArtwork({ spec }, demo));
+    return { imageUrl, framedBy: 'exhibition' };
+  }
+  const record = entry.source === 'record' ? byId.get(entry.recordId) : null;
+  // 老师保存过的成品图（US-008b）：它是**已装裱的整图**，直接挂上墙 —— 再套一层画展的框
+  // 会出现「框里套框」。键里带地址指纹，老师重新保存后画廊立刻换新图（US-008b 的验收）。
+  const savedFramed = framedArtworkOf(record);
+  if (savedFramed) {
+    const fingerprint = `${savedFramed.length}:${savedFramed.slice(-28)}`;
+    const imageUrl = await cached(`saved|${entry.id}|${fingerprint}`, async () => savedFramed);
+    return { imageUrl, framedBy: 'teacher' };
   }
   const raw = entry.source === 'record'
-    ? (byId.get(entry.recordId)?.artworkUrl || '')
+    ? (record?.artworkUrl || '')
     : (entry.imageUrl || '');
-  if (!raw) return '';
+  if (!raw) return { imageUrl: '', framedBy: 'exhibition' };
   // 用「长度 + 尾串」当图片指纹：data URL 很长，不必整串进 key。
   const fingerprint = `${raw.length}:${raw.slice(-28)}`;
-  return cached(
+  const imageUrl = await cached(
     `${entry.id}|${specKey(spec)}|${fingerprint}`,
     () => renderFramedArtwork({
       source: raw, spec,
       student: entry.student || '', title: entry.title || '', date: entry.date || ''
     })
   );
+  return { imageUrl, framedBy: 'exhibition' };
 }
 
 /**
  * 把画展作品清单解析成可以直接交给 three.js 的图。
- * @returns {Promise<Array<{id,student,title,date,imageUrl}>>}
+ *
+ * `framedBy` 说明这张图是谁装的框：`'teacher'` = 老师保存的成品图（US-008b 写回的那一张，
+ * 直接挂），`'exhibition'` = 按画展的模板现画。
+ * @returns {Promise<Array<{id,student,title,date,imageUrl,framedBy}>>}
  */
 export async function resolveExhibitionArtworks(entries, { records = [], preset = null, onProgress } = {}) {
   const list = Array.isArray(entries) ? entries : [];
@@ -118,11 +150,11 @@ export async function resolveExhibitionArtworks(entries, { records = [], preset 
     onProgress?.({ done: i, total: list.length, student: entry.student || '' });
     if (!hasArtworkSource(entry, records)) continue;
     try {
-      const imageUrl = await resolveOne(entry, { byId, spec });
+      const { imageUrl, framedBy } = await resolveOne(entry, { byId, spec });
       if (imageUrl) {
         out.push({
           id: entry.id, student: entry.student || '', title: entry.title || '',
-          date: entry.date || '', source: entry.source, imageUrl
+          date: entry.date || '', source: entry.source, imageUrl, framedBy
         });
       }
     } catch { /* 单幅失败不该拖垮整场画展 */ }

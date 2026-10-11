@@ -21,10 +21,30 @@ export function persistFeedbackRecords(records){
   // 一条指向不存在素材的垃圾地址（US-408 的素材隐私口径）；data: URL 是归档成品，保留。
   const safe=stripSessionMediaUrls(records);
   try { window.localStorage.setItem(STORAGE_KEY,JSON.stringify(safe)); }
-  catch { window.localStorage.setItem(STORAGE_KEY,JSON.stringify(safe.map(record=>({...record,artworkUrl:'',photoUrl:'',videoUrl:''})))); }
+  catch {
+    // 配额不够时的第二档降级：连成品图（US-008b 写回的档案副本，几百 KB）一起瘦身。
+    // 不瘦它的话这一句会再抛一次，异常会从 effect 里冒出去 —— 宁可少一张图也要留住记录本身。
+    window.localStorage.setItem(STORAGE_KEY,JSON.stringify(
+      safe.map(record=>({...record,artworkUrl:'',photoUrl:'',videoUrl:'',framedArtwork:record.framedArtwork?{...record.framedArtwork,imageUrl:''}:record.framedArtwork}))
+    ));
+  }
 }
 
-export function createFeedbackRecord({media,subject,reviews,mode,student='未选择学员',className='未选择班级'}){
+/**
+ * 记录里的「成品图写回」（US-008b）。
+ *
+ * 记录本身存的是**处理后的作品**（`artworkUrl` = 画心），画展挂上墙时再按画展的装裱方案现画 ——
+ * 这是画展一贯的口径（见 gallery/exhibitionArtworks.js 的文件头）。老师保存过的成品图另存一份：
+ * 画展遇到它就**直接挂这一张**（不再套一层框，也不会出现"框里再套一个框"），
+ * 五维点评页与成长档案也读它。没写过回的记录照旧走原路，行为一字不变。
+ */
+function framedArtworkOf(media, framedArtwork){
+  if(framedArtwork) return framedArtwork;
+  const artwork=media&&typeof media==='object'?media.artwork:null;
+  return artwork&&typeof artwork==='object'?artwork.writeBack||null:null;
+}
+
+export function createFeedbackRecord({media,subject,reviews,mode,student='未选择学员',className='未选择班级',framedArtwork=null,lessonId='',lessonDate=''}){
   const now=new Date();
   const date=now.toISOString().slice(0,10);
   return {
@@ -45,6 +65,10 @@ export function createFeedbackRecord({media,subject,reviews,mode,student='未选
     videoUrl:'',
     artworkSource:'processed-linework',
     photoSource:'processed-photo',
+    // 课次上下文与成品图写回：归档时的溯源（US-008b 点名的四项就落在 framedArtwork 里）。
+    lessonId,
+    lessonDate,
+    framedArtwork:framedArtworkOf(media,framedArtwork),
     reviews,
   };
 }

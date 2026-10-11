@@ -7,8 +7,9 @@
 //   - 微信 JPG：`image/jpeg` 质量 0.85，先按标称质量编一次，超 1MB 就按阶梯降质重编，
 //     直到装进上限 —— 返回**实际使用的质量**，界面据此如实说明（不是嘴上说 0.85）。
 //
-// 本模块**不做写回**（写回课次作品位与溯源记录是 US-008b）：它只负责「合成一档成品并把它交给浏览器保存」，
-// 返回值里的 `blob / filename / plan / qualityUsed` 就是 US-008b 的输入，不需要再渲染第二次。
+// 本模块**不做写回**（写回作品位与溯源记录是 US-008b）：它只负责「合成一档成品并把它交给浏览器保存」，
+// 返回值里的 `canvas / blob / filename / plan / qualityUsed` 就是 US-008b 的输入
+// （画布用来缩出档案口径的持久副本，blob 是被下载的那份字节），不需要再渲染第二次。
 
 import {
   artworkExportFilename,
@@ -92,6 +93,9 @@ export async function composeArtworkExport({
   });
   const encoded = await encodeArtworkExportBlob(canvas, entry.id);
   return {
+    // 合成用的画布原样带出去：写回档案的持久副本（US-008b）从它缩到档案口径，
+    // 不需要再渲染第二次 —— 写回与下载因此必然是同一张画面。
+    canvas,
     quality: entry.id,
     qualityLabel: entry.label,
     mimeType: entry.mimeType,

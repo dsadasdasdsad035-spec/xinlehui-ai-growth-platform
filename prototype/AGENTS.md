@@ -529,7 +529,42 @@ DSH 的 `browser_*` 工具**没有 selectOption 能力**：`browser_type` 走的
   「长按图片 → 保存图片 / 存储到照片」的提示页（页面内用 object URL 显示真图，关闭时 `revoke`）。
   判据是纯函数，验证时用 CDP `Emulation.setUserAgentOverride` 真的切 UA 就能端到端跑通两条路径。
 - **本故事不写回课次**（FR-27 的 (b) 是 US-008b）：`composeArtworkExport()` 返回
-  `{blob, filename, width, height, plan, qualityUsed}` 就是写回侧要的输入，别在 UI 里再渲染第二次。
+  `{canvas, blob, filename, width, height, plan, qualityUsed}` 就是写回侧要的输入，别在 UI 里再渲染第二次。
+
+## 保存图片：成品图写回作品位与溯源（US-008b / FR-27）
+
+「保存图片」是**两件互不阻断的事**：① 下载（US-008a）；② 把成品图 + 溯源写进
+**本次课后反馈的作品位**（本故事）。规则集中在 `src/data/artworkWriteBack.js`（零依赖纯函数），
+DOM/canvas 部分在 `src/services/artworkWriteBack.js`，编排在 `main.jsx` 的
+`performArtworkWriteBack` / `retryArtworkWriteBack`。
+
+- **写回落在哪儿**：作品位上的 `writeBack` 子对象 —— 个人反馈是 `media.artwork`（走
+  `applyWriteBackToSlot`），班级反馈是那条上传条目（走 `updateUploadEntry`，
+  **因此 `writeBack` 必须留在 `createUploadEntry` 的白名单里**，否则条目一重建就被静默丢掉）。
+- **写回的图是什么档**：`ARTWORK_WRITE_BACK_IMAGE` = 档案展示口径（长边 ≤1600 · JPEG 0.85，
+  与微信档同参数），从**合成用的那张画布**缩出来（`encodeArtworkWriteBackImage`）。理由：
+  作品位要进 localStorage（归档 → 记录 → 3D 画廊贴图），高清 PNG 的 data URL 可到 1.5MB；
+  老师本机下载的母版仍按所选档位（高清 PNG 保留裁剪后的原始像素），界面上写明了这个分工。
+- **四项溯源**（PRD 点名）：`specSnapshot`（当时的整份渲染视图，配 `specKey` 可复现）、
+  `sourceUrl`（本次导出的底图地址 + 指纹）、`generatedAt`、`operatorId`（原型阶段 = 会话身份串
+  `roleMeta.teacher.name`）。`artworkWriteBackProblem()` 把这四项当**必填**：缺任何一项都算没写好，
+  走「未能同步到档案」那条路。
+- **新鲜度键**（最容易踩）：`artworkWriteBackKey({specKey, sourceUrl, student, title, lessonDate,
+  teacherName, orgName, rotation})` —— 装裱参数 + 底图 + **图上会印的变量**。少一项就会出现
+  「改了框 / 换了学员名，档案里还是旧图」。消费点只有两个入口：`writtenBackImageUrl(slot, key)`
+  与 `artworkWriteBackOf(slot)`；**过期就返回空串**，由调用方退回实时渲染 —— 旧图不许冒充新图。
+- **消费点**：第三步个人反馈的 `<img>`（`reviewFramedSrc`）、班级合展的 `figureOf`（传 `writtenBackKey`）、
+  归档记录（`createFeedbackRecord({framedArtwork})`）、3D 画廊（`exhibitionArtworks`：
+  有 `record.framedArtwork.imageUrl` 就**直接挂这一张**，不再套画展的框 —— 否则「框里套框」；
+  没写过回的老记录一字不变）。
+- **已经归档过的记录要就地更新**：`currentRecordId` 记住本次归档的那条；保存图片时若它非空，
+  写回同时 `setRecords(map)`。换班 / 换学员 / 换模式 / 新建草稿都要清掉它，否则会把成品图
+  写到别人家的档案里。
+- **写回失败不阻断下载**：`artworkWriteBackFailureText()` 给出 PRD 原文那句
+  「已保存到本地，未能同步到档案…可重试」；面板上**耐用状态**（`-status`）与**最近一次尝试**
+  分开报（`-slot` vs `-status`：尝试失败时 status=failed，但 slot 仍是 synced/stale）——
+  两个都挂在 DOM 上，断言各读各的。重试只重跑写回（复用 `composeSaveImageExport` 同一份输入），
+  **不会再下载一次**。
 
 ## 装裱参数 spec：v1 平面结构 / v2 分组结构
 
@@ -1176,3 +1211,26 @@ service 模块也能在 Node 里测：`cloud.database` 是**可写属性**，导
   （两条都读过、都是旧的）；装配上仍然能读到「上传那一刻」的 media。
   要用「最终值」做断言时，一律以 **DOM 上的只读属性**为准（本轮面板把状态落成
   `data-save-image-status/ready/strategy/filename`，断言全读它们）。
+
+### 验证「写回 / 溯源」类功能（US-008b 起）
+
+- 写回面板已把状态落成只读属性：`data-save-image-writeback` 上
+  `-status`（最近一次尝试）/ `-slot`（作品位的耐用状态）/ `-fresh` / `-summary` / `-image`
+  （成品图地址指纹）/ `-record-id`；溯源逐项是 `[data-writeback-provenance="specSnapshot|sourceUrl|generatedAt|operatorId"]`
+  里的 `[data-writeback-provenance-value]`，参数快照整份 JSON 在 `[data-writeback-spec-snapshot]` 里。
+- **「点评页 / 画廊用的是写回的那张图」用地址指纹判**：面板的 `-image` 与页面里
+  `artworkUrlFingerprint(img.src)`（`await import('/src/data/artworkLayers.js')`，与 app 同一模块实例）
+  比对；只比「有没有图」证明不了换图。第三步还落了 `data-review-artwork-source`
+  （`writeback` / `framed`）与 `data-review-artwork-fingerprint`，班级合展是
+  `[data-mosaic-src="writeback"]` + `[data-mosaic-written-back]` 角标。
+- **写回失败注入点选 `HTMLCanvasElement.prototype.toDataURL`**：`composeArtworkExport` 只走
+  `loadImage + drawImage + toBlob`，所以打补丁让 `toDataURL` 抛错时**下载仍然成功**、只有写回失败 ——
+  这正是 PRD 要的那条降级。断言三件：`<a download>` 计数 +1、失败文案含
+  「已保存到本地，未能同步到档案」与「可重试」、重试按钮在；然后恢复补丁点重试，
+  断言 synced 且**下载计数没有二次增长**。
+- **档案侧的证据读 localStorage**：`xinlehui-feedback-records-v1` 里第一条就是刚归档的记录
+  （`framedArtwork.imageUrl` + 四项溯源 + `lessonId/lessonDate`）；画廊那一步用
+  `await import('/src/gallery/exhibitionArtworks.js')` 调**同一个** `resolveExhibitionArtworks`，
+  断言 `framedBy === 'teacher'`（写回图直接挂）与对照组 `framedBy === 'exhibition'`（老记录行为不变）。
+- 跑这类脚本前先 `localStorage.clear()` + reload：上一跑留下的草稿 / 课次 / 归档会让
+  「保存前是 idle」这类断言读成上一轮的状态（本轮真踩，第一次跑挂了这一条）。

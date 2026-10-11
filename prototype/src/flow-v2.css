@@ -534,9 +534,41 @@
 .save-image-sheet-card img{display:block;width:100%;height:auto;border-radius:10px;border:1px solid #eadfbd;background:#fff}
 .save-image-sheet-hint{margin:0;font-size:11px;line-height:1.7;font-weight:700;color:#7a5b00;background:#fff2c8;border-radius:10px;padding:9px 11px}
 .save-image-sheet-actions{display:flex;justify-content:flex-end;gap:9px}
+/* ---- 成品图写回课次作品位（[第二步 US-008b]）--------------------------------------
+   写回的图 + 四项溯源（参数快照 / 原图 / 生成时间 / 操作人）。三种状态各有颜色：
+   `is-synced`（已写回，点评页与画廊已用新图）、`is-stale`（参数改过，待重新保存）、
+   `is-failed`（下载成功但没写进档案，给「重试写回」）。 */
+.save-image-writeback{display:flex;flex-direction:column;gap:8px;border:1px dashed #e2d4a9;border-radius:13px;background:#fffdf3;padding:12px}
+.save-image-writeback.is-synced{border-style:solid;border-color:#cfe1b4;background:#f6fbef}
+.save-image-writeback.is-stale{border-color:#ecd9a5;background:#fff8e3}
+.save-image-writeback.is-failed{border-color:#eebdb6;background:#fdeceb}
+.save-image-writeback-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.save-image-writeback-head b{font-size:12px;color:#292720}
+.save-image-writeback-head em{font-style:normal;font-size:10px;font-weight:800;color:#7a5b00;background:#fff2c8;border-radius:999px;padding:3px 10px}
+.save-image-writeback.is-synced .save-image-writeback-head em{color:#3f5a1e;background:#e6f0d6}
+.save-image-writeback.is-failed .save-image-writeback-head em{color:#9a3529;background:#fadad5}
+.save-image-writeback-summary{margin:0;font-size:10px;line-height:1.7;color:#514a38;word-break:break-all}
+.save-image-writeback-context{margin:0;font-size:10px;line-height:1.6;color:#514a38}
+.save-image-writeback-note{margin:0;font-size:10px;line-height:1.6;color:#857a64}
+.save-image-writeback-error{margin:0;font-size:10px;line-height:1.7;font-weight:700;color:#9a3529;background:#fadad5;border-radius:10px;padding:8px 10px}
+.save-image-writeback-message{margin:0;font-size:10px;line-height:1.7;color:#6b6349}
+.save-image-writeback-provenance details>summary{font-size:10px;font-weight:800;color:#7a5b00;cursor:pointer}
+.save-image-writeback-provenance ul{display:flex;flex-direction:column;gap:6px;margin:8px 0 0;padding:0;list-style:none}
+.save-image-writeback-provenance li{display:flex;flex-direction:column;gap:3px;border-top:1px solid #f0e7cd;padding-top:6px}
+.save-image-writeback-provenance li b{font-size:10px;color:#857a64}
+.save-image-writeback-provenance li em{font-style:normal;font-size:10px;color:#292720;word-break:break-all}
+.save-image-writeback-provenance li small{font-size:10px;color:#857a64;word-break:break-all}
+.save-image-writeback-snapshot summary{font-size:10px;font-weight:700;color:#7a5b00;cursor:pointer}
+.save-image-writeback-snapshot pre{max-height:200px;overflow:auto;margin:6px 0 0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;line-height:1.5;color:#514a38;background:#f7f1de;border-radius:8px;padding:8px 10px}
+.save-image-writeback-actions{display:flex;gap:9px;flex-wrap:wrap}
+.save-image-writeback-actions button{border:1px solid #e3d7b5;background:#fff;border-radius:10px;padding:7px 12px;font-size:11px;font-weight:800;color:#514a38;cursor:pointer}
+.save-image-writeback-actions button:disabled{opacity:.5;cursor:default}
+/* 「这张是老师保存过的成品图」的角标：点评页与班级合展都用它标出来源。 */
+.written-back-badge{position:absolute;left:8px;top:8px;font-size:10px;font-weight:800;color:#3f5a1e;background:#e6f0d6;border:1px solid #cfe1b4;border-radius:999px;padding:2px 8px}
 @media(max-width:800px){
   .save-image-panel{padding:14px}
   .save-image-actions{grid-template-columns:1fr}
   .save-image-action{min-height:44px}
   .save-image-sheet-card button{min-height:44px}
+  .save-image-writeback-actions button{min-height:44px}
 }

@@ -21,6 +21,10 @@
  * 素材本体（File / object URL）不进数据模型，条目里只留 name/type/size/url 这些会话内引用。
  */
 
+// 成品图写回的收敛函数（US-008b）。data → data 的 import 不影响本模块的「零依赖纯函数」性质：
+// artworkWriteBack 同样不 import services、不碰 DOM，Node 里能直接跑。
+import { normalizeArtworkWriteBack } from './artworkWriteBack';
+
 /** 素材只有这两种：作品与课堂照片（视频已从这条流程里去掉）。 */
 export const UPLOAD_KINDS = ['artwork', 'photo'];
 
@@ -131,7 +135,11 @@ export function createUploadEntry(input = {}) {
     // 完整归属者列表：一人一份时长度为 1，全班合影之类的共用素材可以有多位。
     owners,
     // 作品名。US-406a 阶段默认取本次课题，US-406b 起由老师逐幅填写；照片不使用该字段。
-    title: String(source.title || '').trim()
+    title: String(source.title || '').trim(),
+    // 成品图写回（US-008b）：保存图片时把合成好的成品图 + 溯源记录挂在这条素材上。
+    // 必须走 normalizeArtworkWriteBack 收敛 —— 条目是白名单构造的，白名单外的字段会被静默丢掉，
+    // 所以新增字段**一定要**同时加进这个构造器（US-413 的教训）。
+    writeBack: normalizeArtworkWriteBack(source.writeBack)
   };
 }
 
