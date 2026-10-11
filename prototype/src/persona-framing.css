@@ -66,8 +66,9 @@
 .review-launch-actions { margin-top: 16px; display: flex; align-items: center; gap: 12px; }
 .review-launch-actions small { color: var(--muted); font-size: 12px; }
 
-/* 本次点评详情面板（US-103a）：默认折叠成一行摘要，点开才铺开推理过程与正文进度。
-   摘要文本与实时状态由 src/data/reviewDetailPanel.js 拼装，这里只管呈现。 */
+/* 本次点评详情面板（US-103a 折叠态 / US-103b 六分区与导出）：默认折叠成一行摘要，
+   点开才铺开六个分区（推理过程 / 加载清单 / 提示词 / 模型与参数 / 用量与耗时 / 输出原文）。
+   摘要文本、分区内容与导出文本都由 src/data/reviewDetailPanel.js 算好，这里只管呈现。 */
 .review-detail { margin: 16px 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow); overflow: hidden; }
 .review-detail-head { display: flex; align-items: center; gap: 10px; padding: 8px 14px 8px 12px; }
 .review-detail-toggle { flex: 1; display: flex; align-items: center; gap: 10px; min-width: 0; padding: 8px 4px; border: 0; background: none; font: inherit; text-align: left; color: var(--ink); cursor: pointer; }
@@ -86,15 +87,46 @@
 .review-detail-block-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
 .review-detail-block-head b { font-size: 13px; }
 .review-detail-block-head small { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
-.review-detail-reasoning pre { margin: 0; padding: 12px; max-height: 260px; overflow: auto; border-radius: 10px; background: var(--surface); font-family: inherit; font-size: 12px; line-height: 1.7; color: var(--muted); white-space: pre-wrap; }
 .review-detail-bar { height: 5px; border-radius: 999px; background: #efe9dd; overflow: hidden; }
 .review-detail-bar i { display: block; height: 100%; border-radius: 999px; background: var(--blue); transition: width .3s ease; }
 .review-detail-live p { margin: 10px 0 0; max-height: 240px; overflow: auto; font-size: 13px; line-height: 1.8; color: var(--ink); white-space: pre-wrap; }
+/* —— US-103b：六个分区 —— */
+.review-detail-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 8px 10px; border: 1px dashed var(--border); border-radius: 10px; background: #fbf9f4; }
+.review-detail-tools button { padding: 7px 14px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); font: inherit; font-size: 13px; cursor: pointer; }
+.review-detail-tools button:hover { border-color: var(--blue); color: var(--blue); }
+.review-detail-tools small { color: var(--muted); font-size: 12px; }
+.review-detail-tools small[data-detail-copy-state="copied"] { color: var(--blue); }
+.review-detail-tools small[data-detail-copy-state="failed"] { color: var(--coral); }
+.review-detail-section { padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.review-detail-section pre { margin: 0; padding: 12px; max-height: 260px; overflow: auto; border-radius: 10px; background: var(--soft); font-family: inherit; font-size: 12px; line-height: 1.7; color: var(--muted); white-space: pre-wrap; word-break: break-word; }
+.review-detail-section > pre + .review-detail-live { margin-top: 12px; }
+.review-detail-loaded, .review-detail-modules ul, .review-detail-prompt ul, .review-detail-rows { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+.review-detail-loaded li { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 10px; font-size: 13px; }
+.review-detail-loaded li b { flex: none; }
+.review-detail-loaded li span { flex: none; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.review-detail-loaded li em, .review-detail-modules li em { flex: 1; min-width: 0; font-style: normal; font-size: 12px; color: #8a5a00; }
+.review-detail-loaded li.is-off b { color: var(--muted); }
+.review-detail-modules { margin-top: 10px; }
+.review-detail-modules summary { cursor: pointer; font-size: 13px; color: var(--blue); }
+.review-detail-modules ul { margin-top: 8px; }
+.review-detail-modules li { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 10px; font-size: 12px; }
+.review-detail-modules li span { color: var(--muted); font-variant-numeric: tabular-nums; }
+.review-detail-modules li.is-off b { color: var(--muted); }
+.review-detail-prompt { display: grid; gap: 8px; }
+.review-detail-prompt > b { font-size: 12px; color: var(--muted); }
+.review-detail-prompt li { font-size: 12px; color: var(--muted); }
+.review-detail-rows li { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: 13px; }
+.review-detail-rows li b { color: var(--muted); font-weight: 400; }
+.review-detail-rows li span { font-variant-numeric: tabular-nums; }
+.review-detail-section > small.review-detail-note { display: block; margin-top: 8px; color: var(--muted); font-size: 12px; }
 @media (max-width: 800px) {
   /* 窄屏：摘要允许折行（一行放不下时宁可多一行，也不要把模型与耗时藏进省略号）；按钮撑满，可点区域 ≥44px 由全局兜底。 */
   .review-detail-toggle { align-items: flex-start; flex-wrap: wrap; }
   .review-detail-toggle span { white-space: normal; overflow: visible; text-overflow: clip; }
   .review-detail-actions { align-self: stretch; }
+  /* 六个分区在窄屏不许横向滚：提示词与输出原文长行按词内换行（pre 已开 pre-wrap）。 */
+  .review-detail-body { padding: 12px 12px 14px; }
+  .review-detail-section { padding: 10px 10px; }
 }
 
 /* —— 装裱参数生成 —— */

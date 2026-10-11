@@ -7,7 +7,14 @@
 //  2. 生成中的实时状态：已用时、思考字数、正文进度（五维里已经落笔的维度数与正文字数）；
 //  3. 正文进度解析：从流式半成品 JSON 里按维度读出「写到第几维、写了多少字」。
 //
-// 零依赖（不 import 任何模块、不碰 DOM），可以直接用 Node 跑断言（见 prototype/AGENTS.md）。
+// 展开态的六个分区、导出文本与折叠态摘要读的是同一份数据口径（US-103b），
+// 三个「格式」类文案不在这里另写一套：
+//  - 素材体积（`860 KB` / `1.2 MB`）复用 `data/artworkExport.js` 的 `artworkExportSizeText`；
+//  - 时长（`1.2 秒` / `860 毫秒`）与素材正文守卫复用 `data/reviewTrace.js` 的同名函数（轨迹的唯一真源）；
+//  - 文件名（非法字符 / 课次日期）复用 `data/artworkExport.js`（与「保存图片」同一个文件名口径）。
+// 本模块仍然不碰 DOM、不发请求，可以直接用 Node 跑断言（见 prototype/AGENTS.md）。
+import { artworkExportDateText, artworkExportSizeText, sanitizeArtworkExportSegment } from './artworkExport';
+import { reviewTraceMediaViolations, reviewTraceSecondsText } from './reviewTrace';
 
 /** 面板阶段（与 `main.jsx` 的 `reviewStream.phase`、`reviewTrace` 的状态同一套词汇）。 */
 export const REVIEW_DETAIL_PHASES = {
@@ -238,4 +245,441 @@ export function reviewDetailReasoningPlaceholder(phase) {
   if (phase === REVIEW_DETAIL_PHASES.error) return '生成失败前没有收到推理增量。';
   if (phase === REVIEW_DETAIL_PHASES.stopped) return '老师停止生成前没有收到推理增量。';
   return '本次生成没有返回推理增量。';
+}
+
+// ---------------------------------------------------------------------------
+// 展开态：六个分区（[第三步 US-103b] / FR-110）
+// ---------------------------------------------------------------------------
+
+/** 六个分区的键与标题 —— 界面顺序与导出文本顺序都读这一份（不要在组件里另写一遍）。 */
+export const REVIEW_DETAIL_SECTIONS = [
+  { key: 'reasoning', title: '推理过程' },
+  { key: 'loaded', title: '加载清单' },
+  { key: 'prompt', title: '提示词' },
+  { key: 'model', title: '模型与参数' },
+  { key: 'usage', title: '用量与耗时' },
+  { key: 'output', title: '输出原文' }
+];
+
+export const REVIEW_DETAIL_SECTION_KEYS = REVIEW_DETAIL_SECTIONS.map((section) => section.key);
+
+export function reviewDetailSectionTitle(key) {
+  const found = REVIEW_DETAIL_SECTIONS.find((section) => section.key === str(key));
+  return found ? found.title : '';
+}
+
+/**
+ * 面板只属于**老师端第三步**（FR-114）：家长端与家长分享页不存在任何入口。
+ * 界面在渲染前问这一份判据，验证脚本在家长端页面上问同一份 —— 两处不会各写一套 `if`。
+ */
+export const REVIEW_DETAIL_SURFACES = {
+  teacherFlow: 'teacher-flow',
+  parentPortal: 'parent-portal',
+  parentShare: 'parent-share'
+};
+
+/** 允许出现面板的界面（只有老师端第三步）与角色（家长一律不允许）。 */
+export const REVIEW_DETAIL_ALLOWED_SURFACES = [REVIEW_DETAIL_SURFACES.teacherFlow];
+export const REVIEW_DETAIL_ALLOWED_ROLES = ['teacher', 'admin'];
+
+export function reviewDetailSurfaceAllowed({ surface = '', role = 'teacher' } = {}) {
+  if (!REVIEW_DETAIL_ALLOWED_SURFACES.includes(str(surface))) return false;
+  return REVIEW_DETAIL_ALLOWED_ROLES.includes(str(role) || 'teacher');
+}
+
+const ATTACHMENT_KIND_LABELS = { artwork: '学员作品', photo: '课堂照片' };
+
+/** 附件清单：**只描述引用**（序号 / 类型 / 文件名 / mime / 字节数 / hash），正文一个字都没有。 */
+export function reviewDetailAttachmentRows(prompt = {}) {
+  const list = prompt && Array.isArray(prompt.attachments) ? prompt.attachments : [];
+  return list.map((entry, position) => {
+    const source = entry && typeof entry === 'object' ? entry : {};
+    const kind = str(source.kind);
+    const kindLabel = ATTACHMENT_KIND_LABELS[kind] || '附件';
+    const name = str(source.name) || '未命名文件';
+    const mime = str(source.mime);
+    const bytes = Math.max(0, num(source.bytes));
+    const hash = str(source.hash);
+    const index = num(source.index) || position + 1;
+    const bytesText = bytes ? artworkExportSizeText(bytes) : '';
+    return {
+      index,
+      kind,
+      kindLabel,
+      name,
+      mime,
+      bytes,
+      bytesText,
+      hash,
+      text: [`附件 ${index}`, kindLabel, name, mime, bytesText, hash ? `hash ${hash}` : ''].filter(Boolean).join(' · ')
+    };
+  });
+}
+
+// 每项的「细节」列：标签已经单独一列渲染（导出文本里也紧接着），所以这里**不再重复标签**，
+// 只写版本 / 条数 / 字符数这些小字。
+const LOADED_DETAIL_BUILDERS = {
+  file: (item) => [item.version, item.chars ? `${item.chars} 字` : ''].filter(Boolean).join(' · '),
+  skills: (item) => [`${item.count} 项`, item.chars ? `${item.chars} 字` : ''].filter(Boolean).join(' · '),
+  files: (item) => [`${item.count} 个`, item.chars ? `${item.chars} 字` : ''].filter(Boolean).join(' · '),
+  template: (item) => [
+    item.version,
+    item.groups ? `${item.groups} 组` : '',
+    item.count ? `${item.count} 词` : '',
+    item.chars ? `${item.chars} 字` : ''
+  ].filter(Boolean).join(' · '),
+  modules: (item) => [`${item.count}/${item.total} 项`, item.chars ? `${item.chars} 字` : ''].filter(Boolean).join(' · ')
+};
+
+/**
+ * 加载清单的挂载点（`reviewDetailLoaded().items`）→ 界面上的一行。
+ * 每行都写明 `[已加载] / [未加载]` 与没加载的原因，导出文本直接读 `text`。
+ */
+export function reviewDetailLoadedRows(loaded) {
+  const items = loaded && Array.isArray(loaded.items) ? loaded.items : [];
+  return items.map((entry) => {
+    const source = entry && typeof entry === 'object' ? entry : {};
+    const kind = str(source.kind);
+    const label = str(source.label);
+    const included = Boolean(source.included);
+    const reason = str(source.reason);
+    const detail = {
+      ...source,
+      label,
+      count: num(source.count),
+      total: num(source.total),
+      groups: num(source.groups),
+      chars: num(source.chars)
+    };
+    // 没加载的项不写版本 / 字符数（那些数字与「本次没进去」矛盾），只留一句「为什么没加载」。
+    const detailText = included ? (LOADED_DETAIL_BUILDERS[kind] || (() => ''))(detail) : '';
+    return {
+      key: str(source.key),
+      label,
+      kind,
+      detail: detailText,
+      included,
+      reason,
+      text: `${included ? '[已加载]' : '[未加载]'} ${label}${detailText ? ` · ${detailText}` : ''}${!included && reason ? ` —— ${reason}` : ''}`
+    };
+  });
+}
+
+/**
+ * 「提示词模块」子清单：本次拼装的每一个模块（含**没进去**的那些，以及它们为什么没进去）。
+ * 模块清单来自 `buildPersonaPrompt()`（US-101），这里只做展示口径的归一。
+ */
+export function reviewDetailModuleRows(prompt = {}) {
+  const modules = prompt && Array.isArray(prompt.modules) ? prompt.modules : [];
+  return modules.map((entry) => {
+    const source = entry && typeof entry === 'object' ? entry : {};
+    const id = str(source.id);
+    const title = str(source.title) || id;
+    const version = str(source.version);
+    const from = str(source.source);
+    const chars = Math.max(0, num(source.chars));
+    const included = Boolean(source.included);
+    return {
+      id,
+      title,
+      version,
+      source: from,
+      chars,
+      included,
+      text: [`${included ? '[已加载]' : '[未加载]'} ${title}`, version, from, `${chars} 字`].filter(Boolean).join(' · ')
+    };
+  });
+}
+
+/** 参数的显示名（键名来自真正发给模型的那份参数表，`services/llmReview.js` 的 `REVIEW_MODEL_PARAMS`）。 */
+export const REVIEW_DETAIL_PARAM_LABELS = {
+  stream: '流式输出',
+  response_format: '响应格式',
+  stream_options: '流式用量统计',
+  reasoning_effort: '推理强度',
+  temperature: '温度'
+};
+
+/** 参数值 → 一行可读文本（布尔写「开/关」，对象按 `键 = 值` 展开，不做 JSON 嵌套）。 */
+export function reviewDetailParamValue(value) {
+  if (typeof value === 'boolean') return value ? '开' : '关';
+  if (value === null || value === undefined || value === '') return '—';
+  if (typeof value === 'object') {
+    const entries = Object.entries(value);
+    if (!entries.length) return '—';
+    return entries.map(([key, item]) => `${key} = ${typeof item === 'boolean' ? (item ? '开' : '关') : str(item)}`).join('、');
+  }
+  return str(value);
+}
+
+export function reviewDetailParamRows(params = {}) {
+  const source = params && typeof params === 'object' && !Array.isArray(params) ? params : {};
+  return Object.keys(source).map((key) => ({ key, label: REVIEW_DETAIL_PARAM_LABELS[key] || key, value: reviewDetailParamValue(source[key]) }));
+}
+
+/** 空值与 0 要分开：没有 token 计费时写「本次未返回」，不写「0」。 */
+const nullableNumber = (value) => {
+  if (value === null || value === undefined || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+const TOKEN_ROW_DEFS = [
+  ['promptTokens', '提示词 tokens'],
+  ['completionTokens', '补全 tokens'],
+  ['reasoningTokens', '其中推理 tokens'],
+  ['totalTokens', '合计 tokens']
+];
+
+const TIMING_ROW_DEFS = [
+  ['queueMs', '排队'],
+  ['firstTokenMs', '首字延迟'],
+  ['thinkingMs', '思考耗时'],
+  ['totalMs', '总耗时']
+];
+
+/**
+ * 用量与耗时：四项 tokens + 单次成本估算，四个时刻的三项独立时长（PRD FR-104/FR-105）。
+ * 没有 token 时如实写「本次未返回」，不编造 0；时长走 `reviewTraceSecondsText`（与轨迹文案同一份）。
+ */
+export function reviewDetailUsageRows(usage = {}, timing = {}) {
+  const u = usage && typeof usage === 'object' ? usage : {};
+  const t = timing && typeof timing === 'object' ? timing : {};
+  const tokens = TOKEN_ROW_DEFS.map(([key, label]) => {
+    const value = nullableNumber(u[key]);
+    const valueText = value === null ? '本次未返回' : String(value);
+    return { key, label, value, valueText, text: `${label}：${valueText}` };
+  });
+  const timingRows = TIMING_ROW_DEFS.map(([key, label]) => {
+    const value = nullableNumber(t[key]);
+    const valueText = value === null ? '—' : reviewTraceSecondsText(value);
+    return { key, label, value, valueText, text: `${label}：${valueText}` };
+  });
+  const cost = u.cost && typeof u.cost === 'object'
+    ? { amount: nullableNumber(u.cost.amount) ?? 0, currency: str(u.cost.currency), model: str(u.cost.model), priced: Boolean(u.cost.priced), label: str(u.cost.label) }
+    : null;
+  const costText = cost ? `${cost.currency} ${cost.amount}${cost.label ? `（${cost.label}）` : ''}` : '';
+  return {
+    tokens,
+    timing: timingRows,
+    cost,
+    costText,
+    hasTokens: tokens.some((row) => row.value !== null),
+    hasTiming: timingRows.some((row) => row.value !== null)
+  };
+}
+
+/** 输出原文的解析状态（FR-106 的「原样保存、便于排查」）：只看能不能解析，不改动原文。 */
+export function reviewDetailOutputParse(raw) {
+  const text = str(raw).trim();
+  if (!text) return { ok: null, message: '' };
+  const stripped = text.replace(/^```[a-zA-Z]*\s*/, '').replace(/```\s*$/, '').trim();
+  try {
+    JSON.parse(stripped);
+    return { ok: true, message: '原文可解析为 JSON' };
+  } catch (error) {
+    return { ok: false, message: `原文不是合法 JSON（解析失败：${error.message}），已原样保留便于排查` };
+  }
+}
+
+/** 导出载荷的版本：分区结构变化时抬高它（导出的 JSON 自带这一行）。 */
+export const REVIEW_DETAIL_VERSION = 1;
+
+/**
+ * 面板的**唯一数据入口**：把界面上的六类输入（流式增量 / 加载清单 / 提示词 / 轨迹 / 模型参数 / 上下文）
+ * 归一成一份 `payload`。六个分区、Markdown、JSON 导出与「复制全部」都读它 —— 界面不再自己拼文案，
+ * 于是「界面上看到什么」与「导出里有什么」永远一致（浏览器断言与 Node 断言读同一份）。
+ */
+export function reviewDetailPayload(input = {}) {
+  const source = input && typeof input === 'object' ? input : {};
+  const phase = str(source.phase) || REVIEW_DETAIL_PHASES.done;
+  const prompt = source.prompt && typeof source.prompt === 'object' ? source.prompt : {};
+  const system = str(prompt.system);
+  const user = str(prompt.user);
+  const reasoning = str(source.reasoning);
+  const output = str(source.output);
+  const loadedRows = reviewDetailLoadedRows(source.loaded);
+  const moduleRows = reviewDetailModuleRows(prompt);
+  const attachments = reviewDetailAttachmentRows(prompt);
+  const params = reviewDetailParamRows(source.params);
+  const usage = reviewDetailUsageRows(source.usage, source.timing);
+  const payload = {
+    version: REVIEW_DETAIL_VERSION,
+    exportedAt: str(source.exportedAt) || new Date().toISOString(),
+    meta: {
+      title: '本次点评详情',
+      taskLabel: str(source.taskLabel) || '五维点评',
+      student: str(source.student),
+      lesson: str(source.lessonDate),
+      status: reviewDetailPhaseLabel(phase),
+      phase,
+      model: str(source.model),
+      traceId: str(source.traceId),
+      requests: num(source.requests),
+      error: str(source.message) ? { message: str(source.message) } : null
+    },
+    sections: [
+      {
+        key: 'reasoning',
+        title: reviewDetailSectionTitle('reasoning'),
+        chars: reasoning.length,
+        text: reasoning || reviewDetailReasoningPlaceholder(phase),
+        empty: !reasoning
+      },
+      {
+        key: 'loaded',
+        title: reviewDetailSectionTitle('loaded'),
+        rows: loadedRows,
+        modules: moduleRows,
+        included: loadedRows.filter((row) => row.included).length,
+        total: loadedRows.length,
+        modulesIncluded: moduleRows.filter((row) => row.included).length,
+        modulesTotal: moduleRows.length
+      },
+      {
+        key: 'prompt',
+        title: reviewDetailSectionTitle('prompt'),
+        system,
+        user,
+        systemChars: system.length,
+        userChars: user.length,
+        attachments
+      },
+      {
+        key: 'model',
+        title: reviewDetailSectionTitle('model'),
+        model: str(source.model),
+        params
+      },
+      {
+        key: 'usage',
+        title: reviewDetailSectionTitle('usage'),
+        tokens: usage.tokens,
+        timing: usage.timing,
+        cost: usage.cost,
+        costText: usage.costText,
+        hasTokens: usage.hasTokens,
+        hasTiming: usage.hasTiming,
+        // 生成中与「这次没有用量」是两种口径：前者等下就有，后者如实说明没有。
+        note: usage.hasTokens || usage.hasTiming
+          ? ''
+          : (phase === REVIEW_DETAIL_PHASES.running ? '生成中：四项 tokens 与三段耗时会在模型收束后写齐。' : '本次没有拿到用量数据（模型未返回 usage）。')
+      },
+      {
+        key: 'output',
+        title: reviewDetailSectionTitle('output'),
+        chars: output.length,
+        text: output,
+        parse: reviewDetailOutputParse(output),
+        empty: !output
+      }
+    ],
+    // 隐私：导出里**不允许**出现素材正文（data URL / base64 / blob:）。
+    // 判据用轨迹的同一条守卫（`reviewTraceMediaViolations`），落盘与断言读同一份。
+    mediaSafe: true,
+    mediaViolations: []
+  };
+  const violations = reviewTraceMediaViolations(payload);
+  payload.mediaSafe = violations.length === 0;
+  payload.mediaViolations = violations.map((item) => item.path);
+  return payload;
+}
+
+/** 代码块围栏：正文里已经有三个反引号时自动加长，避免导出文本被自己的内容截断。 */
+function reviewDetailFence(text) {
+  const runs = str(text).match(/`+/g) || [];
+  const size = Math.max(3, ...runs.map((run) => run.length + 1));
+  const fence = '`'.repeat(size);
+  return `${fence}\n${str(text)}\n${fence}`;
+}
+
+/** 六个分区的 Markdown 文本（「复制全部」与「导出 Markdown」用同一份 —— 复制到什么就导出什么）。 */
+export function reviewDetailMarkdown(payload) {
+  const source = payload && typeof payload === 'object' ? payload : {};
+  const meta = source.meta && typeof source.meta === 'object' ? source.meta : {};
+  const lines = [`# ${meta.title || '本次点评详情'}（${meta.taskLabel || '五维点评'}）`, ''];
+  const metaRows = [
+    ['学员', meta.student],
+    ['课次日期', meta.lesson],
+    ['状态', meta.status],
+    ['模型', meta.model],
+    ['轨迹 id', meta.traceId],
+    ['导出时间', source.exportedAt]
+  ];
+  metaRows.filter(([, value]) => str(value)).forEach(([label, value]) => lines.push(`- ${label}：${value}`));
+  if (meta.error?.message) lines.push(`- 错误：${meta.error.message}`);
+  lines.push('');
+
+  const sections = Array.isArray(source.sections) ? source.sections : [];
+  sections.forEach((section) => {
+    const key = str(section?.key);
+    lines.push(`## ${section?.title || reviewDetailSectionTitle(key)}`, '');
+    if (key === 'reasoning') {
+      lines.push(reviewDetailFence(section.text || '（本次没有推理增量）'), '');
+    } else if (key === 'loaded') {
+      (section.rows || []).forEach((row) => lines.push(`- ${row.text}`));
+      const modules = section.modules || [];
+      if (modules.length) {
+        lines.push('', `### 提示词模块（${section.modulesIncluded ?? modules.filter((row) => row.included).length}/${section.modulesTotal ?? modules.length} 项）`, '');
+        modules.forEach((row) => lines.push(`- ${row.text}`));
+      }
+      lines.push('');
+    } else if (key === 'prompt') {
+      lines.push(`### system（${section.systemChars || 0} 字）`, '', reviewDetailFence(section.system || '（空）'), '');
+      lines.push(`### user（${section.userChars || 0} 字）`, '', reviewDetailFence(section.user || '（空）'), '');
+      const attachments = section.attachments || [];
+      lines.push(`### 附件（${attachments.length} 个，只记引用与 hash，不含图片正文）`, '');
+      attachments.forEach((row) => lines.push(`- ${row.text}`));
+      lines.push('');
+    } else if (key === 'model') {
+      if (section.model) lines.push(`- 模型：${section.model}`);
+      (section.params || []).forEach((row) => lines.push(`- ${row.label}：${row.value}`));
+      lines.push('');
+    } else if (key === 'usage') {
+      (section.tokens || []).forEach((row) => lines.push(`- ${row.text}`));
+      (section.timing || []).forEach((row) => lines.push(`- ${row.text}`));
+      lines.push(`- 估算成本：${section.costText || '本次未产生可估算的用量'}`);
+      lines.push('');
+    } else if (key === 'output') {
+      lines.push(reviewDetailFence(section.text || '（本次没有输出原文）'), '');
+      if (section.parse?.message) lines.push(`- ${section.parse.message}`);
+      lines.push('');
+    } else {
+      lines.push('');
+    }
+  });
+
+  lines.push('---', '');
+  lines.push(`- 素材正文：${source.mediaSafe === false ? '检测到疑似素材正文，请勿直接外发' : '不含（导出内容只有提示词、推理、输出与素材引用 / hash）'}`);
+  return `${lines.join('\n').trim()}\n`;
+}
+
+/** JSON 导出文本（缩进两格，便于直接看）。 */
+export function reviewDetailJsonText(payload) {
+  return `${JSON.stringify(payload && typeof payload === 'object' ? payload : {}, null, 2)}\n`;
+}
+
+/** 导出格式表：`导出 JSON / Markdown` 两个动作的唯一真源（扩展名与 mime 都从这里取）。 */
+export const REVIEW_DETAIL_EXPORT_FORMATS = {
+  markdown: { id: 'markdown', label: 'Markdown', extension: 'md', mimeType: 'text/markdown;charset=utf-8' },
+  json: { id: 'json', label: 'JSON', extension: 'json', mimeType: 'application/json;charset=utf-8' }
+};
+
+export function reviewDetailExportFormat(id) {
+  const key = str(id);
+  return REVIEW_DETAIL_EXPORT_FORMATS[key] || REVIEW_DETAIL_EXPORT_FORMATS.markdown;
+}
+
+export function reviewDetailExportText(payload, format) {
+  return reviewDetailExportFormat(format).id === 'json' ? reviewDetailJsonText(payload) : reviewDetailMarkdown(payload);
+}
+
+/** 导出文件名前缀（与「保存图片」同一条文件名纪律：去掉空格与非法字符，空片段不拼接）。 */
+export const REVIEW_DETAIL_FILENAME_PREFIX = '点评详情';
+
+export function reviewDetailExportFilename({ student = '', lessonDate = '', format = 'markdown' } = {}) {
+  const entry = reviewDetailExportFormat(format);
+  const segments = [student, artworkExportDateText(lessonDate)].map(sanitizeArtworkExportSegment).filter(Boolean);
+  if (!segments.length) segments.push('课次');
+  return `${[REVIEW_DETAIL_FILENAME_PREFIX, ...segments].join('_')}.${entry.extension}`;
 }

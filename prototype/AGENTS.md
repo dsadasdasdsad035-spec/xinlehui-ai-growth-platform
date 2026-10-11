@@ -1319,10 +1319,12 @@ DOM/canvas 部分在 `src/services/artworkWriteBack.js`，编排在 `main.jsx` �
   归档后镜像里有轨迹且带 recordId」、重新生成的 parentTraceId 链、中止 / 失败两种收束）；
   截图 157 / 158 留档。
 
-## 第三步「五维点评」的本次点评详情面板（US-103a / F-REVIEW-TRACE-02）
+## 第三步「五维点评」的本次点评详情面板（US-103a 折叠态 / US-103b 六分区与导出）
 
-第三步的「本次点评详情」面板**默认折叠**：平时只占一行摘要，点摘要行才展开推理过程与正文进度。
-摘要文本、实时状态与正文进度的唯一真源是 `src/data/reviewDetailPanel.js`（**零依赖**，可 Node 直跑），
+第三步的「本次点评详情」面板**默认折叠**：平时只占一行摘要，点摘要行才展开六个分区
+（推理过程 / 加载清单 / 提示词 / 模型与参数 / 用量与耗时 / 输出原文）。摘要文本、实时状态、
+六个分区的内容与「复制全部 / 导出」文本的唯一真源是 `src/data/reviewDetailPanel.js`
+（纯函数、不碰 DOM / 网络；只 import 同层的 data 模块复用格式口径，可 Node 直跑断言），
 界面（`main.jsx` 的 `ReviewDetailPanel`）不自己拼字符串。
 
 - 折叠态摘要 = `reviewDetailSummary({ loaded, model, phase, elapsedMs, reasoningChars, content, message })`：
@@ -1332,28 +1334,69 @@ DOM/canvas 部分在 `src/services/artworkWriteBack.js`，编排在 `main.jsx` �
 - **「加载了什么」必须来自提示词拼装处的那一份数据**：`startCloudReview` 里先 `buildPersonaPrompt(...)`
   拿 `modules`，再 `reviewDetailLoaded({ modules, skills, memory, keywordTerms, keywordGroups })` 落进
   `reviewLoaded` state —— 与真正发出去的 system 是同一个函数的产物，不要在面板里另推一套。
-  `items` 每项带 `included` 与没加载的原因（US-103b 的加载清单直接渲染它）；`modules` 项不进摘要（14 项太长）。
+  `items` 每项带 `included` 与没加载的原因（加载清单直接渲染它，`reviewDetailLoadedRows` 归一成一行文案）；
+  `modules` 项不进摘要（14 项太长），它只出现在展开后的「提示词模块」子清单里。
 - **正文进度按维度解析流式半成品 JSON**（`reviewContentProgress`）：维度键已出现但字符串未闭合也算
   「已落笔」，字数是已收到的部分；`ratio` 让「5/5 维」与「进度条满格」同时成立（写完的维度各占一格、
   正在写的那一维按字数补）。维度名与顺序的唯一真源是 `REVIEW_DIMENSION_NAMES`：
   `llmReview.js` 的 `DIMENSION_SPEC`（提示词与解析）与 `main.jsx` 的 `reviewDefaults`（五个编辑区）
   都从它派生 —— 改维度名只改这一处。
 - **面板状态与流内容分开**：`reviewStream = { phase, reasoning, content, message, startedAt, elapsedMs }`
-  只管内容与阶段，折叠与否是 `reviewDetailOpen`（默认 `false`）。**折叠只影响渲染**，
+  只管内容与阶段，折叠与否是 `reviewDetailOpen`（默认 `false`）。**折叠只影响渲染**（正文 DOM 整个不渲染），
   所以「折叠后再展开不丢内容、也不重新请求模型」是结构上的结论；`data-detail-requests`
   （`reviewRequests`，每次 `startCloudReview` +1）是这条的读数探针，别删。
 - **秒表按 `startedAt` 推算**（每 1 秒 tick 一次 `elapsedMs`），不要累加：折叠/展开、切步骤回来都不会
   算丢或算重；收束（成功 / 失败 / 停止）时把 `elapsedMs` 冻在 `Date.now() - startedAt`，此后不再涨。
-- **推理过程不做打字机缓冲**：`<pre data-detail-reasoning>` 直接渲染 `stream.reasoning`，模型来一段就长一段
+- **推理过程不做打字机缓冲**：`<pre data-detail-reasoning>` 直接渲染推理增量，模型来一段就长一段
   （缓冲会吞掉 / 滞后内容，也难断言）；`data-detail-reasoning-chars` 是当前字数，等于文本长度。
-- 面板只挂在**第三步**（`step===3 && phase!=='idle'`），跟随 `reviewStream.phase` 出现，生成前完全不渲染。
+- 面板只挂在**第三步**（`step===3 && phase!=='idle' && reviewDetailSurfaceAllowed({surface:teacher-flow, role})`），
+  跟随 `reviewStream.phase` 出现，生成前完全不渲染。
   「停止生成」把 phase 写成 `'stopped'`（**不是**回到 `idle`）：已停止要能显示出来，停止前的增量也要留着。
   `ReviewLaunchPanel` 在生成中把「开始生成点评」置灰、人设选择器禁用，避免误触重启（重启入口是面板上的
   「重新生成」）。
-- 验证方式（本轮实测）：Node 直跑 `data/reviewDetailPanel.js` **24 项** + 提示词回归 **172 项**
-  （13 组输入与 HEAD 逐字符一致 + 每个维度名都出现在提示词里）+ US-102 的 114 / 70 / 58 项回归；
-  浏览器 **52 项**（headless Chrome + CDP + 替身慢速流：默认折叠 → 生成中实时读数 → 展开逐字追加 →
-  折叠再展开不丢内容且替身调用数不变 → 成功 / 失败 / 停止三态 → 归档回归 → 390px），截图 159~164 留档。
+
+### 六分区与「复制全部 / 导出」（US-103b / FR-110、FR-113、FR-114）
+
+- **一份载荷喂六个分区 + 两种导出**：`reviewDetailPayload({ phase, student, lessonDate, model, params,
+  requests, message, loaded, prompt, reasoning, output, usage, timing, traceId, taskLabel, exportedAt })`
+  返回 `{ version, exportedAt, meta, sections[6], mediaSafe, mediaViolations }`；
+  `reviewDetailMarkdown(payload)` / `reviewDetailJsonText(payload)` 与「复制全部」读**同一份载荷**，
+  所以「界面上看到什么」与「导出里有什么」不可能漂移。界面只做 `sectionOf(key)` 取分区再渲染。
+- **分区键与标题只写一次**：`REVIEW_DETAIL_SECTIONS`（顺序 = 界面顺序 = 导出顺序），
+  界面用 `data-detail-section="<key>"` 渲染，验证脚本按同一份顺序断言。
+- **「面板上看到的就是实际用的」靠同源，不靠人工对齐**：`services/llmReview.js` 的
+  `REVIEW_MODEL_PARAMS`（stream / response_format / stream_options / reasoning_effort / temperature）
+  是**真实请求参数**的唯一真源，调用点展开它、面板读它；`buildReviewPromptBundle(...)` 返回
+  `{ system, user, modules, attachments }`，`streamArtworkReview` 内部与 `main.jsx` 的面板读**同一个纯函数**
+  （`user` 只有文字、`attachments` 只有引用与 hash，图片正文结构上进不来）。
+- **用量 / 耗时 / 输出原文以轨迹为准**：`onTrace` 落一份**渲染副本** `reviewTracePanel`（ref 仍只管归档留档），
+  面板的「用量与耗时」「输出原文」优先读它，生成中回落读流式增量；
+  时长文案走 `reviewTraceSecondsText`、素材体积走 `artworkExportSizeText`，不要再写第二套格式函数。
+- **导出时间戳按一次生成冻结**（`exportedAtRef`，`requests` 变化时重置）：否则同一份内容两次导出会因为
+  `new Date()` 不同而出现「复制全部 ≠ 导出 Markdown」；冻结后两者必须**逐字符相同**（浏览器断言就是这么比的）。
+- **家长端与家长分享页不存在入口**（FR-114）：`REVIEW_DETAIL_SURFACES` +
+  `reviewDetailSurfaceAllowed({ surface, role })` 是唯一判据（只有 `teacher-flow` + 非家长角色放行），
+  界面渲染前问它、验证脚本在家长端每个页面上问同一份。以后新增「家长分享页」时必须复用这个函数，
+  不要另写 `if (role==='parent')`。
+- **导出/复制里不许出现素材正文**：载荷自带 `mediaSafe` / `mediaViolations`
+  （复用 `reviewTraceMediaViolations` 的同一条守卫），导出与复制都只是字符串搬运；
+  文件名 `点评详情_<学员>_<课次日期>.{md,json}` 复用 `sanitizeArtworkExportSegment` / `artworkExportDateText`
+  （与「保存图片」同一套文件名纪律）。
+- **只读 DOM 探针是验收的读数**：`data-review-detail-surface`、`data-detail-open`、`data-detail-sections`
+  （=6）、`data-detail-section` / `-title`、`data-detail-loaded-item` / `-included`、`data-detail-module` /
+  `-included`、`data-detail-prompt-system` / `-user`（+ `-chars`）、`data-detail-attachment`、
+  `data-detail-model`、`data-detail-param`、`data-detail-token` / `-timing`（`data-detail-value` 给原始值）、
+  `data-detail-cost`、`data-detail-output` / `-chars` / `-parse`、`data-detail-copy-state`、
+  `data-detail-export-state`。新增分区请沿用这套命名。
+- 验证方式（本轮实测）：Node 直跑 `data/reviewDetailPanel.js` **26 项**（六分区 / 加载清单行 / 附件引用 /
+  参数行 / 用量与耗时 / 解析状态 / Markdown 与 JSON 往返 / 文件名 / 界面白名单 / 脏输入容错 / 确定性）
+  + 服务层 **16 项**（`REVIEW_MODEL_PARAMS` 与 HEAD 内联参数逐字段一致、5 组输入「真发 payload 逐字段一致」、
+  面板提示词 = 真发 messages）+ 回归（US-102 数据 114 / 服务 70、US-101 提示词 172、trace 58）；
+  浏览器 **51 项**（headless Chrome + CDP + 替身：折叠态不渲染正文 DOM → 生成 → 展开六分区逐项对照
+  真发 payload / 轨迹 → 剪贴板「复制全部」→ 真实落盘导出 JSON 与 Markdown（内容与剪贴板逐字符相同）→
+  折叠再展开不丢内容且不重新请求 → 390px → 家长端逐页扫描无入口 → 0 异常），截图 165~169 留档；
+  US-103a 的 52 项浏览器断言作为回归全绿。
+
 
 ## 容易踩的坑
 
@@ -1685,6 +1728,21 @@ service 模块也能在 Node 里测：`cloud.database` 是**可写属性**，导
 - **UA 分支用 CDP `Emulation.setUserAgentOverride` 真跑**：切到
   `... MicroMessenger/8.0.49 ...`（微信）与 `... iPhone OS 17_5 ...`（iOS Safari）后 reload，
   断言面板标成「长按保存」、点保存后出现提示页、并且 `<a download>` 计数**保持 0**。
+- **导出文件要落到磁盘再读回来**（US-103b 起）：`Browser.setDownloadBehavior
+  { behavior:'allow', downloadPath }` 指到一个空目录，点导出后轮询目录（文件可能先出现但还没写完，
+  所以「非空才返回」），再 `fs.readFileSync` 解析内容（JSON 直接 `JSON.parse`，Markdown 逐字符比对）；
+  比用 `prototype.click` 打补丁强 —— 它证明的是「用户真能拿到文件」，补丁只能证明「调过函数」。
+- **剪贴板写入要给权限并读回来**（US-103b 起）：`Browser.grantPermissions
+  { permissions:['clipboardReadWrite','clipboardSanitizedWrite'], origin }`，点「复制全部」后
+  `await navigator.clipboard.readText()` 与导出文件**逐字符比对**（同一次生成里两者必须完全一致 ——
+  这也是「导出时间戳按一次生成冻结」这条设计的判据）。
+- **「家长端不存在某个入口」要逐页扫，不要只看当前页**（US-103b 起）：登录家长身份后遍历侧边栏每一项，
+  每次点击后统计 `[data-review-detail]` / `[data-detail-toggle]` / `[data-detail-section]` 与
+  「复制全部」这类按钮的数量，全部为 0 才算通过；再在页面内 `await import('/src/data/…')` 直调那份
+  白名单判据（`reviewDetailSurfaceAllowed`）覆盖「家长分享页」这类**还没实现的界面**。
+- **headless SwiftShader 下 3D 画廊会打印 `THREE.WebGLRenderer` 的 console error**（US-103b 起）：
+  这是环境限制（本机 CDP 启动参数用了 `--disable-gpu`），既有故事同样如此；
+  断言「0 console error」时要按 `/WebGL|THREE\./` 过滤并如实打印过滤条数，不要为了好看把整条断言删掉。
 
 ### 只读探针读 React state 的两个坑（US-008a 起）
 

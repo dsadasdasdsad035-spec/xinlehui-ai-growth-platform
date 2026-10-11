@@ -36,6 +36,19 @@ export const REVIEW_MODEL = 'glm-5.3-flash';
 // 因此固定为 'low'：既把等待压到 20 秒内，又保留可展示的思考增量。
 export const REVIEW_REASONING_EFFORT = 'low';
 
+/**
+ * 真正发给模型的参数表 —— **唯一真源**：调用点用它、详情面板「模型与参数」分区也读它
+ * （US-103b 的验收是「面板上看到的就是实际用的」，两处各写一份一定会漂）。
+ * 改这里就等于改真实请求参数，不要在面板里另抄一份。
+ */
+export const REVIEW_MODEL_PARAMS = {
+  stream: true,
+  response_format: { type: 'json_object' },
+  stream_options: { include_usage: true },
+  reasoning_effort: REVIEW_REASONING_EFFORT,
+  temperature: 0.4
+};
+
 const FALLBACK_SYSTEM = '你是一位儿童美术教育的成长观察者。只依据画面中真实可见的证据作答，证据不足时明确写出局限。';
 
 // 维度名与顺序的唯一真源在 `data/reviewDetailPanel.js` 的 REVIEW_DIMENSION_NAMES
@@ -106,6 +119,45 @@ export function buildPersonaPrompt(profile, extra = {}) {
 /** 向后兼容入口：只要 system 字符串（拼接结果与模块化改造前逐字符一致）。 */
 export function buildPersonaSystemPrompt(profile, extra = {}) {
   return buildPersonaPrompt(profile, extra).system;
+}
+
+/**
+ * 本次请求的提示词与附件清单 —— **纯函数、且与真正发出去的那一份同源**。
+ *
+ * 返回 `{ system, user, modules, attachments }`：
+ *  - `system` / `modules`：`buildPersonaPrompt()` 的产物（模块清单就是「加载了什么」）；
+ *  - `user`：user 消息里的**纯文本部分**（图片以 data URL 单独作为 content 项，绝不进这里的字符串）；
+ *  - `attachments`：附件的**引用与 hash**（`buildReviewTraceAttachments`，不含图片正文）。
+ *
+ * 详情面板（US-103b 的「提示词」分区）与 `streamArtworkReview` 都调它：面板上看到的就是实际发出去的，
+ * 且导出内容里不可能有素材正文（这是隐私口径的结构保证）。
+ */
+export function buildReviewPromptBundle({
+  profile,
+  skillLibrary,
+  subject,
+  studentName,
+  keywords,
+  teacherObservation,
+  artworkDataUrl,
+  photoDataUrl,
+  keywordCandidates,
+  keywordScope,
+  images
+} = {}) {
+  const prompt = buildPersonaPrompt(profile, { subject, skillLibrary, keywordCandidates, keywordScope });
+  const userContent = buildUserContent({ subject, studentName, keywords, teacherObservation, artworkDataUrl, photoDataUrl });
+  const media = images && typeof images === 'object' ? images : {};
+  const attachments = buildReviewTraceAttachments([
+    { kind: 'artwork', role: '主要美术能力依据', fileId: media.artwork?.id, name: media.artwork?.name, mime: media.artwork?.mime, content: artworkDataUrl },
+    { kind: 'photo', role: '课堂观察素材', fileId: media.photo?.id, name: media.photo?.name, mime: media.photo?.mime, content: photoDataUrl }
+  ]);
+  return {
+    system: prompt.system,
+    modules: prompt.modules,
+    user: String(userContent[0]?.text || ''),
+    attachments
+  };
 }
 
 function buildUserContent({ subject, studentName, keywords = [], teacherObservation = '', artworkDataUrl, photoDataUrl }) {
@@ -185,13 +237,24 @@ export function readableFromRawJson(raw) {
  */
 export async function streamArtworkReview({ profile, skillLibrary, subject, studentName, keywords, teacherObservation, artworkDataUrl, photoDataUrl, keywordCandidates, keywordScope, onReasoning, onContent, signal, trace: traceSeed, onTrace }) {
   // US-101 起 system 由模块拼成；这里同时拿到模块清单（轨迹的「加载了哪些提示词」）。
-  const prompt = buildPersonaPrompt(profile, { subject, skillLibrary, keywordCandidates, keywordScope });
-  const userContent = buildUserContent({ subject, studentName, keywords, teacherObservation, artworkDataUrl, photoDataUrl });
+  // 提示词与附件清单走 `buildReviewPromptBundle` —— 详情面板（US-103b）读的是同一份产物。
   const images = traceSeed?.images || {};
-  const attachments = buildReviewTraceAttachments([
-    { kind: 'artwork', role: '主要美术能力依据', fileId: images.artwork?.id, name: images.artwork?.name, mime: images.artwork?.mime, content: artworkDataUrl },
-    { kind: 'photo', role: '课堂观察素材', fileId: images.photo?.id, name: images.photo?.name, mime: images.photo?.mime, content: photoDataUrl }
-  ]);
+  const bundle = buildReviewPromptBundle({
+    profile,
+    skillLibrary,
+    subject,
+    studentName,
+    keywords,
+    teacherObservation,
+    artworkDataUrl,
+    photoDataUrl,
+    keywordCandidates,
+    keywordScope,
+    images
+  });
+  const prompt = { system: bundle.system, modules: bundle.modules };
+  const userContent = buildUserContent({ subject, studentName, keywords, teacherObservation, artworkDataUrl, photoDataUrl });
+  const attachments = bundle.attachments;
   // 轨迹：**只驻留内存**（调用方拿到 `onTrace` 的结果之后才可能在归档时提交云端）。
   // 图片只进 attachments 的「引用 + hash」（`buildReviewTraceAttachments`），正文一个字都不进轨迹。
   let trace = createReviewTrace({
@@ -216,11 +279,8 @@ export async function streamArtworkReview({ profile, skillLibrary, subject, stud
         { role: 'system', content: prompt.system },
         { role: 'user', content: userContent }
       ],
-      stream: true,
-      response_format: { type: 'json_object' },
-      stream_options: { include_usage: true },
-      reasoning_effort: REVIEW_REASONING_EFFORT,
-      temperature: 0.4,
+      // 参数表是唯一真源：详情面板「模型与参数」分区读的也是这一份（改了这里就等于改了真实请求）。
+      ...REVIEW_MODEL_PARAMS,
       signal
     })) {
       const at = new Date().toISOString();

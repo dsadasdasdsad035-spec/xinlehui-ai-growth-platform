@@ -123,20 +123,27 @@ import { renderBatchFramedArtwork } from './services/batchFraming';
 // 规则在 data 层（可 Node 断言），解码与读文件在 services 层。
 import { framingAssetRulesText, framingAssetSummary, MAX_FRAMING_ASSET_BYTES } from './data/framingAssets';
 import { readFramingAsset, inspectFramingAssetUrl } from './services/framingAssets';
-import { REVIEW_MODEL, buildPersonaPrompt, describeReviewError, readableFromRawJson, streamArtworkReview } from './services/llmReview';
+import { REVIEW_MODEL, REVIEW_MODEL_PARAMS, buildPersonaPrompt, buildReviewPromptBundle, describeReviewError, readableFromRawJson, streamArtworkReview } from './services/llmReview';
 import { keywordCandidatesPrompt, keywordCategoriesFor, keywordOptionsFor, orderKeywords, pickSupportedKeywords } from './data/reviewKeywords';
-// 本次点评详情面板（US-103a）：折叠态那一行摘要、生成中的实时状态与正文进度都读这一份，
-// 界面不自己拼字符串（口径要与验证脚本、与 US-103b 的展开分区完全一致）。
+// 本次点评详情面板（US-103a 折叠态 / US-103b 六分区与导出）：折叠态那一行摘要、生成中的实时状态、
+// 正文进度、六个分区与「复制全部 / 导出 JSON / Markdown」的文本口径都读这一份，
+// 界面不自己拼字符串（口径要与验证脚本完全一致）。
 import {
   REVIEW_DETAIL_PHASES,
+  REVIEW_DETAIL_SURFACES,
   REVIEW_DIMENSION_NAMES,
   reviewContentProgress,
+  reviewDetailExportFormat,
   reviewDetailLoaded,
+  reviewDetailPayload,
   reviewDetailPhaseLabel,
   reviewDetailReasoningPlaceholder,
   reviewDetailSummary,
+  reviewDetailSurfaceAllowed,
   reviewDetailToggleLabel
 } from './data/reviewDetailPanel';
+// 「复制全部 / 导出」是面板上唯一需要 DOM 能力的动作（Blob、剪贴板、<a download>）。
+import { buildReviewDetailExport, copyReviewDetailText, downloadReviewDetailExport } from './services/reviewDetailExport';
 // 三个基础展示原语抽到 ui.jsx，3D 画廊页与主文件共用同一份
 import { Button, PageHeader, Status } from './ui';
 import { hydrateGalleryExhibitions, hydrateGalleryVenues, loadGalleryExhibitions, loadGalleryVenues, persistGalleryExhibitions, persistGalleryVenues } from './data/galleryVenues';
@@ -772,6 +779,14 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
   // 本次生成「加载了什么」（人设 / 技能 / 记忆 / 观察词模板 / 提示词模块）：在开始生成时按提示词的
   // 同一份输入算一次，折叠态摘要与展开后的加载清单都读它（不重新推导，避免面板与提示词对不上）。
   const [reviewLoaded,setReviewLoaded]=useState(null);
+  // 本次请求的提示词与附件清单（US-103b 的「提示词」分区）：与真正发出去的那一份同源
+  //（`buildReviewPromptBundle`，面板与 `streamArtworkReview` 读同一个纯函数）。
+  // 只含 system / user 文本与附件引用 + hash，**不含图片正文**。
+  const [reviewPrompt,setReviewPrompt]=useState(null);
+  // 收束后的推理轨迹（US-102）：展开态的「用量与耗时 / 输出原文」以它为准（真正发出去的与模型返回的）。
+  // 生成中它是 null，面板回落读流式增量；换上下文（换班 / 换学员 / 换模式 / 新建草稿）一起清掉。
+  // 注意它只是 `reviewTraceRef` 的一份**渲染副本** —— 留档仍只由 ref 在归档那一刻提交。
+  const [reviewTracePanel,setReviewTracePanel]=useState(null);
   // 本次会话里真正发起过几次模型请求（只读探针，与 data-detail-requests 一起给验证脚本用：
   // 折叠 / 展开不能让它变化 —— 那正是「不重新请求模型」的判据）。
   const [reviewRequests,setReviewRequests]=useState(0);
@@ -2378,6 +2393,10 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
     setReviewRequests(count=>count+1);
     // 面板默认折叠（open 只在老师点摘要行时切换）；新一次生成从零开始累积增量。
     setReviewStream({phase:REVIEW_DETAIL_PHASES.running,reasoning:'',content:'',message:'',startedAt:Date.now(),elapsedMs:0});
+    // 新一次生成：提示词稍后就位（要带上真正发出去的那两张图的数据地址），
+    // 上一条轨迹的渲染副本立刻作废 —— 面板不能拿上一次的用量/输出冒充本次。
+    setReviewPrompt(null);
+    setReviewTracePanel(null);
     // 轨迹种子：谁（学员 id）/ 哪节课 / 上一代轨迹（重新生成时用 parentTraceId 关联）/
     // 附件引用（文件 id 与文件名，图片正文由 llmReview 侧只取 hash）。
     const traceSeed={
@@ -2394,6 +2413,21 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
     try{
       const artworkDataUrl=await mediaToDataUrl(media.artwork?.cleanUrl||media.artwork?.orientedUrl||media.artwork?.originalUrl);
       const photoDataUrl=await mediaToDataUrl(media.photo?.url);
+      // 「提示词」分区的内容：与 `streamArtworkReview` 内部同一份纯函数产物（system / user 文本 +
+      // 附件引用与 hash）。user 里只有文字，附件正文（data URL）一个字都不进面板。
+      setReviewPrompt(buildReviewPromptBundle({
+        profile:activeProfile,
+        skillLibrary,
+        subject,
+        studentName:selectedStudentLabel,
+        keywords,
+        teacherObservation:'',
+        artworkDataUrl,
+        photoDataUrl,
+        keywordCandidates,
+        keywordScope,
+        images:traceSeed.images
+      }));
       const result=await streamArtworkReview({
         profile:activeProfile,
         skillLibrary,
@@ -2409,6 +2443,8 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
         trace:traceSeed,
         onTrace:(next)=>{
           reviewTraceRef.current=next;
+          // 收束副本进 state（面板的用量 / 耗时 / 输出原文以它为准）；留档仍只由 ref 在归档那一刻提交。
+          setReviewTracePanel(next);
           // 只读调试钩子（与 window.__xinlehuiFeedbackMode 同一类）：验证脚本用它读「本次生成
           // 采到了什么轨迹」，不参与任何业务判断。
           if(typeof window!=='undefined') window.__xinlehuiReviewTrace=next;
@@ -2488,6 +2524,8 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
   /** 换上下文（换班 / 换学员 / 换模式 / 新建草稿）时作废本次轨迹：它属于上一位孩子的那次生成。 */
   const clearReviewTrace=()=>{
     reviewTraceRef.current=null;
+    setReviewTracePanel(null);
+    setReviewPrompt(null);
     if(typeof window!=='undefined') window.__xinlehuiReviewTrace=null;
   };
   // 第一步的「家长授权状态提示」（US-411 / F-INTAKE-CONSENT-01）。
@@ -4086,7 +4124,7 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
       <FlowStepper steps={steps} step={step} flags={[intakeReadiness.ok,hasProcessedArtwork,reviewGenerated,archived]} onGo={go}/>
       <div className="scene-status"><span>当前进行：{steps[step-1][0]}</span><button onClick={()=>go(Math.max(1,step-1))} disabled={step===1}>反馈上一步</button></div>
       {step===3?<ReviewLaunchPanel profiles={teacherProfiles} skillLibrary={skillLibrary} activeProfileId={activeProfileId} setActiveProfileId={setActiveProfileId} onStart={startCloudReview} onLocalDraft={fillLocalDraft} draftReady={reviewGenerated} localDraftUsed={localDraftUsed} keywordCount={keywords.length} hasArtwork={Boolean(media.artwork?.cleanUrl||media.artwork?.originalUrl)} running={reviewStream.phase===REVIEW_DETAIL_PHASES.running}/>:null}
-      {step===3&&reviewStream.phase!==REVIEW_DETAIL_PHASES.idle?<ReviewDetailPanel stream={reviewStream} loaded={reviewLoaded} model={REVIEW_MODEL} requests={reviewRequests} open={reviewDetailOpen} onToggle={()=>setReviewDetailOpen(value=>!value)} onStart={startCloudReview} onStop={stopCloudReview}/>:null}
+      {step===3&&reviewStream.phase!==REVIEW_DETAIL_PHASES.idle&&reviewDetailSurfaceAllowed({surface:REVIEW_DETAIL_SURFACES.teacherFlow,role})?<ReviewDetailPanel stream={reviewStream} loaded={reviewLoaded} prompt={reviewPrompt} trace={reviewTracePanel} model={REVIEW_MODEL} params={REVIEW_MODEL_PARAMS} requests={reviewRequests} student={selectedStudentLabel} lessonDate={lessonDateDots} open={reviewDetailOpen} onToggle={()=>setReviewDetailOpen(value=>!value)} onStart={startCloudReview} onStop={stopCloudReview}/>:null}
       {step===2&&mode==='班级反馈'?<ClassFramingWall artworks={batchUploads.artwork} photos={batchUploads.photo} photoGroups={photoGroups} writeBackKeyOf={classArtworkWriteBackKeyOf} onRotate={index=>rotateBatchItem('artwork',index)} onRotatePhotoEntry={uploadId=>rotateUploadEntry('photo',uploadId)}/>:null}
       {step===1?<section className="scene-panel"><div className="scene-heading"><span>第一步</span><h2>创建课后反馈信息</h2><p>先确定服务对象，再同步收集本节课素材。素材只在本次操作中保留。</p></div>{draftRestored?<div className="intake-draft-restored"><Clock3 size={14}/><div><b>已恢复上次的课次信息；素材需重新选择</b><small>{draftRestoreDetail}</small></div>{pendingTitles.length?<em>已保留 {pendingTitles.length} 个作品名，「学员作品上传位」里重新选择素材后自动填回</em>:null}<button type="button" className="text-link" onClick={()=>setDraftRestored(false)}>知道了</button></div>:null}<div className="feedback-mode"><button className={mode==='个人反馈'?'selected':''} onClick={()=>selectMode('个人反馈')}>个人反馈<small>为一位孩子完成反馈</small></button><button className={mode==='班级反馈'?'selected':''} onClick={()=>selectMode('班级反馈')}>班级反馈<small>批量处理全班素材</small></button></div>{availableClasses.length?<div className="intake-scope"><span>班级范围</span><div className="intake-scope-switch"><button type="button" className={showAllClasses?'':'active'} onClick={()=>selectClassScope(false)}>我带的班（{myClasses.length}）</button><button type="button" className={showAllClasses?'active':''} onClick={()=>selectClassScope(true)}>全部班级（{availableClasses.length}）</button></div><small>当前登录老师：{currentTeacherName}</small></div>:null}{visibleClasses.length?<div className="task-form"><label>选择班级<select value={selectedClassId} onChange={event=>selectClass(event.target.value)}>{visibleClasses.map(item=><option key={item.id} value={item.id}>{item.name}{item.teacher?`（${item.teacher}）`:''}</option>)}</select></label><label>选择学员<select value={mode==='班级反馈'?'__class__':selectedStudentName} disabled={mode==='班级反馈'} onChange={event=>{setSelectedStudentName(event.target.value);setArchived(false);setCurrentRecordId('');clearReviewTrace();setWriteBackAttempt({status:'idle',quality:'',message:''})}}>{mode==='班级反馈'?<option value="__class__">本班全部学员（{classStudents.length}人）</option>:<><option value="">请选择学员</option>{classStudents.map(item=><option key={item.name} value={item.name}>{item.name}</option>)}</>}</select></label>{courseOptions.length?<label>选择课程<select value={activeCourseId} onChange={event=>selectCourse(event.target.value)}>{courseOptions.map(item=><option key={item.courseId} value={item.courseId}>{item.name}{item.courseId===classCourseId?' · 本班课程':''}</option>)}</select></label>:<div className="intake-course-empty"><b>课程库暂时没有可选课程</b><p>{classCourseName?`本班课程「${classCourseName}」不在可选课程里，可能已被停用。`:'课程由机构管理员在「课程库」中维护。'}</p>{role==='admin'?<Button variant="secondary" onClick={()=>navigate('courseLibrary')}>去课程库添加课程</Button>:<small>请联系机构管理员在「课程库」中新增或启用课程。</small>}</div>}{lessonScheduleField}{participantField}{consentNoticeField}{mediaIntakeNotice?<p className="intake-media-notice"><ShieldAlert size={14}/><span>{mediaIntakeNotice}</span></p>:null}</div>:<div className="intake-empty"><Users size={26}/><b>{showAllClasses?'机构里还没有任何班级':'还没有属于你的班级'}</b><p>{showAllClasses?'请先在「学员管理」中新建班级，再回到这里创建课后反馈。':'可以切到「全部班级」确认是否存在其他老师名下的班级，或先去「学员管理」新建班级。'}</p><div className="intake-empty-actions">{showAllClasses?null:<button type="button" className="text-link" onClick={()=>selectClassScope(true)}>查看全部班级</button>}<Button onClick={()=>navigate('classes')}>去学员管理添加班级</Button></div></div>}{mode==='个人反馈'&&selectedClass&&!classStudents.length?<p className="intake-hint">该班级还没有学员，请先在「学员管理」里导入名单，再创建课后反馈。</p>:null}{artworkSlotField}{photoSlotField}{mode==='个人反馈'?<div className="sync-upload"><div className={media.artwork?.url?'has-file':''}><Frame/><b>学员作品 <em>必选</em></b><small>{uploadSummary('artwork')}</small><input ref={artworkInput} type="file" accept="image/jpeg,image/png,image/webp" hidden multiple={mode==='班级反馈'} onChange={e=>readFiles('artwork',e.target.files,e.currentTarget)}/><button onClick={()=>artworkInput.current?.click()}>{media.artwork?.url?'已上传 · 重新选择':'上传作品'}</button></div><div className={media.photo?.url?'has-file':''}><Image/><b>学员照片 <em>选填</em></b><small>{uploadSummary('photo')}</small><input ref={photoInput} type="file" accept="image/jpeg,image/png,image/webp" hidden multiple={mode==='班级反馈'} onChange={e=>readFiles('photo',e.target.files,e.currentTarget)}/><button onClick={()=>photoInput.current?.click()}>{media.photo?.url?'已上传 · 重新选择':'上传照片'}</button></div></div>:null}{lostSessionMedia&&!mediaLostDismissed?<div className="intake-media-lost"><ShieldAlert size={14}/><div><b>上次选择的素材已失效</b><small>作品与课堂照片只在当次会话里有效（只使用会话内 object URL，不写入 localStorage / IndexedDB）。页面刷新或重新进入后，请重新选择原始素材。</small></div><button type="button" className="text-link" onClick={()=>setMediaLostDismissed(true)}>知道了</button></div>:null}<div className="upload-privacy-note"><ShieldCheck size={14}/>{mediaRulesText(UPLOAD_SLOTS_PER_STUDENT)}</div>{intakeReadinessPanel}<div className="scene-actions"><Button variant="secondary" onClick={resetDraft}>新建草稿</Button><Button variant="secondary" icon={Save} disabled={!activeCourseId||lessonSaveState.status==='saving'} onClick={requestLessonSave}>{lessonSaveState.status==='saving'?'保存中…':'保存课次'}</Button><Button icon={ArrowRight} disabled={!intakeReadiness.ok} onClick={()=>go(2)}>进入智能装裱</Button></div></section>:null}
       {step===2?<section className="scene-panel studio-task"><div className="scene-heading"><span>第二步</span><h2>智能装裱</h2><p>先旋转完整原图并确认方向；确认后自动裁掉纸外的桌面、地面与背景，只保留作品本身。装裱方案（画框、卡纸、展签、日期与署名）由管理员在「装裱设置」中统一维护，这里直接选用。</p></div><div className="media-process"><article><div className={`mini-frame uploaded-art${media.artwork?.framedUrl&&!artworkEditor.open?' framed-preview':''}${artworkEditor.open?' is-editing':''}`}>{media.artwork?.url?<><img src={artworkEditor.open?(editorPreview||media.artwork.originalUrl):(media.artwork.framedUrl||media.artwork.cleanUrl||media.artwork.orientedUrl||media.artwork.originalUrl)} alt={artworkEditor.open?'编辑中的旋转稿预览（低分辨率画布）':media.artwork.framedUrl?`已按「${activeFrame?.name||'默认装裱'}」完成装裱的作品`:media.artwork.cleanUrl?'已裁掉纸外背景、只保留作品本身':'等待确认方向的完整原图'}/>{media.artwork?.framedUrl&&!artworkEditor.open?<span className="framed-badge">{activeFrame?.name||'默认装裱'}</span>:null}{artworkEditor.open?<span className="framed-badge editing-badge">编辑中</span>:null}<div className="frame-rotate-controls" aria-label="旋转作品"><button type="button" title="向左旋转 90°" aria-label="向左旋转作品" disabled={artworkEditor.open&&editorPreviewPending} onClick={()=>quickRotateArtwork(-1)}><RotateCcw size={18}/></button><button type="button" title="向右旋转 90°" aria-label="向右旋转作品" disabled={artworkEditor.open&&editorPreviewPending} onClick={()=>quickRotateArtwork(1)}><RotateCw size={18}/></button></div></>:'✺'}</div><div><b>学员作品</b><p>{artworkEditor.open?(editorPreviewPending?'正在生成低分辨率预览…':'编辑中：调整旋转后点「完成编辑」，再按新的方向重新裁剪与装裱。'):framingState==='processing'?(media.artwork?.cleanUrl?'正在按当前装裱方案合成装裱图…':'正在裁掉纸外的桌面与地面，只保留作品本身…'):media.artwork?.framedUrl?`已装裱：${activeFrame?.name||'默认装裱'}。作品只做等比缩放与居中，不裁切主体、不重绘、不调色。`:media.artwork?.cleanUrl?'已完成作品裁剪，正在生成装裱图…':'当前仅显示完整原图；可以先点「编辑作品」把方向摆正，再开始裁剪与装裱。'}</p>{mode==='个人反馈'?artworkEditorField:null}{!media.artwork?.cleanUrl?<button type="button" className="confirm-artwork-button" onClick={startArtworkCleanup} disabled={framingState==='rotating'||framingState==='processing'}>{framingState==='processing'?'正在裁剪作品…':'方向正确，开始裁剪与装裱'}</button>:null}<span className="frame-choice-hint">相框样式在下方「相框样式」面板里挑（缩略图用这幅作品实时渲染）→</span></div></article><article><div className="photo-card">{media.photo?.url?<><img src={media.photo.url} alt="已自然优化的课堂照片" style={{transform:`rotate(${media.photo.rotation||0}deg)`}}/><button type="button" className="frame-rotate-button photo-rotate-button" onClick={rotatePersonalPhoto}><RefreshCw size={16}/>旋转照片</button></>:<img src={pandaMascot} alt="课堂照片占位预览"/>}</div><div><b>学员照片</b><p>{media.photo?.name||'未上传课堂照片，可返回上一步补充。'}</p></div></article></div>{batchFramingPanel}{studioDrawerTrigger('frame')}{frameStylePanel}{overlayPanelTrigger}{overlayDrawerOpen?<div className="lesson-overlay-scrim" data-overlay-scrim="true" onClick={()=>setOverlayDrawerOpen(false)}/>:null}{overlayPanel}{studioDrawerTrigger('save')}{saveImagePanel}{studioDrawer?<div className="studio-drawer-scrim" data-studio-drawer-scrim={studioDrawer} onClick={()=>setStudioDrawer('')}/>:null}{framingPerfPanel}{saveImageSheet}<div className="scene-actions"><Button variant="secondary" onClick={()=>go(1)}>返回创建信息</Button><Button icon={ArrowRight} onClick={()=>go(3)}>进入五维点评</Button></div></section>:null}
@@ -4575,26 +4613,80 @@ function ReviewLaunchPanel({profiles=[],skillLibrary=[],activeProfileId,setActiv
 }
 
 /**
- * 本次点评详情面板（[第三步 US-103a] / F-REVIEW-TRACE-02）。
+ * 本次点评详情面板（[第三步 US-103a] 折叠态 / [US-103b] 六分区与导出 / F-REVIEW-TRACE-02）。
  *
- * 三条硬约定：
+ * 四条硬约定：
  *  1. **默认折叠**：初始只占一行摘要（加载了什么 · 用了哪个模型 · 花了多久 / 生成中给实时读数），
  *     点摘要行才展开 —— 老师平时不看这些细节，需要时一次点击就能看到全部。
- *  2. **折叠不丢内容、不重新请求**：推理增量一直住在 `reviewStream` 里，折叠只是不渲染；
+ *  2. **折叠不丢内容、不重新请求**：推理增量一直住在 `reviewStream` 里，折叠只是把正文 DOM 整个不渲染；
  *     展开不触发任何模型调用（`data-detail-requests` 就是这条判据的读数）。
- *  3. **展开后逐字流式追加**：`<pre data-detail-reasoning>` 直接渲染 `stream.reasoning`，
- *     模型每来一段增量就长一段（生成中末尾带一个光标），不做打字机缓冲（缓冲会吞掉/滞后内容）。
+ *  3. **展开后逐字流式追加**：`<pre data-detail-reasoning>` 直接渲染推理增量，
+ *     模型每来一段增量就长一段，不做打字机缓冲（缓冲会吞掉/滞后内容）。
+ *  4. **六个分区只读一份载荷**（`reviewDetailPayload`）：推理过程 / 加载清单 / 提示词 / 模型与参数 /
+ *     用量与耗时 / 输出原文；「复制全部」与「导出 JSON / Markdown」渲染的是同一份载荷，
+ *     所以界面上看到的与导出文件里写的永远一致（素材正文与图片 base64 都进不来）。
  */
-function ReviewDetailPanel({stream,loaded,model,requests,open,onToggle,onStart,onStop}){
+function ReviewDetailPanel({stream,loaded,prompt,trace,model,params,requests,student,lessonDate,open,onToggle,onStart,onStop}){
   const running=stream.phase===REVIEW_DETAIL_PHASES.running;
-  const summary=reviewDetailSummary({loaded,model,phase:stream.phase,elapsedMs:stream.elapsedMs,reasoningChars:stream.reasoning.length,content:stream.content,message:stream.message});
-  const progress=reviewContentProgress(stream.content);
-  const liveText=readableFromRawJson(stream.content);
-  return <section className="review-detail" data-review-detail="true" data-detail-open={open?'true':'false'} data-detail-phase={stream.phase} data-detail-requests={requests}>
+  const phase=stream.phase;
+  // 轨迹收束后以它为准（真正发出去的提示词、模型返回的用量与输出原文都在里面）；
+  // 生成中只读流式增量。两处都不改变「加载清单」的来源（它来自生成开始时的那一次拼装）。
+  const reasoning=typeof trace?.reasoning==='string'&&trace.reasoning?trace.reasoning:stream.reasoning;
+  const output=typeof trace?.output?.raw==='string'&&trace.output.raw?trace.output.raw:stream.content;
+  const promptSource=trace?.prompts?.system
+    ?{system:trace.prompts.system,user:trace.prompts.user,attachments:trace.prompts.attachments,modules:trace.loaded?.modules||prompt?.modules||[]}
+    :(prompt||{});
+  // 「复制全部 / 导出」回执与导出时间戳：都按**一次生成**冻结 —— 同一次生成的「复制全部」与
+  // 「导出 Markdown」必须是逐字符相同的一份文本（导出的 JSON 里的时间也指着同一份快照）。
+  // 声明必须排在 `reviewDetailPayload` 之前：载荷要读 `exportedAtRef.current`。
+  const exportedAtRef=useRef(new Date().toISOString());
+  const [receipt,setReceipt]=useState({copy:'',chars:0,export:''});
+  useEffect(()=>{exportedAtRef.current=new Date().toISOString();setReceipt({copy:'',chars:0,export:''})},[requests]);
+  const payload=reviewDetailPayload({
+    phase,
+    student,
+    lessonDate,
+    model,
+    params,
+    requests,
+    message:stream.message,
+    loaded,
+    prompt:promptSource,
+    reasoning,
+    output,
+    usage:trace?.usage||null,
+    timing:trace?.timing||null,
+    traceId:trace?.traceId||'',
+    taskLabel:trace?.taskLabel||'',
+    exportedAt:exportedAtRef.current
+  });
+  const sectionOf=key=>payload.sections.find(item=>item.key===key)||{};
+  const loadedSection=sectionOf('loaded');
+  const promptSection=sectionOf('prompt');
+  const modelSection=sectionOf('model');
+  const usageSection=sectionOf('usage');
+  const outputSection=sectionOf('output');
+  const summary=reviewDetailSummary({loaded,model,phase,elapsedMs:stream.elapsedMs,reasoningChars:reasoning.length,content:output,message:stream.message});
+  const progress=reviewContentProgress(output);
+  const liveText=readableFromRawJson(output);
+  const copyAll=async()=>{
+    const result=buildReviewDetailExport(payload,{format:'markdown',student,lessonDate});
+    const ok=await copyReviewDetailText(result.text);
+    setReceipt(current=>({...current,copy:ok?'copied':'failed',chars:result.text.length}));
+  };
+  const exportDetail=format=>{
+    const result=buildReviewDetailExport(payload,{format,student,lessonDate});
+    const filename=downloadReviewDetailExport(result);
+    setReceipt(current=>({...current,export:filename||result.filename}));
+  };
+  const copyText=receipt.copy==='copied'?`已复制全部内容（${receipt.chars} 字）`
+    :receipt.copy==='failed'?'复制失败，请手动选择文本复制'
+      :'复制与导出只含提示词、推理、输出与素材引用，不含图片正文';
+  return <section className="review-detail" data-review-detail="true" data-review-detail-surface={REVIEW_DETAIL_SURFACES.teacherFlow} data-detail-open={open?'true':'false'} data-detail-phase={phase} data-detail-requests={requests} data-detail-sections={payload.sections.length}>
     <div className="review-detail-head">
       <button type="button" className="review-detail-toggle" aria-expanded={open} data-detail-toggle="true" onClick={onToggle}>
         <ChevronDown size={16}/>
-        <b data-detail-phase-label="true">{reviewDetailPhaseLabel(stream.phase)}</b>
+        <b data-detail-phase-label="true">{reviewDetailPhaseLabel(phase)}</b>
         <span data-detail-summary="true">{summary}</span>
         <em>{reviewDetailToggleLabel(open)}</em>
       </button>
@@ -4604,22 +4696,100 @@ function ReviewDetailPanel({stream,loaded,model,requests,open,onToggle,onStart,o
       </div>
     </div>
     {open?<div className="review-detail-body" data-detail-body="true">
-      {stream.phase===REVIEW_DETAIL_PHASES.error?<div className="review-detail-error" data-detail-error="true"><CircleAlert size={15}/><span>{stream.message||'生成失败'}</span></div>:null}
-      <div className="review-detail-reasoning">
-        <div className="review-detail-block-head">
-          <b>推理过程</b>
-          <small>已收到 {stream.reasoning.length} 字{running?' · 逐字追加中':' · 生成已结束'}</small>
-        </div>
-        <pre data-detail-reasoning="true" data-detail-reasoning-chars={stream.reasoning.length}>{stream.reasoning||reviewDetailReasoningPlaceholder(stream.phase)}</pre>
+      {phase===REVIEW_DETAIL_PHASES.error?<div className="review-detail-error" data-detail-error="true"><CircleAlert size={15}/><span>{stream.message||'生成失败'}</span></div>:null}
+      <div className="review-detail-tools" data-detail-tools="true">
+        <button type="button" data-detail-action="copy-all" onClick={copyAll}>复制全部</button>
+        <button type="button" data-detail-action="export-json" onClick={()=>exportDetail('json')}>导出 {reviewDetailExportFormat('json').label}</button>
+        <button type="button" data-detail-action="export-markdown" onClick={()=>exportDetail('markdown')}>导出 {reviewDetailExportFormat('markdown').label}</button>
+        <small data-detail-copy-state={receipt.copy||'idle'}>{copyText}</small>
+        {receipt.export?<small data-detail-export-state="done">已导出 {receipt.export}</small>:null}
       </div>
-      <div className="review-detail-live" data-detail-live="true" data-detail-done={progress.done} data-detail-total={progress.total} data-detail-chars={progress.chars} data-detail-ratio={progress.ratio.toFixed(3)}>
+
+      <section className="review-detail-section" data-detail-section="reasoning">
         <div className="review-detail-block-head">
-          <b>正文进度</b>
-          <small>{progress.done}/{progress.total} 维 · {progress.chars} 字</small>
+          <b>{sectionOf('reasoning').title||'推理过程'}</b>
+          <small>已收到 {reasoning.length} 字{running?' · 逐字追加中':' · 生成已结束'}</small>
         </div>
-        <div className="review-detail-bar"><i style={{width:`${Math.round(progress.ratio*100)}%`}}/></div>
-        <p>{liveText||(running?'模型正在写作，正文会在这里逐字出现…':'本次没有可展示的正文增量。')}</p>
-      </div>
+        <pre data-detail-reasoning="true" data-detail-reasoning-chars={reasoning.length}>{reasoning||reviewDetailReasoningPlaceholder(phase)}</pre>
+        <div className="review-detail-live" data-detail-live="true" data-detail-done={progress.done} data-detail-total={progress.total} data-detail-chars={progress.chars} data-detail-ratio={progress.ratio.toFixed(3)}>
+          <div className="review-detail-block-head">
+            <b>正文进度</b>
+            <small>{progress.done}/{progress.total} 维 · {progress.chars} 字</small>
+          </div>
+          <div className="review-detail-bar"><i style={{width:`${Math.round(progress.ratio*100)}%`}}/></div>
+          <p>{liveText||(running?'模型正在写作，正文会在这里逐字出现…':'本次没有可展示的正文增量。')}</p>
+        </div>
+      </section>
+
+      <section className="review-detail-section" data-detail-section="loaded">
+        <div className="review-detail-block-head">
+          <b>{loadedSection.title||'加载清单'}</b>
+          <small>{loadedSection.included||0}/{loadedSection.total||0} 项已加载</small>
+        </div>
+        <ul className="review-detail-loaded" data-detail-loaded="true">
+          {(loadedSection.rows||[]).map(row=><li key={row.key} data-detail-loaded-item={row.key} data-detail-loaded-included={row.included?'true':'false'} className={row.included?'':'is-off'}>
+            <b>{row.label}</b>{row.detail?<span>{row.detail}</span>:null}{row.included?null:<em>{row.reason}</em>}
+          </li>)}
+        </ul>
+        {(loadedSection.modules||[]).length?<details className="review-detail-modules" data-detail-modules="true">
+          <summary>提示词模块（{loadedSection.modulesIncluded}/{loadedSection.modulesTotal} 项）</summary>
+          <ul>
+            {(loadedSection.modules||[]).map(row=><li key={row.id} data-detail-module={row.id} data-detail-module-included={row.included?'true':'false'} className={row.included?'':'is-off'}>
+              <b>{row.title}</b><span>{[row.version,`${row.chars} 字`].filter(Boolean).join(' · ')}</span>{row.included?null:<em>未进入本次提示词</em>}
+            </li>)}
+          </ul>
+        </details>:null}
+      </section>
+
+      <section className="review-detail-section" data-detail-section="prompt">
+        <div className="review-detail-block-head">
+          <b>{promptSection.title||'提示词'}</b>
+          <small>system {promptSection.systemChars||0} 字 · user {promptSection.userChars||0} 字 · 附件 {(promptSection.attachments||[]).length} 个</small>
+        </div>
+        <div className="review-detail-prompt">
+          <b>system</b>
+          <pre data-detail-prompt-system="true" data-detail-prompt-system-chars={promptSection.systemChars||0}>{promptSection.system||'（本次没有 system 提示词）'}</pre>
+          <b>user</b>
+          <pre data-detail-prompt-user="true" data-detail-prompt-user-chars={promptSection.userChars||0}>{promptSection.user||'（本次没有 user 消息）'}</pre>
+          <b>附件（只记引用与 hash）</b>
+          <ul data-detail-attachments="true">
+            {(promptSection.attachments||[]).length
+              ?(promptSection.attachments||[]).map(row=><li key={row.index} data-detail-attachment={row.kind}>{row.text}</li>)
+              :<li data-detail-attachment="none">本次没有附件</li>}
+          </ul>
+        </div>
+      </section>
+
+      <section className="review-detail-section" data-detail-section="model">
+        <div className="review-detail-block-head">
+          <b>{modelSection.title||'模型与参数'}</b>
+          <small data-detail-model="true">{modelSection.model||'—'}</small>
+        </div>
+        <ul className="review-detail-rows" data-detail-params="true">
+          {(modelSection.params||[]).map(row=><li key={row.key} data-detail-param={row.key}><b>{row.label}</b><span>{row.value}</span></li>)}
+        </ul>
+      </section>
+
+      <section className="review-detail-section" data-detail-section="usage">
+        <div className="review-detail-block-head">
+          <b>{usageSection.title||'用量与耗时'}</b>
+          <small>{usageSection.costText?`估算成本 ${usageSection.costText}`:'本次未返回用量'}</small>
+        </div>
+        <ul className="review-detail-rows" data-detail-usage="true">
+          {(usageSection.tokens||[]).map(row=><li key={row.key} data-detail-token={row.key} data-detail-value={row.value===null?'':row.value}><b>{row.label}</b><span>{row.valueText}</span></li>)}
+          {(usageSection.timing||[]).map(row=><li key={row.key} data-detail-timing={row.key} data-detail-value={row.value===null?'':row.value}><b>{row.label}</b><span>{row.valueText}</span></li>)}
+          {usageSection.cost?<li data-detail-cost="true"><b>估算成本</b><span>{usageSection.costText}</span></li>:null}
+        </ul>
+        {usageSection.note?<small className="review-detail-note" data-detail-usage-note="true">{usageSection.note}</small>:null}
+      </section>
+
+      <section className="review-detail-section" data-detail-section="output">
+        <div className="review-detail-block-head">
+          <b>{outputSection.title||'输出原文'}</b>
+          <small>{outputSection.chars||0} 字{outputSection.parse?.message?` · ${outputSection.parse.message}`:''}</small>
+        </div>
+        <pre data-detail-output="true" data-detail-output-chars={outputSection.chars||0} data-detail-output-parse={outputSection.parse?.ok===null?'':String(outputSection.parse?.ok)}>{output||'（本次没有输出原文）'}</pre>
+      </section>
     </div>:null}
   </section>;
 }
