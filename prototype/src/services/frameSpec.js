@@ -54,6 +54,9 @@ const bool = (value, fallback) => {
 
 const oneOf = (value, list, fallback) => (list.includes(value) ? value : fallback);
 
+/** 把比例型参数收敛到 `{min,max}`；脏值（NaN / 字符串 / null）返回 fallback。 */
+export const clampRatio = (value, range, fallback) => clamp(value, range.min, range.max, fallback);
+
 const text = (value, fallback, max = 120) => {
   const raw = String(value ?? '').trim();
   return (raw || fallback).slice(0, max);
@@ -115,6 +118,15 @@ export const FRAME_SPEC_V2 = 2;
 
 export const FRAME_SHAPES = ['square', 'rounded', 'arch', 'bevel'];
 export const FRAME_TEXTURES = ['solid'];
+
+/**
+ * 比例型参数的生效范围（相对画布短边）。**收敛器与渲染层共用这一份**：
+ * 越界值一律收敛到边界，而不是把画面画崩（US-002a 的验收原文）。
+ * 渲染层单独再收敛一次是必要的 —— v1 平面 spec 是**原样**进渲染层的（frameSpecView 不重新收敛）。
+ */
+export const FRAME_WIDTH_RATIO_RANGE = { min: 0.008, max: 0.08 };
+export const MAT_WIDTH_RATIO_RANGE = { min: 0.02, max: 0.12 };
+export const CORNER_RADIUS_RATIO_RANGE = { min: 0, max: 0.5 };
 export const ELEMENT_POSITIONS = [
   'top-left', 'top-center', 'top-right',
   'middle-left', 'middle-center', 'middle-right',
@@ -237,8 +249,8 @@ export function normalizeFrameSpecV2(raw) {
       shape: oneOf(frame.shape, FRAME_SHAPES, base.frame.shape),
       color: hex(frame.color ?? source.outer, base.frame.color),
       // 0.008-0.08 是 US-002 的生效范围，越界收敛而不是画崩；下限定在 0.008 以下会看不见。
-      widthRatio: clamp(frame.widthRatio ?? source.outerWidthRatio, 0.008, 0.08, base.frame.widthRatio),
-      cornerRadiusRatio: clamp(frame.cornerRadiusRatio, 0, 0.5, base.frame.cornerRadiusRatio),
+      widthRatio: clampRatio(frame.widthRatio ?? source.outerWidthRatio, FRAME_WIDTH_RATIO_RANGE, base.frame.widthRatio),
+      cornerRadiusRatio: clampRatio(frame.cornerRadiusRatio, CORNER_RADIUS_RATIO_RANGE, base.frame.cornerRadiusRatio),
       texture: oneOf(frame.texture, FRAME_TEXTURES, base.frame.texture),
       lighting: {
         highlight: hex(lighting.highlight, base.frame.lighting.highlight),
@@ -249,7 +261,7 @@ export function normalizeFrameSpecV2(raw) {
     mat: {
       visible: bool(mat.visible, base.mat.visible),
       color: hex(mat.color ?? legacyMat, base.mat.color),
-      widthRatio: clamp(mat.widthRatio ?? source.matWidthRatio, 0.02, 0.12, base.mat.widthRatio),
+      widthRatio: clampRatio(mat.widthRatio ?? source.matWidthRatio, MAT_WIDTH_RATIO_RANGE, base.mat.widthRatio),
       innerLine: hexOrNull(mat.innerLine !== undefined ? mat.innerLine : legacyInnerLine)
     },
     plaque: {
@@ -366,6 +378,47 @@ export function frameSpecV2ToLegacy(spec) {
 export function frameSpecView(spec) {
   if (isFrameSpecV2(spec)) return frameSpecV2ToLegacy(spec);
   return isPlainObject(spec) ? spec : {};
+}
+
+/** `frame.lighting` 是否被**显式**给出（缺省即「不画光影」= v1 行为）。 */
+const hasExplicitFrameLighting = (spec) => isPlainObject(group(group(spec).frame).lighting);
+
+/**
+ * 渲染层的**唯一读入口**：v1 平面视图 + 形状 / 圆角 / 光影 / 卡纸开关。
+ *
+ * 这是 `renderFramedArtwork` 读 spec 的入口（不要再直接 `spec.frame.shape`），
+ * 也是「同 spec 只渲染一次」的缓存键原料（`frameSpecRenderKey`）。
+ * 两条硬口径：
+ *   1. **v1 平面结构**（含老预设、老的大模型输出）没有形状 / 光影字段，回落 v1 行为：
+ *      直角、无光影、画卡纸 —— 与升级前逐像素一致。
+ *   2. **v2 的 `frame.lighting` 只在显式给出时绘制**。US-001a 规定「缺失字段回落 v1 行为」，
+ *      而 v1 本来就不画光影；如果按 DEFAULT 补一份默认光影，一份只写了 `frame.shape` 的
+ *      v2 spec 会凭空多出渐变。老模板不迁移、不管，新模板由面板显式带上 lighting
+ *      （内置 4 套预设与 DEFAULT_FRAME_SPEC_V2 都已显式带值，所以它们有体积感）。
+ */
+export function frameSpecRenderView(spec) {
+  const flat = frameSpecView(spec);
+  if (!isFrameSpecV2(spec)) {
+    return { ...flat, shape: 'square', cornerRadiusRatio: 0, lighting: null, matVisible: true };
+  }
+  const v2 = normalizeFrameSpecV2(spec);
+  return {
+    ...flat,
+    shape: v2.frame.shape,
+    cornerRadiusRatio: v2.frame.cornerRadiusRatio,
+    lighting: hasExplicitFrameLighting(spec) ? { ...v2.frame.lighting } : null,
+    matVisible: v2.mat.visible
+  };
+}
+
+/**
+ * 装裱渲染的缓存键：`JSON.stringify(frameSpecRenderView(spec))`。
+ *
+ * 取**整个渲染视图**而不是手挑几个字段 —— 缓存键漏字段的后果是「两套不同的模板共用一份渲染结果」
+ * （画展里互相串图），比多渲染一次严重得多。v2 新增任何影响渲染的字段都会自动进键。
+ */
+export function frameSpecRenderKey(spec) {
+  return JSON.stringify(frameSpecRenderView(spec));
 }
 
 const SPEC_SYSTEM = `你是一位展览级装裱设计师。你把老师用自然语言描述的装裱需求，翻译成可由 canvas 精确绘制的几何与色彩参数。

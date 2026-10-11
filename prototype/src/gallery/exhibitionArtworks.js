@@ -11,7 +11,7 @@
 
 import { DEMO_ARTWORKS, createDemoFramedArtwork } from './demoArtwork';
 import { renderFramedArtwork } from '../services/framing';
-import { frameSpecView } from '../services/frameSpec';
+import { frameSpecRenderKey } from '../services/frameSpec';
 
 /** 装裱结果缓存：同一幅作品 + 同一套参数只渲染一次。 */
 const frameCache = new Map();
@@ -31,16 +31,11 @@ async function cached(key, produce) {
 
 export function clearFramedArtworkCache() { frameCache.clear(); }
 
-// 缓存键只认「会影响渲染的值」。spec 可能是 v1 平面结构或 v2 结构，
-// 统一经 frameSpecView() 取平面视图；否则 v2 预设的 outer/mat 全读不到，
-// 不同模板会算出同一个键、画廊里互相串用渲染结果。
-const specKey = (spec = {}) => {
-  const view = frameSpecView(spec);
-  return [
-    view.outer, view.mat, view.innerLine, view.plaqueBg, view.plaqueText,
-    view.outerWidthRatio, view.matWidthRatio
-  ].join('|');
-};
+// 缓存键只认「会影响渲染的值」，统一由 frameSpec.js 的 frameSpecRenderKey() 给出
+// （即渲染函数真正读到的整份渲染视图，含形状 / 圆角 / 光影 / 卡纸开关）。
+// 手挑字段的写法漏一个就会让两套不同的模板算出同一个键、画廊里互相串用渲染结果；
+// 取整份视图则让 v2 新增的影响渲染字段自动进键（宁可多渲染一次，也不能串图）。
+const specKey = (spec = {}) => frameSpecRenderKey(spec);
 
 /** 课后反馈记录里的一幅作品 → 画展条目。 */
 export function artworkFromRecord(record) {

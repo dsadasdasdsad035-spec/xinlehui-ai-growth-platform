@@ -424,23 +424,42 @@ DSH 的 `browser_*` 工具**没有 selectOption 能力**：`browser_type` 走的
 | 收敛器 | `normalizeFrameSpec`（后台大模型入口仍在用，**不要改**） | `normalizeFrameSpecV2`（字段全可选、脏数据不抛错、非法值收敛到 v1 行为） |
 | 默认值 | `DEFAULT_FRAME_SPEC` | `DEFAULT_FRAME_SPEC_V2` |
 
-- **渲染层与后台面板只读「平面视图」**：`renderFramedArtwork` / `FramingSettingsPage` 一律经
-  `frameSpecView(spec)` 取值。v1 输入**原样返回同一个对象**（老模板渲染逐像素不变），v2 输入由
-  `frameSpecV2ToLegacy()` 映射。新写读 spec 的代码不要再直接 `spec.outer` / `spec.mat`。
+- **渲染层读 `frameSpecRenderView(spec)`，后台面板读 `frameSpecView(spec)`**（两个入口分工不同，别混）：
+  - `frameSpecView` = v1 平面视图（颜色 / 框宽 / 卡纸 / 展签 / 旋转）。v1 输入**原样返回同一个对象**
+    （老模板渲染逐像素不变），v2 输入由 `frameSpecV2ToLegacy()` 映射。后台「装裱设置」面板与列表色板读它。
+  - `frameSpecRenderView` = 平面视图 **+** 形状 / 圆角 / 光影 / 卡纸开关，是 `renderFramedArtwork` **唯一**的
+    spec 读入口。**不要再直接 `spec.frame.shape` / `spec.outer`**，也不要在渲染函数里重新收敛一遍。
+- **`frame.lighting` 只在「显式给出」时绘制**（`frameSpecRenderView` 判 `frame.lighting` 是否是对象；
+  v1 平面结构一律 `lighting: null`）。理由：v1 本来不画光影，US-001a 规定「缺失字段回落 v1 行为」；
+  若按 DEFAULT 补一份默认光影，一份只写了 `frame.shape` 的 v2 spec 会凭空多出渐变。
+  内置 4 套预设与 `DEFAULT_FRAME_SPEC_V2` 都**显式**带 `lighting`，所以它们从 US-002a 起有体积感。
+- **形状**：`square`（直角）与 `rounded`（圆角，半径 = `cornerRadiusRatio × 画布短边`）已实现；
+  `arch` / `bevel` 归 US-002b，在那之前按直角绘制（优雅降级）。圆角半径有三条上限，缺一条就踩红线：
+  ① 收敛到 `0~0.5`；② 不超过外框短边的一半；③ **内圈半径 ≤ 卡纸宽** —— 否则圆角会切进作品窗口，
+  等于把孩子的画裁掉四个角。所以「加宽圆角」永远不能改动作画区域。
+- **光影**：`frame.lighting = { highlight, shadow, angle }`，`angle` 与 CSS `linear-gradient` 同角度语义
+  （0° 朝上、90° 朝右、135° 由左上到右下），渐变起点朝光源 → 135° = 高光在左上、暗部在右下。
+  渐变只铺在外框上（卡纸随后画在其内圈），**不覆盖卡纸与作品像素**。
+- **用 spec 做缓存键一律走 `frameSpecRenderKey(spec)`**（= `JSON.stringify(frameSpecRenderView(spec))`）：
+  `gallery/exhibitionArtworks.js` 的 `specKey` 原先手挑字段，漏一个就会让两套不同模板算出同一个键、
+  画廊里互相串图（形状/光影就是这么漏掉的）。取整份渲染视图，v2 新增的影响渲染字段会自动进键
+  —— 宁可多渲染一次，也不能串图。
+- 收敛范围（越界收敛而不是画崩）：框宽 `0.008~0.08`、圆角 `0~0.5`、卡纸宽 `0.02~0.12`、不透明度 `0~1`、
+  字号 `8~200`、面板字体走 `SAFE_FONTS` 白名单、`logo.url` / `signature.imageUrl` 只放行
+  `http(s)` / `data:image` / `blob:`。比例型范围的唯一真源是 `FRAME_WIDTH_RATIO_RANGE` /
+  `MAT_WIDTH_RATIO_RANGE` / `CORNER_RADIUS_RATIO_RANGE`，**收敛器与渲染层都读它、不要在任一侧写死数字**
+  （v1 平面 spec 是**原样**进渲染层的，渲染层不兜住就会被 0.5 的框宽画崩）。
+- **US-002a 起内置 4 套预设的渲染结果有意改变**（它们显式带 `lighting`，本故事开始绘制）。
+  持久的向后兼容承诺是：**v1 平面 spec**、以及**没有显式 `frame.lighting` 的 v2 spec**，渲染逐像素不变。
+  复核兼容性时不要拿「内置预设」当 v1 基准（US-016 的 4 套预设 v1↔v2 逐像素断言自本故事起失效是预期的）。
 - **v2 的叠加元素（`watermark.*` / `signature` / `date` / 印章）默认 `visible: false`**：v1 本来不画
   任何叠加元素，默认 true 会让「迁移过来的老模板」凭空多出 `{机构名}` 水印。是否绘制由面板显式开启
   （US-003a/003b/003c），**不要为了省事把默认值改成 true**。
 - `src/data/framingPresets.js` 的内置预设已是 v2，且**故意省略 watermark / signature / date 三组**
   （字段可选，缺省即 v1 行为）。该 data 模块保持**零依赖**（不 import services），以便 Node 直跑断言。
-- **用 spec 做缓存键的地方都必须过 `frameSpecView`**：`gallery/exhibitionArtworks.js` 的 `specKey`
-  原先直接读 `spec.outer`，v2 预设全读成 `undefined` → 不同模板算出同一个键、画廊里互相串用渲染结果。
-  v2 新增会影响渲染的分组时，缓存键要同步覆盖。
 - 状态机：`art.rotateDeg` 只允许 **0 / 90**（模板级）；任意角度微调属于单幅作品的 `artworkEdit`（US-004），
   不进模板。`date.source` = `lesson | today | manual`，`date.format` 三种白名单；所有位置是九宫格枚举
   + `offsetX/offsetY` 比例偏移（-0.5~0.5）；尺寸与位置一律用「相对画布短边的比例」。
-- 收敛范围（越界收敛而不是画崩）：框宽 `0.008~0.08`、圆角 `0~0.5`、卡纸宽 `0.02~0.12`、不透明度 `0~1`、
-  字号 `8~200`、面板字体走 `SAFE_FONTS` 白名单、`logo.url` / `signature.imageUrl` 只放行
-  `http(s)` / `data:image` / `blob:`。
 
 ## 装裱模板的三层归属：scope / ownerKey（US-001b）
 
@@ -561,9 +580,23 @@ service 模块也能在 Node 里测：`cloud.database` 是**可写属性**，导
   这样不依赖任何素材文件。
 - 比对分两层：① 先比 data URL 字符串（同一份 spec 的 JPEG 编码是确定的，相等即逐字节相同）；
   ② 不等时再解码回 canvas 用 `getImageData` 逐像素计数差异，好报告「差了多少像素」而不是只报 false。
-- **`specKey` 这类缓存键要用「渲染时会读到的平面视图」**：v2 结构下直接读 `spec.outer` 会全读成
-  `undefined`，不同模板共用同一个键 → 画廊里串用渲染结果。验证时对两套模板各跑一次
-  `resolveExhibitionArtworks`，断言产出的 `imageUrl` 不相同（同一模板两次调用则相同）。
+- **`specKey` 这类缓存键要用「渲染时真正读到的视图」**：现在直接走 `frameSpecRenderKey(spec)`（整份
+  `frameSpecRenderView`）。验证时对两套只有形状/光影不同的模板各跑一次 `resolveExhibitionArtworks`，
+  断言产出的 `imageUrl` 不相同（同一模板两次调用则相同）。
+- **JPEG 是有损的，断言分两种口径，别混**：
+  - **「逐像素 0 差异」只用于「同一编码器下两个渲染之间」的内部区域**：两份渲染在某个 8×8 块内的源像素
+    完全相同 → 解码结果完全相同。但块跨越两个区域边界时（相邻像素不同）解码值会变，所以比较区域要
+    **内缩 12~24px**（色度二次采样是 16×16）。踩过的坑：拿整个 `matRect` 比「光影是否碰到卡纸」，
+    边界那一圈与相框共用 JPEG 块，报出 1.8 万像素假差异；内缩 12px 后为 0。
+  - **颜色 / 与「现画参照图」比对一律用容差**（`sqrt(ΔR²+ΔG²+ΔB²) ≤ 24`）：JPEG 会把 `#8D6439`
+    解成 `#8A6237`，精确字符串比较必假失败。
+- **证明「作品像素只做等比缩放 + 居中、不裁切/不调色」用几何而不是像素比对**：给测试图四周画一条
+  10px 深色描边，然后在卡纸窗口内找「深色描边的最外接框」= 作品实画区域，与
+  `min(area.w/imgW, area.h/imgH)` 算出的期望矩形比（±2px）；再取作品内一个已知颜色的点断言色差。
+  这比「和参照图逐像素比」可靠（后者要穿过 JPEG 有损）。
+- **基线要在改动前用「同一张测试图」抓**：先在 HEAD 上跑一遍基线脚本存 JSON，再改代码跑对照。
+  踩过的坑：基线脚本与验证脚本各写了一份 `buildTestImage`（一份带深色描边、一份不带），
+  源图不同 → 所有基线断言假失败。测试图构造器要**两份脚本逐行一致**（或直接从同一个文件读）。
 - console 里的既有噪音：本机云端不通的 `net::ERR` / `404`、后台装裱预览 `<img src={preview}>` 初始为 `''`
   触发的 React `An empty string ("") was passed to the src attribute` 警告。这些在 HEAD 上就有，
   过滤时要写清楚「是既有噪音」，不要当成新引入的问题放过去。

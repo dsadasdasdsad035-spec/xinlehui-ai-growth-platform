@@ -1,4 +1,4 @@
-import { frameSpecView } from './frameSpec';
+import { frameSpecRenderView, clampRatio, FRAME_WIDTH_RATIO_RANGE, MAT_WIDTH_RATIO_RANGE, CORNER_RADIUS_RATIO_RANGE } from './frameSpec';
 
 const FRAME_STYLES = {
   '星光展': { outer: '#cfa52e', inner: '#f3ede2', plaque: '#2b271f' },
@@ -434,20 +434,67 @@ export async function createPortraitPrint({ source, student = '陈一诺', date 
 }
 
 /**
+ * 相框（或卡纸）的填充：半径为 0 时走 `fillRect`，与升级前的实色矩形**逐像素一致**；
+ * 只有圆角形状才走路径填充。
+ */
+function fillFrameShape(ctx, rect, radius, fill) {
+  if (radius > 0) {
+    ctx.beginPath();
+    ctx.roundRect(rect.x, rect.y, rect.width, rect.height, radius);
+    ctx.fillStyle = fill;
+    ctx.fill();
+    return;
+  }
+  ctx.fillStyle = fill;
+  ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
+}
+
+/**
+ * 相框的光影：沿 `frame.lighting.angle` 铺一条「高光 → 本色 → 暗部」的线性渐变，
+ * 让暖金 / 木质看起来有体积感，而不是一块死色。
+ *
+ * `angle` 与 CSS `linear-gradient` 同角度语义（0° 朝上、90° 朝右、135° 由左上到右下），
+ * 渐变**起点**一侧朝向光源，所以默认的 135° 是「高光在左上、暗部在右下」。
+ * 渐变只铺在外框上，不会盖到卡纸与作品（卡纸随后绘制在其内圈）。
+ */
+function frameLightingFill(ctx, rect, lighting, baseColor) {
+  const angle = (((Number(lighting.angle) || 0) % 360) + 360) % 360;
+  const rad = (angle * Math.PI) / 180;
+  const dx = Math.sin(rad), dy = -Math.cos(rad);
+  const cx = rect.x + rect.width / 2, cy = rect.y + rect.height / 2;
+  // 沿光方向穿过整个外框的投影长度：高光与暗部两端都完整落在框上，不被截断。
+  const span = Math.abs(dx) * rect.width + Math.abs(dy) * rect.height;
+  const gradient = ctx.createLinearGradient(
+    cx - (dx * span) / 2, cy - (dy * span) / 2,
+    cx + (dx * span) / 2, cy + (dy * span) / 2
+  );
+  gradient.addColorStop(0, lighting.highlight);
+  gradient.addColorStop(0.5, baseColor);
+  gradient.addColorStop(1, lighting.shadow);
+  return gradient;
+}
+
+/**
  * 按「装裱参数」渲染装裱图（后台可配置 / 大模型生成的那套参数）。
  *
- * 与 createExhibitionFrame 的差别：这里没有硬编码样式表，颜色与框宽全部来自 spec。
+ * 与 createExhibitionFrame 的差别：这里没有硬编码样式表，颜色、框宽、形状、卡纸与光影全部来自 spec。
  * 不变量保持不变 —— 作品只做等比缩放与居中，不裁切、不重绘、不调色。
  *
  * spec 可以是 **v1 平面结构**，也可以是 **v2 结构**（`services/frameSpec.js`）；
- * 统一由 `frameSpecView()` 取 v1 平面视图后再绘制：v1 原样返回（老模板逐像素不变），
- * v2 由 `frameSpecV2ToLegacy()` 映射。v2 独有的形状 / 光影 / 水印 / 落款 / 时间由后续故事接入这里。
+ * 统一由 `frameSpecRenderView()` 取渲染视图：v1 原样返回（老模板逐像素不变，形状按直角、不画光影），
+ * v2 映射出平面字段 + shape / cornerRadiusRatio / lighting / matVisible。
  *
- * 平面字段（frameSpecView 的产物）：
+ * 本故事（US-002a）落地的形状是 `square`（直角）与 `rounded`（圆角）；
+ * `arch` / `bevel` 归 US-002b，在那之前按直角绘制（降级而不是画崩）。
+ *
+ * 平面字段（frameSpecRenderView 的产物）：
  *   outer / mat / innerLine / plaqueBg / plaqueText  十六进制颜色（innerLine 可为 null）
- *   outerWidthRatio / matWidthRatio                  相对画布短边的比例
+ *   outerWidthRatio / matWidthRatio                  相对画布短边的比例（越界收敛到生效范围）
  *   plaqueFontFamily / plaqueLetterSpacing           展签字体与字距
  *   artRotateDeg                                     0 或 90
+ *   shape / cornerRadiusRatio                        形状与圆角半径（相对画布短边）
+ *   lighting                                         { highlight, shadow, angle } 或 null（不画光影）
+ *   matVisible                                       卡纸开关
  */
 export async function renderFramedArtwork({ source, spec = {}, student = '', title = '', date = '', rotation }) {
   const image = await loadImage(source);
@@ -455,7 +502,7 @@ export async function renderFramedArtwork({ source, spec = {}, student = '', tit
   const height = 1360;
   const shortEdge = Math.min(width, height);
 
-  const view = frameSpecView(spec);
+  const view = frameSpecRenderView(spec);
   const outerColor = view.outer || '#cfa52e';
   const matColor = view.mat || '#f3ede2';
   const plaqueBg = view.plaqueBg || '#2b271f';
@@ -464,9 +511,24 @@ export async function renderFramedArtwork({ source, spec = {}, student = '', tit
   const letterSpacing = Number.isFinite(view.plaqueLetterSpacing) ? view.plaqueLetterSpacing : 1;
 
   const wall = Math.round(shortEdge * 0.025);
-  const outer = Math.max(4, Math.round(shortEdge * (view.outerWidthRatio ?? 0.0412)));
-  const mat = Math.max(6, Math.round(shortEdge * (view.matWidthRatio ?? 0.0647)));
+  // 框宽 / 卡纸宽的收敛在渲染层再做一次：v1 平面 spec 原样进来，没有收敛器兜着。
+  const outer = Math.max(4, Math.round(shortEdge * clampRatio(view.outerWidthRatio, FRAME_WIDTH_RATIO_RANGE, 0.0412)));
+  const mat = view.matVisible === false ? 0 : Math.max(6, Math.round(shortEdge * clampRatio(view.matWidthRatio, MAT_WIDTH_RATIO_RANGE, 0.0647)));
   const plaqueHeight = 96;
+
+  const frameRect = { x: wall, y: wall, width: width - wall * 2, height: height - wall * 2 };
+  const matRect = {
+    x: frameRect.x + outer, y: frameRect.y + outer,
+    width: frameRect.width - outer * 2, height: frameRect.height - outer * 2
+  };
+  // 圆角半径的三条上限，缺一条就会踩到红线：
+  //   ① 越界值收敛到 0~0.5（相对短边）；
+  //   ② 不超过外框短边的一半（否则路径自交）；
+  //   ③ 内圈半径不超过卡纸宽 —— 否则圆角会切进作品窗口，等于把孩子的画裁掉四个角。
+  const outerRadius = view.shape === 'rounded'
+    ? Math.min(Math.round(shortEdge * clampRatio(view.cornerRadiusRatio, CORNER_RADIUS_RATIO_RANGE, 0.06)), Math.max(0, Math.floor(Math.min(frameRect.width, frameRect.height) / 2)))
+    : 0;
+  const matRadius = Math.max(0, Math.min(outerRadius - outer, mat));
 
   const canvas = document.createElement('canvas');
   canvas.width = width; canvas.height = height;
@@ -474,18 +536,20 @@ export async function renderFramedArtwork({ source, spec = {}, student = '', tit
 
   // 最外圈是展墙，用卡纸色的浅色版本，避免出现纯白死边。
   ctx.fillStyle = matColor; ctx.fillRect(0, 0, width, height);
-  ctx.fillStyle = outerColor; ctx.fillRect(wall, wall, width - wall * 2, height - wall * 2);
-  ctx.fillStyle = matColor; ctx.fillRect(wall + outer, wall + outer, width - (wall + outer) * 2, height - (wall + outer) * 2);
+  // 相框：显式配了 lighting 就用方向性渐变画高光与暗部，否则是 v1 的实色框。
+  fillFrameShape(ctx, frameRect, outerRadius, view.lighting ? frameLightingFill(ctx, frameRect, view.lighting, outerColor) : outerColor);
+  // 卡纸：与外框同圆角（内圈），保证圆角处不露底、不出现白缝。
+  fillFrameShape(ctx, matRect, matRadius, matColor);
 
   const area = {
-    x: wall + outer + mat,
-    y: wall + outer + mat,
-    width: width - (wall + outer + mat) * 2,
-    height: height - (wall + outer + mat) * 2 - plaqueHeight
+    x: matRect.x + mat,
+    y: matRect.y + mat,
+    width: matRect.width - mat * 2,
+    height: matRect.height - mat * 2 - plaqueHeight
   };
 
-  // 可选：卡纸内的细分隔线，只画线，不遮挡作品。
-  if (view.innerLine) {
+  // 可选：卡纸内的细分隔线，只画线，不遮挡作品。卡纸关掉时不画（线会落在作品边上）。
+  if (view.innerLine && mat > 0) {
     ctx.strokeStyle = view.innerLine;
     ctx.lineWidth = 2;
     ctx.strokeRect(area.x - 6, area.y - 6, area.width + 12, area.height + 12);
