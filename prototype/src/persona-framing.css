@@ -983,3 +983,80 @@ p.framing-coverage-bad { margin: 0; padding: 10px 18px; font-size: 12px; line-he
   /* 拼装预览不在 .agent-files-page 里（它是并排布局之后的整块），单独补一遍 44px 纪律。 */
   .agent-file-assembly select, .agent-file-assembly button { min-height: 44px; }
 }
+
+/* ── 管理端「作品观察词模板」（US-110a）───────────────────────────────────
+   左列表按适用模式分两栏（个人 / 班级），右侧是模板属性 + 分组词条两级编辑 + 变更历史。
+   窄屏下编辑器两栏堆叠；分组卡片与词条行都按「细节列 min-width: 0」的既有纪律防横滚。 */
+.keyword-templates-rule { margin: 0 0 14px; padding: 10px 13px; border-radius: 12px; background: #f7f2e4; display: flex; gap: 10px; align-items: baseline; font-size: 11px; line-height: 1.7; color: #514a38; }
+.keyword-templates-rule b { flex: none; font-size: 11px; color: #8a6100; }
+.keyword-templates-rule span { min-width: 0; overflow-wrap: anywhere; }
+.keyword-templates-page { align-items: start; }
+.keyword-templates-page > .persona-list,
+.keyword-templates-page > .persona-editor { min-width: 0; }
+.keyword-template-groups { max-height: 78vh; overflow: auto; }
+.keyword-template-group { margin-bottom: 14px; }
+.keyword-template-group-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 0 2px; }
+.keyword-template-group-head b { font-size: 12px; color: var(--navy); }
+.keyword-template-group-head small { font-size: 10px; color: var(--muted); white-space: nowrap; }
+.keyword-template-row { display: flex; align-items: stretch; gap: 6px; }
+.keyword-template-row .keyword-template-pick { flex: 1 1 auto; min-width: 0; }
+.keyword-template-row .keyword-template-order { flex: none; display: flex; flex-direction: column; gap: 4px; justify-content: center; }
+.keyword-template-groups button b { line-height: 1.35; overflow-wrap: anywhere; }
+.keyword-template-facts { display: flex; flex-direction: column; gap: 3px; margin: 0 0 12px; padding: 9px 11px; border-radius: 10px; background: var(--soft); font-size: 10.5px; line-height: 1.6; color: #514a38; }
+.keyword-template-flags { display: flex; flex-wrap: wrap; gap: 18px; margin: 10px 0 0; }
+.keyword-template-courses { margin-top: 16px; }
+.keyword-template-courses h3 { font-size: 13px; margin: 0; }
+.keyword-template-courses .panel-head p { margin: 3px 0 0; font-size: 10.5px; line-height: 1.65; color: var(--muted); }
+.keyword-template-course-rows { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0 0; min-width: 0; }
+.keyword-template-course-rows small { font-size: 10.5px; color: var(--muted); }
+.keyword-template-course { display: inline-flex; align-items: center; gap: 2px; font-size: 11px; font-weight: 700; color: #514a38; background: #f2ecdc; border-radius: 999px; padding: 3px 4px 3px 11px; overflow-wrap: anywhere; }
+.keyword-template-course-add { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; min-width: 0; }
+.keyword-template-course-add input { flex: 1 1 220px; min-width: 0; padding: 9px 11px; border: 1px solid var(--border); border-radius: 10px; font-size: 12px; color: var(--ink); background: #fff; }
+.keyword-template-editor { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 14px; }
+.keyword-template-editor h3 { font-size: 13px; margin: 0; }
+.keyword-template-editor .panel-head p { margin: 3px 0 0; font-size: 10.5px; line-height: 1.65; color: var(--muted); }
+.keyword-group { border: 1px solid var(--border); border-radius: 12px; padding: 10px 11px; margin-top: 12px; min-width: 0; }
+.keyword-group.is-off { background: #faf9f6; }
+.keyword-group-head { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; min-width: 0; }
+.keyword-group-name { flex: 1 1 200px; min-width: 0; padding: 8px 11px; border: 1px solid var(--border); border-radius: 10px; font-size: 12px; font-weight: 700; color: var(--navy); background: #fff; }
+.keyword-group-head .keyword-template-order { display: flex; gap: 4px; margin-left: auto; }
+.keyword-terms { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.keyword-term { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; min-width: 0; }
+.keyword-term.is-off { opacity: .6; }
+.keyword-term input[type="text"], .keyword-term > input:not([type]) { flex: 1 1 200px; min-width: 0; padding: 8px 11px; border: 1px solid var(--border); border-radius: 10px; font-size: 12px; color: var(--ink); background: #fff; }
+.keyword-term .keyword-template-order { display: flex; gap: 4px; }
+.keyword-term.is-duplicate > input:not([type]) { border-color: #d9534f; background: #fdf6f5; }
+.keyword-term-duplicate-note { flex: 1 1 100%; font-size: 10px; line-height: 1.6; color: #8a2f20; overflow-wrap: anywhere; }
+.keyword-term-add { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.keyword-term-add small { font-size: 10px; color: var(--muted); }
+.keyword-template-duplicate { margin-top: 12px; border: 1px solid #e6b8a8; border-radius: 10px; padding: 9px 11px; background: #fdece7; }
+.keyword-template-duplicate-head { display: flex; align-items: center; gap: 6px; color: #8a2f20; }
+.keyword-template-duplicate-head b { font-size: 11px; }
+.keyword-template-duplicate ul { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.keyword-template-duplicate li { font-size: 10.5px; line-height: 1.6; color: #8a2f20; overflow-wrap: anywhere; }
+.keyword-template-duplicate p { margin: 6px 0 0; font-size: 10.5px; line-height: 1.65; color: #8a2f20; }
+.keyword-template-warnings { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.keyword-template-warnings li { font-size: 10.5px; line-height: 1.65; color: #8a6100; background: #fff3cf; border-radius: 9px; padding: 7px 10px; overflow-wrap: anywhere; }
+.keyword-template-history { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 14px; }
+.keyword-template-history h3 { font-size: 13px; margin: 0; }
+.keyword-template-history .panel-head p { margin: 3px 0 0; font-size: 10.5px; line-height: 1.65; color: var(--muted); }
+.keyword-template-history ol { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.keyword-template-history li { border: 1px solid var(--border); border-radius: 10px; padding: 9px 11px; min-width: 0; }
+.keyword-template-history li[data-keyword-template-version-current="true"] { border-color: var(--blue); background: var(--blue-50); }
+.keyword-template-version-head { display: flex; align-items: center; gap: 8px; }
+.keyword-template-version-head b { font-size: 12px; color: var(--navy); }
+.keyword-template-version-head span { font-size: 10.5px; color: var(--muted); }
+.keyword-template-version-head em { font-style: normal; font-size: 10px; font-weight: 800; color: #1b7f34; background: #eef7ec; border-radius: 999px; padding: 2px 8px; }
+.keyword-template-version-head em.muted { color: #8a2f20; background: #fdece7; }
+.keyword-template-history li small { display: block; margin-top: 3px; font-size: 10.5px; color: var(--muted); overflow-wrap: anywhere; }
+.keyword-template-version-meta { margin-top: 3px; font-size: 10px; color: #857a64; font-variant-numeric: tabular-nums; }
+@media (max-width: 900px) {
+  .keyword-template-groups { max-height: none; }
+}
+@media (max-width: 430px) {
+  /* 与「Agent 指令与记忆」同一条 44px 纪律：窄屏下所有可点区域不小于 44×44px。
+     上移 / 下移箭头与「停用」这类文字按钮在桌面端保持紧凑，窄屏才撑到 44px。 */
+  .keyword-templates-page button, .keyword-templates-page select, .keyword-templates-page input { min-height: 44px; min-width: 44px; }
+  .keyword-term { align-items: stretch; }
+  .keyword-template-row .keyword-template-order { flex-direction: row; }
+}

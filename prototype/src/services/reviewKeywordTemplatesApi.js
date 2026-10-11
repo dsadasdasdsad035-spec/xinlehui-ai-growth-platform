@@ -29,7 +29,9 @@ function rowToKeywordTemplate(row) {
     sortOrder: source.sort_order,
     orgId: source.org_id,
     updatedBy: source.updated_by,
-    updatedAt: source.updated_at
+    updatedAt: source.updated_at,
+    versions: source.versions,
+    history: source.history
   });
 }
 
@@ -49,7 +51,11 @@ function keywordTemplateToRow(template) {
     sort_order: item.sortOrder,
     org_id: item.orgId,
     updated_by: item.updatedBy,
-    updated_at: item.updatedAt
+    updated_at: item.updatedAt,
+    // 版本快照与变更历史（管理端 US-110 写入）：与 agent_files 同一口径 —— 云表还没建、
+    // 或缺这两列时整条写入会被 PostgREST 拒掉，那只影响跨设备可见，本机镜像照样成立。
+    versions: item.versions,
+    history: item.history
   };
 }
 

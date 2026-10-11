@@ -1846,6 +1846,49 @@ DOM/canvas 部分在 `src/services/artworkWriteBack.js`，编排在 `main.jsx` �
   `!prompt.includes('人物 / 风景')` 会被新词 `水墨人物 / 风景` 命中（假红）。判据改成
   「候选清单逐词 = 面板词条」这种**列表相等**，或断言 `!prompt.includes('：人物 /')`。
 
+## 管理端「作品观察词模板」：分组词条维护与版本留档（US-110a / F-REVIEW-KW-01）
+
+管理端的写侧规则全在 `src/data/reviewKeywordAdmin.js`（零依赖纯函数；与 `reviewKeywordTemplates.js`
+的分工：读侧 = 容错 normalize / 老师端匹配 / 本机镜像，写侧 = 草稿形状 / 校验 / 版本自增 / 分组词条增删排序）。
+页面 `src/admin/KeywordTemplatesPage.jsx` 只渲染与调用，三处接线（`navByRole.admin` /
+`ADMIN_ONLY_PAGES` / `PageRouter.map`）与其它管理端页面一致。
+
+- **编辑视图与读侧 normalize 必须分开**：读侧 `normalizeKeywordTemplateGroups()` 会把**无名分组**与
+  **空词条**直接丢掉（返回 null 再 filter），这是落库要的语义；但编辑态要是也走它，
+  刚点的「新增词条」空行会在下一次操作时凭空消失，校验也就永远拦不到无名分组（静默丢组）。所以
+  `keywordTemplateEditGroups()` 是**编辑专用的第二份归一化**：保留停用项 / 空组名 / 空词条，只重排 `sortOrder`。
+- **顺序只有一个来源**：草稿里分组 / 词条的**数组位置就是顺序**，每次改动后由 `resequenceKeywordGroups()`
+  把 `sortOrder` 重写成 10、20、30…。于是「上移 / 下移 / 删除」都是普通数组操作，不存在两处顺序打架；
+  老师端面板顺序（`keywordTemplateGroups` 按 `sortOrder` 排）与编辑器逐行对得上。
+- **保存闸门是 `keywordTemplateSaveGate(draft)`**（`{ ok, issue, warnings }`）：重复词 / 无名分组拦截，
+  空词条与「没有可用词条」只提示。页面按钮 `disabled={!gate.ok}` + 界面上**一直摆着**原因
+  （`data-keyword-template-block-reason`），`save()` 里再拦一道（结构上的第二道门）。
+  **归一化后重复的词跨分组也算**，判据复用 `reviewKeywords.js` 的 `normalizeKeywordText()`（空格 / 标点 / 前缀都不算差异）。
+- **每次写入都记一版**：`stampKeywordTemplateVersion()` 是 `templateVersion` / `versions` / `history` /
+  `updatedBy` / `updatedAt` 的**唯一写入口**（页面里 0 处 `templateVersion +`、0 处 `versions:`）。
+  首次保存 = v1 + 「新建」，之后每保存一次 +1（内容没动也增，如实写「内容未改动」）；**启停同样 +1**
+  （停用一套模板与改它的词条同样影响老师端命中）。快照带 `groups` 与配置字段 → US-110b 的回滚有素材。
+- **版本快照必须穿过持久化**：`persistReviewKeywordTemplates` / `loadReviewKeywordTemplates` 都过
+  `normalizeKeywordTemplate()`，所以 `versions` / `history` 是在**读侧模块的 normalize 里**接的
+  （`normalizeKeywordTemplateSnapshots` / `normalizeKeywordTemplateHistory`）；漏接这一处，
+  「保存过一版」刷新后就没了（本故事真踩：光写管理端，刷新后版本历史归零）。
+- **两件库级属性的口径**（与 `framingPresets` 的既有做法对齐）：① 排序（`moveKeywordTemplate`）
+  **不改内容 → 不增版本**，但改动要落本机镜像，且返回的列表**就是新顺序**（调用方 setState 后直接用）；
+  ② 同模式只留一套默认（`applyKeywordTemplateDefault`），被清标记的模板不增版本。
+  默认模板之间是「取 `sortOrder` 最靠前的一套」，所以「设为默认」不一定等于「老师端会选中它」，
+  还要排到同模式第一位（`keywordTemplateDirty()` 与保存时的改动清单同一口径逐字段比，顺序也算改动）。
+
+### 验证脚本里的三个口径（US-110a 真踩）
+
+- **`saving` 期间按钮是 disabled**：启停 / 保存按钮在 commit（推云端）期间不可点，脚本必须等它回到可用
+  再点，否则**点击被丢掉**、断言停在「版本没变」上（看起来像功能没生效）。
+- **本机镜像落盘是 state 变化触发的**：`setDraft()` 先跑、镜像后写。改完立刻读 `localStorage` 会读到上一版；
+  断言镜像内容前先 `waitForCondition` 等镜像里那一版出现。
+- **配了「适用课程类型 / 年龄段」的模板在别的上下文里不是「分数低」而是「不算候选」**：
+  独立重算与断言必须给**完整上下文**（课程类型 + 年龄段都要给，与老师端同参），少给一个约束就会落到默认模板
+  —— 那是正确行为，不是 bug。`data-keyword-template-*` 属性族（页面根 / 编辑区 / 列表行 / 分组 / 词条）
+  是断言读数的入口，新增控件时顺手补同名族属性。
+
 ## 容易踩的坑
 
 - **派生值（`const x = f(state)`）必须排在被它读的 state 之后**（US-108b 真踩）：把

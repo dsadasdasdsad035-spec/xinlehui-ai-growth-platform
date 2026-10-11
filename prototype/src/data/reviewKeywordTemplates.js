@@ -123,6 +123,48 @@ export function keywordTemplateVersionText(value) {
   return `v${normalizeKeywordTemplateVersion(value)}`;
 }
 
+/**
+ * 一次保存的**内容快照**（管理端 US-110 写入）。
+ * 老师端不读它，但 `normalize` / 持久化 / 云表映射都会经过这里 —— 丢了快照，
+ * 「保存过一版」在刷新之后就没了（版本历史与回滚都靠它，见 `data/reviewKeywordAdmin.js`）。
+ */
+export function normalizeKeywordTemplateSnapshot(raw) {
+  const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  return {
+    version: normalizeKeywordTemplateVersion(source.version ?? source.templateVersion),
+    name: str(source.name),
+    mode: normalizeKeywordTemplateMode(source.mode),
+    courseTypes: toList(source.courseTypes ?? source.course_types).map((item) => str(item)).filter(Boolean),
+    ageRange: str(source.ageRange ?? source.age_range),
+    isDefault: source.isDefault === true || source.is_default === true,
+    groups: normalizeKeywordTemplateGroups(source.groups ?? source.categories),
+    enabled: source.enabled !== false,
+    at: str(source.at ?? source.updatedAt ?? source.updated_at),
+    by: str(source.by ?? source.updatedBy ?? source.updated_by),
+    action: str(source.action),
+    note: str(source.note)
+  };
+}
+
+export function normalizeKeywordTemplateSnapshots(raw) {
+  return (Array.isArray(raw) ? raw : []).map(normalizeKeywordTemplateSnapshot);
+}
+
+/** 一条变更历史（`谁 · 什么时候 · 做了什么`）。 */
+export function normalizeKeywordTemplateHistory(raw) {
+  return (Array.isArray(raw) ? raw : [])
+    .map((entry) => {
+      const source = entry && typeof entry === 'object' ? entry : {};
+      return {
+        at: str(source.at),
+        by: str(source.by),
+        action: str(source.action),
+        detail: str(source.detail)
+      };
+    })
+    .filter((entry) => entry.at || entry.action || entry.detail);
+}
+
 /** 词条：接受字符串或 `{ term, enabled, sortOrder, note }`（管理端维护时用对象形态）。 */
 export function normalizeKeywordTemplateTerm(raw, index = 0) {
   const source = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : { term: raw };
@@ -192,6 +234,11 @@ export function normalizeKeywordTemplate(raw) {
     orgId: str(source.orgId ?? source.org_id),
     updatedBy: str(source.updatedBy ?? source.updated_by),
     updatedAt: str(source.updatedAt ?? source.updated_at),
+    // 管理端（US-110）写入的版本快照与变更历史：老师端不读，但必须能穿过 normalize 与持久化
+    // （`persistReviewKeywordTemplates` / `loadReviewKeywordTemplates` 都过这一处，
+    //  丢了它们「保存过一版」在刷新之后就没了）。没有的旧数据读成空数组，语义不变。
+    versions: normalizeKeywordTemplateSnapshots(source.versions),
+    history: normalizeKeywordTemplateHistory(source.history),
     legacy: source.legacy && typeof source.legacy === 'object' ? source.legacy : undefined
   };
 }

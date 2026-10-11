@@ -4,7 +4,7 @@ import {
   Archive, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bell, BookOpen, Boxes, Check, ChevronDown,
   CircleAlert, CircleCheck, Clock3, Download, FileText, Film, FolderOpen, Frame,
   GraduationCap, Image, Landmark, LayoutDashboard, LogOut, Menu, MessageSquareText, MoreHorizontal,
-  Package, PanelLeftClose, Plus, RefreshCw, RotateCcw, RotateCw, Save, Search, Settings, ShieldAlert, ShieldCheck, Sparkles,
+  ListChecks, Package, PanelLeftClose, Plus, RefreshCw, RotateCcw, RotateCw, Save, Search, Settings, ShieldAlert, ShieldCheck, Sparkles,
   Store, Trash2, UploadCloud, UserRound, Users, Video, WandSparkles, X, Zap
 } from 'lucide-react';
 import './styles.css';
@@ -222,6 +222,8 @@ import GalleryAdminPage from './gallery/GalleryAdminPage';
 import CourseLibraryPage from './admin/CourseLibraryPage';
 // Agent 指令与记忆（US-106a）：管理员维护 agent.md 与记忆文件的正文、生效范围与版本历史。
 import AgentFilesPage from './admin/AgentFilesPage';
+// 作品观察词模板（US-110a）：管理员维护多套模板的属性、分组与词条，是老师端观察词面板与提示词候选的来源。
+import KeywordTemplatesPage from './admin/KeywordTemplatesPage';
 
 // 五个维度各自的留空提示语 —— 只说明「这一维该看什么」，不预填任何成句的点评。
 const REVIEW_DIMENSION_HINTS = {
@@ -264,7 +266,7 @@ const navByRole = {
     ['gallery','3D 画廊',Landmark]
   ],
   parent: [['parent','首页',LayoutDashboard],['parentInsight','作品观察',Sparkles],['parentArchive','成长档案',Archive],['gallery','3D 画廊',Landmark],['growthCenter','个人成长中心',BookOpen],['authorization','授权管理',ShieldCheck],['profile','个人中心',UserRound]],
-  admin: [['adminDash','运营总览',LayoutDashboard],['apps','应用中心',Boxes],['providers','模型供应商',Zap],['teacherPersona','老师人设',GraduationCap],['skillLibrary','技能库',Boxes],['courseLibrary','课程库',BookOpen],['agentFiles','指令与记忆',FileText],['framingSettings','装裱设置',Frame],['galleryAdmin','3D 画廊',Landmark],['users','用户管理',Users],['logs','生成日志',FileText],['archiveAdmin','档案管理',Archive],['permissions','权限设置',ShieldCheck],['settings','系统配置',Settings]]
+  admin: [['adminDash','运营总览',LayoutDashboard],['apps','应用中心',Boxes],['providers','模型供应商',Zap],['teacherPersona','老师人设',GraduationCap],['skillLibrary','技能库',Boxes],['courseLibrary','课程库',BookOpen],['keywordTemplates','观察词模板',ListChecks],['agentFiles','指令与记忆',FileText],['framingSettings','装裱设置',Frame],['galleryAdmin','3D 画廊',Landmark],['users','用户管理',Users],['logs','生成日志',FileText],['archiveAdmin','档案管理',Archive],['permissions','权限设置',ShieldCheck],['settings','系统配置',Settings]]
 };
 
 const aiAppsSeed = [
@@ -6512,13 +6514,13 @@ function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast,recor
 
 // 机构级基础数据页：只有管理员能进。导航已经隐藏入口，这里再拦一道，
 // 避免从导览页、历史链接或未来新增入口绕过。
-const ADMIN_ONLY_PAGES=['teacherPersona','skillLibrary','courseLibrary','agentFiles','framingSettings','galleryAdmin'];
+const ADMIN_ONLY_PAGES=['teacherPersona','skillLibrary','courseLibrary','keywordTemplates','agentFiles','framingSettings','galleryAdmin'];
 
 function PageRouter(props){
  // 「课次表单」全站只有一份实现：`TeacherFlowV2`（第一步创建信息 / 后续装裱·点评·归档都在这个组件里）。
  // 旧的 CreateFlow 向导（StepLesson/StepUpload/StepApps/StepGenerate/StepSuccess）已删除，
  // `create` 这个路由 id 保留下来只作为别名，供工作台 / 课后反馈列表 / AI 创作台的历史入口复用同一组件。
- const map={dashboard:TeacherWelcome,teacherFlow:TeacherFlowV2,create:TeacherFlowV2,lessons:LessonsPage,ai:TeacherAIWorkspace,tasks:TasksPage,progress:ProgressBoard,classes:StudentArchiveData,growthCenter:PersonalGrowthCenter,archives:GrowthArchiveData,parent:ParentHomeFamily,parentInsight:ParentInsight,parentArchive:ParentArchiveFamily,authorization:AuthorizationPage,profile:ProfilePage,adminDash:AdminDashboard,apps:AppsPage,providers:ProvidersPage,teacherPersona:TeacherPersonaPage,skillLibrary:SkillLibraryPage,courseLibrary:CourseLibraryPage,agentFiles:AgentFilesPage,framingSettings:FramingSettingsPage,galleryAdmin:GalleryAdminPage,gallery:GalleryPage,users:UsersPage,logs:LogsPage,archiveAdmin:ArchiveAdmin,permissions:PermissionsPage,settings:SettingsPage,guide:GuidePage};
+ const map={dashboard:TeacherWelcome,teacherFlow:TeacherFlowV2,create:TeacherFlowV2,lessons:LessonsPage,ai:TeacherAIWorkspace,tasks:TasksPage,progress:ProgressBoard,classes:StudentArchiveData,growthCenter:PersonalGrowthCenter,archives:GrowthArchiveData,parent:ParentHomeFamily,parentInsight:ParentInsight,parentArchive:ParentArchiveFamily,authorization:AuthorizationPage,profile:ProfilePage,adminDash:AdminDashboard,apps:AppsPage,providers:ProvidersPage,teacherPersona:TeacherPersonaPage,skillLibrary:SkillLibraryPage,courseLibrary:CourseLibraryPage,keywordTemplates:KeywordTemplatesPage,agentFiles:AgentFilesPage,framingSettings:FramingSettingsPage,galleryAdmin:GalleryAdminPage,gallery:GalleryPage,users:UsersPage,logs:LogsPage,archiveAdmin:ArchiveAdmin,permissions:PermissionsPage,settings:SettingsPage,guide:GuidePage};
  if(ADMIN_ONLY_PAGES.includes(props.page)&&props.role!=='admin'){
    const Fallback=props.role==='parent'?ParentHomeFamily:TeacherWelcome;
    return <Fallback {...props}/>;
