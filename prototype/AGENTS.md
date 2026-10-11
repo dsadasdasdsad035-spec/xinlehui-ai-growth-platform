@@ -41,6 +41,17 @@ React + Vite 单页原型（`src/main.jsx` 是主入口，另按模块拆出 `sr
 
 ## 老师端「课后反馈」第一步（班级 / 学员 / 课程 / 课次推荐）
 
+> **课次表单全站只有一份实现 = `TeacherFlowV2`（`main.jsx`）。** 旧的 `CreateFlow` 五步向导
+> （`StepLesson` / `StepUpload` / `StepApps` / `StepGenerate` / `StepSuccess`）与另外几个不可达的重复入口
+> （`TeacherFlow`、`TeacherDashboard`、`LegacyTeacherDashboard`）已在 US-412 删除。
+> `PageRouter` 的 `create` 与 `teacherFlow` **两个路由 id 指向同一个组件**（`create` 只是别名，
+> 供工作台 / 课后反馈列表 / AI 创作台 / 导览页的历史入口继续可用）。
+> 新增入口请 `navigate('teacherFlow')`；**不要再写第二份课次表单**，也不要在 `main.jsx` 里加回
+> 「写死班级 / 学员 / 课程主题」的演示版表单 —— 第一步的班级、学员、课程、课次日期、序号、课题
+> 全部由 `studentManagement` / `courses` / `lessons` 派生，JSX 里不允许出现学员名、作品名、日期字面量。
+> 浏览器验证两条入口：侧边栏「课后反馈」= `teacherFlow`；`create` 这个 id **不在侧边栏**里，
+> 从「AI助手 → 课前工作 → 任意工具卡」点进去（那张卡的 `onClick` 就是 `navigate('create')`）。
+
 第一步的全部下拉都是 `TeacherFlowV2`（`main.jsx`）里的**受控组件**，状态是
 `selectedClassId / selectedStudentName / selectedCourseId`，派生值是 `visibleClasses / classStudents / courseOptions / activeCourseId`。
 
