@@ -702,11 +702,11 @@ function paintSignature(ctx, plan, image) {
  *   2. **模块对齐到整像素**：每个模块用 `Math.round` 取整边界再 `fillRect`，避免相邻模块之间
  *      出现灰色细缝（缩放到非整数倍时最容易出现，屏幕上看起来像码点模糊）。
  */
-function paintOverlayQr(ctx, plan, matrix) {
+function paintOverlayQr(ctx, plan, matrix, plateColor = '#FFFFFF') {
   if (!plan || !matrix) return;
   const { box, plate } = plan;
   ctx.save();
-  ctx.fillStyle = '#FFFFFF';
+  ctx.fillStyle = plateColor;
   ctx.fillRect(plate.x, plate.y, plate.width, plate.height);
   ctx.fillStyle = '#000000';
   const count = matrix.size;
@@ -748,6 +748,20 @@ export function paintQrMatrixToCanvas(ctx, { matrix, canvasWidth, canvasHeight, 
   if (!plan) return null;
   paintOverlayQr(ctx, plan, matrix);
   return plan;
+}
+
+/**
+ * 通用二维码画笔（[海报 US-301b]）：把矩阵画进调用方给定的 `box`（**码本体**，不含静区）与
+ * `plate`（白底，已含静区），`plateColor` 缺省白。
+ *
+ * 装裱水印 / 家长分享二维码 / 海报三处共用这一支画笔 ——「白底 + 静区 + 模块取整（相邻模块
+ * 不留灰缝）」的口径只有一份，改一处三处一起变。位置与尺寸由调用方算好（海报的码位是
+ * spec 里的 x/y/sizeRatio，与九宫格无关），这里只负责落笔。
+ */
+export function paintQrMatrixBox(ctx, { matrix, box, plate, plateColor = '#FFFFFF' } = {}) {
+  if (!ctx || !matrix || !box || !plate) return false;
+  paintOverlayQr(ctx, { box, plate, caption: null }, matrix, plateColor);
+  return true;
 }
 
 /**

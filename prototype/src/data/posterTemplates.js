@@ -84,11 +84,15 @@ const hex = (value, fallback) => {
   return /^#[0-9a-fA-F]{6}$/.test(text) ? text.toUpperCase() : fallback;
 };
 
-/** 只接受 http(s) / data:image / blob（与装裱的素材地址同一把闸：不把任意串印到海报上）。 */
-const imageUrl = (value) => {
+/**
+ * 只接受 http(s) / data:image / blob（与装裱的素材地址同一把闸：不把任意串印到海报上）。
+ * **导出**：渲染层收到的素材地址（`data.images` / `data.logo`）也要过同一把闸 ——
+ * 模板里的地址已由收敛器过了一遍，运行时传进来的那一份不能是第二套判据。
+ */
+export function posterImageUrl(value) {
   const raw = str(value);
   return /^(https?:\/\/|data:image\/|blob:)/i.test(raw) ? raw : '';
-};
+}
 
 // ---------------------------------------------------------------------------
 // 枚举与常量（收敛器 / 渲染引擎 / 管理端面板 / 断言读同一份 —— 别在任何一侧再抄一遍）
@@ -394,6 +398,60 @@ export function posterRatioToPixels(value, canvas) {
 }
 
 // ---------------------------------------------------------------------------
+// 拼贴网格（image slot 的 `grid`）：`columns/rows = 0` = 自适应
+//
+// 档位按 US-304 的验收原文：**4 幅→2×2、6–9 幅→3×3、10–12 幅→3×4**（「列×行」，列在前）。
+// 这里只回答「几个格子、怎么排」——「超上限时选哪几幅」由 `posterEvenSample()` 回答，
+// 渲染层与预览提示共用同一份判据（别在组件里再算一遍）。
+// ---------------------------------------------------------------------------
+
+/** 自适应档位：`max` 是本档管到多少幅（升序；最后一档兜住 maxItems 的上限 60）。 */
+export const POSTER_GRID_SHAPE_PRESETS = [
+  { max: 4, columns: 2, rows: 2 },
+  { max: 9, columns: 3, rows: 3 },
+  { max: POSTER_GRID_ITEM_RANGE.max, columns: 3, rows: 4 }
+];
+
+/**
+ * 拼贴网格的行列数。返回 `{ columns, rows, capacity, count, total, trimmed, adaptive }`：
+ *   - `count` = 实际要画的格数（已按 `maxItems` 封顶）、`total` = 传进来的幅数、
+ *     `trimmed` = 被上限挡掉的幅数（US-304 的「共 N 幅，已收录 M 幅」读这两个读数）；
+ *   - `adaptive` = 是否走自适应档位（作者显式给了 columns 与 rows 时为 false）。
+ * 显式只给一个方向也回落自适应 —— 半套网格没有意义（行数 / 列数算不出来）。
+ */
+export function posterGridShape({ columns, rows, count, maxItems } = {}) {
+  const total = Math.max(0, Math.round(num(count, 0)));
+  const limit = intIn(maxItems, POSTER_GRID_ITEM_RANGE, POSTER_GRID_MAX_ITEMS_DEFAULT);
+  const shown = Math.min(total, limit);
+  const fixedColumns = intIn(columns, POSTER_GRID_COLUMN_RANGE, 0);
+  const fixedRows = intIn(rows, POSTER_GRID_COLUMN_RANGE, 0);
+  const base = { count: shown, total, trimmed: Math.max(0, total - shown) };
+  if (fixedColumns > 0 && fixedRows > 0) {
+    return { ...base, columns: fixedColumns, rows: fixedRows, capacity: fixedColumns * fixedRows, adaptive: false };
+  }
+  const last = POSTER_GRID_SHAPE_PRESETS[POSTER_GRID_SHAPE_PRESETS.length - 1];
+  const preset = POSTER_GRID_SHAPE_PRESETS.find((item) => shown <= item.max) || last;
+  return { ...base, columns: preset.columns, rows: preset.rows, capacity: preset.columns * preset.rows, adaptive: true };
+}
+
+/**
+ * 超上限时的**均匀取样**（US-304 的「按课次均匀精选」）：首尾必取，中间等间隔取，
+ * 顺序保持原样（拼贴按课次顺序读，取样不该把顺序打乱）。`limit` 非法时回落默认 12。
+ */
+export function posterEvenSample(items, limit) {
+  const list = Array.isArray(items) ? items : [];
+  const max = intIn(limit, POSTER_GRID_ITEM_RANGE, POSTER_GRID_MAX_ITEMS_DEFAULT);
+  if (list.length <= max) return list.slice();
+  if (max <= 0) return [];
+  const picked = [];
+  for (let index = 0; index < max; index += 1) {
+    const position = max === 1 ? Math.round((list.length - 1) / 2) : Math.round((index * (list.length - 1)) / (max - 1));
+    if (!picked.includes(position)) picked.push(position);
+  }
+  return picked.map((position) => list[position]);
+}
+
+// ---------------------------------------------------------------------------
 // 收敛器：normalizePosterSpec（FR-307 —— 字段缺失或非法回落默认值，**永不抛错**）
 // ---------------------------------------------------------------------------
 
@@ -427,7 +485,7 @@ function normalizeBackground(raw) {
     type,
     angle: ratioIn(source.angle, { min: 0, max: 360 }, DEFAULT_POSTER_BACKGROUND.angle),
     stops,
-    image: imageUrl(source.image)
+    image: posterImageUrl(source.image)
   };
 }
 
@@ -568,7 +626,7 @@ export function normalizePosterSlot(raw) {
   return {
     ...base,
     maxWRatio: ratioIn(raw.maxWRatio, POSTER_LOGO_WIDTH_RATIO_RANGE, num(fallback.maxWRatio, 0.16)),
-    url: imageUrl(raw.url)
+    url: posterImageUrl(raw.url)
   };
 }
 

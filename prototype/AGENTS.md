@@ -3525,6 +3525,61 @@ US-222 管「成片怎么版本化」，这一节管「谁能碰这些成片、�
   校验读数 / **300 组随机嵌套脏数据 fuzz**）。本故事**没有 UI 改动**，因此不做浏览器验证；
   模块目前还没有消费点（US-301b / US-302a 接上）。
 
+## 海报渲染引擎 `services/poster.js`（[海报 US-301b] / FR-308 ~ FR-312）
+
+参数化模板 → canvas 的**唯一落笔处**：`renderPoster({ spec, data, scale })` 返回
+`{ blob, dataURL, canvas, plan, warnings, … }`（`renderPosterToCanvas` 是它的画布层）。
+预览与导出**就是这一个函数、只差 `scale`**：`scale = 1` 得 1080 宽预览、`scale = 2` 得 2160 宽导出。
+
+- **绘制坐标系永远是 spec 的逻辑画布，最后只做一次 `ctx.scale(deviceW/logicalW, deviceH/logicalH)`**
+  （与装裱 US-008a 的导出同一条口径）。于是 `plan` 里的一切（盒子 / 字号 / 二维码模块大小）
+  **不随 scale 变**；设备像素只在 `plan.canvas.deviceWidth/deviceHeight` 上。断言像素时要自己乘 `scale`。
+  「同一函数、只差 scale」的**证明方式**（别用逐字节相等 —— 文字抗锯齿必然不同）：
+  ① 两档 `plan` 逐值相同；② 把 scale=2 的图缩回 scale=1 的尺寸后逐像素比，平均通道差 ≤ 3、
+  差异 > 60 的像素占比 < 0.5%；③ 平坦区取十几对 (x, y) ↔ (2x, 2y) 采样点，通道差 ≤ 8。
+- **画笔顺序**：背景 → 分隔线（decor）→ slots（按数组顺序）→ 相框（最后画，最外圈不被占位区盖住）。
+  `visible: false` 的占位区**完全不进绘制层**（不画、不留空白占位）——`plan` 里如实写 `reason: 'hidden'`。
+- **`plan` 是给界面与断言读的唯一读数**：每个占位区 `{ drawn, reason, box, … }`，文本带
+  `lines / truncated / dropped / font / lineHeight`、图片带 `cells[]`（每格的 `box / imageBox / captionBox`）、
+  二维码带 `modules / version / plate / quiet`。**别让界面反推渲染结果**，也别在组件里重算版式。
+- **文本：先设 `ctx.font` 再 `measureText`**（本轮真踩：字体在测量之后才设 → `measureText` 用的是
+  默认 10px sans-serif → 断行判据失效 → 长句一行铺满整张画布，plan 里 `lines.length === 1`、
+  墨迹分带只有 1 条）。`layoutPosterText()` 的 `measure` 是**注入**的（浏览器给 `ctx.measureText`），
+  所以换行 / 截断 / `dropped` 计数可以脱离 canvas 用假测量断言。
+  口径：中文逐字测宽、拉丁词元尽量整词（放不下再逐字符硬拆）、显式 `\n` 强制换行、
+  换行处吞空格、**省略号也要挤进 `maxWidth`**（放不下就继续丢字，最后可能整行只剩「…」）。
+  超行时 `warnings` 追加 `posterTextOverflowWarning()`（FR-311 的「导出前溢出警告」，
+  界面直接渲染这一句，不许自己拼）。
+- **图片：`contain` 等比 + 居中，`drawImage` 只给目标框、不给源裁剪参数、不设任何滤镜**（FR-309）。
+  白底卡片 = 圆角路径填充（可选阴影用 `ctx.shadow*` 只在这一层）→ 作品裁剪到**内圈圆角**
+  （`max(0, radius - padding)`，留白足够时连这个裁剪都不发生）→ 可选边框描边（内缩 `lineWidth/2`）。
+  多图拼贴：合成一个 slot 的 `grid`，档位由 `posterGridShape()` 给（4→2×2 / 6–9→3×3 / 10–12→3×4，
+  **列在前**），超 `maxItems` 用 `posterEvenSample()` 按课次均匀精选；`cellCaption.visible` 时
+  每格的**卡片高度会缩掉一条标注带**（所以「行距 = 格高 + 间距」而不是「卡片高 + 间距」）。
+  `{ url: '' }` 是**占位格**（保留格子、不画图，FR-321 的班级占位格）。
+- **素材入参只有三种形状**，归一入口是纯函数 `posterImageEntries()` / `posterImagePlan(spec, data)`：
+  `data.images` 字符串 / 数组 → 归**第一个 image 槽**；对象 → 按槽 id 取（没命中就不画）；
+  `data.image` 是单张的便捷写法；`data.logo` 是机构 Logo（模板自带 `slot.url` 优先）。
+  **分配必须在渲染前一次算好、不能写标记到 `data` 上**（早期写法用 `data.__imagesTaken`，
+  第二次渲染同一个 `data` 对象时第一个槽就拿不到素材了 —— 纯函数 + 局部 flag 才是对的）。
+  素材地址一律过 `posterImageUrl()` 这一把闸（`http(s)` / `data:image` / `blob`）。
+- **二维码复用装裱那一支画笔**：`framing.js` 新导出 `paintQrMatrixBox(ctx, { matrix, box, plate, plateColor })`
+  —— 白底 + 静区 + 模块取整（相邻模块不留灰缝）只有一份实现，装裱水印 / 分享二维码 / 海报共用。
+  `plateColor` 缺省白（既有调用方行为一字不变），海报传 `slot.bg`。静区 = `QR_QUIET_MODULES`（overlayLayout 导出）。
+  **编不出来就不画**（`qrMatrix()` 返回 null → `plan.reason = 'unencodable'`，绝不画假码）；
+  变量解析后为空同样不画（`'empty-value'`，US-303 的「分享链接待生成」读这个 reason）。
+  造「编不出来」的用例要用 **200 个汉字**：收敛器把 `qrcode.value` 截到 200 字，200 个 ASCII 仍编得出来。
+- **设备尺寸封顶**：`posterCanvasScale()` 在超长图（report-long 4096 高）× 导出倍数 > 4096 时
+  **统一缩**（宽高同倍率），只夹一边会把版式压变形；`scaleClamped` / `plan.canvas.clamped` 如实回报。
+- **坏素材只让这一支消失**（解码失败 → `reason: 'decode-failed'`，整张海报照样出图）；
+  跨域素材 `crossOrigin='anonymous'`，否则污染画布、`toBlob` 直接抛。解码结果有小缓存（≤24 张）。
+- 回归口径（改动本模块时一起跑）：`US-089` Node **104 项** + 浏览器 **83 项**；`uss088` data 39 项；
+  `assert-overlays.mjs`（US-028 规则层 87 项，含 `applyOverlayVariables` 的 `keys` 参数）；
+  `/tmp/assert-us089-framing-regression.mjs` **7 项**（分享二维码老路径白底仍纯白 —— 改了 QR 画笔就跑它）。
+- 本故事**没有 UI 消费点**（弹窗 / 五类版式入口在 US-302a、US-303 起），浏览器验证 = 页面里
+  `await import('/src/services/poster.js')` 直接渲染 + 逐像素断言（合成作品图四边各有色带，
+  专门验「不裁切」；中心色块验「不调色」）。截图 441 留档。
+
 ## 容易踩的坑
 
 - **「每次渲染后量一次」的测量签名里不能有时间戳**（US-224 真踩）：`useEffect(()=>{measure()})`

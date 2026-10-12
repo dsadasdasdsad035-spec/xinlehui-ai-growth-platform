@@ -275,24 +275,29 @@ export function findOverlayVariables(template) {
 /**
  * 变量替换。返回 `{ text, replaced, missing, empty }`：
  *   - `replaced` 命中且有值的变量名；
- *   - `missing`  **不在五个变量里**的占位符（原文保留，后台要给它一条警告 —— FR-19）；
+ *   - `missing`  **不在变量表里**的占位符（原文保留，后台要给它一条警告 —— FR-19）；
  *   - `empty`    命中了变量但当前上下文没有值（替换成空串）。
  * 永不抛错：非字符串模板按空串处理。
+ *
+ * `keys` 可换成另一张变量表（[海报 US-301b] 的海报变量复用同一支实现）——
+ * **语义必须一致**：未知占位符保留原文、命中但没值替换成空串。默认就是装裱的五个变量，
+ * 既有调用方一字不用改。
  */
-export function applyOverlayVariables(template, context = {}) {
+export function applyOverlayVariables(template, context = {}, keys = OVERLAY_VARIABLE_KEYS) {
   const values = context && typeof context === 'object' ? context : {};
+  const table = keys && typeof keys === 'object' ? keys : OVERLAY_VARIABLE_KEYS;
   const names = findOverlayVariables(template);
   const replaced = [];
   const missing = [];
   const empty = [];
   for (const name of names) {
-    const key = OVERLAY_VARIABLE_KEYS[name];
+    const key = table[name];
     if (!key) { missing.push(name); continue; }
     const value = String(values[key] ?? '').trim();
     if (value) replaced.push(name); else empty.push(name);
   }
   const text = String(template ?? '').replace(/\{([^{}]{1,16})\}/g, (whole, name) => {
-    const key = OVERLAY_VARIABLE_KEYS[name];
+    const key = table[name];
     if (!key) return whole; // 未命中：保留原文，绝不静默吞掉
     return String(values[key] ?? '').trim();
   });
