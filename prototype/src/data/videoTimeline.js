@@ -77,16 +77,21 @@ export const VIDEO_FRAME_UNTITLED_TEXT = '作品名未记录';
 // ---------------------------------------------------------------------------
 
 /**
- * 五种帧（片头 / 作品帧 / 课堂照片 / 片尾 / 缺课留白卡）。
- * 前四种是这一份帧序规则自己的帧；`absence` 只出现在**个人成长视频的编排**里（[第四步 US-217]）：
- * 缺课的课次不跳过，留一张 1.5 秒的留白卡 —— 时长同样只在下面这张表里写一次。
+ * 七种帧（片头 / 作品帧 / 课堂照片 / 片尾 / 缺课留白卡 / 学员姓名卡 / 本期留白卡）。
+ * 前四种是这一份帧序规则自己的帧，后三种只出现在**编排**里（新增帧种类只加这三处枚举，
+ * 不要另写一套时长表）：
+ *  - `absence`：个人成长视频（[第四步 US-217]）里缺课的课次不跳过，留一张 1.5 秒的留白卡；
+ *  - `nameCard` / `blank`：班级视频集锦（[第四步 US-218]）里每位学员一段 —— 段首一张 1.5 秒
+ *    姓名卡（姓名 + 作品数），这位学员本期一件作品都没有时补一张 1.5 秒的留白卡而不是跳过整段。
  */
 export const VIDEO_FRAME_KINDS = {
   intro: 'intro',
   artwork: 'artwork',
   photo: 'photo',
   ending: 'ending',
-  absence: 'absence'
+  absence: 'absence',
+  nameCard: 'nameCard',
+  blank: 'blank'
 };
 
 export const VIDEO_FRAME_KIND_LABELS = {
@@ -94,16 +99,23 @@ export const VIDEO_FRAME_KIND_LABELS = {
   [VIDEO_FRAME_KINDS.artwork]: '作品帧',
   [VIDEO_FRAME_KINDS.photo]: '课堂照片',
   [VIDEO_FRAME_KINDS.ending]: '片尾',
-  [VIDEO_FRAME_KINDS.absence]: '缺课留白卡'
+  [VIDEO_FRAME_KINDS.absence]: '缺课留白卡',
+  [VIDEO_FRAME_KINDS.nameCard]: '学员姓名卡',
+  [VIDEO_FRAME_KINDS.blank]: '本期留白卡'
 };
 
-/** 每种帧的时长（秒）—— 验收点名的四个数字（+ 留白卡 1.5 秒），改这里就是改规则。 */
+/**
+ * 每种帧的时长（秒）—— 验收点名的四个数字（+ 留白卡 / 姓名卡 1.5 秒），改这里就是改规则。
+ * 1.5 秒这一档是共享的：缺课留白卡、学员姓名卡、本期留白卡都是 1.5 秒（卡片只够一句话）。
+ */
 export const VIDEO_FRAME_DURATION_SEC = {
   [VIDEO_FRAME_KINDS.intro]: 3,
   [VIDEO_FRAME_KINDS.artwork]: 3.5,
   [VIDEO_FRAME_KINDS.photo]: 2,
   [VIDEO_FRAME_KINDS.ending]: 4,
-  [VIDEO_FRAME_KINDS.absence]: 1.5
+  [VIDEO_FRAME_KINDS.absence]: 1.5,
+  [VIDEO_FRAME_KINDS.nameCard]: 1.5,
+  [VIDEO_FRAME_KINDS.blank]: 1.5
 };
 
 /** 转场时长（秒）：统一 0.5 秒交叉淡入 —— 相邻帧因此重叠这 0.5 秒。 */
@@ -358,7 +370,11 @@ export const VIDEO_FRAME_FIELDS = [
   'startSec', 'endSec', 'durationSec', 'transitionSec', 'isFirst',
   // 这一帧的素材**属于哪位学员**（从源条目的 `student` 原样带过来）：
   // 「只收录该学员自己的作品」的判据要能对着帧本身复核，而不是去信构建过程（[第四步 US-217]）。
-  'sourceStudent'
+  'sourceStudent',
+  // 这一帧属于**哪一段**（班级视频集锦按学员分段：[第四步 US-218]）：`-1` = 不属于任何一段（片头 / 片尾）。
+  // `declaredArtworkCount` 只写在段首姓名卡上（卡上写着的那一个数字）——
+  // 「姓名卡与作品不串档」的判据拿它与这一段里真实的作品帧数对账，不对账就点名。
+  'segmentIndex', 'declaredArtworkCount'
 ];
 
 /** 归一化一帧（读旧数据 / 脏数据都不抛错；时长取整数表并做上下限收敛）。 */
@@ -395,7 +411,10 @@ export function normalizeVideoFrame(raw) {
     durationSec: Math.max(0, round1(source.durationSec) || num(VIDEO_FRAME_DURATION_SEC[kind])),
     transitionSec: Math.max(0, round1(source.transitionSec)),
     isFirst: source.isFirst === true,
-    sourceStudent: str(source.sourceStudent)
+    sourceStudent: str(source.sourceStudent),
+    // 段号（班级集锦的分段）与姓名卡上写着的那一个作品数：不属于任何一段就是 `-1`。
+    segmentIndex: Number.isFinite(Number(source.segmentIndex)) ? int(source.segmentIndex) : -1,
+    declaredArtworkCount: Math.max(0, int(source.declaredArtworkCount))
   };
 }
 

@@ -870,7 +870,7 @@ US-213a 那份本机演示队列（上面一节）**不是**真服务：真服�
   **缺课留白卡不受它影响**（缺课本来就不进精选），界面据此说明「为什么时间线比全量少了几幅」。
   两个时长确实不同（个人时间线含留白卡），所以面板另给一句「上面的帧清单不排留白卡」的口径说明。
 - **班级集锦（US-218）不属于这里**：`VideoPersonalTimeline` 只在 `!isClass` 时渲染（`personalPlan` 为 null），
-  班级档案下的精选 / 帧清单 / 任务面板一字不变。
+  班级档案下的精选 / 帧清单 / 任务面板一字不变（班级那一块见下一节）。
 - **验证方式（本故事实测）**：`pnpm run build`；Node 直跑 **122 项**（`/tmp/assert-us077-data.mjs`：
   升序串联 / 留白卡两分支与判据 / 片头拼装 / 成片信息四项与「预估」/ 学员隔离与复核判据 / 照片槽与内容边界 /
   精选联动 / 视图八种状态同形状 + `videoFrameSpan` 单元）；浏览器 **88 项**（`/tmp/assert-us077-browser.mjs`：
@@ -881,6 +881,50 @@ US-213a 那份本机演示队列（上面一节）**不是**真服务：真服�
   `ENOENT ... open '.../382-第四步-成片信息（时长 /'`（错误信息只显示到斜杠前那一段，看着像目录不存在）。
   ② 走完整流程归档出来的那位学员（`陈一诺`）**也在同一个周期里**，所以「被挡下的其他学员条数」= 夹具外人 + 1；
   断言写死 3 会假红 —— 这类计数要么把流程记录算进去，要么就断言「别人一条都没进来」而不是断言总数。
+
+## 班级视频集锦按学员分段（[第四步 US-218]）
+
+「全班串成一条会是什么样」在出片之前就要看得到：每位学员一段、段首 1.5 秒姓名卡、本期无作品留白卡、总时长 ≤5 分钟。
+
+| 关注点 | 位置 | 说明 |
+|---|---|---|
+| 编排（分段 / 姓名卡 / 留白卡 / 顺序 / 上限 / 不串档判据） | `src/data/videoClass.js`（零依赖，Node 可直跑） | `videoClassPlan()`、`videoClassView()`、`videoClassSegments()`、`videoClassNameCardTitle()`、`videoClassCrossTalkIssue()`、`videoClassMoveOrder()` |
+| 界面 | `GrowthArchiveData.jsx` 的 `VideoClassTimeline`（在 `VideoJobsPanel` 里、个人时间线之后、任务卡片之外；**只在班级档案下渲染**） | `data-class-video-*` / `data-class-segment-*` / `data-class-name-card*` / `data-class-blank-card` / `data-class-order-*` / `data-class-frame-student` |
+
+- **新增帧种类只加三处枚举**（`videoTimeline.js`）：`VIDEO_FRAME_KINDS` / `VIDEO_FRAME_KIND_LABELS` /
+  `VIDEO_FRAME_DURATION_SEC`。US-218 就是照这条加进 `nameCard`（学员姓名卡）与 `blank`（本期留白卡），
+  两个都是 1.5 秒；起止仍然只由 `videoFrameSpan` 算 —— 帧清单那一套规则（3 / 3.5 / 2 / 4 秒与 0.5 秒转场）
+  **一个字没动**（US-075 的 130 项数据回归 + 95 项浏览器回归全绿就是这么来的）。不要另写一套时长表。
+- **段号与「声明幅数」是帧上的字段**（`segmentIndex` / `declaredArtworkCount` 进了 `VIDEO_FRAME_FIELDS`）：
+  `-1` = 不属于任何一段（片头 / 片尾）。姓名卡把**这一段真实收录了几幅**写在卡上（`declaredArtworkCount`），
+  「姓名卡与作品不串档」的判据 `videoClassCrossTalkIssue()` 因此能**对着产物对账**（卡上数字 vs 段内真实作品帧数、
+  每一帧的 `sourceStudent` vs 段首姓名卡），而不是去信构建过程。
+- **顺序默认按班级名单 = `roster` 是顺序真源**：`videoClassPlan` 收 `roster`（名单）与 `order`（老师调整后的顺序）；
+  分段名单 = `roster ∪ 本期有记录的学员`（名单之外的**接在后面照样各占一段**并如实报数）。这里用的是
+  **未经收录清单过滤**的名单（`periodGroups`）：某位学员的作品被精选挡光之后他仍然占一段（留白卡），
+  不会从时间线上凭空消失。换位算法是 `videoClassMoveOrder()`（越界原样返回，界面据此置灰按钮）。
+- **上限读的是 US-216 那一份**：`VIDEO_DURATION_CAP_SEC.class`（300 秒 / 5 分钟），班级的「每人至少 1 幅（保底）+
+  按作品数比例」直接复用 `videoSelectionAllocateGroups()` / `videoSelectionSampleIndices()`。修剪的判据是
+  **整条编好的时间线**（姓名卡与留白卡都算进去），从「全收」往下逐档试出最大的放得下的名额；保底本身超上限时
+  如实标 `overCap`（与 US-216 同一句实话：**不靠少收某位学员来凑时长**）。
+- **卡片元素里只放那一句话**（US-217 的教训在这里同样成立）：姓名卡元素里只有 `姓名 · N 幅作品`，
+  留白卡元素里只有文案；时长（`data-class-name-card-duration` / `data-class-blank-duration`）、
+  「本段收录几幅」与来源说明都写在卡片**外面**（`data-class-name-card-note` / `data-class-blank-note`）——
+  DOM 层面的「卡片文案 ≤16 字」判据才站得住。
+- **班级档案下的入口数据是另外两份**（`GrowthArchiveData`）：`videoClassEntries`（这个班级 + 生成周期的记录）与
+  `classRoster`（学员管理里同班的学生名 = 顺序真源）；面板自己持有 `classOrder` 局部 state（换班级清空）。
+- **验证方式（本故事实测）**：`pnpm run build`（330~359ms）；Node 直跑 **166 项**（`/tmp/assert-us078-data.mjs`：
+  分段与姓名卡对账 / 顺序与换位算法 / 留白卡两分支与判据 / 25 位 × 6 幅取样到上限内 / 保底超上限的实话 /
+  精选联动 / 缺课不进分段 / 视图同形状 + 篡改产物的四类点名）；浏览器 **94 项**（`/tmp/assert-us078-browser.mjs`：
+  注入同班 3 位学员（1 / 2 / 3 幅，含一条缺课）+ 名单里的第 4 位「本期 0 幅」+ 走完整流程归档一条，
+  逐个对象复核不串档、真实点上移 / 下移 / 恢复名单顺序、390px）；回归 US-075 95、US-076 100、US-077 91、
+  US-074 72 全绿；截图 386~390 留档。
+- **验证脚本的两个坑（本故事真踩）**：
+  ① **篡改产物做判据断言时要先复制帧对象**：`frames.map(frame => { frame.sourceStudent = 'X'; return {...frame} })`
+  会把 `plan.frames` 里那个对象也改掉，后面「判据对干净产物为空」之类的断言整片连带失败（看起来像产品误报）。
+  复制在前、改副本在后。
+  ② **走流程归档那一条的作品名是课题名**（`圆形变变变`），不含学员姓名：想验「作品不串档」要断言
+  「不含其他学员的名字」或读帧上的 `sourceStudent`，别断言作品名前缀是学员名。
 
 ## 老师端「课后反馈」第一步（班级 / 学员 / 课程 / 课次推荐）
 

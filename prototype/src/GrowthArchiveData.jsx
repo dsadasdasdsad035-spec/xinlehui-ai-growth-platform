@@ -159,6 +159,20 @@ import {
   videoPersonalPlan,
   videoPersonalView
 } from './data/videoPersonal';
+// 班级视频集锦按学员分段（[第四步 US-218]）：分段（每位学员一段）/ 段首 1.5 秒姓名卡（姓名 + 作品数）/
+// 顺序默认按班级名单且生成前可调整 / 本期无作品保留留白卡 / 全班串成一条且总时长不超过 5 分钟全在
+// `data/videoClass.js`（零依赖纯函数）。这一页只渲染它的产物 —— 卡片文案、分段读数、
+// 「不串档」判据与顺序调整都是数据层给的（组件不自己算时长、也不自己拼字符串）。
+import {
+  VIDEO_CLASS_MOVE_DOWN_LABEL,
+  VIDEO_CLASS_MOVE_UP_LABEL,
+  VIDEO_CLASS_ORDER_RESET_LABEL,
+  VIDEO_CLASS_SECTION_DESC,
+  VIDEO_CLASS_SECTION_TITLE,
+  videoClassMoveOrder,
+  videoClassPlan,
+  videoClassView
+} from './data/videoClass';
 // 机构名（帧清单的片头与片尾都要写它，与装裱叠加元素的变量同一份来源）。
 import { DEFAULT_ORG_NAME } from './data/lessons';
 import { Button } from './ui';
@@ -636,6 +650,110 @@ function VideoPersonalTimeline({plan}){
 }
 
 /**
+ * 班级视频集锦（[第四步 US-218]）：全班按学员分段串成一条时间线 —— 每位学员一段，
+ * 段首 1.5 秒姓名卡写着姓名与作品数，段内按课次时间线排；本期没有作品的学员保留一张留白卡。
+ *
+ * 判据与文案全部来自 `data/videoClass.js`（组件只渲染产物）：
+ *  - 分段方式、姓名卡那一行（姓名 + 作品数）、留白卡文案与时长、「不串档」判据都是数据层给的；
+ *  - **只在班级档案下渲染**：个人档案下走 `VideoPersonalTimeline`（US-217），这里不给个人档案留错配的入口；
+ *  - 顺序默认按班级名单，生成前可调整：上移 / 下移只重排分段顺序（判据与换位算法在数据层），
+ *    「恢复班级名单顺序」把调整清掉；
+ *  - 卡片元素里**只放那一句话**（姓名卡文案 / 留白卡文案）：时长标签与来源说明都写在卡片**外面**，
+ *    这样 DOM 上的「卡片文案 ≤16 字」判据才站得住；
+ *  - 这一块只出时间线：没有成片地址、封面或下载入口（`data-class-video-mp4="none"`）。
+ */
+function VideoClassTimeline({plan,view,onMove,onReset}){
+  const framesOfSegment=index=>view.frames.filter(frame=>frame.segmentIndex===index&&!frame.isNameCard&&!frame.isBlank);
+  const studentOf=name=>view.studentRows.find(row=>row.name===name)||{count:0,kept:0,note:''};
+  return <section className="video-class" data-class-video="true"
+    data-class-video-object={view.objectName} data-class-video-period={view.period}
+    data-class-video-intro-line={view.introLine} data-class-video-frames={view.frameCount}
+    data-class-video-segments={view.segmentCount} data-class-video-artworks={view.artworkCount}
+    data-class-video-photos={view.photoCount} data-class-video-name-cards={view.nameCardCount}
+    data-class-video-blanks={view.blankCount} data-class-video-empty-segments={view.emptySegmentCount}
+    data-class-video-duration={view.totalSec} data-class-video-duration-text={view.totalText}
+    data-class-video-cap={view.capSec} data-class-video-within-cap={view.withinCap?'true':'false'}
+    data-class-video-over-cap={view.overCap?'true':'false'} data-class-video-dropped={view.droppedEntries.length}
+    data-class-video-external={view.externalLessons} data-class-video-order-changed={view.orderChanged?'true':'false'}
+    data-class-video-crosstalk={view.crossTalkOk?'true':'false'} data-class-video-clean={view.clean?'true':'false'}
+    data-class-video-mp4="none" data-class-video-demo={view.demoLabel} data-class-video-has-output="false">
+    <div className="archive-section-head"><span>{view.demoLabel} · 分段集锦 mock</span><h4>{VIDEO_CLASS_SECTION_TITLE}</h4><p>{VIDEO_CLASS_SECTION_DESC}</p></div>
+    <ul className="video-class-rules" data-class-rules="true">{view.rules.map(rule=><li key={rule.id} data-class-rule={rule.id} data-class-rule-value={rule.value}>
+      <b>{rule.label}</b><span data-class-rule-text="true">{rule.value}</span><small>{rule.detail}</small>
+    </li>)}</ul>
+    <div className="video-class-intro" data-class-intro="true" data-class-intro-line={view.introLine}>
+      <b data-class-intro-label="true">{view.introLine}</b>
+      <small>片头：班级名 · 周期 · 标题「{view.introTitle}」</small>
+    </div>
+    <div className="video-class-order" data-class-order="true" data-class-order-current={view.currentOrder.join(' > ')} data-class-order-default={view.defaultOrder.join(' > ')}>
+      <b>学员顺序（{view.orderText}）</b>
+      <small data-class-order-note="true">{view.orderNote}</small>
+      <ul data-class-order-list="true">{view.segments.map((row,index)=><li key={row.student||index} data-class-order-row={row.student}
+        data-class-order-position={row.position} data-class-order-count={studentOf(row.student).count} data-class-order-kept={studentOf(row.student).kept}
+        data-class-order-empty={row.isEmpty?'true':'false'}>
+        <span data-class-order-name="true">{row.positionLabel} · {row.studentLabel}</span>
+        <em data-class-order-note-text="true">{studentOf(row.student).note}</em>
+        <button type="button" data-class-order-move="up" data-class-order-move-index={index} disabled={!row.canUp} onClick={()=>onMove(index,-1)}>{VIDEO_CLASS_MOVE_UP_LABEL}</button>
+        <button type="button" data-class-order-move="down" data-class-order-move-index={index} disabled={!row.canDown} onClick={()=>onMove(index,1)}>{VIDEO_CLASS_MOVE_DOWN_LABEL}</button>
+      </li>)}</ul>
+      <button type="button" data-class-order-reset="true" disabled={!view.orderChanged} onClick={onReset}>{VIDEO_CLASS_ORDER_RESET_LABEL}</button>
+    </div>
+    <p className="video-class-summary" data-class-summary="true">{view.summary}</p>
+    <p className="video-class-cap" data-class-cap="true" data-class-cap-within={view.withinCap?'true':'false'}>{`总时长 ${view.totalText} / ${view.capText}`}</p>
+    {view.notes.map((note,index)=><p className="video-class-note" key={note} data-class-note={index}>{note}</p>)}
+    <p className="video-class-no-output" data-class-no-output="true">{view.noOutputNote}</p>
+    <ol className="video-class-list" data-class-segment-list="true">
+      {view.segments.map(row=><li key={row.student||row.index} className={`video-class-segment${row.isEmpty?' is-empty':''}`} data-class-segment={row.student}
+        data-class-segment-index={row.index} data-class-segment-student={row.studentLabel}
+        data-class-segment-declared={row.declaredCount} data-class-segment-artworks={row.artworkCount}
+        data-class-segment-photos={row.photoCount} data-class-segment-empty={row.isEmpty?'true':'false'}
+        data-class-segment-date={row.dateText} data-class-segment-start={row.startSec} data-class-segment-end={row.endSec}
+        data-class-segment-duration={row.durationSec} data-class-segment-time={row.timeText}
+        data-class-segment-blank-text={row.blankText}>
+        <header><b data-class-segment-position="true">{row.positionLabel} · {row.studentLabel}</b><span data-class-segment-time-label="true">{row.timeText}</span><em data-class-segment-duration-label="true">{row.durationText}</em></header>
+        <div className="video-class-name-card" data-class-name-card="true" data-class-name-card-text={row.nameCardText}
+          data-class-name-card-declared={row.declaredCount} data-class-name-card-segment={row.index} data-class-name-card-duration={view.nameCardDurationSec}>
+          <b data-class-name-card-label="true">{row.nameCardText}</b>
+        </div>
+        <small className="video-class-name-card-note" data-class-name-card-note="true">段首 1.5 秒姓名卡 · 本段收录 {row.artworkCount} 幅{row.dateText?` · 课次 ${row.dateText}`:''}</small>
+        {framesOfSegment(row.index).length?<ol className="video-class-frames" data-class-frame-list="true">{framesOfSegment(row.index).map(frame=><li key={frame.id} className={`video-class-frame is-${frame.kind}`} data-class-frame={frame.kind}
+          data-class-frame-index={frame.index} data-class-frame-segment={row.index} data-class-frame-student={frame.sourceStudent}
+          data-class-frame-date={frame.date} data-class-frame-title={frame.titleText} data-class-frame-subtitle={frame.subtitle}
+          data-class-frame-start={frame.startSec} data-class-frame-end={frame.endSec} data-class-frame-duration={frame.durationSec}>
+          <header><b data-class-frame-kind-label="true">{frame.kindLabel}</b><span data-class-frame-time-label="true">{frame.timeText}</span><em data-class-frame-duration-label="true">{frame.durationText}</em></header>
+          <div className="video-class-frame-body">
+            {frame.asset.ready?<img src={frame.asset.url} alt={`${frame.titleText}帧`} loading="lazy" decoding="async" data-class-frame-image="true"/>:null}
+            <div>
+              <p className="video-class-frame-title" data-class-frame-title-label="true">{frame.titleText}{frame.date?` · ${frame.date}`:''}</p>
+              {frame.kind===VIDEO_FRAME_KINDS.artwork?<p className={`video-class-frame-subtitle${frame.subtitle?'':' is-empty'}`} data-class-frame-subtitle-line="true">{frame.subtitle||'（这一帧没有字幕）'}</p>:null}
+            </div>
+          </div>
+          <small className="video-class-frame-note" data-class-frame-note="true">{frame.assetNote}</small>
+        </li>)}</ol>:null}
+        {row.isEmpty?<div className="video-class-blank-card" data-class-blank-card="true" data-class-blank-text={row.blankText} data-class-blank-duration={view.blankDurationSec} data-class-blank-segment={row.index}>
+          <b data-class-blank-label="true">{row.blankText}</b>
+        </div>:null}
+        {row.isEmpty?<small className="video-class-frame-note" data-class-blank-note="true">{row.blankNote}</small>:null}
+      </li>)}
+    </ol>
+    {view.empty?<p className="video-jobs-empty" data-class-empty="true">{view.emptyText}</p>:null}
+    <div className="video-class-info" data-class-info="true" data-class-info-estimated={view.infoRows.filter(row=>row.estimated).map(row=>row.id).join(',')}>
+      <b>成片信息</b>
+      <ul>{view.infoRows.map(row=><li key={row.id} data-class-info-row={row.id} data-class-info-estimated={row.estimated?'true':'false'} data-class-info-value={row.value}>
+        <span>{row.label}</span><em data-class-info-value-label="true">{row.value}</em>{row.estimated?<span className="video-class-info-badge" data-class-info-estimate-badge="true">{row.estimateText}</span>:null}<small>{row.hint}</small>
+      </li>)}</ul>
+      <small data-class-info-note="true">{view.estimateNote}</small>
+    </div>
+    <div className={`video-class-crosstalk${view.clean?'':' is-issue'}`} data-class-crosstalk="true" data-class-crosstalk-ok={view.crossTalkOk?'true':'false'}>
+      <b>姓名卡与作品不串档</b>
+      <small data-class-crosstalk-note="true">{view.crossTalkNote}</small>
+      {view.crossTalkIssue?<p className="video-jobs-issue" data-class-crosstalk-issue="true">{view.crossTalkIssue}</p>:null}
+      {view.cardIssue?<p className="video-jobs-issue" data-class-card-issue="true">{view.cardIssue}</p>:null}
+    </div>
+  </section>;
+}
+
+/**
  * 视频任务（演示队列）面板（[第四步 US-213a]，[第四步 US-214] 补入口 / 预估剩余时间 / 恢复读数）。
  *
  * 这一块是「渲染服务还没接进来，但前端不能空等」的落地：
@@ -659,8 +777,13 @@ function VideoPersonalTimeline({plan}){
  * 1.5 秒留白卡、成片信息（时长 / 幅数 / 分辨率 / 文件大小，推算值带「预估」）。
  * 它读的是 `scopeEntries`（这个周期**全部学员**的记录）：学员隔离由数据层做 ——
  * 「只收录该学员自己的作品」不是靠这里传对了参数，而是靠 `videoPersonalPlan` 自己按学员名过滤并如实报数。
+ *
+ * 班级视频集锦的编排（[第四步 US-218]）：班级档案下多一块**班级视频集锦时间线** —— 每位学员一段、
+ * 段首 1.5 秒姓名卡（姓名 + 作品数）、本期无作品的学员保留留白卡、全班串成一条且总时长不超过 5 分钟。
+ * 它读的是 `classEntries`（这个班级在这个周期的记录）与 `roster`（班级名单 = 顺序真源）；
+ * 「顺序默认按班级名单、生成前可调整」用面板自己的 `classOrder` 局部 state 实现。
  */
-function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkCount,photoCount,teacherName,setToast,entries=[],scopeEntries=[],tokens=[]}){
+function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkCount,photoCount,teacherName,setToast,entries=[],scopeEntries=[],classEntries=[],roster=[],tokens=[]}){
   const [jobs,setJobs]=useState(()=>listVideoJobs());
   const [notice,setNotice]=useState('');
   const [simulateFail,setSimulateFail]=useState(false);
@@ -669,6 +792,9 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
   const [excludedArtworks,setExcludedArtworks]=useState([]);
   // 片尾寄语（帧清单的输入：≤40 字，超限由数据层给可读原因；空着就不显示寄语，不编一句）。
   const [endingNote,setEndingNote]=useState('');
+  // 班级集锦的学员顺序（[第四步 US-218] 第 2 条验收）：默认按班级名单（`null` = 跟着名单走），
+  // 老师点过「上移 / 下移」之后才是一份显式顺序 —— 换班级就清空（顺序是对某个班级说的）。
+  const [classOrder,setClassOrder]=useState(null);
   // 演示失败原因（四类：模型 / 字体 / 素材 / 存储）—— 可选值与文案都来自数据层。
   const [simulateErrorCode,setSimulateErrorCode]=useState(VIDEO_JOB_SIMULATE_ERROR_DEFAULT);
   // 刚提交的那条（卡片高亮 + 滚动到卡片）：提交后「立即进入任务卡片」是可见的，不只是一个 state。
@@ -723,6 +849,16 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
   // 缺课留白卡不受精选影响（缺课本来就不进精选），所以它一定排得进来。
   const selectedKeys=useMemo(()=>selection.selectedEntries.map(entry=>videoSelectionEntryKey(entry)),[selection]);
   const personalPlan=useMemo(()=>isClass?null:videoPersonalPlan({entries:scopeEntries,objectName,period,orgName:DEFAULT_ORG_NAME,endingNote,shareReady,selectedKeys,type}),[isClass,scopeEntries,objectName,period,endingNote,shareReady,selectedKeys,type]);
+  // 班级视频集锦时间线（[第四步 US-218]）：只有班级档案下才算（个人档案走上面那一块）。
+  // 顺序默认按班级名单（`classOrder` 为 null 时数据层就按 `roster` 排）；换班级把调整清掉。
+  useEffect(()=>{setClassOrder(null)},[objectName]);
+  const classPlan=useMemo(()=>isClass?videoClassPlan({entries:classEntries,className:objectName,roster,order:classOrder,period,orgName:DEFAULT_ORG_NAME,endingNote,shareReady,selectedKeys,type}):null,[isClass,classEntries,objectName,roster,classOrder,period,endingNote,shareReady,selectedKeys,type]);
+  const classView=useMemo(()=>classPlan?videoClassView(classPlan):null,[classPlan]);
+  const moveClassOrder=useCallback((index,direction)=>{
+    const current=classView?classView.currentOrder:roster;
+    setClassOrder(videoClassMoveOrder(current,index,direction));
+  },[classView,roster]);
+  const resetClassOrder=useCallback(()=>setClassOrder(null),[]);
   const report=result=>{setJobs(listVideoJobs());setNotice(result.ok?result.notice:result.issue);setToast(result.ok?result.notice:result.issue)};
   const submit=()=>{
     const result=submitVideoJob({type,studentId:isClass?'':objectName,classId:isClass?objectName:'',period,objectName,lessonCount,artworkCount,photoCount,createdBy:teacherName,simulate:simulateFail?'fail':'success',simulateErrorCode});
@@ -751,6 +887,7 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
     <VideoSelectionPanel view={selectionView} onToggleExclude={toggleExclude}/>
     <VideoTimelinePreview plan={timelinePlan} endingNote={endingNote} onEndingNote={setEndingNote}/>
     {personalPlan?<VideoPersonalTimeline plan={personalPlan}/>:null}
+    {classPlan&&classView?<VideoClassTimeline plan={classPlan} view={classView} onMove={moveClassOrder} onReset={resetClassOrder}/>:null}
     {notice?<p className="video-jobs-notice" data-video-notice="true">{notice}</p>:null}
     {view.resumeSummary?<p className="video-jobs-resumed" data-video-jobs-resumed="true">{view.resumeSummary}</p>:null}
     <p className="video-jobs-summary" data-video-jobs-summary="true">{view.summary}</p>
@@ -800,6 +937,23 @@ export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,p
   // 「只收录该学员自己的作品」交给数据层保证（它自己按 `entry.student` 过滤，并把其他学员的记录如实报数），
   // 不靠这里传对了参数 —— 传错了也串不进去。
   const videoScopeEntries=useMemo(()=>filterArchiveRecordsByPeriod(records,resolveArchivePeriod(videoPeriod)).map(record=>archiveLessonEntry(record,{tokens:shareTokens})),[records,videoPeriod,shareTokens]);
+  // 班级视频集锦（[第四步 US-218]）读的是**这个班级**在这个周期的记录 + 班级名单（顺序真源）：
+  // 分段顺序默认就是名单的顺序，名单之外但本期有记录的学员由数据层接在后面（并如实报数）。
+  const videoClassEntries=useMemo(()=>{
+    if(!view.isClass) return [];
+    const className=view.name;
+    return filterArchiveRecordsByPeriod(records,resolveArchivePeriod(videoPeriod))
+      .filter(record=>String((record&&record.className)||'').trim()===className)
+      .map(record=>archiveLessonEntry(record,{tokens:shareTokens}));
+  },[records,videoPeriod,view.isClass,view.name,shareTokens]);
+  const classRoster=useMemo(()=>{
+    if(!view.isClass) return [];
+    const className=view.name;
+    return management.students
+      .filter(item=>String((item&&item.className)||'').trim()===className)
+      .map(item=>String((item&&item.name)||'').trim())
+      .filter(Boolean);
+  },[management,view.isClass,view.name]);
   // 四种状态（加载 / 就绪 / 空 / 错误）读的是同一个产物，四份读数同形状。
   const sourceStatus=recordsSource&&recordsSource.phase?recordsSource.phase:'ready';
   const phase=archiveResidentPhase({source:sourceStatus,count:view.count});
@@ -1014,7 +1168,7 @@ export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,p
             {timelineWindow.hasMore?<button type="button" className="primary" data-archive-page-more="true" onClick={()=>setTimelinePage(page=>Math.min(timelineWindow.pageCount,page+1))}>{timelineWindow.moreLabel}</button>:null}
           </nav>:null}
         </section>
-        <VideoJobsPanel isClass={view.isClass} objectName={view.name} period={videoPeriod} onPeriod={setVideoPeriod} lessonCount={view.summary.lessons} artworkCount={view.summary.artworks} photoCount={view.summary.photos} teacherName={teacherName} setToast={setToast} entries={videoEntries} scopeEntries={videoScopeEntries} tokens={shareTokens}/>
+        <VideoJobsPanel isClass={view.isClass} objectName={view.name} period={videoPeriod} onPeriod={setVideoPeriod} lessonCount={view.summary.lessons} artworkCount={view.summary.artworks} photoCount={view.summary.photos} teacherName={teacherName} setToast={setToast} entries={videoEntries} scopeEntries={videoScopeEntries} classEntries={videoClassEntries} roster={classRoster} tokens={shareTokens}/>
         <section className="archive-perf-panel" data-archive-perf="true" data-archive-perf-measured={String(perfChecks.measured)} data-archive-perf-total={String(perfChecks.total)} data-archive-perf-all-ok={perfChecks.allOk?'true':'false'} data-archive-perf-summary-text={perfChecks.summary}>
           <div className="archive-perf-head"><Gauge size={15}/><b>档案性能</b><em data-archive-perf-summary="true">{perfChecks.summary}</em><small>{ARCHIVE_PERF_HINT}</small></div>
           <ul className="archive-perf-list">{perfChecks.rows.map(row=><li key={row.id} data-archive-perf-row={row.id} data-archive-perf-state={row.ok===null?'pending':row.ok?'ok':'over'} data-archive-perf-value={row.value} data-archive-perf-budget={row.budget} data-archive-perf-text={row.text}>
