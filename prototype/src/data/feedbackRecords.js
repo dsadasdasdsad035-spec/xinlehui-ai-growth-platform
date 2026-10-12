@@ -16,10 +16,17 @@
 //     `dedupeFeedbackRecords`，任何路径都不会让同一个键出现两条。
 //  ⑤ 再次归档**不是**「删旧的插新的」：`applyFeedbackRecordArchive` 判同键后走
 //     `updateFeedbackRecord`（id / recordKey / archivedAt 不变，version 自增、updatedAt 刷新）。
+//  ⑥ 记录上的 `media`（[第四步 US-203]）是**归档素材的持久化记录**（成品图 + 修正后的照片，
+//     未同步时为空数组）：类别 / 同步状态 / 持久地址 / storageKey 由 `data/archiveMedia.js` 管，
+//     原图字段（`...originalUrl`）在 `createFeedbackRecord` 里被**结构守卫摘掉**（原图永不上传）。
+//     素材同步成功时**不动 version / updatedAt** —— 它们记的是老师的正文改到第几版。
 //
 // 与 `data/lessons.js` 同一套模型：本地只是「断网 / 未开通云服务时的兜底」，云端表才是真源。
 import { makeStudentId, normalizeLessonDate } from './lessons';
 import { stripSessionMediaUrls } from './mediaValidation';
+// 归档素材的持久化记录（[第四步 US-203]）：类别 / 同步状态 / 持久地址 / storageKey 的规则与
+// 「原图字段不许进 payload」的结构守卫都在 data 层，这里只负责把素材清单挂到记录上。
+import { normalizeArchiveMediaList, stripArchiveMediaUrls, stripOriginalMediaFields } from './archiveMedia';
 
 const STORAGE_KEY = 'xinlehui-feedback-records-v1';
 
@@ -155,6 +162,9 @@ export function normalizeFeedbackRecord(raw) {
     version: normalizeRecordVersion(source.version),
     // 第三步推理轨迹的关联（[US-201]）：没有轨迹（缺课记录 / 老记录）时是空串。
     reviewTraceId: str(source.reviewTraceId),
+    // 归档素材的持久化记录（[第四步 US-203]）：每条含类别 / 同步状态 / 持久地址 / storageKey。
+    // 读盘与云端 payload 都过这一道，旧记录（没有 media）自然是空数组。
+    media: normalizeArchiveMediaList(source.media),
     reviews: normalizeRecordReviews(source.reviews)
   };
 }
@@ -241,8 +251,17 @@ export function persistFeedbackRecords(records){
   catch {
     // 配额不够时的第二档降级：连成品图（US-008b 写回的档案副本，几百 KB）一起瘦身。
     // 不瘦它的话这一句会再抛一次，异常会从 effect 里冒出去 —— 宁可少一张图也要留住记录本身。
+    // [第四步 US-203] 起素材记录里的**本地持久副本**（data URL）走同一档：地址摘掉、状态降级为
+    // 「图片同步中」（`stripArchiveMediaUrls`），于是家长端显示占位而不是一张不存在的图；
+    // https 持久地址几乎不占空间，原样保留。
     window.localStorage.setItem(STORAGE_KEY,JSON.stringify(
-      safe.map(record=>({...record,artworkUrl:'',photoUrl:'',videoUrl:'',framedArtwork:record.framedArtwork?{...record.framedArtwork,imageUrl:''}:record.framedArtwork}))
+      safe.map(record=>({
+        ...stripArchiveMediaUrls(record),
+        artworkUrl:'',
+        photoUrl:'',
+        videoUrl:'',
+        framedArtwork:record.framedArtwork?{...record.framedArtwork,imageUrl:''}:record.framedArtwork
+      }))
     ));
   }
 }
@@ -282,6 +301,7 @@ export function createFeedbackRecord({
   plaqueTitle = '',
   topic = '',
   framedArtwork = null,
+  archiveMedia = [],
   lessonId = '',
   lessonDate = '',
   reviewTraceId = '',
@@ -300,7 +320,10 @@ export function createFeedbackRecord({
     plaqueTitle,
     topic
   });
-  return normalizeFeedbackRecord({
+  // 归档 payload 的结构守卫（[第四步 US-203] 第 3 条）：原图字段（`...originalUrl`）在这里被
+  // **摘掉**而不是「判断一下放不放行」—— 上传通道拿到的素材只有成品图与修正后的照片副本，
+  // 原图连 payload 都进不来。`archivePayloadOriginalIssue` 是断言用的复核口径（见 data/archiveMedia.js）。
+  return normalizeFeedbackRecord(stripOriginalMediaFields({
     id: identity.id,
     recordKey: identity.recordKey,
     lessonId: str(lessonId),
@@ -325,6 +348,9 @@ export function createFeedbackRecord({
     videoUrl: '',
     artworkSource: 'processed-linework',
     photoSource: 'processed-photo',
+    // 归档素材的持久化记录（[第四步 US-203]）：成品图与修正后的照片各一条，
+    // 带同步状态 / 持久地址 / storageKey —— 家长端能不能看到图取决于这里。
+    media: normalizeArchiveMediaList(archiveMedia),
     archivedAt,
     updatedAt: archivedAt,
     version: FEEDBACK_RECORD_VERSION,
@@ -332,7 +358,7 @@ export function createFeedbackRecord({
     // 课次上下文与成品图写回：归档时的溯源（US-008b 点名的四项就落在 framedArtwork 里）。
     framedArtwork: framedArtworkOf(media, framedArtwork),
     reviews
-  });
+  }));
 }
 
 /**

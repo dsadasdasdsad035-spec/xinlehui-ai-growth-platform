@@ -1,5 +1,6 @@
 import { cloud, unwrap } from '../cloud';
 import { loadRemoteStudentManagement } from './studentManagementApi';
+import { cloudArchiveMedia } from '../data/archiveMedia';
 
 // 课后反馈（成长记录）改为云端持久化，替换原先指向 http://127.0.0.1:8791 的本地服务。
 // 数据按「一所机构共享一份工作区」组织：老师在教师端归档、家长端读取、管理员端审计，
@@ -13,6 +14,10 @@ const httpOnly = value => (/^https?:\/\//.test(String(value || '')) ? String(val
 // 新增字段（recordKey / lessonId / classId / courseId / studentId / archivedAt / updatedAt /
 // version / reviewTraceId）都在 `payload` 里原样透传：给云表加列会被 PostgREST 整条拒掉
 // （DATABASE_PGRST204 的教训），幂等键仍是既有的 `record_key`（= 记录的确定性 id）。
+//
+// [第四步 US-203] 的素材记录（`record.media`）多一道**更严的闸门**：`cloudArchiveMedia` 只放行
+// https 持久地址（连 http://127.0.0.1 的开发适配器地址都不进库），其余地址原样丢掉、只留一条
+// `status: 'pending'` 的占位记录 —— 家长端据此显示「图片同步中」，而不是一张取不到的破图。
 const toRow = record => ({
   record_key: String(record.id),
   student: String(record.student || ''),
@@ -25,7 +30,8 @@ const toRow = record => ({
     ...record,
     artworkUrl: httpOnly(record.artworkUrl),
     photoUrl: httpOnly(record.photoUrl),
-    videoUrl: httpOnly(record.videoUrl)
+    videoUrl: httpOnly(record.videoUrl),
+    media: cloudArchiveMedia(record.media)
   }
 });
 

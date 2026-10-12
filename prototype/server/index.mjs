@@ -23,6 +23,9 @@ const maxImageBytes = Number(process.env.MEDIA_MAX_IMAGE_BYTES || 20 * 1024 * 10
 // The development adapter deliberately keeps material only in RAM. Configure an object-storage
 // adapter before any deployment; video uploads are not accepted by this safe local adapter.
 const media = new Map();
+// 归档素材（[第四步 US-203]）：与 `media` 同一套纪律 —— **只驻留内存**、不落服务端本地磁盘。
+// 它模拟的是「私有对象存储」那条通道的位置，但如实声明自己不是持久落点。
+const archiveMedia = new Map();
 const tasks = new Map();
 const parentSessions = new Map();
 // 点评轨迹的审计存储（[第三步 US-112]）：**只驻留内存**（与儿童素材同一条纪律 ——
@@ -45,7 +48,15 @@ const childMediaStoragePolicy = {
     requiredConsent: 'granted'
   },
   credentialsToClient: ['publishableKey'],
-  note: '开发适配器只在内存里持有儿童素材，不落服务端本地磁盘；生产环境必须换成私有对象存储（带鉴权、服务端签名）。'
+  note: '开发适配器只在内存里持有儿童素材，不落服务端本地磁盘；生产环境必须换成私有对象存储（带鉴权、服务端签名）。',
+  // 归档素材的写入通道（[第四步 US-203]）：开发适配器没有对象存储，如实声明「非持久地址」。
+  archiveMedia: {
+    endpoint: '/api/archive-media',
+    storage: childMediaStorageSink,
+    persistent: false,
+    objectStorageConfigured: false,
+    note: '归档素材走同一条鉴权通道；本地地址是 http、进程重启即清空 —— 客户端据此降级为本地持久副本。'
+  }
 };
 const managementSeed = {
   students: [
@@ -64,7 +75,9 @@ function send(response, status, payload, extraHeaders = {}) {
     'Content-Type': 'application/json; charset=utf-8',
     'Access-Control-Allow-Origin': corsOrigin,
     'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Actor-Role, X-Actor-Id, X-Media-Consent, X-Media-Kind, X-Media-Name',
+    // `X-Media-Storage-Key` 是归档素材写入（[第四步 US-203] `/api/archive-media`）带的建议键：
+    // 少一个头会让预检失败、请求根本发不出去（上传被静默降级成 pending），所以它必须在白名单里。
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Actor-Role, X-Actor-Id, X-Media-Consent, X-Media-Kind, X-Media-Name, X-Media-Storage-Key',
     'Access-Control-Max-Age': '600',
     ...extraHeaders
   });
@@ -439,6 +452,42 @@ http.createServer(async (request, response) => {
       if (!requireTeacherWithConsent(request, response)) return;
       media.delete(mediaMatch[1]);
       return send(response, 200, { deleted: true });
+    }
+    // 归档素材的持久化落点（[第四步 US-203]）。开发适配器**没有对象存储**，所以它如实
+    // 声明「内存 + 非持久地址（http://127.0.0.1）」而不是假装成功：客户端 `services/archiveMediaApi.js`
+    // 会拿 `storage` 与 `url` 过两道闸门（落点合格 / 必须 https），于是本地跑出来的结果是
+    // `local`（降级为本地持久副本 + 界面上标注），生产接上私有对象存储后才会是 `synced`。
+    if (request.method === 'POST' && url.pathname === '/api/archive-media') {
+      if (!requireTeacherWithConsent(request, response)) return;
+      const kind = String(request.headers['x-media-kind'] || '');
+      const contentType = String(request.headers['content-type'] || '').split(';')[0].toLowerCase();
+      const bytes = await readBody(request, maxImageBytes);
+      validateMedia(kind, contentType, bytes.length);
+      const requestedKey = String(request.headers['x-media-storage-key'] || '').replace(/[^\w./-]/g, '').slice(0, 180);
+      const id = crypto.randomUUID();
+      const storageKey = requestedKey || `archive/${kind || 'media'}/${id}`;
+      const item = { id, kind, contentType, size: bytes.length, bytes, storageKey, createdAt: new Date().toISOString() };
+      archiveMedia.set(id, item);
+      return send(response, 201, {
+        id: item.id,
+        kind: item.kind,
+        size: item.size,
+        storageKey,
+        url: `${url.protocol}//${url.host}/api/archive-media/${item.id}`,
+        storage: childMediaStorageSink,
+        persistent: false,
+        note: '本地开发适配器没有对象存储：素材只在内存里、地址不是 https，属非持久地址；归档时客户端会降级为本地持久副本并在界面标注。'
+      });
+    }
+    const archiveMediaMatch = url.pathname.match(/^\/api\/archive-media\/([\w-]+)$/);
+    if (archiveMediaMatch && request.method === 'GET') {
+      // 生产口径是「私有桶 + 服务端签名」；本地开发适配器只是把内存里的字节按 id 回放，
+      // 方便 curl / 浏览器核对这次上传真的到了服务端。重启进程即清空（不落本地磁盘，FR-46）。
+      const item = archiveMedia.get(archiveMediaMatch[1]);
+      if (!item) return sendError(response, 404, 'Archive media was not found or has expired.');
+      response.writeHead(200, { 'Content-Type': item.contentType, 'Content-Length': item.bytes.length, 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' });
+      response.end(item.bytes);
+      return;
     }
     if (request.method === 'POST' && url.pathname === '/api/tasks') {
       if (!requireTeacherWithConsent(request, response)) return;

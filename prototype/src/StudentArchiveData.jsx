@@ -2,6 +2,21 @@ import React, { useDeferredValue, useEffect, useMemo, useState } from 'react';
 import { Archive, ArrowRight, Download, FileText, Frame, Image, MessageSquareText, Plus, Search, Users, X } from 'lucide-react';
 import { loadStudentManagement, persistStudentManagement } from './data/studentManagement';
 import { loadRemoteStudentManagement, saveRemoteStudentManagement } from './services/studentManagementApi';
+// 归档素材的持久化记录（[第四步 US-203]）：档案里展示的图优先读 `record.media` 里的持久地址
+// （对象存储的 https 地址 / 未接入时的本机持久副本），读不到就退回原来的 artworkUrl / photoUrl。
+// 判据（占位还是渲染、哪种地址能用）在 data 层，界面只渲染它的产物。
+import { archiveMediaView } from './data/archiveMedia';
+
+/**
+ * 一条记录在**老师端档案**里该显示什么图：`{url, placeholder, placeholderText, status}`。
+ * 旧记录（没有 media）与取不到的情况一律退回 `fallback`，行为与 US-203 之前一字不变。
+ */
+const archiveThumb = (entry, kind, fallback = '') => {
+  const media = (Array.isArray(entry.media) ? entry.media : []).find(item => item && item.kind === kind) || null;
+  if (!media) return { url: fallback || '', placeholder: false, placeholderText: '', status: '' };
+  const view = archiveMediaView(media, { surface: 'teacher' });
+  return { url: view.url || fallback || '', placeholder: view.placeholder && !fallback, placeholderText: view.placeholderText, status: view.status };
+};
 
 const downloadAsset = (url, name) => {
   if (!url) return false;
@@ -146,7 +161,12 @@ export default function StudentArchiveData({ records, setToast }) {
     <main className="student-archive-main">
       <header className="student-archive-head"><div><span>{student} · 学员详情</span><h2>从每一节课，看见孩子正在积累的成长。</h2><p>处理后的作品、课堂照片与点评会按课次留存，方便老师持续跟进。</p></div><div className="student-head-actions"><button className="parent-binding-button" onClick={openParentBinding}><Users size={16} />{activeStudent?.guardianName ? '管理家长绑定' : '绑定家长端'}</button><button className="primary" onClick={() => { setSection('个人成长档案'); }}><Archive size={17} />查看个人成长档案</button></div></header>
       <nav className="student-archive-tabs">{['课程记录', '基础档案', '阶段报告'].map(name => <button key={name} className={studentTab === name ? 'active' : ''} onClick={() => setStudentTab(name)}>{name}</button>)}</nav>
-      {studentTab === '课程记录' ? <section className="student-work-archive"><div><b>每节课的作品与记录</b><span>仅保留处理后的作品、课堂照片与完整点评。</span></div>{entries.length ? entries.map(entry => <article className={entry.status === '缺课' ? 'absent' : ''} key={entry.id}><time>{entry.date.slice(5).replace('-', '.')}</time>{entry.status === '缺课' ? <div className="absence-note"><b>这节课，我们先轻轻为孩子留下一页。</b><p>{entry.reviews.summary || '老师已经把这次的课程主题和创作机会好好保留，等孩子回来时，我们会陪她自然地接上。'}</p></div> : <><div className="student-work-thumb">{entry.artworkUrl ? <img src={entry.artworkUrl} alt={`${entry.title}处理后的作品`} /> : <Frame />}</div><div className="student-photo-thumb">{entry.photoUrl ? <img src={entry.photoUrl} alt={`${entry.title}课堂照片`} /> : <Image />}</div><div><b>《{entry.title}》</b><p>{entry.reviews.美术能力}</p><button onClick={() => setToast(`已展开 ${entry.date} 的完整多维点评`)}>查看完整点评 <ArrowRight /></button><LessonActions entry={entry} setToast={setToast} /></div></>}</article>) : <EmptyRecords />}</section> : null}
+      {studentTab === '课程记录' ? <section className="student-work-archive"><div><b>每节课的作品与记录</b><span>仅保留处理后的作品、课堂照片与完整点评。</span></div>{entries.length ? entries.map(entry => {
+        // 缩略图优先读归档素材的持久地址（US-203）：刷新 / 重开之后也读得到同一张图。
+        const artworkThumb = archiveThumb(entry, 'artwork', entry.artworkUrl);
+        const photoThumb = archiveThumb(entry, 'photo', entry.photoUrl);
+        return <article className={entry.status === '缺课' ? 'absent' : ''} key={entry.id}><time>{entry.date.slice(5).replace('-', '.')}</time>{entry.status === '缺课' ? <div className="absence-note"><b>这节课，我们先轻轻为孩子留下一页。</b><p>{entry.reviews.summary || '老师已经把这次的课程主题和创作机会好好保留，等孩子回来时，我们会陪她自然地接上。'}</p></div> : <><div className="student-work-thumb" data-archive-media-kind="artwork" data-archive-media-status={artworkThumb.status||''}>{artworkThumb.url ? <img src={artworkThumb.url} alt={`${entry.title}处理后的作品`} data-archive-media-thumb="artwork" /> : artworkThumb.placeholder ? <span className="archive-media-placeholder" data-archive-media-hold="true">{artworkThumb.placeholderText}</span> : <Frame />}</div><div className="student-photo-thumb" data-archive-media-kind="photo" data-archive-media-status={photoThumb.status||''}>{photoThumb.url ? <img src={photoThumb.url} alt={`${entry.title}课堂照片`} data-archive-media-thumb="photo" /> : photoThumb.placeholder ? <span className="archive-media-placeholder" data-archive-media-hold="true">{photoThumb.placeholderText}</span> : <Image />}</div><div><b>《{entry.title}》</b><p>{entry.reviews.美术能力}</p><button onClick={() => setToast(`已展开 ${entry.date} 的完整多维点评`)}>查看完整点评 <ArrowRight /></button><LessonActions entry={entry} setToast={setToast} /></div></>}</article>
+      }) : <EmptyRecords />}</section> : null}
       {studentTab === '基础档案' ? <section className="student-profile-form"><div className="profile-section-head"><div><b>学员基础信息</b><span>这些信息帮助老师理解孩子，并规划后续课程。</span></div><button onClick={saveStudentProfile}>保存档案</button></div><div className="base-info-grid"><label>姓名<input defaultValue={student} readOnly /></label><label>出生年月日<input type="date" defaultValue={activeStudent?.birthDate || ''} /></label><label>所在班级<select defaultValue={activeStudent?.className || ''}>{classes.map(item => <option key={item.id}>{item.name}</option>)}</select></label><label>学习期望<textarea defaultValue={activeStudent?.expect || '希望孩子更自信地表达自己的想法。'} /></label></div><div className="parent-binding-summary"><div><Users size={18} /><span><b>家长端绑定</b><small>{activeStudent?.guardianName ? `${activeStudent.guardianName} · ${activeStudent.guardianPhone || '待补充手机号'}` : '尚未绑定家长账号'}</small></span></div><button onClick={openParentBinding}>{activeStudent?.guardianName ? '管理绑定' : '去绑定'}</button></div></section> : null}
       {studentTab === '阶段报告' ? <section className="student-reports"><div className="report-card-primary"><span>阶段成长报告</span><h3>把作品、照片与点评连成清晰的成长轨迹。</h3><p>当前已归档 {entries.length} 条记录。生成报告后将含课次索引、阶段总结、雷达分析与下一阶段学习规划。</p><button className="primary" onClick={() => setToast('阶段报告生成任务已创建，等待服务端接入')}><FileText size={17} />生成阶段报告</button></div></section> : null}
     </main>

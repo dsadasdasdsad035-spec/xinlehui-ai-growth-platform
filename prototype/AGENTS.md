@@ -93,6 +93,53 @@ React + Vite 单页原型（`src/main.jsx` 是主入口，另按模块拆出 `sr
   而 `pnpm run build` 与静态检查全绿。诊断信号：脚本点「我是老师」之后 `.sidebar nav button` 永远不出现 +
   `Runtime.exceptionThrown` 里那条 hook 数量不匹配。
 
+### 归档素材的持久化与降级（[第四步 US-203]）
+
+一条归档记录除了正文，还要带**持久地址的图**给家长看（老师端的素材本来是会话内 `blob:`，刷新即失效、
+家长端根本取不到）。规则全在 `data/archiveMedia.js`（零依赖），网络 / 画布动作在 `services/archiveMediaApi.js`。
+
+- **四种状态，唯一真源**：`synced`（私有对象存储的 https 地址 + `storageKey`）/ `local`（对象存储未接入，
+  降级为**本机持久副本** = data URL）/ `pending`（上传没成功，可重试）/ `missing`（连副本都没有）。
+  界面、断言、云端映射都读 `ARCHIVE_MEDIA_STATUSES`，谁都不许自己写字符串。
+- **「哪种地址能用」是纯函数产物**：`persistentMediaUrlIssue()` 只认 `https://`（`http://` 含本地适配器的
+  127.0.0.1、`blob:`、`data:` 一律不算持久）；`archiveMediaView(entry,{surface})` 给出
+  `{url, placeholder, placeholderText}` —— 老师端（`teacher`）本机副本也渲染，家长 / 云端口径
+  （`parent`/`cloud`）**只渲染 https，其余一律「图片同步中」占位**（状态也按云端口径收敛成 `pending`）。
+  界面只渲染这份产物，不自己判断地址前缀，所以不会出现破图。
+- **原图永不上传 = 结构守卫，不是「判断一下」**：`stripOriginalMediaFields()` 在 `createFeedbackRecord`
+  里把键名命中 `/original/i` 的字段整个摘掉（`archivePayloadOriginalIssue()` 是断言 / 读数的复核口径）；
+  候选素材由 `archiveMediaCandidates()` 只从「成品图 + 修正后的照片」里取（旋转角交给同步层烘进副本像素）。
+- **云端只放行 https**：`services/feedbackRecordsApi.js` 的 `toRow` 里 `media: cloudArchiveMedia(record.media)`
+  —— https 保留（带 storageKey），其余**地址丢掉、只留一条 `pending` 占位**（家长端要据此显示占位而不是
+  一片空白）。`artworkUrl/photoUrl` 那条老口径（`httpOnly`）保持不变。
+- **素材同步不动 `version` / `updatedAt`**：`applyArchiveMediaSync()` 只换 `media`。那两个字段记的是
+  「老师的正文改到第几版」—— 同步成功不该让「档案已更新（第 N 版）」谎报一次改稿。
+  重试入口只调用 `retryArchiveMediaRecord(record)`（老师端第四步 / 管理端清单共用同一份实现）。
+- **降级也是正常结果，但要标注**：开发适配器（`server/index.mjs` 的 `POST /api/archive-media`）没有对象存储，
+  它如实返回 `storage: 'memory-development-only' + persistent: false` 与一个 **http** 地址 —— 客户端据此
+  判成 `local` 并写明「仅本地留存（对象存储未接入）」，而不是假装同步成功。接替替身上传器（`syncArchiveMediaEntry(x,{uploader})`）
+  可以走通 `synced` 一路（https + storageKey + `private-object-storage`）。
+- **不阻断归档**：整条通道 `永不抛错`，`Promise.race` + `AbortController` 双保险做超时（替身上传器不理会
+  signal 也不会把归档挂在 await 上）；材料塞不下时 `stripArchiveMediaUrls()` 摘掉非 https 的本地副本并把状态
+  降级为 `pending`（配额兜底，见 `persistFeedbackRecords`）。
+- **入口与消费点**：归档时在 `archiveRecord` 里现算候选（**必须在回调里算**，见下面的 TDZ 坑）；
+  第四步面板 `.archive-media-sync`（`data-archive-media-*`）显示状态 + 重试；管理端「档案管理」页有
+  「素材同步失败」清单（`pendingArchiveMediaRecords`）；老师端的学员档案（`StudentArchiveData` 的课程记录）
+  优先渲染 `record.media` 的持久地址，家长端时间线渲染占位。
+
+#### 两个真踩的坑（US-203）
+
+- **渲染期读「后面才定义的 const」= TDZ 白屏，而 `pnpm run build` 全绿**：归档素材的候选要先看
+  `writeBackFresh / writeBackRecord`（定义在组件 body 靠后位置的派生值）。把它们写在渲染路径上，
+  一进「课后反馈」就抛 `ReferenceError: Cannot access 'writeBackFresh' before initialization`，
+  整页白屏 + `Runtime.exceptionThrown`（症状与 US-202 的 hook 数不匹配很像，但报的是 TDZ）。
+  **判据**：只有在回调（`archiveRecord` 被点的那一刻）里读它们才安全 —— 组件 body 里读任何「靠后定义的
+  const」都要先问一句「这句到底在渲染期跑、还是在回调里跑」。
+- **给开发适配器加新请求头，必须同步 `Access-Control-Allow-Headers`**：`POST /api/archive-media` 带了
+  `X-Media-Storage-Key`，白名单里没有它 → 浏览器预检失败、请求根本没发出去，功能**静默**降级成
+  `pending`（`lastError` 里才有原因，界面上只看到「图片同步中」）。加头时同步改
+  `server/index.mjs` 的 `send()` 白名单，并用 curl 复核两条 403（缺身份 / 缺授权）与一条 201。
+
 ## 老师端「课后反馈」第一步（班级 / 学员 / 课程 / 课次推荐）
 
 > **课次表单全站只有一份实现 = `TeacherFlowV2`（`main.jsx`）。** 旧的 `CreateFlow` 五步向导
@@ -456,6 +503,12 @@ DSH 的 `browser_*` 工具**没有 selectOption 能力**：`browser_type` 走的
 日期、序号一类的验收直接填就行，不需要绕路。
 本地兜底数据（`xinlehui-lessons-v1` 等 localStorage 键）会在验证时被写入；验证完想回到种子数据，
 删掉对应键再刷新即可（`loadLessons()` 在本地为空时返回 `seedLessons`）。
+
+**想验证「刷新后档案里的图仍能显示」这类跨刷新断言，先找一个刷新后仍然到得了的页面**（US-203 真踩）：
+老师侧边栏**没有**「成长档案」入口（`archives` 只能从第四步或更新 toast 的「查看档案」进，都是会话内的），
+刷新后到达不了；可行的老师端档案页面是「学员管理 → 学员 → 课程记录」（`StudentArchiveData`，读同一条
+`record.media`）。管理端页面（如「档案管理」）可以用顶栏 `.role-switch` → `.role-menu button` 切身份到达，
+不要点登录页（那是退出登录后再登录，会丢掉会话内的流程状态）。
 
 ## 管理端页面（admin）的接线与写入约定
 
