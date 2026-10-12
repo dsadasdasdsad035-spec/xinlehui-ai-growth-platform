@@ -559,6 +559,54 @@
 .video-selection-toggle{min-height:30px;padding:4px 10px;font-size:10px;font-weight:700;color:#7a6a45;background:#fff;border:1px solid #e6d9b8;border-radius:999px;cursor:pointer;white-space:nowrap}
 .video-selection-toggle:hover{background:#fff8e3}
 .video-selection-row small{grid-column:1/-1;font-size:9px;line-height:1.6;color:#857a64;word-break:break-word}
+.video-personal{display:flex;flex-direction:column;gap:9px;border:1px solid #dcd6e6;border-radius:12px;background:#fbfaff;padding:12px;min-width:0}
+.video-personal-rules{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin:0;padding:0;list-style:none;min-width:0}
+.video-personal-rules li{border:1px solid #ece4f4;border-radius:10px;background:#fff;padding:7px 9px;min-width:0}
+.video-personal-rules b{display:block;font-size:9px;font-weight:800;color:#6b4b9a}
+.video-personal-rules span{display:block;margin-top:2px;font-size:11px;font-weight:700;color:#292720}
+.video-personal-rules small{display:block;margin-top:3px;font-size:9px;line-height:1.6;color:#857a64}
+.video-personal-intro{display:flex;flex-direction:column;gap:3px;border:1px dashed #d6c9ea;border-radius:10px;background:#fff;padding:9px 11px;min-width:0}
+.video-personal-intro b{font-size:13px;font-weight:800;color:#412a6b;word-break:break-word}
+.video-personal-intro small{font-size:9px;line-height:1.6;color:#857a64}
+.video-personal-summary{margin:0;font-size:11px;line-height:1.7;font-weight:700;color:#4b3a6b}
+.video-personal-order{margin:0;font-size:10px;line-height:1.65;color:#6b4b9a}
+.video-personal-note{margin:0;font-size:10px;line-height:1.65;color:#857a64}
+.video-personal-no-output{margin:0;font-size:10px;line-height:1.65;color:#8a4b00;background:#fff8e3;border:1px dashed #f0d79a;border-radius:10px;padding:7px 9px}
+.video-personal-list{display:flex;flex-direction:column;gap:8px;margin:0;padding:0;list-style:none;min-width:0}
+.video-personal-frame{display:flex;flex-direction:column;gap:6px;border:1px solid #ece4f4;border-left:3px solid #9b86c4;border-radius:10px;background:#fff;padding:8px 10px;min-width:0}
+.video-personal-frame.is-absence{border-left-color:#c9c2a6;background:#fbf9f2}
+.video-personal-frame header{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;min-width:0}
+.video-personal-frame header b{font-size:10px;font-weight:800;color:#412a6b}
+.video-personal-frame header span{font-size:9px;color:#857a64}
+.video-personal-frame header em{font-style:normal;margin-left:auto;font-size:9px;font-weight:800;color:#6b4b9a;background:#f3eefb;border-radius:999px;padding:2px 8px}
+.video-personal-frame-body{display:grid;grid-template-columns:auto minmax(0,1fr);gap:8px;align-items:start;min-width:0}
+.video-personal-frame-body img{width:72px;height:72px;object-fit:cover;border-radius:8px;border:1px solid #ece4f4}
+.video-personal-frame-body>div{min-width:0}
+.video-personal-frame-title{margin:0;font-size:11px;font-weight:700;color:#292720;word-break:break-word}
+.video-personal-frame-lines{margin:4px 0 0;padding-left:14px;font-size:9px;line-height:1.7;color:#857a64}
+.video-personal-frame-subtitle{margin:4px 0 0;font-size:10px;line-height:1.65;color:#4b3a6b}
+.video-personal-frame-subtitle.is-empty{color:#9b9384}
+.video-personal-frame-note{font-size:9px;line-height:1.6;color:#857a64;word-break:break-word}
+.video-personal-absence-card{display:flex;flex-direction:column;gap:2px;border:1px dashed #d8d2bd;border-radius:9px;background:#fffdf6;padding:9px 11px;min-width:0}
+.video-personal-absence-card b{font-size:12px;font-weight:800;color:#5f5745;word-break:break-word}
+.video-personal-absence-card span{font-size:9px;color:#9b9384}
+.video-personal-info{display:flex;flex-direction:column;gap:6px;border:1px solid #ece4f4;border-radius:10px;background:#fff;padding:9px 10px;min-width:0}
+.video-personal-info>b{font-size:11px;color:#4b3a6b}
+.video-personal-info ul{margin:0;padding:0;list-style:none;display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:6px;min-width:0}
+.video-personal-info li{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 6px;border:1px solid #f2ecf8;border-radius:9px;background:#fdfcff;padding:6px 8px;min-width:0}
+.video-personal-info li>span{font-size:9px;font-weight:800;color:#6b4b9a;white-space:nowrap}
+.video-personal-info li>em{font-style:normal;font-size:11px;font-weight:700;color:#292720;word-break:break-word}
+.video-personal-info li>small{flex-basis:100%;font-size:9px;line-height:1.6;color:#857a64}
+.video-personal-info-badge{font-size:9px;font-weight:800;color:#8a4b00;background:#fff2c8;border:1px solid #f0d79a;border-radius:999px;padding:2px 7px;white-space:nowrap}
+.video-personal-info>small{font-size:9px;line-height:1.6;color:#857a64}
+.video-personal-scope{display:flex;flex-direction:column;gap:5px;border:1px solid #d6e6cf;border-radius:10px;background:#f8fdf6;padding:9px 10px;min-width:0}
+.video-personal-scope>b{font-size:11px;color:#2f6b3a}
+.video-personal-scope>small{font-size:9px;line-height:1.6;color:#857a64}
+.video-personal-scope ul{margin:0;padding:0;list-style:none;display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:6px;min-width:0}
+.video-personal-scope li{border:1px solid #f0e6d8;border-radius:9px;background:#fff;padding:6px 8px;min-width:0}
+.video-personal-scope li span{display:block;font-size:10px;font-weight:700;color:#292720;word-break:break-word}
+.video-personal-scope li em{display:block;margin-top:2px;font-style:normal;font-size:9px;line-height:1.6;color:#857a64}
+.video-personal-scope.is-issue{border-color:#f0d7bd;background:#fdf1e4}
 @media(max-width:430px){
   .video-jobs{padding:14px}
   .video-jobs-controls{grid-template-columns:minmax(0,1fr)}
@@ -580,4 +628,9 @@
   .video-selection-row{grid-template-columns:minmax(0,1fr);align-items:stretch}
   .video-selection-state{justify-self:start}
   .video-selection-toggle{width:100%;min-height:44px;justify-content:center}
+  .video-personal{padding:10px}
+  .video-personal-rules{grid-template-columns:minmax(0,1fr)}
+  .video-personal-frame-body{grid-template-columns:minmax(0,1fr)}
+  .video-personal-info ul{grid-template-columns:minmax(0,1fr)}
+  .video-personal-scope ul{grid-template-columns:minmax(0,1fr)}
 }

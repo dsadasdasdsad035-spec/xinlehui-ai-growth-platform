@@ -841,6 +841,47 @@ US-213a 那份本机演示队列（上面一节）**不是**真服务：真服�
   落在他选的班级里（`周六创意绘画 2 班`），夹具再用同一个班名会让班级总数 / 配额断言整片偏掉（多一位学员、
   多一幅作品，最大余数法的分配结果就变了）。
 
+## 个人成长视频时间线（[第四步 US-217]）
+
+「一位孩子这个阶段的作品串起来会是什么样」在出片之前就要看得到：升序串联、缺课 1.5 秒留白卡、片头写学员与周期、成片信息（推算值带「预估」）。
+
+| 关注点 | 位置 | 说明 |
+|---|---|---|
+| 编排（串联 / 留白卡 / 片头 / 成片信息 / 学员隔离） | `src/data/videoPersonal.js`（零依赖，Node 可直跑） | `videoPersonalPlan()`、`videoPersonalView()`、`videoAbsenceCardText()`、`videoPersonalInfoRows()`、`videoPersonalOwnershipIssue()` |
+| 界面 | `GrowthArchiveData.jsx` 的 `VideoPersonalTimeline`（在 `VideoJobsPanel` 里、帧清单**之后**、任务卡片之外；**只在个人档案下渲染**） | `data-personal-video-*` / `data-personal-frame*` / `data-personal-absence-*` / `data-personal-info-*` / `data-personal-foreign-*` |
+
+- **帧序、帧时长与重叠量只有一份**：个人时间线的作品/照片帧直接复用 `videoTimelinePlan`（US-215），
+  起止一律走 **`videoFrameSpan(prevEndSec, durationSec, {isFirst})`**（`videoTimeline.js` 导出的共用数学）。
+  新增帧种类只加 `VIDEO_FRAME_KINDS` / `VIDEO_FRAME_KIND_LABELS` / `VIDEO_FRAME_DURATION_SEC` 三处
+  （留白卡 1.5 秒就是这么进的表），**不要另写一套 `durationOf()`**。
+- **缺课留白卡的文案分两支**：老师缺课记录原文（`entry.absenceText` / `reviews.summary`）**≤16 字就逐字用**，
+  放不下就用统一短句 `VIDEO_ABSENCE_CARD_TEXT`（沿用缺课的温和语气）—— **不删改、不编造老师的句子**，
+  来源（`videoAbsenceCardText().source`）写成卡片**旁边**的旁注。卡片元素里**只放那一句话**：
+  DOM 层面的「卡片文案 ≤16 字」判据是 `card.textContent.length`（时长标签放在帧头，卡片里多一个 span 就会假红）。
+- **推算值必须标注「预估」，且只有一个拼装点**：`videoPersonalInfoRows()` 里把「预估」两个字拼好
+  （时长、文件大小两行），界面只渲染 `value` + `estimated` 徽标 —— 组件不许自己写「预估」。
+  分辨率与收录幅数是**规则与实数**（不标预估）；文件大小按 PRD 成本提示推算（每分钟 4–8 MB，5 分钟 20–40MB）。
+- **「只收录该学员自己的作品」是结构性的，不是传参正确性**：面板传的是这个周期的**全部学员**记录
+  （`videoScopeEntries = filterArchiveRecordsByPeriod(records, resolveArchivePeriod(videoPeriod))` + `archiveLessonEntry`），
+  `videoPersonalPlan` 自己按 `entry.student` 过滤并把外人**如实报数**（`foreignEntries`）；
+  读不出学员名的记录也算「不属于」（没有证据就不收录）。复核判据 `videoPersonalOwnershipIssue()` 逐帧读
+  帧上的 `sourceStudent`（本故事为此把它加进 `VIDEO_FRAME_FIELDS`）—— 判据看**产物**，不去信构建过程。
+- **收录清单（US-216）以作品键传进来**：`selectedKeys` 只筛作品帧（被舍弃 / 被手动排除的不排进这条时间线），
+  **缺课留白卡不受它影响**（缺课本来就不进精选），界面据此说明「为什么时间线比全量少了几幅」。
+  两个时长确实不同（个人时间线含留白卡），所以面板另给一句「上面的帧清单不排留白卡」的口径说明。
+- **班级集锦（US-218）不属于这里**：`VideoPersonalTimeline` 只在 `!isClass` 时渲染（`personalPlan` 为 null），
+  班级档案下的精选 / 帧清单 / 任务面板一字不变。
+- **验证方式（本故事实测）**：`pnpm run build`；Node 直跑 **122 项**（`/tmp/assert-us077-data.mjs`：
+  升序串联 / 留白卡两分支与判据 / 片头拼装 / 成片信息四项与「预估」/ 学员隔离与复核判据 / 照片槽与内容边界 /
+  精选联动 / 视图八种状态同形状 + `videoFrameSpan` 单元）；浏览器 **88 项**（`/tmp/assert-us077-browser.mjs`：
+  注入两位学员（各 3 条 / 3 条，含两条缺课：一条短原话、一条长原话）+ 走完整流程归档一条，逐个对象复核）；
+  回归 US-075 data 130 + browser 95、US-076 data 146 + browser 100、US-074 browser 72 全绿；截图 380~384 留档。
+- **验证脚本的两个坑（本故事真踩）**：
+  ① **截图文件名里不能有 `/`**：`382-...（时长 / 幅数 / 分辨率）.png` 会被当成路径分隔符，报
+  `ENOENT ... open '.../382-第四步-成片信息（时长 /'`（错误信息只显示到斜杠前那一段，看着像目录不存在）。
+  ② 走完整流程归档出来的那位学员（`陈一诺`）**也在同一个周期里**，所以「被挡下的其他学员条数」= 夹具外人 + 1；
+  断言写死 3 会假红 —— 这类计数要么把流程记录算进去，要么就断言「别人一条都没进来」而不是断言总数。
+
 ## 老师端「课后反馈」第一步（班级 / 学员 / 课程 / 课次推荐）
 
 > **课次表单全站只有一份实现 = `TeacherFlowV2`（`main.jsx`）。** 旧的 `CreateFlow` 五步向导

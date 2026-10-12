@@ -76,27 +76,34 @@ export const VIDEO_FRAME_UNTITLED_TEXT = '作品名未记录';
 // ① 帧序规则（FR-215 第 1、2、3、6 条）
 // ---------------------------------------------------------------------------
 
-/** 四种帧（片头 / 作品帧 / 课堂照片 / 片尾）。 */
+/**
+ * 五种帧（片头 / 作品帧 / 课堂照片 / 片尾 / 缺课留白卡）。
+ * 前四种是这一份帧序规则自己的帧；`absence` 只出现在**个人成长视频的编排**里（[第四步 US-217]）：
+ * 缺课的课次不跳过，留一张 1.5 秒的留白卡 —— 时长同样只在下面这张表里写一次。
+ */
 export const VIDEO_FRAME_KINDS = {
   intro: 'intro',
   artwork: 'artwork',
   photo: 'photo',
-  ending: 'ending'
+  ending: 'ending',
+  absence: 'absence'
 };
 
 export const VIDEO_FRAME_KIND_LABELS = {
   [VIDEO_FRAME_KINDS.intro]: '片头',
   [VIDEO_FRAME_KINDS.artwork]: '作品帧',
   [VIDEO_FRAME_KINDS.photo]: '课堂照片',
-  [VIDEO_FRAME_KINDS.ending]: '片尾'
+  [VIDEO_FRAME_KINDS.ending]: '片尾',
+  [VIDEO_FRAME_KINDS.absence]: '缺课留白卡'
 };
 
-/** 每种帧的时长（秒）—— 验收点名的四个数字，改这里就是改规则。 */
+/** 每种帧的时长（秒）—— 验收点名的四个数字（+ 留白卡 1.5 秒），改这里就是改规则。 */
 export const VIDEO_FRAME_DURATION_SEC = {
   [VIDEO_FRAME_KINDS.intro]: 3,
   [VIDEO_FRAME_KINDS.artwork]: 3.5,
   [VIDEO_FRAME_KINDS.photo]: 2,
-  [VIDEO_FRAME_KINDS.ending]: 4
+  [VIDEO_FRAME_KINDS.ending]: 4,
+  [VIDEO_FRAME_KINDS.absence]: 1.5
 };
 
 /** 转场时长（秒）：统一 0.5 秒交叉淡入 —— 相邻帧因此重叠这 0.5 秒。 */
@@ -150,6 +157,20 @@ export function videoTimelineRuleRows() {
 
 /** 帧序规则的行 id（断言用：五行缺一不可）。 */
 export const VIDEO_TIMELINE_RULE_IDS = videoTimelineRuleRows().map(row => row.id);
+
+/**
+ * 一帧在时间轴上的起止（**帧序与「个人成长视频的编排」共用这一处数学**）：
+ *  - 第一帧从 0 开始、没有转场；
+ *  - 其余帧比上一帧**提前 `transitionSec`** 开始（这就是「交叉淡入」在时间线上的样子），
+ *    因此总时长 = 各帧时长之和 − (帧数 − 1) × 转场。
+ * 帧时长与重叠量都只在上面的常量里写一次；返回的四个数直接进 `normalizeVideoFrame`。
+ */
+export function videoFrameSpan(prevEndSec, durationSec, { isFirst = false, transitionSec = VIDEO_TRANSITION_SEC } = {}) {
+  const duration = Math.max(0, round1(durationSec));
+  const overlap = isFirst ? 0 : Math.max(0, round1(transitionSec));
+  const startSec = isFirst ? 0 : round1(Math.max(0, round1(prevEndSec) - overlap));
+  return { startSec, endSec: round1(startSec + duration), durationSec: duration, transitionSec: overlap, isFirst: isFirst === true };
+}
 
 /** 秒 → `mm:ss.s`（帧清单的起止读数；负值 / 脏值收敛成 0）。 */
 export function videoTimelineTimecode(seconds) {
@@ -334,7 +355,10 @@ export function videoTimelineContentIssue(timeline) {
 export const VIDEO_FRAME_FIELDS = [
   'id', 'index', 'kind', 'kindLabel', 'objectName', 'entryId', 'date', 'title', 'titleText',
   'subtitle', 'subtitleSource', 'subtitleTruncated', 'lines', 'endingNote', 'asset', 'assetNote',
-  'startSec', 'endSec', 'durationSec', 'transitionSec', 'isFirst'
+  'startSec', 'endSec', 'durationSec', 'transitionSec', 'isFirst',
+  // 这一帧的素材**属于哪位学员**（从源条目的 `student` 原样带过来）：
+  // 「只收录该学员自己的作品」的判据要能对着帧本身复核，而不是去信构建过程（[第四步 US-217]）。
+  'sourceStudent'
 ];
 
 /** 归一化一帧（读旧数据 / 脏数据都不抛错；时长取整数表并做上下限收敛）。 */
@@ -370,7 +394,8 @@ export function normalizeVideoFrame(raw) {
     endSec: Math.max(0, round1(source.endSec)),
     durationSec: Math.max(0, round1(source.durationSec) || num(VIDEO_FRAME_DURATION_SEC[kind])),
     transitionSec: Math.max(0, round1(source.transitionSec)),
-    isFirst: source.isFirst === true
+    isFirst: source.isFirst === true,
+    sourceStudent: str(source.sourceStudent)
   };
 }
 
@@ -397,7 +422,12 @@ function photosOfEntries(entries) {
     list.forEach(photo => {
       const url = str(photo && photo.url);
       if (!url) { placeholders += 1; return; }
-      photos.push({ url, name: str(photo && photo.name) || '课堂照片', lessonDate: str(entry && entry.date) });
+      photos.push({
+        url,
+        name: str(photo && photo.name) || '课堂照片',
+        lessonDate: str(entry && entry.date),
+        student: str(entry && entry.student)
+      });
     });
   });
   return { photos, placeholders };
@@ -431,22 +461,15 @@ export function videoTimelinePlan({ entries = [], objectName = '', type = 'perso
   const frames = [];
   let cursor = 0;
   const push = (frameKind, fields = {}) => {
-    const durationSec = round1(VIDEO_FRAME_DURATION_SEC[frameKind]);
-    const isFirst = frames.length === 0;
-    // 后一帧提前 `transitionSec` 开始 —— 这就是「交叉淡入」在时间线上的样子。
-    const startSec = isFirst ? 0 : round1(Math.max(0, cursor - VIDEO_TRANSITION_SEC));
-    const endSec = round1(startSec + durationSec);
-    cursor = endSec;
+    // 起止只在 `videoFrameSpan` 里算一次（个人成长视频的编排读同一份数学）。
+    const span = videoFrameSpan(cursor, VIDEO_FRAME_DURATION_SEC[frameKind], { isFirst: frames.length === 0 });
+    cursor = span.endSec;
     frames.push(normalizeVideoFrame({
       ...fields,
+      ...span,
       id: `${frameKind}-${frames.length + 1}`,
       index: frames.length + 1,
-      kind: frameKind,
-      startSec,
-      endSec,
-      durationSec,
-      transitionSec: isFirst ? 0 : VIDEO_TRANSITION_SEC,
-      isFirst
+      kind: frameKind
     }));
     return frames[frames.length - 1];
   };
@@ -484,7 +507,8 @@ export function videoTimelinePlan({ entries = [], objectName = '', type = 'perso
       subtitleSource: reviewText,
       subtitleTruncated: subtitle.truncated,
       asset,
-      assetNote: asset.ready ? '帧内按长边 ≤1920 等比缩放，暖白背景留边。' : asset.statusText
+      assetNote: asset.ready ? '帧内按长边 ≤1920 等比缩放，暖白背景留边。' : asset.statusText,
+      sourceStudent: str(source.student)
     });
     if ((position + 1) % VIDEO_PHOTO_EVERY_ARTWORKS !== 0) return;
     const photo = photos[photoIndex];
@@ -497,7 +521,8 @@ export function videoTimelinePlan({ entries = [], objectName = '', type = 'perso
       title: photo.name,
       titleText: photo.name,
       asset: photoAsset,
-      assetNote: photoAsset.ready ? '课堂照片帧：停留 2 秒。' : photoAsset.statusText
+      assetNote: photoAsset.ready ? '课堂照片帧：停留 2 秒。' : photoAsset.statusText,
+      sourceStudent: photo.student
     });
   });
 
