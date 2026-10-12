@@ -1280,3 +1280,93 @@
   .poster-dialog-forward-checks li{grid-template-columns:minmax(0,1fr);gap:2px}
   .poster-dialog-forward-checks li>em{grid-column:1}
 }
+
+/* ---------------------------------------------------------------------------
+   管理端「海报模板」页（[海报 US-312a]）：三栏 = 列表 · 参数面板 · 实时预览
+   配色与弹窗同一套（暖白纸感 + 暖金强调 + 墨色文字），控件尺寸照顾手指（≥44px 的那一档）。
+   --------------------------------------------------------------------------- */
+.poster-admin{display:grid;grid-template-columns:minmax(0,246px) minmax(0,1fr) minmax(0,1fr);gap:14px;align-items:start;min-width:0}
+.poster-admin>.panel{min-width:0;padding:12px}
+.poster-admin-list{display:flex;flex-direction:column;gap:8px;max-height:88vh;overflow-y:auto}
+.poster-admin-group{display:flex;flex-direction:column;gap:6px}
+.poster-admin-group-head{display:flex;flex-direction:column;gap:2px;padding:4px 2px 0}
+.poster-admin-group-head b{font-size:12px;color:#3f3b33}
+.poster-admin-group-head small{font-size:10px;color:#8b8064;line-height:1.5}
+.poster-admin-row{border:1px solid #e3ddcc;border-radius:12px;background:#fff}
+.poster-admin-row.active{border-color:#cfa52e;background:#fdf6e3;box-shadow:0 0 0 1px #f0e2b6 inset}
+.poster-admin-pick{display:flex;flex-direction:column;gap:6px;width:100%;padding:8px;border:0;background:none;text-align:left;color:#3f3b33;min-height:44px;cursor:pointer}
+.poster-admin-row-copy{display:flex;flex-direction:column;gap:2px;min-width:0}
+.poster-admin-row-copy b{font-size:12px;word-break:break-word}
+.poster-admin-row-copy small{font-size:10px;color:#8b8064;word-break:break-word}
+.poster-admin-row-tags{display:flex;flex-wrap:wrap;gap:4px}
+.poster-admin-row-tags em{font-style:normal;font-size:10px;font-weight:700;padding:2px 6px;border-radius:999px;background:#eee9dd;color:#6f6551}
+.poster-admin-row-tags em.is-on{background:#e6f5ea;color:#2f7a45}
+.poster-admin-row-tags em.is-off{background:#f3eee4;color:#8b6a2f}
+.poster-admin-row-tags em.is-readonly{background:#f1eef7;color:#5b5477}
+.poster-admin-row-tags em.is-builtin{background:#fdf0d5;color:#8a6a1f}
+.poster-admin-row-tags em.is-default{background:#eaf2fb;color:#2f5b8a}
+.poster-admin-row-tags em.is-dirty{background:#fbe8e4;color:#a5452f}
+.poster-admin-offline{margin:0;font-size:10px;color:#9a6a1f;background:#fff6df;border-radius:8px;padding:6px 8px}
+.poster-admin-panel,.poster-admin-preview{display:flex;flex-direction:column;gap:10px}
+.poster-admin-panel .panel-head,.poster-admin-preview .panel-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.poster-admin-panel .panel-head h2,.poster-admin-preview .panel-head h2{margin:0;font-size:14px;color:#3f3b33}
+.poster-admin-panel .panel-head p,.poster-admin-preview .panel-head small{margin:2px 0 0;font-size:10px;color:#8b8064;line-height:1.5}
+.poster-admin-panel .row-actions{display:flex;align-items:center;gap:8px}
+.poster-admin-panel .row-actions button{min-height:44px}
+.poster-admin-readonly-note,.poster-admin-blocker,.poster-admin-notice{margin:0;font-size:11px;line-height:1.6;border-radius:9px;padding:7px 9px}
+.poster-admin-readonly-note{background:#f4f1f9;color:#544d77}
+.poster-admin-blocker{background:#fbeeea;color:#a5452f}
+.poster-admin-notice{background:#f3f7f0;color:#4a6b45}
+.poster-admin-section{border:1px solid #e6e1d2;border-radius:12px;background:#fffdf6;padding:10px;display:flex;flex-direction:column;gap:8px}
+.poster-admin-section h3{margin:0;font-size:12px;color:#544d40}
+.poster-admin-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(184px,1fr));gap:8px;min-width:0}
+.poster-admin-field,.poster-admin-check{display:flex;flex-direction:column;gap:4px;font-size:11px;color:#544d40;min-width:0}
+.poster-admin-field>b,.poster-admin-check>span{font-size:11px;color:#544d40}
+.poster-admin-field>small,.poster-admin-hint{align-self:stretch;font-size:10px;color:#8b8064;line-height:1.5;word-break:break-word}
+.poster-admin-field input,.poster-admin-field select{width:100%;min-width:0;min-height:36px;padding:6px 8px;border:1px solid #d9d7e0;border-radius:8px;background:#fff;color:#3f3b33;font:inherit;font-size:11px}
+.poster-admin-field input:focus,.poster-admin-field select:focus{border-color:#cfa52e;box-shadow:0 0 0 3px #fdf3dc;outline:none}
+.poster-admin-field input:disabled,.poster-admin-field select:disabled{background:#f4f1e9;color:#a79b7d}
+.poster-admin-color{display:grid;grid-template-columns:38px minmax(0,1fr);gap:6px;align-items:center}
+.poster-admin-color input[type="color"]{width:38px;height:36px;padding:2px;border:1px solid #d9d7e0;border-radius:8px;background:#fff}
+.poster-admin-check{flex-direction:row;align-items:center;gap:6px;min-height:36px}
+.poster-admin-check input{width:18px;height:18px}
+.poster-admin-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.poster-admin-actions .text-link{font-size:10px;color:#9a6a1f;background:none;border:0;text-decoration:underline;cursor:pointer;min-height:32px}
+.poster-admin-actions .text-link:disabled{color:#b9b0a0;cursor:not-allowed;text-decoration:none}
+.poster-admin-actions small{font-size:10px;color:#8b8064}
+.poster-admin-meta-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.poster-admin-chip{font-size:10px;font-weight:700;padding:4px 8px;border-radius:999px;background:#eee9dd;color:#6f6551}
+.poster-admin-slot{border:1px solid #eae4d5;border-radius:10px;background:#fff;padding:8px}
+.poster-admin-slot>summary{display:flex;align-items:center;gap:8px;font-size:11px;color:#3f3b33;cursor:pointer;min-height:32px;list-style:none}
+.poster-admin-slot>summary::-webkit-details-marker{display:none}
+.poster-admin-slot>summary b{font-size:11px}
+.poster-admin-slot>summary span{margin-left:auto;font-size:10px;color:#8b8064}
+.poster-admin-slot>.poster-admin-grid{margin-top:8px}
+.poster-admin-issues{margin:0;padding-left:16px;display:flex;flex-direction:column;gap:4px;font-size:10px;color:#6a6252;line-height:1.6}
+.poster-admin-preview-figure{margin:0;display:grid;place-items:center;border:1px solid #d9d7e0;border-radius:12px;background:#fff;min-height:320px;max-height:min(76vh,780px);overflow:hidden}
+.poster-admin-preview-figure img{display:block;max-width:100%;max-height:min(76vh,780px);width:auto;height:auto}
+/* 长图（成长报告）不受「整张塞进框里」那一档：按宽度铺满 + 框内滚动（与弹窗同一处分流）。 */
+.poster-admin[data-poster-admin-preview-kind="report-long"] .poster-admin-preview-figure{display:block;overflow:auto}
+.poster-admin[data-poster-admin-preview-kind="report-long"] .poster-admin-preview-figure img{width:100%;max-height:none}
+.poster-admin-preview-hold{display:flex;align-items:center;justify-content:center;gap:6px;min-height:320px;font-size:11px;color:#8a7d5e;padding:20px;text-align:center}
+.poster-admin-preview-notes{margin:0;padding-left:14px;display:flex;flex-direction:column;gap:3px;font-size:10px;color:#6a6252;line-height:1.6}
+.poster-admin-preview-notes li.is-warn{color:#a5452f}
+.poster-admin-preview-foot{margin:0;display:flex;align-items:center;gap:6px;font-size:10px;color:#8b8064;line-height:1.6}
+@media(max-width:1180px){
+  .poster-admin{grid-template-columns:minmax(0,220px) minmax(0,1fr)}
+  .poster-admin-preview{grid-column:1/-1}
+}
+@media(max-width:800px){
+  /* 手机上单列堆叠：列表不再是滚动条里的一条窄缝，面板与预览依次排在下面。 */
+  .poster-admin{grid-template-columns:minmax(0,1fr)}
+  .poster-admin-list{max-height:none}
+  .poster-admin-panel .panel-head,.poster-admin-preview .panel-head{flex-direction:column;align-items:stretch}
+  /* 面板与预览的控件一律 ≥44px（宽高都要：两个字的按钮只给高度会变成细条）。 */
+  .poster-admin-field input,.poster-admin-field select{min-height:44px}
+  .poster-admin-color input[type="color"]{width:44px;height:44px}
+  .poster-admin-check{min-height:44px}
+  .poster-admin-panel .row-actions button{min-width:44px}
+  .poster-admin-actions .text-link{min-height:44px;min-width:44px;display:inline-flex;align-items:center;justify-content:center}
+  .poster-admin-preview-figure{max-height:60vh}
+  .poster-admin-preview-figure img{max-height:60vh}
+}

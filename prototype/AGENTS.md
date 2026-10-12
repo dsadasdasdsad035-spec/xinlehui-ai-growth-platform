@@ -4149,8 +4149,81 @@ services / 界面只渲染产物」）：
   → 状态变「已转发」且与第四步状态条 / 状态块同步 → 撤回后「已撤回」（撤回优先）→ 真导出落盘
   + 两条留痕 → 390px）。截图 506~510。
 
+## 管理端「海报模板」：三栏（列表 · 参数面板 · 实时预览）（[海报 US-312a] / FR-355 ~ FR-359）
+
+没有设计交付也能做出一套版式：左边选模板、中间改参数、右边用**与老师端出图同一支渲染**当场看结果。
+入口在管理端侧边栏「海报模板」（`posterTemplates`：三处同名 —— `navByRole.admin` / `ADMIN_ONLY_PAGES` /
+`PageRouter` 的 map，加页时三处一起改，漏一处就是「点进去是空白页」或「老师端也进得去」）。
+
+- **`src/data/posterAdmin.js`（新，零依赖纯函数）**是这一页的全部规则，四块：
+  - **库列表**：`posterAdminLibraryGroups(templates, viewer)` 按三层分组（系统 / 机构 / 老师个人，空组不出现），
+    组上的 `writable` 与行上的 `writable` 都来自 `posterAdminTemplateWriteIssue()` —— 它**就是**装裱那一支
+    （`data/framingPermissions.js` 的 `framingPresetWriteIssue`，PRD 9.2 第 7 条：不发明第二套权限模型）。
+    本会话是**平台管理员**（`{role:'admin', adminTier:'platform'}`），所以平台层可写、机构层与老师个人层
+    **可见但只读**（列表要读全量）。`posterAdminRowView()` 是行读数的唯一出口（徽标 / 画布 / 占位区数）。
+  - **参数面板**：`POSTER_ADMIN_SECTION_FIELDS`（画布 / 背景 / 边框 / 装饰线）+ `POSTER_ADMIN_SLOT_FIELDS`
+    （公共 + 四类占位区）是**控件描述表**（`{path,label,control,min,max,step,hint,options}`，五种控件：
+    number / color / text / select / check）。界面按它渲染、把改动交给 `posterAdminSetPath()` 写草稿 ——
+    页面里**没有一个写死的 spec 路径**，所以「面板覆盖了哪些参数」是可数的：
+    `posterAdminPanelCoverage()` / `posterAdminPanelMissingFields()`（对 8 套内置模板逐套缺口为 0，
+    断言与面板上的覆盖读数读同一份）。故意不覆盖的只有 `version` 与 `background.image`（第二期预留），
+    以及 `slots.N.id`（占位区的**身份键**：渲染层按它取素材 `data.images[slot.id]`，改名等于换版式）。
+  - **写入**：`posterAdminInputValue()` 的数字只认「原样能往返」的串（`String(Number(raw))===raw`），
+    其余保留原文本 —— 于是 `0.` / `-` 这种打到一半的值不会被吞（「想打 0.5 结果变成 5」）；
+    收敛只发生在渲染与保存时（`normalizePosterSpec`），**草稿不做收敛**。
+    `posterAdminKindPatch()` 同时改模板记录的 `kind` 与 `spec.kind`（两处必须一致）；
+    `posterAdminSlotTypePatch()` 换占位区类型时保留 id / 位置 / 显隐，尺寸回到该类型默认值
+    （不把 `text` 的字号比例塞进 `qrcode` 的边长比例）。
+  - **新增 / 复制**：`posterAdminNewTemplate()` / `posterAdminCopyTemplate()` —— 新 id 一律随机
+    （`template_key` 是云端 upsert 冲突键，不能由名字派生）、名字自动去重（`posterAdminUniqueName`）、
+    排序取列表最后 +1、**一律 `enabled:false` 的草稿态**（参数没确认就漏到老师端是最容易犯的错；
+    验收原文也是「新增一套模板**并启用**」）。复制出来的副本落在**平台层**（本会话唯一写得动的那一层），
+    `spec` 逐字段照抄（断言用 `normalizePosterSpec` 深比）。
+  - **保存前读数**：`posterAdminSaveFacts()` 只把「空名 / 重名 / 缺 id」当阻塞，越界参数与未知变量
+    是**如实读数**（与装裱面板同一口径：收敛不改阻塞）。
+- **`src/services/posterAdminPreview.js`（新）**：合成样例素材（画布 + 斜带 + 圆点 + 序号角标，**夹具**，
+  不依赖外部图片）+ 把 `posterAdminPreviewPlan()` 造的 plan 交给 `services/posterDialog.js` 的
+  `renderPosterDialog()` —— 老师端弹窗预览 / 缩略图 / 导出用的**同一支分派**（FR-312），
+  这一层既不画海报也不建画布以外的东西。倍数 re-export `POSTER_DIALOG_PREVIEW_SCALE`（预览 1×）。
+  - 预览 plan 按**模板记录的 `kind`** 分派（老师端弹窗也是按 `template.kind` 装配的），五类版式的门字段
+    （`hasRecord` / `hasStudent` / `hasClass` / `hasObject` / `pages`）都要给全；
+    样例数据是 15 个变量全有值的夹具（`POSTER_ADMIN_PREVIEW_DATA`），素材按占位区 **id** 分组：
+    单图位（`artwork` / `cover`）1 幅、写死行列按乘积、自适应按 `maxItems` 且**封顶 9**
+    （约定与开发自检那一份一致，断言逐条比两份常量）。
+  - 改一个参数就重画（`posterAdminPreviewKey(spec, kind)` 是重绘键，节流 `POSTER_ADMIN_PREVIEW_THROTTLE_MS`）。
+- **`src/admin/PosterTemplatesPage.jsx`（新）**：三栏（`.poster-admin` 的 grid；≤1180px 两栏、≤800px 单列）。
+  四条纪律：① 不在平台层的模板整页只读（控件 disabled + 保存不可点 + 说明「由谁维护」，
+  服务层 403 是第二道）；② 草稿不收敛；③ 预览节流；④ 新增 / 复制先停用。
+- **镜像的写权归这一页**：`loadPosterTemplateStore({ persist: false })` + `touchedRef` ——
+  云端读回晚于用户操作时**放弃回灌**（合并方向仍是本机优先）。老师端弹窗读的是同一份本机镜像
+  （`data/posterTemplates.js` 的 `loadPosterTemplates()`，同步），所以「后台存下 → 老师端重开弹窗看到」
+  是同一条路；反过来让服务层 persist 就会在「刚新增还没保存」时被一份更早读到的旧列表顶掉。
+- 验收口径：`/tmp/assert-us103.mjs`（Node，**145 项**：分组与写权限 / 描述表覆盖与缺口 / 深写与输入值 /
+  五类版式的预览 plan 与素材分配 / 新增与复制的记录形状 / 保存前读数 / 源码接线 / 与老师端可见性口径一致）
+  + `/tmp/assert-us103-browser.mjs`（CDP，**77 项**：侧边栏进页 → 三层分组与机构 / 老师只读（120 个控件逐个 disabled）→
+  面板覆盖验收点名的每一类参数 → 改参数后**面板那一张图逐字节等于页面内 `renderPosterDialog()` 重算的那一张**
+  （同一支分派）/ 换类型 + 用该类型默认画布 + 换占位区类型 → 新增（空名被拦）与复制副本（spec 逐字段相同）→
+  启用保存 → 切老师端走一遍真机归档 → 弹窗里选到新模板 + **像素判据**（背景角点 = 管理端刚设的自定义色）→
+  停用后老师端不再出现 → 390px 单列 ≥44px → console 0 error）。截图 511~515。
+
 ## 容易踩的坑
 
+- **「出现过这个名字」不等于「消费它」：结构性判据别用子串**（US-103 真踩一条老断言）：
+  US-090 的「自检模块的消费点只有 main.jsx」原来是 `source.includes('posterSelfCheck')` —— 本轮我在
+  `data/posterAdmin.js` 的**注释**里引用了一句「与开发自检同一份约定」，那条断言当场假红。
+  判据要写成**真的 import 点**（`from '…posterSelfCheck'` 或动态 `import('…posterSelfCheck')`）。
+  同类：任何「界面不写死字段名 / 不直接调引擎 / 规则只在 data 层」的源码守卫，**先剥注释再查**
+  （`stripComments()`：块注释 + 行注释），否则注释里提到的函数名与路径字面量都会假红。
+- **data 层新模块的每个导出都要在 Node 里喂一份非空夹具跑一次**（US-103 真踩两次）：
+  `posterAdminUnsavedTemplateIds` 用了 `posterTemplates.js` 的私有 `list()`（压根没 import 到）、
+  `posterTemplateKey` 也漏了 import —— `pnpm run build` 全绿、`#root.innerHTML.length === 0`（白屏，
+  `ReferenceError` 只在运行时炸）。更阴的是：**空数组夹具会让 `map` 里的 ReferenceError 漏过去**
+  （`[].map(fn)` 不执行 fn）—— 遍历导出逐个调用时，夹具必须**非空**。
+- **管理端页面读云端时不能让服务层顺手写镜像**（US-103 真踩，与「夹具 ↔ 云端合并竞态」同源）：
+  `loadPosterTemplateStore()` 默认 `persist: true`，它 resolve 时会把**读之前**的本机列表写回镜像 ——
+  与「用户在这期间刚新增 / 刚保存的那一套」形成竞态：界面看着好好的、镜像是空的、老师端弹窗里没有它。
+  做法：让页面**独占**写镜像（`{ persist: false }`）+ `touchedRef` 标记「读回之前用户已经动过手」→
+  直接放弃回灌（合并方向仍是本机优先）。凡是「异步读云端 + 同步给用户写」的页面都按这条走。
 - **同一个概念散落在五个 plan 的五个字段名里时，只给界面留一个出口**（US-102）：
   「这张海报对应哪条归档记录」在阶段 / 长图叫 `shareRecordId`、班级叫 `share.recordId`、
   封面叫 `artwork.recordId`、单作品原本**压根没带**（本轮补上 `plan.recordId`）。

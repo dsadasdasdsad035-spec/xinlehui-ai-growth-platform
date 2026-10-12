@@ -364,6 +364,9 @@ import AgentFilesPage from './admin/AgentFilesPage';
 import KeywordTemplatesPage from './admin/KeywordTemplatesPage';
 // 音乐库（US-220a）：管理员维护背景音乐与授权状态；老师端只能选 confirmed 且未过期的曲目（US-221）。
 import MusicLibraryPage from './admin/MusicLibraryPage';
+// 海报模板（[海报 US-312a]）：管理员用参数面板 + 实时预览做出版式（不用设计交付）；
+// 老师端「一键转发」弹窗按同一套可见性/适用性规则读这里存下的模板。
+import PosterTemplatesPage from './admin/PosterTemplatesPage';
 // 曲库的数据模型与本地兜底（授权状态 / 去重 / 引用范围都是零依赖纯函数）；云端读写走 musicLibraryApi。
 import { loadMusicTracks, mergeMusicTracks, persistMusicTracks } from './data/musicTracks';
 import { loadRemoteMusicTracks } from './services/musicLibraryApi';
@@ -435,7 +438,7 @@ const navByRole = {
     ['gallery','3D 画廊',Landmark]
   ],
   parent: [['parent','首页',LayoutDashboard],['parentInsight','作品观察',Sparkles],['parentArchive','成长档案',Archive],['gallery','3D 画廊',Landmark],['growthCenter','个人成长中心',BookOpen],['authorization','授权管理',ShieldCheck],['profile','个人中心',UserRound]],
-  admin: [['adminDash','运营总览',LayoutDashboard],['apps','应用中心',Boxes],['providers','模型供应商',Zap],['teacherPersona','老师人设',GraduationCap],['skillLibrary','技能库',Boxes],['courseLibrary','课程库',BookOpen],['keywordTemplates','观察词模板',ListChecks],['agentFiles','指令与记忆',FileText],['musicLibrary','音乐库',Music],['framingSettings','装裱设置',Frame],['galleryAdmin','3D 画廊',Landmark],['users','用户管理',Users],['logs','生成日志',FileText],['archiveAdmin','档案管理',Archive],['permissions','权限设置',ShieldCheck],['settings','系统配置',Settings]]
+  admin: [['adminDash','运营总览',LayoutDashboard],['apps','应用中心',Boxes],['providers','模型供应商',Zap],['teacherPersona','老师人设',GraduationCap],['skillLibrary','技能库',Boxes],['courseLibrary','课程库',BookOpen],['keywordTemplates','观察词模板',ListChecks],['agentFiles','指令与记忆',FileText],['musicLibrary','音乐库',Music],['framingSettings','装裱设置',Frame],['posterTemplates','海报模板',Image],['galleryAdmin','3D 画廊',Landmark],['users','用户管理',Users],['logs','生成日志',FileText],['archiveAdmin','档案管理',Archive],['permissions','权限设置',ShieldCheck],['settings','系统配置',Settings]]
 };
 
 const aiAppsSeed = [
@@ -8030,13 +8033,13 @@ function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast,recor
 
 // 机构级基础数据页：只有管理员能进。导航已经隐藏入口，这里再拦一道，
 // 避免从导览页、历史链接或未来新增入口绕过。
-const ADMIN_ONLY_PAGES=['teacherPersona','skillLibrary','courseLibrary','keywordTemplates','agentFiles','musicLibrary','framingSettings','galleryAdmin'];
+const ADMIN_ONLY_PAGES=['teacherPersona','skillLibrary','courseLibrary','keywordTemplates','agentFiles','musicLibrary','framingSettings','posterTemplates','galleryAdmin'];
 
 function PageRouter(props){
  // 「课次表单」全站只有一份实现：`TeacherFlowV2`（第一步创建信息 / 后续装裱·点评·归档都在这个组件里）。
  // 旧的 CreateFlow 向导（StepLesson/StepUpload/StepApps/StepGenerate/StepSuccess）已删除，
  // `create` 这个路由 id 保留下来只作为别名，供工作台 / 课后反馈列表 / AI 创作台的历史入口复用同一组件。
- const map={dashboard:TeacherWelcome,teacherFlow:TeacherFlowV2,create:TeacherFlowV2,lessons:LessonsPage,ai:TeacherAIWorkspace,tasks:TasksPage,progress:ProgressBoard,classes:StudentArchiveData,growthCenter:PersonalGrowthCenter,archives:GrowthArchiveData,parent:ParentHomeFamily,parentInsight:ParentInsight,parentArchive:ParentArchiveFamily,authorization:AuthorizationPage,profile:ProfilePage,adminDash:AdminDashboard,apps:AppsPage,providers:ProvidersPage,teacherPersona:TeacherPersonaPage,skillLibrary:SkillLibraryPage,courseLibrary:CourseLibraryPage,keywordTemplates:KeywordTemplatesPage,agentFiles:AgentFilesPage,musicLibrary:MusicLibraryPage,framingSettings:FramingSettingsPage,galleryAdmin:GalleryAdminPage,gallery:GalleryPage,users:UsersPage,logs:LogsPage,archiveAdmin:ArchiveAdmin,permissions:PermissionsPage,settings:SettingsPage,guide:GuidePage};
+ const map={dashboard:TeacherWelcome,teacherFlow:TeacherFlowV2,create:TeacherFlowV2,lessons:LessonsPage,ai:TeacherAIWorkspace,tasks:TasksPage,progress:ProgressBoard,classes:StudentArchiveData,growthCenter:PersonalGrowthCenter,archives:GrowthArchiveData,parent:ParentHomeFamily,parentInsight:ParentInsight,parentArchive:ParentArchiveFamily,authorization:AuthorizationPage,profile:ProfilePage,adminDash:AdminDashboard,apps:AppsPage,providers:ProvidersPage,teacherPersona:TeacherPersonaPage,skillLibrary:SkillLibraryPage,courseLibrary:CourseLibraryPage,keywordTemplates:KeywordTemplatesPage,agentFiles:AgentFilesPage,musicLibrary:MusicLibraryPage,framingSettings:FramingSettingsPage,posterTemplates:PosterTemplatesPage,galleryAdmin:GalleryAdminPage,gallery:GalleryPage,users:UsersPage,logs:LogsPage,archiveAdmin:ArchiveAdmin,permissions:PermissionsPage,settings:SettingsPage,guide:GuidePage};
  if(ADMIN_ONLY_PAGES.includes(props.page)&&props.role!=='admin'){
    const Fallback=props.role==='parent'?ParentHomeFamily:TeacherWelcome;
    return <Fallback {...props}/>;
