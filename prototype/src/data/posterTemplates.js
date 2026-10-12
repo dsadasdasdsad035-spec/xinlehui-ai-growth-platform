@@ -683,7 +683,7 @@ export function posterSlotsOfType(spec, type) {
 // 模板记录（云表 `poster_templates`）：三层归属 + 库级属性
 // ---------------------------------------------------------------------------
 
-/** 模板的本机镜像键（云端表是 `poster_templates`，读写落在 US-301b）。 */
+/** 模板的本机镜像键（云端表是 `poster_templates`，读写落在 `services/posterTemplatesApi.js`，[海报 US-302b]）。 */
 export const POSTER_TEMPLATE_STORAGE_KEY = 'xinlehui-poster-templates-v1';
 /** 排序缺省值（与装裱的 90 同一口径：没写排序号的排在有号的之后）。 */
 export const POSTER_TEMPLATE_SORT_FALLBACK = 90;
@@ -741,6 +741,23 @@ export function disabledPosterTemplateKeys(templates) {
   return sortPosterTemplates(templates)
     .filter((template) => template.enabled === false)
     .map((template) => template.id);
+}
+
+/**
+ * 内置模板**不可删除**的判据（FR-357，[海报 US-302] AC4）：内置模板只能停用。
+ *
+ * 为什么要在 data 层留一个纯函数：这条规则既要在「云端写入前」拦（`services/posterTemplatesApi.js`
+ * 的删除闸口），也要在将来的管理端列表里解释「为什么这个删除按钮是灰的」（US-312b 的界面）。
+ * 两处读同一份文案，别各写一句 —— 与装裱 `framingPresetDeleteVerdict` 同一口径。
+ */
+export const POSTER_TEMPLATE_BUILTIN_DELETE_NOTE = '内置模板不可删除，只能停用。';
+
+/** 删除前的判据读数：返回可读原因（空串 = 可以删）；缺 id 也算不可删（没有幂等键就写不动云端）。 */
+export function posterTemplateDeleteIssue(template) {
+  const item = normalizePosterTemplate(template);
+  if (!item.id) return '缺少模板 id（云端 template_key 是幂等键）。';
+  if (item.builtin) return POSTER_TEMPLATE_BUILTIN_DELETE_NOTE;
+  return '';
 }
 
 // ---------------------------------------------------------------------------
@@ -1533,6 +1550,81 @@ export const seedPosterTemplates = [
     sortOrder: 8
   }
 ].map((template) => normalizePosterTemplate(template));
+
+// ---------------------------------------------------------------------------
+// 本机镜像与列表合并（云端不可达时的兜底，[海报 US-302b] / FR-356、FR-368）
+//
+// 三层归属（platform / org / teacher）与装裱完全同构，**处境也相同**：本机云端的
+// `poster_templates` 表还没建立（建议表在 tasks/prd-share-poster.md 9.3），写入会被 PostgREST
+// 整条拒掉 —— 所以「先落本机镜像、再推云端」是这里的默认姿势，`services/posterTemplatesApi.js`
+// 的读取也按**本机镜像优先**合并（与 `framingPresets.js` / `musicTracks.js` 同一套口径：
+// 云表缺列或未建时，本机的那一份才是最新的，云端只负责补进本机没有的 template_key）。
+//
+// 「本机镜像优先」不会让内置模板变味：内置模板只在**本机也没有这个 key** 时才补进来
+// （`mergePosterTemplates` 的主列表先占位），所以管理员在后台改过的名字 / 停用 / 排序不会被
+// 出厂值顶回去，重复初始化也不会产生重复数据（FR-356）。
+// ---------------------------------------------------------------------------
+
+/** 读坏 JSON 一律回落 fallback（本机镜像来自别的版本 / 手工改过 / 配额写了一半都可能坏）。 */
+function safeParsePosterJson(raw, fallback) {
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed === null || parsed === undefined ? fallback : parsed;
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * 合并两份模板列表：**主列表优先**，只有主列表里没有的 `template_key` 才从入参里补进来，
+ * 最后统一过一遍排序（顺序的唯一来源仍是 `sortPosterTemplates`）。
+ *
+ * 三条纪律：① 没有 id 的条目直接丢（没有幂等键就既存不下也删不掉）；② 同一个 key 只留一条
+ * （先出现的那条赢）——「重复初始化不产生重复数据」这条 AC 在合并层就成立，不依赖云端去重；
+ * ③ 入参不被修改（纯函数，可 `node` 直跑断言）。
+ */
+export function mergePosterTemplates(primary, incoming) {
+  const kept = [];
+  const seen = new Set();
+  list(primary).concat(list(incoming)).forEach((raw) => {
+    const template = normalizePosterTemplate(raw);
+    if (!template.id || seen.has(template.id)) return;
+    seen.add(template.id);
+    kept.push(template);
+  });
+  return sortPosterTemplates(kept);
+}
+
+/** 保证列表里有**全部内置模板**（已有的那几条原样保留，缺的按出厂值补进来）。 */
+export function withBuiltinPosterTemplates(templates) {
+  return mergePosterTemplates(templates, seedPosterTemplates);
+}
+
+/** 内置模板里「这份列表还没有」的那几条（幂等初始化的输入；顺序 = 出厂顺序）。 */
+export function missingBuiltinPosterTemplates(existing) {
+  const present = new Set(list(existing).map((item) => posterTemplateKey(item)).filter(Boolean));
+  return seedPosterTemplates.filter((template) => !present.has(template.id));
+}
+
+/**
+ * 读本机镜像：读坏 / 空 / 没有 `window`（Node 直跑断言）一律回落**内置模板库**。
+ * 与装裱 `loadFramingPresets()` 同一口径 —— 「本地兜底」的兜底就是出厂值。
+ */
+export function loadPosterTemplates() {
+  if (typeof window === 'undefined') return seedPosterTemplates;
+  const saved = safeParsePosterJson(window.localStorage.getItem(POSTER_TEMPLATE_STORAGE_KEY), null);
+  if (!Array.isArray(saved) || !saved.length) return seedPosterTemplates;
+  // 老版本写下的镜像可能没有这次升级新增的内置模板 → 补进来（FR-356 的「随首次加载初始化」）。
+  return withBuiltinPosterTemplates(saved);
+}
+
+/** 写本机镜像（裸数组，与装裱主键同一形状：外部读取方直接 `JSON.parse` 拿列表）。配额满时静默降级。 */
+export function persistPosterTemplates(templates) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(POSTER_TEMPLATE_STORAGE_KEY, JSON.stringify(sortPosterTemplates(templates)));
+  } catch { /* 配额满 / 隐私模式：界面仍拿得到内存里的那一份 */ }
+}
 
 // ---------------------------------------------------------------------------
 // 校验读数（AC 的「非法字段被收敛」要看得见；管理端保存前与断言共用这一份）

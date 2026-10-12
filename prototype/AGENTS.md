@@ -3474,7 +3474,9 @@ US-222 管「成片怎么版本化」，这一节管「谁能碰这些成片、�
 |---|---|---|
 | spec 形状 | v1 平面 / v2 分组（`services/frameSpec.js`） | `version / kind / canvas / background / frame / decor / slots[]` |
 | 收敛器 | `normalizeFrameSpec` / `normalizeFrameSpecV2` | `normalizePosterSpec`（**永不抛错**，见下） |
-| 模板记录 | `data/framingPresets.js`（`framing_presets` 表） | `data/posterTemplates.js`（`poster_templates` 表，读写 US-301b） |
+| 模板记录 | `data/framingPresets.js`（`framing_presets` 表） | `data/posterTemplates.js`（`poster_templates` 表，读写 US-302b） |
+| 云表读写 | `services/framingPresetsApi.js`（`preset_key`） | `services/posterTemplatesApi.js`（`template_key`，幂等初始化见下节） |
+| 本机镜像 | `xinlehui-framing-presets-v1`（`load/persistFramingPresets`） | `xinlehui-poster-templates-v1`（`load/persistPosterTemplates`，同一口径） |
 | 模板层级 | `scope` + `ownerKey`（US-001b） | **同一套**：`normalizeFrameScope` 直接复用，别再发明一套权限模型 |
 
 - **比例坐标（FR-303）**：位置 `x / y`、尺寸 `w / h`、字号 `sizeRatio`、字距 `letterSpacingRatio`
@@ -3624,6 +3626,50 @@ US-222 管「成片怎么版本化」，这一节管「谁能碰这些成片、�
   真跑自检入口 8/8 出非空 Blob、逐套独立复算 Blob 类型与字节与画布、plan 逐位读数、成图墨迹、
   播放字符是实心三角而不是豆腐块、失败路径、8 套拼图截图 442）。回归：US-088 data 39 项（E6 已改成
   「与种子自身顺序比」，种子再长也不用改）、US-089 data 104 项、US-089 浏览器 83 项。
+
+## 海报模板的云端读写与幂等初始化（[海报 US-302b] / FR-356、FR-357、FR-368）
+
+`src/services/posterTemplatesApi.js` = 云表 `poster_templates` 的读写边界（与装裱
+`framingPresetsApi.js` 同构，幂等键从 `preset_key` 换成 `template_key`），**data 层配一个本机镜像**。
+
+- **列名单一来源 = `POSTER_TEMPLATE_ROW_FIELDS`（14 列）**：`rowToPosterTemplate` / `posterTemplateToRow`
+  都从它派生，`POSTER_TEMPLATE_ROW_COLUMNS` 自动跟着变 —— 断言直接拿它核对 AC 点名的 14 列。
+  新增一个库级字段时只改这一处 + `normalizePosterTemplate`，别在两边各抄一份 snake_case。
+  `posterTemplateToRow` **14 列一个不少地写**（云表缺列会被 PostgREST 整条拒，那是调用方要处理的失败，
+  不是「少写两列凑合」——少写会让「后台改了名字但库里没变」变得不可解释）。
+- **「首次加载幂等写入内置模板」= `ensureBuiltinPosterTemplates()`（FR-356）**，三条口径别改：
+  ① **只补不覆盖**：已存在的 `template_key` 一律跳过 —— 管理员改过的名字 / 停用 / 排序 / 默认标记
+  都属于「已存在的那一条」，重复初始化不能把它们顶回出厂值（断言 C4 组专门钉这条）；
+  ② **不抛错**：单条失败只记进 `failed`（`{id, message}`），其余照写 —— 初始化不该让页面打不开；
+  ③ **不自己写镜像**：落盘只在 `loadPosterTemplateStore` 一处发生。
+  写出去的行会盖 `updated_by = '系统初始化'`（`POSTER_TEMPLATE_SEED_OPERATOR`）与 ISO 的 `updated_at`。
+- **读取入口是 `loadPosterTemplateStore()`，返回值带「降级事实」（FR-368，不许静默降级）**：
+  `{ templates, source: 'cloud'|'builtin', cloudConnected, notice, seeded, seedFailed, remote, error }`。
+  云端读不到时 `notice === POSTER_TEMPLATE_OFFLINE_NOTICE`（**原文「当前使用内置模板（云端未连通）」**，
+  界面直接显示这一句，别在别处再抄）。**注意区分两种降级**：读得到但写不进去（云表欠列 /
+  `DATABASE_PGRST204`）时仍是 `source: 'cloud'`、`notice: ''`，失败落在 `seedFailed` 里 ——
+  把「写失败」也报成「云端未连通」是错的话术。
+  两条路径都会把「正在用的那一份」落进本机镜像（观察结果一致，断网首访也有镜像）。
+- **合并方向：本机镜像优先**（与装裱 / 音乐库同一处境）：云表还没建立时带新列的写入会被 PostgREST
+  拒掉，本机那一份才是最新的；云端只补进本机没有的 `template_key`。`mergePosterTemplates(主, 入参)`
+  的第一个参数赢、没有 id 的条目丢掉、同 key 只留一条 —— 「重复初始化不产生重复数据」在合并层就成立。
+- **本机镜像键 `xinlehui-poster-templates-v1` 是裸数组**（与装裱主键同形状，外部读取方直接
+  `JSON.parse` 拿列表）：`loadPosterTemplates()` / `persistPosterTemplates()` 在 `data/posterTemplates.js`，
+  读到空 / 坏 JSON 回落 `seedPosterTemplates`，并且**每次都把缺失的内置模板补进来**（老镜像 + 新版本
+  内置模板的场景）。这两个函数是本模块**唯一**碰 `window` 的地方（都先判 `typeof window === 'undefined'`，
+  US-088 的 A2 断言已按这个新口径改判据：禁 `document./fetch(/services/`，`window` 只准以
+  `typeof` 守卫 + `window.localStorage` 出现）。
+- **写入：`savePosterTemplate` 先落本机镜像再推云端**，云端失败**抛出**（调用方提示「已保存到本机」）；
+  **删除：内置模板在碰云端之前就拒**（FR-357，`posterTemplateDeleteIssue` + `PosterTemplateDeleteError`，
+  只可停用）。「已被使用过的模板只允许停用」要数引用范围，属 US-312b。
+- 本故事**没有 UI 消费点**（管理端「海报模板」页 = US-312a）。验证口径：`/tmp/assert-us091.mjs`
+  （Node，**109 项**：data 纯函数 / 14 列双向映射 / 脏行不抛错 / 云端替身下的首次初始化 · 重复初始化 ·
+  不覆盖管理员改动 · 云端不可达降级 · 写失败但读得到 · 保存与删除 · 本机镜像 / 静态卫生）+
+  `/tmp/assert-us091-browser.mjs`（CDP，**12 项**：页面里 import 模块，**真云端**跑一次 store ——
+  本机云端的 `poster_templates` 表还没建，实测落到 `source=builtin` + 原文案 +
+  `Could not find the table 'public.poster_templates' in the schema cache`）。
+  **已知边界**：那条「写入云端」的分支在当前环境下无法真机验证（表未建），只能靠云端替身断言；云表建好后
+  跑一次 `/tmp/assert-us091-browser.mjs` 应变成 `source=cloud`。
 
 ## 容易踩的坑
 
