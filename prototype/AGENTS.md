@@ -799,6 +799,48 @@ US-213a 那份本机演示队列（上面一节）**不是**真服务：真服�
   ② 帧清单的缩略图**必须放在任务卡片之外**：US-072/074 的脚本会数 `[data-video-job-card]` 里的
   `video/img/iframe/audio`（「不得显示假封面」那一条），卡片里多一张图就会假红。
 
+## 成片时长上限与自动精选（[第四步 US-216]）
+
+「这条片子放不下这么多作品、哪些会被舍弃」在提交之前就要看得到：两个上限、超出时的均匀取样、班级配额与手动排除。
+
+| 关注点 | 位置 | 说明 |
+|---|---|---|
+| 规则（上限 / 取样 / 班级配额 / 排除） | `src/data/videoSelection.js`（零依赖，Node 可直跑） | `VIDEO_DURATION_CAP_SEC`、`videoSelectionSampleIndices()`、`videoSelectionAllocateGroups()`、`videoSelectionPlan()`、`videoSelectionView()` |
+| 界面 | `GrowthArchiveData.jsx` 的 `VideoSelectionPanel`（在 `VideoJobsPanel` 里、帧清单**之前**） | `data-video-selection-*` / `data-video-selection-row*` / `data-video-selection-toggle` / `data-video-selection-student*` |
+
+- **预估时长只有一份算法**：`videoSelectionDurationSec(entries,{type})` = `videoTimelinePlan({entries,type}).totalSec`。
+  于是「精选清单上的预估时长」与「帧清单上的总时长」永远是同一个数（改帧时长只改 `videoTimeline.js`）——
+  不许在数据层或界面里另写一个 `3.5 × n` 之类的公式。
+- **只有超上限才取样**：`videoSelectionPlan` 先算「不取舍」的完整时长（`fullSec`），没超就**一幅都不舍弃**；
+  超了就从「全收」往下找**最大的**放得下的名额 —— 照片槽有台阶（每 4 幅插 1 张），时长对名额**不是严格单调**，
+  所以是逐个试（`durationOf(videoSelectionSelect(...))`）而不是二分。取样公式
+  `videoSelectionSampleIndices(count,size)` = `round(i×(count−1)/(size−1))`：首末两幅必留是**结构上**成立的。
+- **班级保底优先于上限**：名额不够让每位学员都上时按时间线**均匀挑学员**（不是砍掉排在后面的孩子）；
+  剩下的按作品数比例分（最大余数法，某位学员的作品先分完就把余量让给别人）。极端情形「每人 1 幅都超上限」
+  如实标 `overCap` + 一句人话 —— **不许靠少收某位学员来凑时长**。
+- **手动排除是「先去掉再精选」，不是「隐藏一行」**：`excluded`（`entry.id` / `entry.recordKey`）从候选里
+  去掉后**整条链重算**，所以「收录清单 + 预估时长 + 帧清单」三处一起变（US-216 第 5 条）。
+  排除是面板的局部 state，换对象 / 换周期 / 换类型时清空 —— 它只对「某个对象的某个周期」有效，不进任务、不落库。
+- **帧清单重建在「收录的那一批」上**：`VideoJobsPanel` 把 `selection.selectedEntries` 喂给 `videoTimelinePlan`。
+  未超上限的周期（既有夹具都在这一档）取样结果等于全收，所以 US-075 的 95 项帧清单断言一条没动。
+- **缺课记录不是一幅作品**：`isAbsence` 的条目不进候选、不占名额、也不计进「本周期共 N 幅」与 `counts.total`
+  （与 US-215 的帧序同一口径），但会以 `state:'absence'` 的行如实列在清单里（没有排除开关）——
+  否则老师的缺课记录会像「凭空少了一条」，也容易被算成一幅作品把名额挤掉。
+- **验证方式（本故事实测）**：`pnpm run build`；Node 直跑 **146 项**（`/tmp/assert-us076-data.mjs`：
+  上限与规则四条 / 取样等距与首末必留 / 班级保底与最大余数分配 / 60 幅取样到 37 幅 / 预估时长与帧清单同源 /
+  手动排除重算 / 缺课不计入 / 保底超上限 / 视图七种状态同形状）；浏览器 **100 项**（`/tmp/assert-us076-browser.mjs`：
+  注入「60 幅（超个人上限）+ 3 幅 + 1 条缺课（未超上限）+ 班级 100 幅（5 位学员 40/30/15/10/5 幅，超班级上限）」三个场景，
+  逐个对象复核读数与帧清单、真实点击排除与恢复、提交后任务卡片仍然没有假成片、390px）；
+  回归 US-075 data 130 + browser 95、US-074 data 24 + browser 72、US-072 data 37 + browser 82/83
+  （那条「提交按钮文案」是 US-214 起的既有失效项）、US-073 data 46 + browser 37；截图 376~379 留档。
+- **验证脚本的两个坑（本故事真踩）**：
+  ① 往页面里注入的表达式**括号要对准每一个 `(`**：`[...o].find(item=>item.value==="X"))` 多一个 `)`
+  在浏览器里报 `SyntaxError: Unexpected token ')'`（错误位置指在引号处、指不到多出来的那一个）；
+  写完抠出来 `node --check` 一遍最快（与 US-213b 的教训同一条）。
+  ② 一次注入多个场景时，**夹具班级必须与「走流程」那个班级换名字**：`walkToArchive` 造出来的那位学员
+  落在他选的班级里（`周六创意绘画 2 班`），夹具再用同一个班名会让班级总数 / 配额断言整片偏掉（多一位学员、
+  多一幅作品，最大余数法的分配结果就变了）。
+
 ## 老师端「课后反馈」第一步（班级 / 学员 / 课程 / 课次推荐）
 
 > **课次表单全站只有一份实现 = `TeacherFlowV2`（`main.jsx`）。** 旧的 `CreateFlow` 五步向导

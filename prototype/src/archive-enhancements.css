@@ -526,6 +526,39 @@
 .video-timeline-boundary li small{display:block;margin-top:2px;font-size:9px;line-height:1.6;color:#857a64}
 .video-timeline-boundary>small{font-size:9px;line-height:1.6;color:#857a64}
 .video-timeline-boundary.is-issue{border-color:#f0d7bd;background:#fdf1e4}
+.video-selection{display:flex;flex-direction:column;gap:9px;border:1px solid #e3dcbf;border-radius:12px;background:#fffdf4;padding:12px;min-width:0}
+.video-selection-rules{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin:0;padding:0;list-style:none;min-width:0}
+.video-selection-rules li{border:1px solid #f1e8d3;border-radius:10px;background:#fff;padding:7px 9px;min-width:0}
+.video-selection-rules b{display:block;font-size:9px;font-weight:800;color:#9a7200}
+.video-selection-rules span{display:block;margin-top:2px;font-size:11px;font-weight:700;color:#292720}
+.video-selection-rules small{display:block;margin-top:3px;font-size:9px;line-height:1.6;color:#857a64}
+.video-selection-summary{margin:0;font-size:12px;line-height:1.7;font-weight:800;color:#292720}
+.video-selection-duration{margin:0;font-size:11px;line-height:1.7;font-weight:700;color:#8a4b00}
+.video-selection-note,.video-selection-hint{margin:0;font-size:10px;line-height:1.65;color:#857a64}
+.video-selection-hint{color:#7a6a45}
+.video-selection-students{display:flex;flex-direction:column;gap:6px;border:1px solid #f1e8d3;border-radius:10px;background:#fff;padding:8px 10px;min-width:0}
+.video-selection-students>b{font-size:11px;color:#7a6a45}
+.video-selection-students>small{font-size:9px;line-height:1.6;color:#857a64}
+.video-selection-students ul{margin:0;padding:0;list-style:none;display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:6px;min-width:0}
+.video-selection-students li{border:1px solid #f6f1e3;border-radius:9px;background:#fffdf9;padding:6px 8px;min-width:0}
+.video-selection-students li span{display:block;font-size:10px;font-weight:700;color:#292720;word-break:break-word}
+.video-selection-students li em{display:block;margin-top:2px;font-style:normal;font-size:9px;line-height:1.6;color:#857a64}
+.video-selection-students li[data-video-selection-student-floor="met"] em::after{content:' · 保底已满足';color:#2f6b3a}
+.video-selection-list{display:flex;flex-direction:column;gap:6px;margin:0;padding:0;list-style:none;min-width:0}
+.video-selection-row{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:6px 8px;align-items:center;border:1px solid #f1e8d3;border-left:3px solid #7fa46b;border-radius:10px;background:#fff;padding:7px 9px;min-width:0}
+.video-selection-row.is-dropped{border-left-color:#c9a227;background:#fffbf1}
+.video-selection-row.is-excluded{border-left-color:#c98a6a;background:#fdf6f0}
+.video-selection-row.is-absence{border-left-color:#c9c2a6;background:#fbf9f2}
+.video-selection-row-head{min-width:0}
+.video-selection-row-head b{display:block;font-size:11px;color:#292720;word-break:break-word}
+.video-selection-row-head span{display:block;margin-top:2px;font-size:9px;color:#857a64;word-break:break-word}
+.video-selection-state{font-style:normal;font-size:9px;font-weight:800;color:#2f6b3a;background:#f2f9ef;border:1px solid #cfe1b4;border-radius:999px;padding:3px 9px;white-space:nowrap}
+.video-selection-row.is-dropped .video-selection-state{color:#8a4b00;background:#fff2c8;border-color:#f0d79a}
+.video-selection-row.is-excluded .video-selection-state{color:#9a2f22;background:#fdeee7;border-color:#f0d7bd}
+.video-selection-row.is-absence .video-selection-state{color:#7a6a45;background:#f6f2e7;border-color:#e6d9b8}
+.video-selection-toggle{min-height:30px;padding:4px 10px;font-size:10px;font-weight:700;color:#7a6a45;background:#fff;border:1px solid #e6d9b8;border-radius:999px;cursor:pointer;white-space:nowrap}
+.video-selection-toggle:hover{background:#fff8e3}
+.video-selection-row small{grid-column:1/-1;font-size:9px;line-height:1.6;color:#857a64;word-break:break-word}
 @media(max-width:430px){
   .video-jobs{padding:14px}
   .video-jobs-controls{grid-template-columns:minmax(0,1fr)}
@@ -541,4 +574,10 @@
   .video-timeline-rules{grid-template-columns:minmax(0,1fr)}
   .video-timeline-ending textarea{min-height:44px}
   .video-timeline-boundary ul{grid-template-columns:minmax(0,1fr)}
+  .video-selection{padding:10px}
+  .video-selection-rules{grid-template-columns:minmax(0,1fr)}
+  .video-selection-students ul{grid-template-columns:minmax(0,1fr)}
+  .video-selection-row{grid-template-columns:minmax(0,1fr);align-items:stretch}
+  .video-selection-state{justify-self:start}
+  .video-selection-toggle{width:100%;min-height:44px;justify-content:center}
 }

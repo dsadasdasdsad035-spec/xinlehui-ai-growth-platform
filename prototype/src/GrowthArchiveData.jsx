@@ -136,6 +136,17 @@ import {
   videoTimelineShareReady,
   videoTimelineView
 } from './data/videoTimeline';
+// 时长上限与自动精选（[第四步 US-216]）：两个上限（个人 120 秒 / 班级 300 秒）、超出时的
+// 均匀取样（首末两幅必留）、班级的「每人至少 1 幅 + 按作品数比例」配额与手动排除后的重算
+// 全在 `data/videoSelection.js`（零依赖纯函数）。这一页只渲染它的产物 ——
+// 收录清单、被舍弃的作品与预估时长都从数据层来，组件不自己算时长。
+import {
+  VIDEO_SELECTION_QUOTA_NOTE,
+  VIDEO_SELECTION_SECTION_DESC,
+  VIDEO_SELECTION_SECTION_TITLE,
+  videoSelectionPlan,
+  videoSelectionView
+} from './data/videoSelection';
 // 机构名（帧清单的片头与片尾都要写它，与装裱叠加元素的变量同一份来源）。
 import { DEFAULT_ORG_NAME } from './data/lessons';
 import { Button } from './ui';
@@ -414,6 +425,61 @@ function VideoJobCard({job,isLatest,onCancel,onRetry}){
 }
 
 /**
+ * 时长上限与自动精选（[第四步 US-216]）：这条片子放得下多少幅、哪些被舍弃、老师手动排除哪几幅。
+ *
+ * 判据与文案全部来自 `data/videoSelection.js`（组件只渲染产物，不自己算时长、不自己拼原因）：
+ *  - 两个上限（个人 120 秒 / 班级 300 秒）与「超出时按课次时间线均匀取样、首末两幅必留」；
+ *  - 「本周期共 N 幅，已精选 M 幅收录」与预估时长（预估时长 = **入选那一批**按帧序规则推出来的，
+ *    因此与下面帧清单上的总时长必然是一个数）；
+ *  - 每幅作品的去向（收录 / 已舍弃 / 已手动排除）+ 一个「排除这一幅 / 恢复收录」的开关：
+ *    点一下就从候选里去重算收录清单与预估时长（实时，不需要点应用）；
+ *  - 班级成片另给每位学员的分配读数（先保底每人 1 幅，再按作品数比例分剩余名额）。
+ */
+function VideoSelectionPanel({view,onToggleExclude}){
+  return <section className="video-selection" data-video-selection="true"
+    data-video-selection-type={view.type} data-video-selection-total={view.total}
+    data-video-selection-selected={view.selectedCount} data-video-selection-dropped={view.droppedCount}
+    data-video-selection-excluded={view.excludedCount} data-video-selection-absence={view.absenceCount}
+    data-video-selection-students={view.studentCount}
+    data-video-selection-duration={view.durationSec} data-video-selection-full-duration={view.fullSec}
+    data-video-selection-cap={view.capSec} data-video-selection-sampled={view.sampled?'true':'false'}
+    data-video-selection-cap-exceeded={view.capExceeded?'true':'false'} data-video-selection-over-cap={view.overCap?'true':'false'}
+    data-video-selection-summary-text={view.summary}>
+    <div className="archive-section-head"><span>{view.typeLabel} · 精选在先</span><h4>{VIDEO_SELECTION_SECTION_TITLE}</h4><p>{VIDEO_SELECTION_SECTION_DESC}</p></div>
+    <ul className="video-selection-rules" data-video-selection-rules="true">{view.rules.map(rule=><li key={rule.id} data-video-selection-rule={rule.id} data-video-selection-rule-value={rule.value}>
+      <b>{rule.label}</b><span data-video-selection-rule-text="true">{rule.value}</span><small>{rule.detail}</small>
+    </li>)}</ul>
+    <p className="video-selection-summary" data-video-selection-summary="true">{view.summary}</p>
+    <p className="video-selection-duration" data-video-selection-duration-text="true">{view.durationSummary}</p>
+    {view.notes.map((note,index)=><p className="video-selection-note" key={note} data-video-selection-note={index}>{note}</p>)}
+    <p className="video-selection-hint" data-video-selection-hint="true">下面的帧清单只排收录的作品：被舍弃或被手动排除的作品不会出现在帧清单里。</p>
+    {view.studentRows.length?<div className="video-selection-students" data-video-selection-students="true">
+      <b>每位学员的收录份数</b>
+      <small data-video-selection-quota-note="true">{VIDEO_SELECTION_QUOTA_NOTE}</small>
+      <ul>{view.studentRows.map(row=><li key={row.name} data-video-selection-student={row.name}
+        data-video-selection-student-count={row.count} data-video-selection-student-kept={row.kept}
+        data-video-selection-student-quota={row.quota} data-video-selection-student-floor={row.floorMet?'met':'missed'}>
+        <span>{row.name}</span><em data-video-selection-student-note="true">{row.note}</em>
+      </li>)}</ul>
+    </div>:null}
+    <ol className="video-selection-list" data-video-selection-list="true">
+      {view.rows.map(row=><li key={row.id} className={`video-selection-row is-${row.state}`} data-video-selection-row={row.id}
+        data-video-selection-row-state={row.state} data-video-selection-row-date={row.date}
+        data-video-selection-row-student={row.student} data-video-selection-row-title={row.title}>
+        <div className="video-selection-row-head">
+          <b data-video-selection-row-title-label="true">{row.title}</b>
+          <span>{row.date}{row.student?` · ${row.student}`:''}</span>
+        </div>
+        <em className="video-selection-state" data-video-selection-row-label="true">{row.stateLabel}</em>
+        {row.action?<button type="button" className="video-selection-toggle" data-video-selection-toggle={row.id} data-video-selection-toggle-action={row.action} onClick={()=>onToggleExclude(row.id)}>{row.actionLabel}</button>:null}
+        <small data-video-selection-row-note="true">{row.note}</small>
+      </li>)}
+    </ol>
+    {view.empty?<p className="video-jobs-empty" data-video-selection-empty="true">{view.emptyText}</p>:null}
+  </section>;
+}
+
+/**
  * 成片帧清单（时间线预览，[第四步 US-215]）：帧序规则五行 + 每一帧的起止与字幕 + 内容边界。
  *
  * 判据与文案全部来自 `data/videoTimeline.js`（组件只渲染产物，不自己算时长、不自己拼字幕说明）：
@@ -501,6 +567,9 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
   const [jobs,setJobs]=useState(()=>listVideoJobs());
   const [notice,setNotice]=useState('');
   const [simulateFail,setSimulateFail]=useState(false);
+  // 老师手动排除的作品（[第四步 US-216] 第 5 条）：只对这一份精选清单有效，不写进任务、也不落库。
+  // 换对象 / 换周期 / 换类型后清空 —— 「排除」是对某个对象某个周期说的，不是一条永久规则。
+  const [excludedArtworks,setExcludedArtworks]=useState([]);
   // 片尾寄语（帧清单的输入：≤40 字，超限由数据层给可读原因；空着就不显示寄语，不编一句）。
   const [endingNote,setEndingNote]=useState('');
   // 演示失败原因（四类：模型 / 字体 / 素材 / 存储）—— 可选值与文案都来自数据层。
@@ -538,10 +607,20 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
   const view=videoJobQueueView(jobs,{resumedAt:sessionStartRef.current});
   const submitIssue=videoJobSubmitIssue({type,studentId:isClass?'':objectName,classId:isClass?objectName:'',period});
   const jobKey=videoJobKey({type,studentId:isClass?'':objectName,classId:isClass?objectName:'',period});
+  // 精选（[第四步 US-216]）：先定「哪些作品进成片」（时长上限 + 均匀取样 + 手动排除），
+  // 帧清单再按**收录的那一批**排 —— 于是「已精选 M 幅」与帧清单上的帧数、预估时长三者同源。
+  useEffect(()=>{setExcludedArtworks([])},[objectName,period,isClass]);
+  const selection=useMemo(()=>videoSelectionPlan({entries,type,excluded:excludedArtworks}),[entries,type,excludedArtworks]);
+  const selectionView=useMemo(()=>videoSelectionView(selection),[selection]);
+  const pickedEntries=selection.selectedEntries;
+  const toggleExclude=useCallback(key=>{
+    if(!key)return;
+    setExcludedArtworks(current=>current.includes(key)?current.filter(item=>item!==key):[...current,key]);
+  },[]);
   // 帧清单（[第四步 US-215]）：当前「查看对象 + 生成周期」下这条视频会怎么走。
   // `shareReady` 读的是这一批归档记录里有没有可用的家长分享令牌（决定片尾二维码那一行怎么写）。
   const shareReady=useMemo(()=>videoTimelineShareReady(tokens,entries),[tokens,entries]);
-  const timelinePlan=useMemo(()=>videoTimelinePlan({entries,objectName,type,period,orgName:DEFAULT_ORG_NAME,endingNote,shareReady}),[entries,objectName,type,period,endingNote,shareReady]);
+  const timelinePlan=useMemo(()=>videoTimelinePlan({entries:pickedEntries,objectName,type,period,orgName:DEFAULT_ORG_NAME,endingNote,shareReady}),[pickedEntries,objectName,type,period,endingNote,shareReady]);
   const report=result=>{setJobs(listVideoJobs());setNotice(result.ok?result.notice:result.issue);setToast(result.ok?result.notice:result.issue)};
   const submit=()=>{
     const result=submitVideoJob({type,studentId:isClass?'':objectName,classId:isClass?objectName:'',period,objectName,lessonCount,artworkCount,photoCount,createdBy:teacherName,simulate:simulateFail?'fail':'success',simulateErrorCode});
@@ -567,6 +646,7 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
     </div>
     <p className="video-jobs-note" data-video-submit-note="true">{VIDEO_JOB_SUBMIT_NOTE}</p>
     {submitIssue?<p className="video-jobs-issue" data-video-submit-issue="true">{submitIssue}</p>:null}
+    <VideoSelectionPanel view={selectionView} onToggleExclude={toggleExclude}/>
     <VideoTimelinePreview plan={timelinePlan} endingNote={endingNote} onEndingNote={setEndingNote}/>
     {notice?<p className="video-jobs-notice" data-video-notice="true">{notice}</p>:null}
     {view.resumeSummary?<p className="video-jobs-resumed" data-video-jobs-resumed="true">{view.resumeSummary}</p>:null}
