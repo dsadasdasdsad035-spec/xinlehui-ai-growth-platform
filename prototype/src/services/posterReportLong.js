@@ -36,7 +36,10 @@ export function posterReportPageFailedText(index) {
  * 返回 `renderPoster` 的完整结果（`{ blob, dataURL, canvas, plan, warnings, … }`）；
  * 没有学员 / 没有这一张 / 没有 canvas 能力时返回 `null`（调用方自己决定怎么降级）。
  */
-export async function renderPosterReport(plan, { pageIndex = 0, scale = POSTER_REPORT_PREVIEW_SCALE, type, quality } = {}) {
+// `encodeDataURL` 放在参数表**最前**是刻意的：US-101 的源码守卫认的是这段签名里的
+// `type, quality }`（「五个 renderPosterX 都转发编码档」），新选项插到末尾会把那条老断言判红。
+// 调顺序之前先看 /tmp/assert-us101.mjs 的 G5（导出档不产 dataURL 的理由见 `services/posterDialog.js`）。
+export async function renderPosterReport(plan, { encodeDataURL, pageIndex = 0, scale = POSTER_REPORT_PREVIEW_SCALE, type, quality } = {}) {
   const value = plan && typeof plan === 'object' ? plan : null;
   if (!value || !value.hasStudent) return null;
   const pages = Array.isArray(value.pages) ? value.pages : [];
@@ -45,7 +48,7 @@ export async function renderPosterReport(plan, { pageIndex = 0, scale = POSTER_R
     : Math.max(1, Number(value.page && value.page.index) || 1);
   const page = pages[index - 1] || value.page || null;
   if (!page || !page.spec) return null;
-  return renderPoster({ spec: page.spec, data: value.data, scale, type, quality });
+  return renderPoster({ spec: page.spec, data: value.data, scale, type, quality, encodeDataURL });
 }
 
 /** 预览用的地址（object URL，用完必须 `releasePosterReportUrl` 回收）。 */

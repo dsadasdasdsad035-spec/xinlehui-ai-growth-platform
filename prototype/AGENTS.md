@@ -4304,6 +4304,64 @@ services / 界面只渲染产物」）：
   再扫码看到「该分享已撤回」→ 模板里塞第二个可见二维码位只画一个 → 390px ≥44px → console 干净）。
   截图 525~534。
 
+## 海报的移动端与导出性能（[海报 US-314] / FR-361、FR-363 ~ FR-366）
+
+> 「用手机的老师在教室里就要能出图发出去」这一条：规则全在 `src/data/posterMobile.js`
+> （零依赖纯函数 + 常量，可 `node` 直跑断言），浏览器侧的执行在 `src/services/posterMobile.js`
+> （让出主线程 + 阻塞探针；**内存采样复用装裱那一支** `services/framingPerformance.js`）。
+> 界面只多三块：预览上面的缩放工具条（`[data-poster-preview-zoom-toolbar]`）、导出面板里的进度条
+> （`[data-poster-export-progress]`）与预览列末尾的「移动端与性能」四项读数（`[data-poster-mobile-perf]`）。
+
+- **四条预算各只有一个数**：首张预览 `POSTER_PREVIEW_BUDGET_MS`（= `POSTER_DIALOG_FIRST_PREVIEW_BUDGET_MS`
+  3000ms，**不抄第二份**）、长图渲染 `POSTER_LONG_RENDER_BUDGET_MS`（1500ms / FR-363）、
+  导出内存峰值 `POSTER_EXPORT_MEMORY_BUDGET_MB`（= 装裱的 `FRAMING_MEMORY_BUDGET_MB` 300MB / FR-364）、
+  导出单次阻塞 `POSTER_EXPORT_BLOCK_BUDGET_MS`（1000ms / FR-365）。
+  结论只在 `posterMobilePerfChecks()` 里算（`ok === null` = 还没测到，面板写「待测」，**不写 0 达标**）；
+  界面、Node 断言与浏览器脚本读的都是 `rows`。
+- **长图那一条量的是「渲染」本身**：从调用 `renderPosterDialog` 那一刻到出图（不含弹窗挂载，
+  与首张预览那一条的口径不同 —— 首张含挂载与队列等待，那是 FR-361 的原文）。只记**第一次**量到的
+  （同一套模板再切一次会命中解码缓存，写的就不是渲染了）。
+- **导出路径不产 base64 副本**（FR-364 的内存 + FR-365 的阻塞，同一处改）：`renderPoster({ encodeDataURL })`
+  —— 默认 `true`（预览 / 缩略图沿用原口径），`renderPosterDialogExport()` 默认 **false**（导出只交付 `blob`；
+  那次 `canvas.toDataURL()` 是**同步**的全图编码，既多留一份整图字符串又把主线程按住一小会儿）。
+  ⚠️ 五个 `renderPosterX` 的 `encodeDataURL` **必须写在参数表最前**：US-101 的源码守卫认的是签名里的
+  `type, quality }` 那段文本（「五个 renderPosterX 都转发编码档」），插到末尾会把那条老断言判红。
+- **导出按阶段报进度，界面不自己算百分比**：服务层 `exportPosterFiles({ onProgress })` 报
+  `start / rendering / saved / ready / blocked / failed / done`，`posterExportProgressView()` 把它折算成
+  百分比（每张两步：渲染 → 存下；多张按张累加，所以单张是 50% → 100%）。进度条只在 `busy` 时出现，
+  `role="progressbar"` 的 `aria-valuenow` 与面板上的百分比同源。
+- **每个阶段之间 `yieldToInteraction()` 让出主线程**（FR-365：不阻塞交互超过 1 秒）：
+  ⚠️ 这一支**必须有上限**（`maxWaitMs`，默认 200ms）——只等 `requestAnimationFrame` 的话，
+  **页面转后台时 rAF 停发**（真机场景：老师导出时切去微信看一眼再回来；headless 里 `document.hidden`
+  变真时同样如此），这个 Promise 永远不 resolve，导出会**卡死在 busy 上**（本轮 390px 的用例就是这么抓到的：
+  导出 + 页面转后台 → 90 秒不结束）。上限保证每一步都能往前走，Node 里也有断言钉住。
+- **导出期间的阻塞 / 内存读数由探针给**：`createPosterPerfProbe()` = `createMemorySampler()`（装裱那一支，
+  `performance.memory` 的全仓唯一读点）+ `createBlockingProbe()`（优先读浏览器自己量的 `longtask` 条目，
+  读不到退回「定时器间隔被拖长了多少」）。**别在别处再写一份 `usedJSHeapSize` 读取**——
+  断言里有一条「全仓只有一份」的守卫（`src/services/` 下只有 `framingPerformance.js` 命中）。
+  被导出门拦下（没渲染）时 `perf` 为 `null`，界面**保留上一次的实测值**而不是抹掉。
+- **预览缩放（FR-366）**：档位 `[50, 100, 150, 200, 300]`，`0` = 适应屏幕（打开时的默认档，交给 CSS 的
+  `max-width:100%` 等比缩）；`100%` = 与预览像素 1:1（手机上看细节的那一档）。`posterPreviewZoomView()`
+  给 `percent / label / cssWidth`，界面只把 `cssWidth` 写成 `<img style="width: Npx">` 并给预览框加
+  `.is-zoomed`（`display:block;overflow:auto` + 放开 `max-*`）。**缩放只改显示**：不重新渲染、不改导出文件
+  （断言比的是「图片地址与源尺寸没变」）。放大到底停在 300%，最小档再缩小 = 回到适应屏幕（不绕回）。
+- **390px 的两件事**：模板列表的横向滑动条是既有 CSS（`@media(max-width:800px)` 里
+  `.poster-dialog-templates{flex-direction:row;overflow-x:auto}`），`posterNarrowView(viewportWidth)` 把
+  「现在是不是这一档」变成弹窗上的读数（`data-poster-mobile-narrow` / `-list-mode`）；缩放三个按钮在这一档
+  一律 **44×44**（只给 `min-height` 会让「放大」变成细条，US-310a 踩过同一件事）。
+- 验收口径：`/tmp/assert-us106.mjs`（Node，**149 项**：四条预算真源 / 窄屏口径 / 缩放档位与夹取 / 进度折算
+  与阶段名单（从 `report(...)` 的字符串里取，三元写法也要认得）/ 四项读数的三种口径（没测到 · 达标 · 超标）/
+  `yieldToInteraction` 在 rAF 停发时仍收尾 / 阻塞探针在 Node 里量到一次 220ms 长任务 / 分层纪律与源码接线）
+  + `/tmp/assert-us106-browser.mjs`（CDP，**61 项**：真机链路到第四步 → 弹窗四项读数（首张 88ms）→
+  放大到 100% / 150% / 300% 与「适应屏幕」回来（图片地址没变 = 没重渲染）→ 进成长档案 → 长图渲染 71~75ms
+  （≤1.5s）→ 阶段海报（1080×1920）导出：进度条在走、**导出进行中点缩放 9ms 就生效**、落盘文件字节数一致、
+  内存峰值 **121~122MB**（≤300MB）、最长阻塞 **1~4ms**（≤1s）→ 390px：列表横滑（1260px > 342px）、
+  三个缩放按钮 ≥44×44、页面无横向滚动 → 手机 UA 走「长按保存」那一支（2× 2160×3840 出图、不触发下载）→
+  console 干净）。截图 535~540。
+- ⚠️ **390px 的导出用例要换手机 UA**：`mobile: true` + 桌面 UA 时点下载会让页面转后台（`document.hidden`
+  变真、rAF 停发）—— 那既不是真机行为，也会把页面导走。真机（iOS Safari / 微信）本来走的也是
+  `mode = 'longpress'` 那一支（FR-367），所以 390px 那一段用 iPhone UA 验长按保存，桌面那一段验真下载。
+
 ## 容易踩的坑
 
 - **「出现过这个名字」不等于「消费它」：结构性判据别用子串**（US-103 真踩一条老断言）：

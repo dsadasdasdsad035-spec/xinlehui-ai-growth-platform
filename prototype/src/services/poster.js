@@ -902,9 +902,14 @@ function canvasToBlob(canvas, mimeType, quality) {
  * `scale = 2` 得 2160 宽的导出图，两者是同一次绘制的两种分辨率 —— 不存在「预览一套、导出一套」。
  * `type` / `quality` 是编码档（缺省 PNG；导出故事 US-311a 会传 JPEG + 质量）。
  *
+ * `encodeDataURL = false` = **不产 `dataURL`**（返回 `''`）：那是一次**同步**的全图 base64 编码，
+ * 会给导出路径多留一份整图字符串（内存）并把主线程按住一小会儿 —— 导出只交付 `blob`，
+ * 所以导出档（`renderPosterDialogExport`）关掉它（[海报 US-314] / FR-364、FR-365）。
+ * 预览与缩略图仍按原口径带 `dataURL`（既有调用方一字不改）。
+ *
  * 没有 canvas 能力的环境返回 `null`（本工程只在浏览器里跑海报渲染）。
  */
-export async function renderPoster({ spec, data = {}, scale = 1, type = POSTER_MIME_PNG, quality, maxEdge = POSTER_CANVAS_EDGE_RANGE.max } = {}) {
+export async function renderPoster({ spec, data = {}, scale = 1, type = POSTER_MIME_PNG, quality, maxEdge = POSTER_CANVAS_EDGE_RANGE.max, encodeDataURL = true } = {}) {
   const rendered = await renderPosterToCanvas({ spec, data, scale, maxEdge });
   if (!rendered) return null;
   const mimeType = type === POSTER_MIME_JPEG ? POSTER_MIME_JPEG : POSTER_MIME_PNG;
@@ -915,11 +920,12 @@ export async function renderPoster({ spec, data = {}, scale = 1, type = POSTER_M
   return {
     ...rendered,
     blob,
-    dataURL: rendered.canvas.toDataURL(mimeType, jpegQuality),
+    dataURL: encodeDataURL === false ? '' : rendered.canvas.toDataURL(mimeType, jpegQuality),
     bytes: blob ? blob.size : 0,
     mimeType,
     quality: jpegQuality === undefined ? null : jpegQuality,
-    encoded: !!blob
+    encoded: !!blob,
+    dataURLSkipped: encodeDataURL === false
   };
 }
 

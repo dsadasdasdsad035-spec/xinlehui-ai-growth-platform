@@ -30,10 +30,13 @@ export const POSTER_VIDEO_COVER_RENDER_FAILED_TEXT = '封面没有渲染成功�
  * 返回 `renderPoster` 的完整结果（`{ blob, dataURL, canvas, plan, warnings, … }`）；
  * 没有对象 / 没有 canvas 能力时返回 `null`（调用方自己决定怎么降级）。
  */
-export async function renderPosterVideoCover(plan, { scale = POSTER_VIDEO_COVER_PREVIEW_SCALE, type, quality } = {}) {
+// `encodeDataURL` 放在参数表**最前**是刻意的：US-101 的源码守卫认的是这段签名里的
+// `type, quality }`（「五个 renderPosterX 都转发编码档」），新选项插到末尾会把那条老断言判红。
+// 调顺序之前先看 /tmp/assert-us101.mjs 的 G5（导出档不产 dataURL 的理由见 `services/posterDialog.js`）。
+export async function renderPosterVideoCover(plan, { encodeDataURL, scale = POSTER_VIDEO_COVER_PREVIEW_SCALE, type, quality } = {}) {
   const value = plan && typeof plan === 'object' ? plan : null;
   if (!value || !value.hasObject || !value.spec) return null;
-  return renderPoster({ spec: value.spec, data: value.data, scale, type, quality });
+  return renderPoster({ spec: value.spec, data: value.data, scale, type, quality, encodeDataURL });
 }
 
 /** 预览用的地址（object URL，用完必须 `releasePosterVideoCoverUrl` 回收）。 */

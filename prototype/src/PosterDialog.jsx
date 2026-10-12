@@ -17,7 +17,7 @@
 // 因此这里不写任何「成长档案专属」的逻辑（档案页给的是 target / name / students / 周期筛选）。
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, Download, Loader2, MessageSquareText, Plus, QrCode, Share2, X } from 'lucide-react';
+import { Archive, Download, Gauge, Loader2, MessageSquareText, Plus, QrCode, Share2, X } from 'lucide-react';
 import { Button } from './ui';
 import { nowMs } from './services/archivePerformance';
 import {
@@ -83,6 +83,24 @@ import { AUDIT_ACTIONS, auditEntryMissingFields, auditTraceText } from './data/a
 // 状态文案 / 「只画一个二维码」的收敛在 `data/posterShareQr.js`；生成动作的闸门与编排在
 // `services/posterShareGenerate.js`（与第四步的「生成家长分享链接」同一支：授权判据与令牌字段只有一份）。
 import { POSTER_SHARE_QR_HEADING, POSTER_SHARE_QR_SINGLE_RULE, posterShareQrFacts } from './data/posterShareQr';
+// 移动端与导出性能（[海报 US-314] / FR-361、FR-363 ~ FR-366）：四项预算 / 缩放档位 / 进度折算
+// 全在 `data/posterMobile.js`（零依赖纯函数）；浏览器侧的探针（内存峰值 + 最长阻塞）在
+// `services/posterMobile.js`，内存采样复用装裱那一支（`services/framingPerformance.js`）。
+import {
+  POSTER_MOBILE_PERF_HINT,
+  POSTER_MOBILE_WIDTH,
+  POSTER_PREVIEW_FIT_LABEL,
+  POSTER_PREVIEW_FIT_PERCENT,
+  POSTER_PREVIEW_ZOOM_IN_LABEL,
+  POSTER_PREVIEW_ZOOM_OUT_LABEL,
+  posterExportProgressView,
+  posterMobilePerfChecks,
+  posterMobilePerfLine,
+  posterNarrowView,
+  posterPreviewZoomStep,
+  posterPreviewZoomView
+} from './data/posterMobile';
+import { createPosterPerfProbe } from './services/posterMobile';
 import { SHARE_TOKEN_DEFAULT_VALID_DAYS, SHARE_TOKEN_VALID_DAYS_NOTE } from './data/shareTokens';
 import { generatePosterShareToken, posterShareQrGeneratePlan, pushPosterShareTokenRemote } from './services/posterShareGenerate';
 import { copyReviewDetailText } from './services/reviewDetailExport';
@@ -175,7 +193,18 @@ export default function PosterDialog({
   const [pickedId, setPickedId] = useState('');
   const [preview, setPreview] = useState({ key: '', url: '', phase: 'idle', kind: '', templateId: '', width: 0, height: 0, warnings: [], checks: null });
   const [thumbs, setThumbs] = useState({});
-  const [perf, setPerf] = useState({ firstPreviewMs: null, switchMs: null });
+  const [perf, setPerf] = useState({ firstPreviewMs: null, switchMs: null, longPreviewMs: null });
+  // 移动端与导出性能（[海报 US-314]）：
+  //   - `zoomPercent`：预览缩放（0 = 适应屏幕、100% = 与预览像素 1:1）—— 档位与步进在 data 层；
+  //   - `exportProgress`：导出进度（服务层按阶段报，这里只存最近一次读数）；
+  //   - `exportPerf`：这一次导出的内存峰值与最长阻塞（探针在 `services/posterMobile.js`）。
+  const [zoomPercent, setZoomPercent] = useState(POSTER_PREVIEW_FIT_PERCENT);
+  const [exportProgress, setExportProgress] = useState({ index: 0, total: 0, phase: '', filename: '' });
+  const [exportPerf, setExportPerf] = useState({ memoryBytes: null, blockMs: null, memorySupported: false, longTaskMs: 0, longTasks: 0 });
+  // 窄屏口径（FR-366）：模板列表是不是横向滑动条、预览缩放按钮在不在 —— 读数由 data 层给。
+  // 视口宽度是**纯函数现算**的，另用一个 resize 监听在数值真的变了时才 setState
+  // （React 不会因为 resize 自己重渲染；同值 setState 会直接被跳过）。
+  const [viewportWidth, setViewportWidth] = useState(() => (typeof window === 'undefined' ? 0 : Math.round(window.innerWidth)));
   // 「文案与作品微调」（[海报 US-310a] / FR-335 ~ FR-339）：老师填的五个字段。
   // 空值 = 不改这一项（留空 = 用原值），因此初始态是「原样」，一个字段都不覆盖。
   const [tuning, setTuning] = useState({ title: '', quote: '', date: '', qrcode: true, artworks: [] });
@@ -294,6 +323,10 @@ export default function PosterDialog({
     const blank = { key: planKey, url: '', phase: 'pending', kind: selectedRow ? selectedRow.kind : '', templateId: selectedId, width: 0, height: 0, warnings: [], checks: null };
     let cancelled = false;
     let createdUrl = '';
+    // 长图渲染耗时（FR-363：报告长图 ≤1.5 秒）从**这一次绘制开始的那一刻**记账 ——
+    // 它量的就是「渲染」，不含弹窗挂载与队列等待（首张那一条才含前者，FR-361 的口径）。
+    const renderStartedAt = nowMs();
+    const isLong = Boolean(selectedRow && selectedRow.kind === 'report-long');
     setPreview(blank);
     renderPosterDialog(selectedPlan, { scale: POSTER_DIALOG_PREVIEW_SCALE }).then((rendered) => {
       if (cancelled) return;
@@ -316,6 +349,11 @@ export default function PosterDialog({
         checks: posterExportChecks({ rendered, gate })
       });
       recordPerf(request);
+      // 长图那一条只记**第一次**量到的（同一套模板再切一次会命中解码缓存，写的就不是「渲染」了）。
+      if (isLong) {
+        const ms = Math.max(0, Math.round(nowMs() - renderStartedAt));
+        setPerf((current) => (current.longPreviewMs === null ? { ...current, longPreviewMs: ms } : current));
+      }
       if (request === 'switch') perfRef.current.request = 'idle';
     }).catch(() => {
       if (cancelled) return;
@@ -363,6 +401,19 @@ export default function PosterDialog({
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
+
+  // 视口宽度（FR-366 的窄屏口径）：resize 时重算一次，**数值真的变了**才 setState。
+  // （弹窗在手机上就是靠这条读数告诉断言「模板列表已经是横向滑动条」——CSS 断点与它同值。）
+  useEffect(() => {
+    if (typeof window === 'undefined') return () => {};
+    const onResize = () => {
+      const next = Math.round(window.innerWidth);
+      setViewportWidth((current) => (current === next ? current : next));
+    };
+    window.addEventListener('resize', onResize);
+    onResize();
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
 
   // 换模板 / 换周期 / 换对象后「收录哪些作品」的清单会变：老选择不再适用，清掉它
   // （留着会把图收空或收错 —— 数据层虽然也有兜底，但界面自己先说清楚更省事）。
@@ -509,13 +560,34 @@ export default function PosterDialog({
     releasePressImages();
     setPressImages([]);
     setExportFiles([]);
+    setExportProgress({ index: 0, total: exportPages.length, phase: 'start', filename: '' });
     setExportState((current) => ({ ...current, phase: 'busy', busy: true, notice: '正在按导出倍数渲染要发出去的那张图…' }));
     const download = exportStrategy.mode === 'download';
-    const result = await exportPosterFiles(selectedPlan, { format: exportEntry.id, download }).catch(() => null);
+    // 性能探针（[海报 US-314] / FR-364、FR-365）：整段导出期间采内存峰值与最长阻塞。
+    // 采样器与装裱共用一支（`services/framingPerformance.js` 的内存采样 + `services/posterMobile.js` 的阻塞探针）。
+    const probe = createPosterPerfProbe();
+    const result = await exportPosterFiles(selectedPlan, {
+      format: exportEntry.id,
+      download,
+      onProgress: (step) => setExportProgress(step),
+      probe
+    }).catch(() => null);
+    setExportProgress({ index: 0, total: 0, phase: '', filename: '' });
     const blank = { busy: false, filename: '', bytes: 0, width: 0, height: 0, pages: 0, shared: '' };
     if (!result) {
       setExportState({ ...blank, phase: 'failed', notice: POSTER_EXPORT_RENDER_FAILED_TEXT });
       return;
+    }
+    // 只有**真的量到**才覆盖上一次读数：被导出门拦下（没渲染）时保留上一次的实测值，
+    // 面板写「待测」而不是把上一次的结果抹掉。
+    if (result.perf) {
+      setExportPerf({
+        memoryBytes: result.perf.memorySupported ? result.perf.memoryBytes : null,
+        blockMs: result.perf.blockSupported ? result.perf.blockMs : null,
+        memorySupported: Boolean(result.perf.memorySupported),
+        longTaskMs: result.perf.longTaskMs || 0,
+        longTasks: Array.isArray(result.perf.longTasks) ? result.perf.longTasks.length : 0
+      });
     }
     setExportFiles(result.files);
     if (!result.count) {
@@ -774,6 +846,22 @@ export default function PosterDialog({
   );
 
   const perfChecks = posterDialogPerfChecks(perf);
+  // 移动端与导出性能（[海报 US-314]）：四件事各读 data 层的产物 —— 这里的界面不自己算比例 / 百分比。
+  //   ① 缩放读数（FR-366）：档位与「在页面上占多宽」都由 `posterPreviewZoomView()` 给；
+  //   ② 窄屏口径（FR-366）：模板列表是不是横向滑动条；
+  //   ③ 进度读数（FR-365）：服务层报的「第几张 / 哪一步」翻成百分比与那句提示；
+  //   ④ 四项读数（FR-361 / FR-363 / FR-364 / FR-365）：预算与结论都在 `posterMobilePerfChecks()`。
+  const zoomView = posterPreviewZoomView({ percent: zoomPercent, width: preview.width, height: preview.height });
+  const narrow = posterNarrowView(viewportWidth);
+  const progressView = posterExportProgressView(exportProgress.phase ? exportProgress : { index: 0, total: exportPages.length, phase: 'start' });
+  const mobilePerf = posterMobilePerfChecks({
+    firstPreviewMs: perf.firstPreviewMs,
+    longRenderMs: perf.longPreviewMs,
+    memoryBytes: exportPerf.memoryBytes,
+    blockMs: exportPerf.blockMs
+  });
+  const zoomPreview = (direction) => setZoomPercent((current) => posterPreviewZoomStep(current, direction));
+  const backToFit = () => setZoomPercent(POSTER_PREVIEW_FIT_PERCENT);
   // 微调面板的渲染读数（只算一次：界面不自己数勾选框，也不自己判「改了什么」）。
   const tuningApplied = tuningView ? tuningView.applied : [];
   const tuningActive = tuningApplied.length > 0;
@@ -1011,6 +1099,31 @@ export default function PosterDialog({
           <button type="button" className="poster-dialog-export-share" data-poster-export-share-button="true" onClick={shareExported}><Share2 size={13} />直接分享</button>
         ) : null}
       </div>
+      {/* 导出进度（[海报 US-314] / FR-365）：只在导出期间出现 —— 百分比由「第几张 / 哪一步」折算
+          （数据层 `posterExportProgressView()`），不是计时器猜的；每张图分「渲染 / 存下」两步。 */}
+      {exportState.busy ? (
+        <div
+          className="poster-dialog-export-progress"
+          data-poster-export-progress="true"
+          data-poster-export-progress-phase={progressView.phase}
+          data-poster-export-progress-percent={String(progressView.percent)}
+          data-poster-export-progress-page={String(progressView.page)}
+          data-poster-export-progress-pages={String(progressView.pages)}
+        >
+          <div
+            className="poster-dialog-export-progress-bar"
+            role="progressbar"
+            aria-label="导出进度"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={progressView.percent}
+            data-poster-export-progress-bar="true"
+          >
+            <span data-poster-export-progress-fill="true" style={{ width: `${progressView.percent}%` }} />
+          </div>
+          <small data-poster-export-progress-label="true">{progressView.label}</small>
+        </div>
+      ) : null}
       <ul className="poster-dialog-export-checks" data-poster-export-checks-list="true">
         {exportChecks ? exportChecks.rows.map((row) => (
           <li
@@ -1039,8 +1152,7 @@ export default function PosterDialog({
           ))}
         </div>
       ) : null}
-      {exportState.notice ? <p className="poster-dialog-export-notice" data-poster-export-notice="true">{exportState.notice}</p> : null}
-      {/* 导出留痕的回执（AC3）：动作 / 操作人 / 对象 / 时间 + 缺项点名（与归档模块同一套写法）。 */}
+      {exportState.notice ? <p className="poster-dialog-export-notice" data-poster-export-notice="true">{exportState.notice}</p> : null}      {/* 导出留痕的回执（AC3）：动作 / 操作人 / 对象 / 时间 + 缺项点名（与归档模块同一套写法）。 */}
       {posterAudit.export ? (
         <p
           className="poster-dialog-export-audit"
@@ -1055,6 +1167,46 @@ export default function PosterDialog({
           已写入审计日志：{posterAudit.export.actionLabel} · {auditTraceText(posterAudit.export)}
         </p>
       ) : null}
+    </section>
+  );
+  // 移动端与性能（[海报 US-314] / FR-361、FR-363 ~ FR-366）：四项读数的**结论全在数据层**
+  // （`posterMobilePerfChecks()`），这一块只渲染；窄屏那一行说的是「390px 下能用」这件事的机器读数。
+  const mobilePanel = empty.on ? null : (
+    <section
+      className="poster-dialog-mobile"
+      data-poster-mobile-perf="true"
+      data-poster-mobile-width={String(narrow.width)}
+      data-poster-mobile-narrow={narrow.narrow ? 'true' : 'false'}
+      data-poster-mobile-max-width={String(narrow.maxWidth)}
+      data-poster-mobile-acceptance-width={String(POSTER_MOBILE_WIDTH)}
+      data-poster-mobile-list-mode={narrow.row}
+      data-poster-mobile-summary={mobilePerf.summary}
+      data-poster-mobile-measured={`${mobilePerf.measured}/${mobilePerf.total}`}
+      data-poster-mobile-memory-supported={mobilePerf.memorySupported ? 'true' : 'false'}
+      data-poster-mobile-block-longtasks={String(exportPerf.longTasks)}
+    >
+      <header className="poster-dialog-mobile-head">
+        <Gauge size={14} />
+        <b>移动端与性能</b>
+        <small data-poster-mobile-hint="true">{POSTER_MOBILE_PERF_HINT}</small>
+      </header>
+      <ul className="poster-dialog-mobile-rows" data-poster-mobile-perf-list="true">
+        {mobilePerf.rows.map((row) => (
+          <li
+            key={row.id}
+            data-poster-mobile-perf-row={row.id}
+            data-poster-mobile-perf-value={row.value}
+            data-poster-mobile-perf-budget={row.budget}
+            data-poster-mobile-perf-ok={row.ok === null ? 'pending' : row.ok ? 'true' : 'false'}
+          >
+            <b>{row.label}</b>
+            <span data-poster-mobile-perf-value-text="true">{row.value || '待测'}</span>
+            <em data-poster-mobile-perf-detail="true">{row.text}</em>
+          </li>
+        ))}
+      </ul>
+      <small className="poster-dialog-mobile-narrow" data-poster-mobile-narrow-note="true">{narrow.text}</small>
+      <small className="poster-dialog-mobile-line" data-poster-mobile-line="true">{posterMobilePerfLine(mobilePerf)}</small>
     </section>
   );
   // 海报二维码（[海报 US-313]）：二维码内容 = 分享令牌链接（`/p/<shareToken>`）；没有可用分享时
@@ -1331,9 +1483,37 @@ export default function PosterDialog({
               {/* 微调面板放在预览**上面**：一打开弹窗就看得见「能改哪几项」，改完往下一眼就是这张图
                   （弹窗本身可滚动，不必先滚过一张最高 780px 的预览图才找到输入框）。 */}
               {tuningPanel}
-              <figure className="poster-dialog-preview-figure" data-poster-dialog-preview-figure="true">
+              {/* 预览缩放（[海报 US-314] / FR-366）：390px 下把「放大到 1:1 看细节」做成一排按钮 ——
+                  档位（50% / 100% / 150% / 200% / 300%，0 = 适应屏幕）与「占多宽」都由 data 层给。
+                  长图（report-long）本来就按宽度铺满 + 框内滚动，缩放这一档对它同样生效。 */}
+              <div
+                className="poster-dialog-zoom"
+                data-poster-preview-zoom-toolbar="true"
+                data-poster-preview-zoom-mode={zoomView.mode}
+                data-poster-preview-zoom-percent={String(zoomView.percent)}
+                data-poster-preview-zoom-css-width={String(zoomView.cssWidth)}
+                data-poster-preview-zoom-source={`${zoomView.sourceWidth}x${zoomView.sourceHeight}`}
+              >
+                <span className="poster-dialog-zoom-value" data-poster-preview-zoom-label="true">{zoomView.label}</span>
+                <button type="button" data-poster-preview-zoom-out="true" disabled={!zoomView.canZoomOut} onClick={() => zoomPreview('out')}>{POSTER_PREVIEW_ZOOM_OUT_LABEL}</button>
+                <button type="button" data-poster-preview-zoom-in="true" disabled={!zoomView.canZoomIn} onClick={() => zoomPreview('in')}>{POSTER_PREVIEW_ZOOM_IN_LABEL}</button>
+                <button type="button" data-poster-preview-zoom-fit="true" disabled={zoomView.fit} onClick={backToFit}>{POSTER_PREVIEW_FIT_LABEL}</button>
+                <small data-poster-preview-zoom-note="true">{zoomView.note}</small>
+              </div>
+              <figure
+                className={`poster-dialog-preview-figure${zoomView.zoomed ? ' is-zoomed' : ''}`}
+                data-poster-dialog-preview-figure="true"
+                data-poster-preview-zoomed={zoomView.zoomed ? 'true' : 'false'}
+              >
                 {preview.url
-                  ? <img src={preview.url} alt={`${selectedRow ? selectedRow.name : '海报'}预览（${subject.name} · ${period}）`} data-poster-dialog-image="true" data-poster-dialog-image-size={`${preview.width}x${preview.height}`} data-poster-dialog-image-template={preview.templateId} />
+                  ? <img
+                    src={preview.url}
+                    alt={`${selectedRow ? selectedRow.name : '海报'}预览（${subject.name} · ${period}）`}
+                    data-poster-dialog-image="true"
+                    data-poster-dialog-image-size={`${preview.width}x${preview.height}`}
+                    data-poster-dialog-image-template={preview.templateId}
+                    style={zoomView.zoomed ? { width: `${zoomView.cssWidth}px`, height: 'auto' } : undefined}
+                  />
                   : <span className="poster-dialog-hold" data-poster-dialog-hold="true" data-poster-dialog-hold-phase={preview.phase}>{preview.phase === 'pending' ? <Loader2 size={16} /> : null}{previewHoldText}</span>}
               </figure>
               <div className="poster-dialog-meta">
@@ -1355,6 +1535,7 @@ export default function PosterDialog({
               {shareQrPanel}
               {forwardPanel}
               {exportPanel}
+              {mobilePanel}
             </div>
           </div>
         )}

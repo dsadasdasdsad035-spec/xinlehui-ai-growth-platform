@@ -55,13 +55,17 @@ export function posterDialogExportScale(plan, pageIndex = 0) {
  * 渲染**要交付的那一张**（[海报 US-311a] 的导出档）：倍数按上面的分派、编码档按导出格式表
  * （PNG 无损 / JPG 质量 0.9）。返回值与 `renderPoster` 同形（`blob` / `mimeType` / `quality` / ...），
  * 于是「导出前校验」与「下载字节」读的是同一次渲染的产物，不存在第二次绘制。
+ *
+ * `encodeDataURL` 默认 **false**（[海报 US-314] / FR-364、FR-365）：导出只交付 `blob`，
+ * 开关掉的是**同步的全图 base64 编码**——它会给导出路径多留一份整图字符串（内存峰值）、
+ * 又把主线程按住一小会儿（导出期间的阻塞）。预览 / 缩略图仍走默认值（带 `dataURL`）。
  */
-export async function renderPosterDialogExport(plan, { format = POSTER_EXPORT_DEFAULT_FORMAT, pageIndex = 0 } = {}) {
+export async function renderPosterDialogExport(plan, { format = POSTER_EXPORT_DEFAULT_FORMAT, pageIndex = 0, encodeDataURL = false } = {}) {
   const value = plan && typeof plan === 'object' ? plan : null;
   if (!value) return null;
   const entry = posterExportFormat(format);
   const scale = posterDialogExportScale(value, pageIndex);
-  const options = { scale, type: entry.mimeType, quality: entry.quality === null ? undefined : entry.quality };
+  const options = { scale, type: entry.mimeType, quality: entry.quality === null ? undefined : entry.quality, encodeDataURL };
   if (value.kind === 'period') return renderPosterPeriod(value, options);
   if (value.kind === 'class') return renderPosterClass(value, options);
   if (value.kind === 'video-cover') return renderPosterVideoCover(value, options);
