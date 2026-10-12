@@ -124,6 +124,20 @@ import {
 // 演示队列（上面那份）与真服务是两件事：探测不可用时，这里显示契约层抛出的原文，
 // 队列本身仍然明确标注为「演示数据 · 视频服务未接入」。
 import { probeVideoService } from './services/videoApi';
+// 成片内容规则与帧清单（[第四步 US-215]）：帧序规则 / 字幕口径 / 内容边界全在
+// `data/videoTimeline.js`（零依赖纯函数）。这一页只渲染它的产物 —— 帧的起止、时长、
+// 字幕说明与「只出清单不出片」那一句都是数据层给的，组件不自己算时长、也不自己拼字幕。
+import {
+  VIDEO_ENDING_NOTE_MAX_CHARS,
+  VIDEO_FRAME_KINDS,
+  VIDEO_TIMELINE_SECTION_DESC,
+  VIDEO_TIMELINE_SECTION_TITLE,
+  videoTimelinePlan,
+  videoTimelineShareReady,
+  videoTimelineView
+} from './data/videoTimeline';
+// 机构名（帧清单的片头与片尾都要写它，与装裱叠加元素的变量同一份来源）。
+import { DEFAULT_ORG_NAME } from './data/lessons';
 import { Button } from './ui';
 
 /**
@@ -400,6 +414,71 @@ function VideoJobCard({job,isLatest,onCancel,onRetry}){
 }
 
 /**
+ * 成片帧清单（时间线预览，[第四步 US-215]）：帧序规则五行 + 每一帧的起止与字幕 + 内容边界。
+ *
+ * 判据与文案全部来自 `data/videoTimeline.js`（组件只渲染产物，不自己算时长、不自己拼字幕说明）：
+ *  - 帧序规则（片头 3 秒 / 作品帧 3.5 秒 / 每 4 幅作品插 1 张照片 2 秒 / 片尾 4 秒 /
+ *    统一 0.5 秒交叉淡入）与每一帧的 `startSec / endSec` 同源，因此清单上的时间与规则必然对得上；
+ *  - 字幕是点评「美术能力」首句（≤24 字，逐字来自老师确认后的点评）—— 缺点评的帧如实写「字幕留空」，
+ *    不编一句顶上；超长只在停顿处截断（`subtitleText` 说明这一点）；
+ *  - **这里只出清单、不出片**：这一块里没有成片地址、封面或下载入口
+ *    （`data-video-timeline-mp4="none"`），「成片内容边界」四行（原图 / 推理轨迹 / 内部提示词 /
+ *    联系方式）让老师提交前就能看见边界。
+ */
+function VideoTimelinePreview({plan,endingNote,onEndingNote}){
+  const view=videoTimelineView(plan);
+  return <section className="video-timeline" data-video-timeline="true"
+    data-video-timeline-frames={view.counts.frames} data-video-timeline-artworks={view.counts.artworks}
+    data-video-timeline-photos={view.counts.photos} data-video-timeline-total={view.totalSec}
+    data-video-timeline-total-text={view.totalText} data-video-timeline-mp4="none"
+    data-video-timeline-clean={view.clean?'true':'false'} data-video-timeline-issue={view.contentIssue}
+    data-video-timeline-subtitles={view.subtitleCount}>
+    <div className="archive-section-head"><span>按帧序规则推演 · 只出清单不出片</span><h4>{VIDEO_TIMELINE_SECTION_TITLE}</h4><p>{VIDEO_TIMELINE_SECTION_DESC}</p></div>
+    <ul className="video-timeline-rules" data-video-timeline-rules="true">{view.rules.map(rule=><li key={rule.id} data-video-timeline-rule={rule.id} data-video-timeline-rule-value={rule.value}>
+      <b>{rule.label}</b><span data-video-timeline-rule-text="true">{rule.value}</span><small>{rule.detail}</small>
+    </li>)}</ul>
+    <p className="video-timeline-summary" data-video-timeline-summary="true">{view.summary}</p>
+    {view.notes.map((note,index)=><p className="video-timeline-note" key={note} data-video-timeline-note={index}>{note}</p>)}
+    <p className="video-timeline-no-output" data-video-timeline-no-output="true">{view.noOutputNote}</p>
+    <label className="video-timeline-ending">片尾寄语（选填，≤{view.endingNoteMaxChars} 字）
+      <textarea value={endingNote} maxLength={view.endingNoteMaxChars} rows={2} data-video-timeline-ending-field="true" aria-label="片尾寄语" onChange={event=>onEndingNote(event.target.value)}/>
+    </label>
+    {view.endingNoteIssue?<p className="video-jobs-issue" data-video-timeline-ending-issue="true">{view.endingNoteIssue}</p>:null}
+    <ol className="video-timeline-list" data-video-timeline-list="true">
+      {view.frames.map(frame=><li key={frame.id} className={`video-frame is-${frame.kind}`} data-video-frame={frame.kind}
+        data-video-frame-index={frame.index} data-video-frame-start={frame.startSec} data-video-frame-end={frame.endSec}
+        data-video-frame-duration={frame.durationSec} data-video-frame-time={frame.timeText} data-video-frame-date={frame.date}
+        data-video-frame-title={frame.titleText} data-video-frame-subtitle={frame.subtitle}
+        data-video-frame-subtitle-truncated={frame.subtitleTruncated?'true':'false'}
+        data-video-frame-subtitle-verbatim={frame.subtitle&&!frame.boundaryIssue?'true':'false'}
+        data-video-frame-asset={frame.asset.ready?'ready':frame.asset.status}>
+        <header><b data-video-frame-index-label="true">{frame.indexLabel} · {frame.kindLabel}</b><span data-video-frame-time-label="true">{frame.timeText}</span><em data-video-frame-duration-label="true">{frame.durationText}</em></header>
+        <div className="video-frame-body">
+          {frame.asset.ready?<img src={frame.asset.url} alt={`${frame.titleText}帧`} loading="lazy" decoding="async" data-video-frame-image="true"/>:null}
+          <div>
+            <p className="video-frame-title" data-video-frame-title-label="true">{frame.titleText}{frame.date?` · ${frame.date}`:''}</p>
+            {frame.lines.length?<ul className="video-frame-lines">{frame.lines.map((line,index)=><li key={line} data-video-frame-line={index}>{line}</li>)}</ul>:null}
+            {frame.kind===VIDEO_FRAME_KINDS.artwork?<p className={`video-frame-subtitle${frame.subtitle?'':' is-empty'}`} data-video-frame-subtitle-line="true">{frame.subtitle||'（这一帧没有字幕）'}</p>:null}
+            {frame.kind===VIDEO_FRAME_KINDS.artwork?<small className="video-frame-subtitle-note" data-video-frame-subtitle-note="true">{frame.subtitleText}</small>:null}
+            <small className="video-frame-asset-note" data-video-frame-asset-note="true">{frame.assetNote}</small>
+            <small className="video-frame-transition" data-video-frame-transition="true">{frame.transitionText}</small>
+          </div>
+        </div>
+      </li>)}
+    </ol>
+    {view.empty?<p className="video-jobs-empty" data-video-timeline-empty="true">{view.emptyText}</p>:null}
+    <div className={`video-timeline-boundary${view.clean?'':' is-issue'}`} data-video-timeline-boundary="true" data-video-timeline-boundary-ok={view.clean?'true':'false'}>
+      <b>成片内容边界</b>
+      <ul>{view.boundaryRows.map(row=><li key={row.id} data-video-boundary-row={row.id} data-video-boundary-ok={row.ok?'true':'false'}>
+        <em>{row.ok?'不进成片':'有问题'}</em><span>{row.label}</span><small>{row.note}</small>
+      </li>)}</ul>
+      <small data-video-timeline-boundary-note="true">{view.boundaryNote}</small>
+      {view.contentIssue?<p className="video-jobs-issue" data-video-timeline-content-issue="true">{view.contentIssue}</p>:null}
+    </div>
+  </section>;
+}
+
+/**
  * 视频任务（演示队列）面板（[第四步 US-213a]，[第四步 US-214] 补入口 / 预估剩余时间 / 恢复读数）。
  *
  * 这一块是「渲染服务还没接进来，但前端不能空等」的落地：
@@ -413,11 +492,17 @@ function VideoJobCard({job,isLatest,onCancel,onRetry}){
  *    不给「选了班级却提交个人视频」这种错配留入口；
  *  - 「演示失败 + 失败原因」是队列自身的演示能力（走到 45% 时按选中的那类原因失败），
  *    用来验证失败态、四套文案与重试，不是产品规则 —— 真实的渲染失败由服务端返回。
+ *
+ * 成片内容规则（[第四步 US-215]）：提交区下面多一块**帧清单（时间线预览）** —— 它按当前
+ * 「查看对象 + 生成周期」把归档条目串成帧列表（`entries` 由档案页按 `videoPeriod` 过滤后传进来），
+ * 片尾寄语是这一块自己的输入（不写进任务、也不落库）。
  */
-function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkCount,photoCount,teacherName,setToast}){
+function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkCount,photoCount,teacherName,setToast,entries=[],tokens=[]}){
   const [jobs,setJobs]=useState(()=>listVideoJobs());
   const [notice,setNotice]=useState('');
   const [simulateFail,setSimulateFail]=useState(false);
+  // 片尾寄语（帧清单的输入：≤40 字，超限由数据层给可读原因；空着就不显示寄语，不编一句）。
+  const [endingNote,setEndingNote]=useState('');
   // 演示失败原因（四类：模型 / 字体 / 素材 / 存储）—— 可选值与文案都来自数据层。
   const [simulateErrorCode,setSimulateErrorCode]=useState(VIDEO_JOB_SIMULATE_ERROR_DEFAULT);
   // 刚提交的那条（卡片高亮 + 滚动到卡片）：提交后「立即进入任务卡片」是可见的，不只是一个 state。
@@ -453,6 +538,10 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
   const view=videoJobQueueView(jobs,{resumedAt:sessionStartRef.current});
   const submitIssue=videoJobSubmitIssue({type,studentId:isClass?'':objectName,classId:isClass?objectName:'',period});
   const jobKey=videoJobKey({type,studentId:isClass?'':objectName,classId:isClass?objectName:'',period});
+  // 帧清单（[第四步 US-215]）：当前「查看对象 + 生成周期」下这条视频会怎么走。
+  // `shareReady` 读的是这一批归档记录里有没有可用的家长分享令牌（决定片尾二维码那一行怎么写）。
+  const shareReady=useMemo(()=>videoTimelineShareReady(tokens,entries),[tokens,entries]);
+  const timelinePlan=useMemo(()=>videoTimelinePlan({entries,objectName,type,period,orgName:DEFAULT_ORG_NAME,endingNote,shareReady}),[entries,objectName,type,period,endingNote,shareReady]);
   const report=result=>{setJobs(listVideoJobs());setNotice(result.ok?result.notice:result.issue);setToast(result.ok?result.notice:result.issue)};
   const submit=()=>{
     const result=submitVideoJob({type,studentId:isClass?'':objectName,classId:isClass?objectName:'',period,objectName,lessonCount,artworkCount,photoCount,createdBy:teacherName,simulate:simulateFail?'fail':'success',simulateErrorCode});
@@ -478,6 +567,7 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
     </div>
     <p className="video-jobs-note" data-video-submit-note="true">{VIDEO_JOB_SUBMIT_NOTE}</p>
     {submitIssue?<p className="video-jobs-issue" data-video-submit-issue="true">{submitIssue}</p>:null}
+    <VideoTimelinePreview plan={timelinePlan} endingNote={endingNote} onEndingNote={setEndingNote}/>
     {notice?<p className="video-jobs-notice" data-video-notice="true">{notice}</p>:null}
     {view.resumeSummary?<p className="video-jobs-resumed" data-video-jobs-resumed="true">{view.resumeSummary}</p>:null}
     <p className="video-jobs-summary" data-video-jobs-summary="true">{view.summary}</p>
@@ -520,6 +610,9 @@ export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,p
   // 常驻视图的唯一产物：概况 + 时间线 + 被筛掉的条数（界面只读它，不自己过滤一遍）。
   // 时间线每一行还带**转发状态**（US-209）：按档案记录 id 在令牌账里查，三态与打开次数都从 data 层推出来。
   const view=useMemo(()=>archiveResidentView({records,target,student,className,period,absenceOnly:absenceFilter===ARCHIVE_ABSENCE_ONLY,tokens:shareTokens}),[records,target,student,className,period,absenceFilter,shareTokens]);
+  // 帧清单（[第四步 US-215]）读的是**生成周期**（`videoPeriod`）而不是上面那个「周期筛选」：
+  // 筛选是「看什么」，视频是「生成什么」—— 两件事各用各的窗口，与提交时的任务口径一致。
+  const videoEntries=useMemo(()=>archiveResidentView({records,target,student,className,period:videoPeriod,absenceOnly:false,tokens:shareTokens}).entries,[records,target,student,className,videoPeriod,shareTokens]);
   // 四种状态（加载 / 就绪 / 空 / 错误）读的是同一个产物，四份读数同形状。
   const sourceStatus=recordsSource&&recordsSource.phase?recordsSource.phase:'ready';
   const phase=archiveResidentPhase({source:sourceStatus,count:view.count});
@@ -734,7 +827,7 @@ export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,p
             {timelineWindow.hasMore?<button type="button" className="primary" data-archive-page-more="true" onClick={()=>setTimelinePage(page=>Math.min(timelineWindow.pageCount,page+1))}>{timelineWindow.moreLabel}</button>:null}
           </nav>:null}
         </section>
-        <VideoJobsPanel isClass={view.isClass} objectName={view.name} period={videoPeriod} onPeriod={setVideoPeriod} lessonCount={view.summary.lessons} artworkCount={view.summary.artworks} photoCount={view.summary.photos} teacherName={teacherName} setToast={setToast}/>
+        <VideoJobsPanel isClass={view.isClass} objectName={view.name} period={videoPeriod} onPeriod={setVideoPeriod} lessonCount={view.summary.lessons} artworkCount={view.summary.artworks} photoCount={view.summary.photos} teacherName={teacherName} setToast={setToast} entries={videoEntries} tokens={shareTokens}/>
         <section className="archive-perf-panel" data-archive-perf="true" data-archive-perf-measured={String(perfChecks.measured)} data-archive-perf-total={String(perfChecks.total)} data-archive-perf-all-ok={perfChecks.allOk?'true':'false'} data-archive-perf-summary-text={perfChecks.summary}>
           <div className="archive-perf-head"><Gauge size={15}/><b>档案性能</b><em data-archive-perf-summary="true">{perfChecks.summary}</em><small>{ARCHIVE_PERF_HINT}</small></div>
           <ul className="archive-perf-list">{perfChecks.rows.map(row=><li key={row.id} data-archive-perf-row={row.id} data-archive-perf-state={row.ok===null?'pending':row.ok?'ok':'over'} data-archive-perf-value={row.value} data-archive-perf-budget={row.budget} data-archive-perf-text={row.text}>

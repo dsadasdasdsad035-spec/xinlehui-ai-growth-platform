@@ -754,6 +754,51 @@ US-213a 那份本机演示队列（上面一节）**不是**真服务：真服�
 - **档案页的「查看对象」必须是有记录的学员 / 班级**：`VideoJobsPanel` 挂在 `showTimeline` 分支里，
   换成没有归档记录的学员 / 班级时整块面板不渲染（本轮想用另外两位学员换 jobKey，发现面板直接没了）。
 
+## 成片内容规则与帧清单（时间线预览）（[第四步 US-215]）
+
+提交视频之前老师要看的那条时间线：帧序规则、每一帧的起止与字幕、成片内容边界。
+
+| 关注点 | 位置 | 说明 |
+|---|---|---|
+| 规则（帧时长 / 转场 / 每 4 幅插照片 / 字幕 / 内容边界） | `src/data/videoTimeline.js`（零依赖，Node 可直跑） | `VIDEO_FRAME_DURATION_SEC`、`VIDEO_TRANSITION_SEC`、`videoSubtitleFromReview()`、`videoTimelinePlan()`、`videoTimelineView()`、`videoTimelineContentIssue()` |
+| 界面 | `GrowthArchiveData.jsx` 的 `VideoTimelinePreview`（在 `VideoJobsPanel` 里、任务卡片之外） | `data-video-timeline-*` / `data-video-frame-*` / `data-video-boundary-row` |
+
+- **帧序四条数字 + 转场一条**：片头 3 / 作品帧 3.5 / 课堂每 4 幅插 1 张 2 秒 / 片尾 4，转场统一 0.5 秒交叉淡入。
+  规则与时间轴**同源**：相邻帧重叠 0.5 秒（后一帧 `startSec = 前一帧 endSec − 0.5`），
+  因此 `总时长 = 各帧时长之和 − (帧数 − 1) × 0.5`（13 帧 = 42.5 − 6 = 36.5 秒）。改时长只改那份常量表。
+- **每 4 幅作品后插 1 张照片，缺照片就是跳过而不是报错**：照片槽 = `floor(作品数 / 4)`，
+  有限照片按顺序填槽；**占位照片不算一张照片**（渲染服务取不到），单独记 `counts.unavailablePhotos`，
+  缺槽记 `counts.skippedPhotoSlots`，两者都在面板上用一句人话说明。
+- **字幕只能来自归档记录里「美术能力」的那句原文**：归档前置校验保证它是老师确认过的，
+  所以 `videoTimelinePlan` 只读 `entry.dimensions` 里 `VIDEO_SUBTITLE_DIMENSION` 的 `text`。
+  超 24 字时**在停顿标点处截断**（`VIDEO_SUBTITLE_SOFT_BREAKS`，至少留 6 字），截出来仍是**原文字符的连续片段**：
+  不补字、不改写、不加省略号。没有原文就留空 + 可读原因（**不许编一句顶上**）。
+  `videoSubtitleIssue(subtitle, reviewText)` 是这条口径的判据（`includes` 逐字校验 + ≤24 字），
+  界面上的 `data-video-frame-subtitle-verbatim` 与它同源。
+- **素材用「渲染服务那一侧」的口径**：帧里的图**只认 https 持久地址**（`isPersistentMediaUrl`），
+  本机副本（data:）在帧上如实标「图片同步中」—— 渲染服务本来就取不到它，预览不该假装取得到。
+  这也让帧清单的缩略图只在素材同步成功后出现。
+- **「内容不得包含原图 / 推理轨迹 / 内部提示词 / 联系方式」分两层**：
+  结构层 = 帧由白名单字段现拼（`VIDEO_FRAME_FIELDS`），且禁字段键名把分享那一套**再加成片地址类**
+  （`outputurl` / `mp4` / `downloadurl`）—— 「不产出 mp4」因此在字段名这一层就成立；
+  复核层 = `videoTimelineContentIssue()`（键名 → 字幕逐字 → 成片文字扫联系方式）。
+  联系方式的正则**复用 `data/archiveShare.js` 的 `ARCHIVE_SHARE_WECHAT_FORBIDDEN`**（别抄第二份），
+  文案按视频口径另给；扫描范围只是**成片里真会出现的文字**（片头行 / 作品名 / 字幕 / 片尾寄语），
+  规则说明不参与（否则「联系方式」这类词会自己命中自己）。
+- **帧清单读的是「生成周期」而不是页面上的「周期筛选」**：`GrowthArchiveData` 里另算一份
+  `videoEntries = archiveResidentView({..., period: videoPeriod}).entries` 传进面板 ——
+  两个窗口混用一个 state 会让「只是筛一下」变成「悄悄改了要生成的东西」（US-213a 的既有口径）。
+- **验证方式（本故事实测）**：`pnpm run build`；Node 直跑 **130 项**（`/tmp/assert-us075-data.mjs`：
+  规则五行 / 帧序与重叠 / 照片槽与跳过 / 字幕三种情形 / 内容边界四类 / 素材闸门 / 空周期同形状 / 令牌判定）；
+  浏览器 **95 项**（`/tmp/assert-us075-browser.mjs`：注入 9 条带 https 素材的归档记录 + 1 条点评里带微信的记录，
+  走完整流程到档案页后逐个对象复核）；回归 US-072 data 37、US-072 browser 82/83（那条按钮文案是既有失效项）、
+  US-073 data 46 + browser 37、US-071 browser 80、US-074 browser 72；截图 372~375 留档。
+- **验证脚本的两个坑（本故事真踩）**：
+  ① 「点评里带联系方式」的夹具**要保证那段联系方式活过 24 字截断** —— 第一版把微信写在长句末尾，
+  截断后正好被剪掉，于是边界那行不点名，看起来像功能坏了（夹具问题，不是产品问题）；
+  ② 帧清单的缩略图**必须放在任务卡片之外**：US-072/074 的脚本会数 `[data-video-job-card]` 里的
+  `video/img/iframe/audio`（「不得显示假封面」那一条），卡片里多一张图就会假红。
+
 ## 老师端「课后反馈」第一步（班级 / 学员 / 课程 / 课次推荐）
 
 > **课次表单全站只有一份实现 = `TeacherFlowV2`（`main.jsx`）。** 旧的 `CreateFlow` 五步向导
