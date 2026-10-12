@@ -3464,6 +3464,67 @@ US-222 管「成片怎么版本化」，这一节管「谁能碰这些成片、�
 - 断言脚本口径：US-077 的「串联顺序读数 / order 规则那一条」文案已随本故事改成
   `按课次日期 + 课时序号升序`（`/tmp/assert-us077-data.mjs` 三处 + `/tmp/assert-us077-browser.mjs` 一处）。
 
+## 海报模板（poster spec v1）的数据模型与收敛（[海报 US-301a] / FR-301 ~ FR-307）
+
+`src/data/posterTemplates.js` 是「后台改参数即出新模板」的**唯一真源**（data 层、零依赖纯函数，
+可 `node` 直跑断言；渲染实现将来落在 `services/poster.js` 的 `renderPoster({ spec, data, scale })`，
+预览与导出共用同一个函数、只差 `scale` —— FR-312）。与装裱是**同构的两套**：
+
+| | 装裱 | 海报 |
+|---|---|---|
+| spec 形状 | v1 平面 / v2 分组（`services/frameSpec.js`） | `version / kind / canvas / background / frame / decor / slots[]` |
+| 收敛器 | `normalizeFrameSpec` / `normalizeFrameSpecV2` | `normalizePosterSpec`（**永不抛错**，见下） |
+| 模板记录 | `data/framingPresets.js`（`framing_presets` 表） | `data/posterTemplates.js`（`poster_templates` 表，读写 US-301b） |
+| 模板层级 | `scope` + `ownerKey`（US-001b） | **同一套**：`normalizeFrameScope` 直接复用，别再发明一套权限模型 |
+
+- **比例坐标（FR-303）**：位置 `x / y`、尺寸 `w / h`、字号 `sizeRatio`、字距 `letterSpacingRatio`
+  全是**相对画布短边**的比例，禁止绝对像素。单位换算只有两个入口：`posterShortEdge(canvas)` 与
+  `posterRatioToPixels(value, canvas)` —— 渲染层要换算就走它们（预览 1080 宽与导出 2160 宽因此同构）。
+  **长画布的 `y` 可以大于 1**（1080×1920 的画布高 = 1.778 个短边、4096 高的长图约 3.79），
+  所以 `POSTER_POSITION_RATIO_RANGE.max = 4`：看到 `y: 1.62` 不是越界，别「顺手修正」它。
+- **四种占位区（FR-302）**：`image`（作品图，`contain` + 白底 + `radiusRatio` + 可选 `shadow` / `border`；
+  多图拼贴用同一个 slot 的 `grid`，`columns/rows = 0` 表示**自适应**：4→2×2、6–9→3×3、10–12→3×4）、
+  `text`（`template` 含 `{变量}` + 字体白名单 + `sizeRatio` + `maxLines` / `lineHeight` / `letterSpacingRatio`）、
+  `qrcode`（`sizeRatio` / `value` / `caption`）、`logo`（`maxWRatio` / `opacity` / 可选 `url`）。
+  每类都带 `visible`（false = 完全不绘制）与 `opacity`。
+- **`normalizePosterSpec` 的三条纪律**（写死的，别改）：
+  ① **未知类型丢弃、其余字段回落默认值** —— `type` 不在四种里没有合理默认（画出来是错的），
+  该 slot 直接丢；其余字段（含枚举）缺失**或非法**一律回落「该占位区的默认值」（`DEFAULT_POSTER_*_SLOT`）；
+  ② `slots` **缺失 / 非数组** → 回落默认版式（单作品六件套），**显式空数组保持为空**（那是明确的表达）；
+  ③ **永不抛错**（FR-307）：`normalizePosterSpec(undefined)` 等于 `DEFAULT_POSTER_SPEC`，
+  且幂等（`normalize(normalize(x))` 深等 `normalize(x)`）。
+- **字体白名单的回落口径与装裱一致**：白名单内原样；**写了但不在白名单 → `sans-serif`**；
+  没写才用该占位区的默认字体（默认文字位是 `serif`）。海报只支持 `contain`：`fit: 'cover'` 会被
+  收敛成 `contain`（FR-309：海报只做排版，绝不裁切孩子的作品）。
+- **两处「看起来像 bug 的默认值」**：`image.border` 显式写 `null` 才是**没有边框**，不写则回落默认细边框；
+  `normalizePosterSpec` 的数值收敛**不认**布尔 / 数组 / 对象（`Number(true) === 1`、`Number([]) === 0`
+  会把「字段缺失」悄悄变成「一个像样的值」），只认数字与数字串。
+- **内置模板数据**（AC1 的「内置模板数据」）：`seedPosterTemplates` 目前是 2 套骨架
+  （`poster-warm-gold-single` 单作品 / `poster-oak-period` 阶段成长），走 `builtinPosterSpec()`
+  构造 —— 种子过同一个收敛器，所以「内置模板一定合法」是结构保证。**US-302a 要把它补到
+  ≥8 套、覆盖 `single / period / class / video-cover / report-long` 五类**（每类至少 1 套）。
+  每套必须预留**二维码位与 Logo 位**（可 `visible: false`，字段要在）且二维码可见数 ≤1（FR-323 / FR-325），
+  这两条与 `posterSpecIssues()` 读同一份判据。模板记录的库级字段沿用装裱：
+  `enabled / builtin / isDefault / sortOrder / entryScope`（`archive | feedback | both`，US-309 用它置灰入口）。
+- **文案变量（FR-304）**：`POSTER_VARIABLE_KEYS`（15 个，含验收点名的七个）是白名单真源，
+  `posterTemplateVariableNames()` / `posterUnknownVariables()` 给面板与校验读数用；
+  口径同装裱：**未知变量保留原文**并由校验点名，命中但上下文无值替换成空串（渲染层的事）。
+- **校验读数**：`posterSpecIssues(spec)` / `posterTemplateIssues(record)` 逐项列出「被收敛了哪里」
+  （越界 / 未知枚举 / 丢弃的 slot / 白名单外字体 / 未知变量 / 蓝色主视觉 / 二维码数量 / 缺 Logo 位）。
+  结构级规则（缺二维码位、缺 Logo 位）**只在作者显式写了 `slots` 时检查** —— slots 缺失会回落默认版式，
+  对着回落值报「缺 Logo 位」是假警报（本轮真踩，被断言抓出来）。
+  「可扫性（`POSTER_QR_MIN_PIXELS = 120`）、文字溢出、越界」要真渲染一次才算得出来，属 US-311a。
+- **踩过的两个「永不抛错」的坑**（fuzz 断言抓出来的，都是同一类）：
+  ① **别对任意值 `Number(...)`**：`Number([Symbol()])` 会走数组 join → toString 直接抛错；
+  ② **别对任意值 `String(...)`**：`String([Symbol()])`、`String(Object.create(null))` 同样抛。
+  所以本模块的 `str()` 带 try/catch，`pushRangeIssue` 只对数字与数字串求值、报文案前一律过 `str()`。
+  新增任何「把原值写进文案」的地方都照这个写法。
+- 验证口径：`~/.nvm/versions/node/v22.23.2/bin/node --experimental-loader /tmp/zcode-ext-loader.mjs
+  /tmp/assert-us088.mjs`（**39 组**：枚举真源 / data 层分层纪律 / spec 结构 / 12 组垃圾输入不抛错 /
+  越界与枚举回落 / 幂等与「不修改输入」/ 比例坐标 / 内置模板合法性与几何越界 / 变量白名单 /
+  校验读数 / **300 组随机嵌套脏数据 fuzz**）。本故事**没有 UI 改动**，因此不做浏览器验证；
+  模块目前还没有消费点（US-301b / US-302a 接上）。
+
 ## 容易踩的坑
 
 - **「每次渲染后量一次」的测量签名里不能有时间戳**（US-224 真踩）：`useEffect(()=>{measure()})`
