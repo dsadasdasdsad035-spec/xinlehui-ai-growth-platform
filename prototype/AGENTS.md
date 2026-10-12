@@ -3375,6 +3375,43 @@ US-222 管「成片怎么版本化」，这一节管「谁能碰这些成片、�
   US-072 82/83（那 1 项「提交按钮文案」在 HEAD 上就已失败）、US-079 110/110、US-082 100/100、
   US-083 62/62；截图 427~434 留档。
 
+## 归档唯一键：课次 + 学员（[第四步到第一步联通] US-414 / FR-447）
+
+归档记录的业务唯一键是 **`lessonId::studentId`**（`data/feedbackRecords.js` 的 `resolveRecordKey`）。
+它要求归档**落在一条真实课次实体上** —— 老师没点过「保存课次」也要有实体，否则键会退化成
+「班级 + 日期 + 学员 + 作品名」，同一天两节课会被判成同一次更新（一条档案吃掉另一条）。
+
+- 判定的唯一真源是 `src/data/archiveLesson.js`（零依赖纯函数）：`archiveLessonKey()` 产出课次的
+  **自然键**（`班级::课次日期::课时序号`，拼法直接调 `data/lessons.js` 的 `lessonKeyOf`，不另拼一份），
+  `resolveArchiveLesson()` 产出四选一：`selected`（会话里那条）/ `natural`（列表里同自然键那条）/
+  `create`（归档那一刻把表单落成课次）/ `none`（没有课次 → 退化键，历史记录的可读路径）。
+  写入在 `services/lessonApi.js` 的 `ensureArchiveLesson()`：判定用「会话列表 ∪ 本地镜像」，
+  建之前先 `queryLessons` 问一次云端（同一次课可能已在别的设备建过 —— 认它，别留两条实体），
+  新建走 `createLesson`（**不带 lessonId**，否则两条课次共用一个 id）。
+- **界面读数与写入侧必须是同一份判定**：`main.jsx` 的 `archiveIdentity` / `archivedRecord` 都用
+  `resolveArchiveLesson` 的结果。课次还没落库（`create`）时**不要拿退化键去碰历史记录**
+  （`archiveLessonReady` 为 false → `archivedRecord = null` → 按钮如实说「新建」），
+  `data-archive-record-key` 也留空 —— 那一段 `lessonId` 是归档那一刻才生成的，算不出就别假装算得出；
+  按钮上另给 `data-archive-lesson-natural-key`。归档后按 `created`（**本地镜像也算**，见下）
+  在 toast 里补一句「已为这次归档保存课次：第 N 次课 · …（已保存在本机）」，并在第一步面板留同一句回执。
+- **本机云端的 `lessons` 表不存在**（实测 `DATABASE_PGRST205: Could not find the table 'public.lessons'`）：
+  课次的所有云端读写都会**抛错**，`saveLesson` 的「先落本地镜像再推云端」因此只剩镜像这一半 ——
+  课次数据以 `localStorage` 的 `xinlehui-lessons-v1` 为准。相关口径：`ensureArchiveLesson` 的
+  `created` 在「云端写失败但镜像里写下来了」时**也算真**（否则那句回执永远不出现），
+  另给 `remote` 标志让界面区分「已保存在本机」。别把 `created` 写成「云端成功」的意思。
+- **课次自然键的判定不许用 `normalizeLesson` 的默认值补齐**：它会把缺失的日期填成今天、序号填成 1，
+  于是「看起来有键」而实际是编出来的（同一天两节课在这里被合并就全白做）。`archiveLessonKey` 三样
+  缺一返回空串，`none` 才是正确结论。表单改过日期 / 序号但没重新保存时**以表单为准**：
+  记录上的日期 / 课题 / 班级本来就来自表单，课次实体跟着表单走才不会两个来源打架。
+- 验证方式（本轮实测）：`pnpm run build` 通过（366~396ms）；Node **65 项**（`/tmp/assert-us086.mjs`：
+  自然键口径 / 四种来源 / 两段键与退化键不互撞 / 同一天两节课两个键 / 旧记录 id 与退化键不变 /
+  `ensureArchiveLesson` 云端可用 + 弱网镜像两条路径）；浏览器 **36 项**（`/tmp/assert-us086-browser.mjs`：
+  **不点「保存课次」** 直接走完流程归档 → 课次在归档那一刻建出来且 `recordKey = lessonId::studentId`、
+  再归档命中间一条（update、版本自增、记录不增加）、新建草稿后同一天第 N+1 次课 = 另建课次 + 另一个键
+  （第一节课的记录版本不动）、注入无课次的历史记录 → 刷新后仍在 + 退化键与 id 不变 + 家长端渲染得出、
+  console 0 报错）；回归 US-058 66/66、US-059 data 53/53 + browser 46/46、US-060 data 27/27 +
+  browser 79/79、US-061 67/67、US-071 80/80 全绿；截图 435~437 留档。
+
 ## 容易踩的坑
 
 - **「每次渲染后量一次」的测量签名里不能有时间戳**（US-224 真踩）：`useEffect(()=>{measure()})`

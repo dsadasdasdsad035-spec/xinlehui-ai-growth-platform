@@ -12,6 +12,9 @@ import {
   persistLessons,
   sortLessons
 } from '../data/lessons';
+// 归档要绑定的课次从哪儿来（[第四步到第一步联通] US-414）：纯规则在 data 层，
+// 这里只负责「读出来 / 建出来」，两边读的是同一份 `resolveArchiveLesson`。
+import { ARCHIVE_LESSON_SOURCES, archiveLessonKey, resolveArchiveLesson } from '../data/archiveLesson';
 
 // 课次的云端数据层：与其它表同一套「一所机构共享一份工作区」模型，lesson_key 做幂等键。
 //
@@ -161,6 +164,66 @@ export async function updateLesson(lessonId, patch, { existingLessons } = {}) {
     throw new Error(`该班 ${next.lessonDate} 已有第 ${conflict.lessonNo} 次课，请修改课时序号后再保存。`);
   }
   return saveLesson({ ...next, timestamps: { ...next.timestamps, updatedAt: new Date().toISOString() } });
+}
+
+/**
+ * 归档前的课次保底（[第四步到第一步联通] US-414 / FR-447）。
+ *
+ * 归档记录的业务唯一键是 `lessonId::studentId`，所以归档必须落在课次实体上。老师点过
+ * 「保存课次」时实体已经在列表里；没点过（一直没离开第一步表单就往下走）时，这里在归档
+ * 那一刻把表单落成课次 —— 判据与落库方式全部复用既有实现，不另起一套：
+ *  ①「这次归档属于哪一条课次」= `data/archiveLesson.js` 的 `resolveArchiveLesson`（纯函数）；
+ *  ② 新建走 `createLesson`（同一套班内唯一性校验与「先落本地镜像再推云端」）。
+ * 找不到同键课次、云端又写不进去时返回 `lesson: null`：调用方退回退化键（历史记录的可读路径），
+ * 不冒名顶替别的课次，也不抛错（归档不能因为课次没建起来就整个失败）。
+ */
+export async function ensureArchiveLesson(input = {}, { existingLessons } = {}) {
+  const classId = String(input.classId || '').trim();
+  const lessonDate = normalizeLessonDate(input.lessonDate);
+  const lessonNo = Number(input.lessonNo);
+  // 判定用「会话列表 ∪ 本地镜像」：刚在本机保存过（云端还没回来 / 写失败）的课次也要认出来，
+  // 否则会给同一次课再建一条实体，两条 lessonId 各自归档 → 同一次课两份档案。
+  const known = mergeLessons(
+    (Array.isArray(existingLessons) ? existingLessons : []).map(normalizeLesson),
+    loadLessons()
+  );
+  const plan = resolveArchiveLesson({ lessonId: input.lessonId, classId, lessonDate, lessonNo, lessons: known });
+  if (plan.lesson) return { lesson: plan.lesson, source: plan.source, created: false, remote: false };
+  if (plan.source !== ARCHIVE_LESSON_SOURCES.create) return { lesson: null, source: plan.source, created: false, remote: false };
+  // 建之前先问一次云端：同一次课可能已经在**别处**（另一台设备 / 另一个会话）建过实体了 ——
+  // 认它，不给同一次课留两条实体（时间线会出现同一节课两遍）。云端不可用时 `queryLessons`
+  // 自己回落到本机镜像，不抛错。
+  const remote = findArchiveLesson(await queryLessons({ classId, from: lessonDate, to: lessonDate }), plan.naturalKey);
+  if (remote) return { lesson: remote, source: ARCHIVE_LESSON_SOURCES.natural, created: false, remote: true };
+  // 新建时**不带 lessonId**：会话里那条（input.lessonId）属于另一次课次，
+  // 让它落到新实体上就成了两条课次共用一个 id。
+  const patch = {
+    classId,
+    lessonDate,
+    lessonNo,
+    courseId: String(input.courseId || ''),
+    topic: String(input.topic || ''),
+    orgId: input.orgId,
+    campusId: input.campusId,
+    teacherId: String(input.teacherId || ''),
+    participants: input.participants
+  };
+  try {
+    const saved = await createLesson(patch, { existingLessons: known });
+    return { lesson: saved, source: plan.source, created: true, remote: true };
+  } catch {
+    // 云端不通（本地镜像里已经有这条课次）或撞自然键：按自然键从镜像读回来 —— 与「保存课次」同一条兜底。
+    // `created` 仍算真：走到这里说明这条课次是**这一次**写下来的（镜像或云端），老师该看到那句回执。
+    const mirrored = findArchiveLesson(loadLessons(), plan.naturalKey);
+    return mirrored
+      ? { lesson: mirrored, source: plan.source, created: true, remote: false }
+      : { lesson: null, source: ARCHIVE_LESSON_SOURCES.none, created: false, remote: false };
+  }
+}
+
+function findArchiveLesson(list, naturalKey) {
+  if (!naturalKey) return null;
+  return (Array.isArray(list) ? list : []).map(normalizeLesson).find(item => archiveLessonKey(item) === naturalKey) || null;
 }
 
 /** 状态推进：只允许沿 draft → collecting → processing → reviewing → archived 逐步前进。 */
