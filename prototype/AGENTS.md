@@ -190,6 +190,54 @@ React + Vite 单页原型（`src/main.jsx` 是主入口，另按模块拆出 `sr
 - **流程状态是会话内的**：离开「课后反馈」页再回来会重挂载 `TeacherFlowV2`（素材与 `currentRecordId` 归零、
   草稿把班级/学员带回来但从第一步重来）。想在第四步上做 UI 断言（390px、转发面板）**必须在离开之前做完**；
   第二轮的浏览器验证要显式把班级与学员再选一遍（「新建草稿」回到未选学员的初始态），别假设第一轮选中的学员还在。
+  （US-208a 补充：**再走一次流程要真的换页** —— 点同一个侧边栏项（已在「课后反馈」页）不会重新挂载，
+  还停在第四步；先点「进度看板」再点「课后反馈」才回到第一步。）
+
+## 家长分享令牌（[第四步 US-208a] / F-ARCHIVE-SHARE-01）
+
+> 老师要把这一次的成长记录发给家长，链接形如 `/p/<shareToken>`。令牌的**唯一真源**是
+> `src/data/shareTokens.js`（零依赖纯函数 + 常量，可 `node` 直跑断言），推云端在
+> `src/services/shareTokensApi.js`（表 `share_tokens`，按 `token_key`（= 令牌本体）幂等 upsert；
+> 表还没建时只落本机镜像 —— 与审计日志 / 阶段报告同一套兜底口径）。令牌账挂在 **App 层**
+> （`shareTokens` state），因为读它的不止第四步：档案列表的转发状态（US-209）与家长分享页（US-210）读同一份。
+
+- **令牌 = 24 字节密码学随机 → 拒绝采样映射到 57 个「无易混字符（0/O/1/l/I）」的字母表 → 32 位字符串**
+  （约 187 位熵）。**拒绝采样不能省**：`256 % 57 ≠ 0`，裸取模会让字母表前 28 个字符多出一份概率。
+  没有 `crypto` 的环境回落 `Math.random` 兜底（令牌生成失败比令牌不够随机更糟，且永不抛错）；
+  `shareTokenStrength()` 是「长度 / 字母表 / 熵 / strong」的可断言读数，面板上也给老师看一眼。
+- **状态永远推导，不落库**：`shareTokenStatus(record, now)` → `active | expired | revoked`（脏记录 `invalid`）。
+  记录里**没有** `status` 字段（存了就会与 `revokedAt` / `expiresAt` 漂移，「说要撤回、链接还能开」正是这么来的）；
+  **撤回优先于有效期**（`revokedAt` 一有值就立即失效）；`expiresAt` 读不出来按 `expired` 处理 ——
+  不能因为数据读坏了，就把孩子的素材一直挂在老链接里。
+- **默认 30 天且可配置**：`SHARE_TOKEN_DEFAULT_VALID_DAYS = 30` + `SHARE_TOKEN_VALID_DAY_OPTIONS`
+  （面板下拉读它），自定义天数过 `normalizeShareTokenValidDays()` 收敛到 1~365 天；
+  `shareTokenExpiresAt(createdAt, days)` 是「到期时刻 = 生成时刻 + N 天」的唯一算法。
+- **生成前的授权闸门 = `shareTokenGenerationGate(archiveForwardView(...))`**：读的是第四步转发面板的产物
+  （也就是 `data/consent.js` 那一份来源），**只有 `ready` 才 `allowed`**；未授权时把可读原因与
+  「去授权管理」入口原样带出来。界面**不写第二套授权判断**，生成动作的第一步就是
+  `if(!shareTokenGate.allowed){…return;}`（先拦，再碰数据）。
+- **家长端唯一查询入口是 `resolveShareToken(tokens, token, now)`**（US-210 读它）：令牌不存在与记录是脏数据
+  都归 `invalid`（对家长都一样：这个链接打不开）。US-208 验收点名的「该分享已撤回」收在
+  `SHARE_TOKEN_REVOKED_PHRASE` 里**只写一次**，老师端的回执文案由它拼出来（界面源码 0 命中）。
+- **`mergeShareTokens` 的方向是「撤回必须赢」**：本机记录在前、云端只补本机没有的令牌；同一个令牌两边都有时，
+  只要云端撤回过而本机还没撤，就采用云端那一条 —— 在另一台设备上撤掉的链接，这台设备也必须立即失效。
+  反过来（本机已撤回、云端还是旧的未撤回版本）**不能**被顶掉。
+- **`ARCHIVE_SHARE_LINK_NOTE` 在 US-208a 改成「默认 30 天有效、可随时撤回」**：原文那句
+  「接入后可直接发送给家长」在链接接入后就是假话。`assert-us061*` 对它的断言是「等于常量」与
+  「含 `F-ARCHIVE-SHARE-01`」，所以改文案不用改脚本。
+
+#### 真踩的坑（US-208a）
+
+- **根节点 `data-*` 与控件选择器同名会再次咬人**（US-206 的同一类）：分享链接块的根节点
+  `data-share-token-valid-days="30"` 与有效期下拉的 `data-share-token-valid-days="true"` 撞名后，
+  `document.querySelector('[data-share-token-valid-days]')` 取到的是**根 div**（文档顺序在前），
+  验证脚本把 `HTMLSelectElement.prototype.value` 的 setter 用到 div 上 → `TypeError: Illegal invocation`
+  （报错位置在求值表达式的第 3 行，完全指不到选择器）。**根节点读数一律带后缀**（`-value`），
+  控件选择器带 `="true"` 标记。
+- **钉住「同一条档案」再断言令牌**：`shareTokenView({recordId})` 只认**档案记录 id**，而重新走一遍流程
+  会按 `classId + lessonDate + lessonNo` 找回同一次课（`currentLessonId` 从草稿恢复，US-409）——
+  于是「重新生成」这条路径必须**用同一个日期 + 同一个学员**再走一遍流程，否则落到另一条记录上、
+  面板显示的是「还没有生成分享链接」（看着像令牌丢了）。
 
 ## 成长档案页的对象筛选（[第四步 US-205]）
 

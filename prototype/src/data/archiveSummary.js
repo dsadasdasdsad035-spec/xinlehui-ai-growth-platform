@@ -62,8 +62,8 @@ export const ARCHIVE_SUMMARY_FIELD_IDS = ARCHIVE_SUMMARY_FIELDS.map(field => fie
 /** 转发前的内容边界（US-208 / FR-222 的同一句话，第四步与分享弹窗共用）。 */
 export const ARCHIVE_SHARE_PRIVACY_NOTE = '分享内容只包含成品素材与老师确认后的点评：不含原图、不含推理轨迹、不含内部提示词。';
 
-/** 分享链接与二维码还没接入时的如实说明（不给假回执）。 */
-export const ARCHIVE_SHARE_LINK_NOTE = '分享链接与二维码由「家长分享」（F-ARCHIVE-SHARE-01）能力生成，接入后可直接发送给家长。';
+/** 分享链接与二维码的口径说明（US-208a 起链接已接入：默认 30 天有效、老师可随时撤回）。 */
+export const ARCHIVE_SHARE_LINK_NOTE = '分享链接与二维码由「家长分享」（F-ARCHIVE-SHARE-01）能力生成，默认 30 天有效、可随时撤回。';
 
 /** 「去授权管理」入口文案（未授权时给出可点进去的处理入口）。 */
 export const ARCHIVE_SHARE_CONSENT_ENTRY = '去授权管理';

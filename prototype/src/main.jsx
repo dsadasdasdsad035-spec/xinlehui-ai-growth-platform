@@ -4,7 +4,7 @@ import {
   Archive, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bell, BookOpen, Boxes, Check, ChevronDown,
   CircleAlert, CircleCheck, Clock3, Download, FileText, Film, FolderOpen, Frame,
   GraduationCap, Image, Landmark, LayoutDashboard, LogOut, Menu, MessageSquareText, MoreHorizontal,
-  ListChecks, Package, PanelLeftClose, Plus, RefreshCw, RotateCcw, RotateCw, Save, Search, Settings, ShieldAlert, ShieldCheck, Sparkles,
+  ListChecks, Link2, Package, PanelLeftClose, Plus, RefreshCw, RotateCcw, RotateCw, Save, Search, Settings, ShieldAlert, ShieldCheck, Sparkles,
   Store, Trash2, UploadCloud, UserRound, Users, Video, WandSparkles, X, Zap
 } from 'lucide-react';
 import './styles.css';
@@ -224,6 +224,18 @@ import {
   ARCHIVE_STEP_STATES, ARCHIVE_SHARE_COPY_DONE, ARCHIVE_SHARE_COPY_FAILED, ARCHIVE_SHARE_COPY_LABEL,
   ARCHIVE_SHARE_LINK_NOTE, ARCHIVE_SHARE_PRIVACY_NOTE, archiveForwardView, archiveStepView
 } from './data/archiveSummary';
+// 家长分享令牌（[第四步 US-208a] / F-ARCHIVE-SHARE-01）：令牌随机不可猜测、默认 30 天有效期（可配置）、
+// 撤回后立即失效、生成前的授权闸门（读第四步转发面板的产物 —— 不另写一套授权判断）的唯一真源；
+// 家长端查询入口是同一份的 `resolveShareToken`（US-210 读它）。零依赖纯函数，可直接 Node 断言。
+import {
+  SHARE_TOKEN_DEFAULT_VALID_DAYS, SHARE_TOKEN_GENERATED_NOTICE, SHARE_TOKEN_LINK_HEADING,
+  SHARE_TOKEN_REVOKED_NOTICE, SHARE_TOKEN_REVOKE_CONFIRM_LABEL, SHARE_TOKEN_REVOKE_LABEL, SHARE_TOKEN_REVOKE_NOTE,
+  SHARE_TOKEN_VALID_DAY_OPTIONS, SHARE_TOKEN_VALID_DAYS_NOTE,
+  appendShareToken, createShareTokenRecord, loadShareTokens, mergeShareTokens,
+  persistShareTokens, replaceShareToken, revokeShareTokenRecord, shareTokenGenerationGate, shareTokenLink,
+  shareTokenStrength, shareTokenValidDaysLabel, shareTokenView
+} from './data/shareTokens';
+import { loadRemoteShareTokens, revokeRemoteShareToken, saveRemoteShareToken } from './services/shareTokensApi';
 // 录入页移动端与性能（US-413）：缩略图长边上限 / 44px 可点区域 / 20 人以上按出席折叠分组 / 录入用时。
 // 规则与文案是零依赖纯函数（可直接 Node 断言），浏览器侧的执行在 services/mediaIntake。
 import {
@@ -401,6 +413,11 @@ function App(){
   // （表还没建 → 写入被拒，报告只在本机镜像里 —— 与审计日志 / 装裱模板同一套兜底口径；
   //  合并方向本机优先：刚生成、还没推上云的那一版不能被云端旧记录顶掉）。
   const [archiveReports,setArchiveReports]=useState(loadArchiveReports);
+  // 家长分享令牌（[第四步 US-208a]）：本机镜像先渲染，云端 `share_tokens` 表回来就并进来
+  // （表还没建 → 写入被拒，令牌只在本机镜像里 —— 与审计日志 / 阶段报告同一套兜底口径；
+  //  合并时**撤回必须赢**：在另一台设备上撤掉的链接，这台设备也必须立即失效）。
+  // 放在 App 层是因为它不止第四步要读：档案列表（US-209 转发状态）与家长分享页（US-210）读同一份。
+  const [shareTokens,setShareTokens]=useState(loadShareTokens);
   // 管理端「生成日志 → 点评轨迹」读的轨迹账：本机镜像先渲染，云端表 / 开发适配器回来后并进去
   // （合并方向：`mergeReviewTraces` 按 traceId 去重、时间倒序）。清理（到期）也写回这一份。
   const [traceLog,setTraceLog]=useState(loadReviewTraces);
@@ -436,6 +453,9 @@ function App(){
   // 这里不整表回写 —— 否则每次读到云端旧数据都会把本机的新版本覆盖回去。
   useEffect(()=>{persistArchiveReports(archiveReports)},[archiveReports]);
   useEffect(()=>{let active=true;loadRemoteArchiveReports().then(remote=>{if(active&&remote.length)setArchiveReports(current=>mergeArchiveReports(current,remote))}).catch(()=>{});return()=>{active=false}},[]);
+  // 分享令牌同样只在本机镜像落盘、按令牌合并（撤回优先）；云端只补本机没有的令牌。
+  useEffect(()=>{persistShareTokens(shareTokens)},[shareTokens]);
+  useEffect(()=>{let active=true;loadRemoteShareTokens().then(remote=>{if(active&&remote.length)setShareTokens(current=>mergeShareTokens(current,remote))}).catch(()=>{});return()=>{active=false}},[]);
   // 策略落盘（保留期 + 披露开关）：本机镜像是唯一真源（云端没有这张配置表的口径）。
   useEffect(()=>{persistReviewTracePolicy(tracePolicy)},[tracePolicy]);
   useEffect(()=>{let active=true;loadRemoteAuditLog().then(remote=>{if(active&&remote.length)setAuditLog(current=>mergeAuditLog(remote,current))}).catch(()=>{});return()=>{active=false}},[]);
@@ -548,7 +568,7 @@ function App(){
     <main className="main">
       <Topbar role={role} onMenu={()=>setMobileNav(true)} onSwitch={(r)=>login(r,'demo')} onGuide={()=>navigate('guide')} onLogout={()=>setAuth(false)}/>
       <div className="content">
-        <PageRouter {...{page,role,navigate,setToast,setModal,apps,setApps,tasks,setTasks,demoState,setDemoState,records:archivedRecords,setRecords,recordsSource,reloadRecords:reloadFeedbackRecords,parentStudent,parentStudents,parentPhone,parentSession,setParentStudent,teacherProfiles,setTeacherProfiles,framingPresets,setFramingPresets,skillLibrary,setSkillLibrary,agentFiles,setAgentFiles,adminName:roleMeta.admin.name,galleryVenues,setGalleryVenues,galleryExhibitions,setGalleryExhibitions,lessons,setLessons,courses,setCourses,auditLog,recordAudit,reviewModels,reviewModelDefaults,setReviewModelDefaults,keywordTemplates,setKeywordTemplates,keywordTemplateRemote,traceLog,setTraceLog,tracePolicy,setTracePolicy,traceSource,refreshReviewTraces,cleanupReviewTraces,auditTraceEntry,adminTraceViewer,teacherTraceViewer,archiveReports,setArchiveReports,teacherName:roleMeta.teacher.name,pageParams}}/>
+        <PageRouter {...{page,role,navigate,setToast,setModal,apps,setApps,tasks,setTasks,demoState,setDemoState,records:archivedRecords,setRecords,recordsSource,reloadRecords:reloadFeedbackRecords,parentStudent,parentStudents,parentPhone,parentSession,setParentStudent,teacherProfiles,setTeacherProfiles,framingPresets,setFramingPresets,skillLibrary,setSkillLibrary,agentFiles,setAgentFiles,adminName:roleMeta.admin.name,galleryVenues,setGalleryVenues,galleryExhibitions,setGalleryExhibitions,lessons,setLessons,courses,setCourses,auditLog,recordAudit,reviewModels,reviewModelDefaults,setReviewModelDefaults,keywordTemplates,setKeywordTemplates,keywordTemplateRemote,traceLog,setTraceLog,tracePolicy,setTracePolicy,traceSource,refreshReviewTraces,cleanupReviewTraces,auditTraceEntry,adminTraceViewer,teacherTraceViewer,archiveReports,setArchiveReports,shareTokens,setShareTokens,teacherName:roleMeta.teacher.name,pageParams}}/>
       </div>
     </main>
     {toast?<div className="toast panda-toast"><img src={pandaWave} alt="熊猫鼓励"/><span><CircleCheck size={18}/>{toast}</span>{toastAction?<button type="button" className="toast-action" data-toast-action={toastAction.label} onClick={()=>{const run=toastAction.onClick;setToastRaw('');setToastAction(null);if(run)run()}}>{toastAction.label}</button>:null}</div>:null}
@@ -664,7 +684,7 @@ function IntakeSlotGroups({listKey,rows,collapsedKeys,onToggle,renderRow,classNa
   </div>;
 }
 
-function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[],setFramingPresets=()=>{},teacherProfiles=[],skillLibrary=[],courses=[],lessons=[],setLessons=()=>{},role='teacher',auditLog=[],recordAudit=()=>{},reviewModels=[],reviewModelDefaults={},setReviewModelDefaults=()=>{},keywordTemplates=[],keywordTemplateRemote=null,tracePolicy=null}){
+function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[],setFramingPresets=()=>{},teacherProfiles=[],skillLibrary=[],courses=[],lessons=[],setLessons=()=>{},role='teacher',auditLog=[],recordAudit=()=>{},reviewModels=[],reviewModelDefaults={},setReviewModelDefaults=()=>{},keywordTemplates=[],keywordTemplateRemote=null,tracePolicy=null,shareTokens=[],setShareTokens=()=>{}}){
   const management=loadStudentManagement();
   const availableClasses=management.classes||[];
   // 当前登录老师：原型阶段只有一个老师身份（见 roleMeta.teacher），班级数据里存的是老师姓名。
@@ -3168,6 +3188,91 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
     const ok=await copyReviewDetailText(archiveForward.wechatText);
     setArchiveShareCopy({phase:ok?'done':'failed',message:ok?ARCHIVE_SHARE_COPY_DONE:ARCHIVE_SHARE_COPY_FAILED});
   };
+  // ---- 家长分享令牌（[第四步 US-208a]）------------------------------------------------
+  // 令牌本体 / 有效期 / 撤回状态全部由 `data/shareTokens.js` 判定（状态**推导**，存储里没有
+  // `status` 字段），界面只渲染它的产物：`data-share-token-*` 读数与浏览器断言读同一份。
+  const [shareTokenValidDays,setShareTokenValidDays]=useState(SHARE_TOKEN_DEFAULT_VALID_DAYS);
+  const [shareTokenRevokeConfirm,setShareTokenRevokeConfirm]=useState(false);
+  const [shareTokenNotice,setShareTokenNotice]=useState({phase:'idle',message:''});
+  const shareTokenPanel=shareTokenView({tokens:shareTokens,recordId:currentArchiveRecord?.id||''});
+  // 生成前的授权闸门：**读转发面板的产物**（`archiveForwardView` = data/consent.js 那一份来源），
+  // 未完成查看授权时 `allowed:false`，原因与「去授权管理」入口原样带出来。
+  const shareTokenGate=shareTokenGenerationGate(archiveForward);
+  const shareTokenStrengthView=shareTokenPanel.tokenText?shareTokenStrength(shareTokenPanel.tokenText):null;
+  // 面板开合 / 换记录时把撤回确认与回执清掉：上一次的中间态不带过来。
+  useEffect(()=>{setShareTokenRevokeConfirm(false);setShareTokenNotice({phase:'idle',message:''})},[currentArchiveRecord?.id,archiveShareOpen]);
+  // 生成分享链接：**先过授权闸门**（未授权时不生成、不留任何数据，只给原因与处理入口）。
+  const generateParentShareLink=()=>{
+    if(!shareTokenGate.allowed){setShareTokenNotice({phase:'blocked',message:shareTokenGate.reason});return;}
+    if(!currentArchiveRecord){setShareTokenNotice({phase:'failed',message:'先归档再生成分享链接。'});return;}
+    const created=createShareTokenRecord({
+      recordId:currentArchiveRecord.id,
+      recordKey:currentArchiveRecord.recordKey,
+      orgId:DEFAULT_ORG_ID,
+      student:currentArchiveRecord.student,
+      studentId:currentArchiveRecord.studentId,
+      className:currentArchiveRecord.className,
+      lessonDate:currentArchiveRecord.lessonDate,
+      title:currentArchiveRecord.title,
+      version:currentArchiveRecord.version,
+      validDays:shareTokenValidDays,
+      createdBy:currentTeacherName
+    },{});
+    if(!created){setShareTokenNotice({phase:'failed',message:'令牌生成失败，请重试。'});return;}
+    setShareTokens(current=>appendShareToken(current,created));
+    setShareTokenRevokeConfirm(false);
+    setShareTokenNotice({phase:'done',message:SHARE_TOKEN_GENERATED_NOTICE});
+    setToast(`${SHARE_TOKEN_GENERATED_NOTICE}${shareTokenLink(created.token)}`);
+    // 推云端：`share_tokens` 表还没建时会被拒 —— 只影响跨设备可见，本机这条照常成立。
+    void saveRemoteShareToken(created).catch(()=>{});
+  };
+  // 撤回分享：撤回后链接**立即失效**（`shareTokenStatus` 一看到 `revokedAt` 就判 revoked）。
+  const revokeParentShareLink=()=>{
+    const target=shareTokenPanel.active?shareTokenPanel.token:null;
+    if(!target) return;
+    const revoked=revokeShareTokenRecord(target,{by:currentTeacherName});
+    if(!revoked) return;
+    setShareTokens(current=>replaceShareToken(current,revoked));
+    setShareTokenRevokeConfirm(false);
+    setShareTokenNotice({phase:'done',message:SHARE_TOKEN_REVOKED_NOTICE});
+    setToast(SHARE_TOKEN_REVOKED_NOTICE);
+    void revokeRemoteShareToken(revoked).catch(()=>{});
+  };
+  // 「家长分享链接」块：链接 / 有效期 / 撤回三个动作 + 授权闸门。链接形如 `/p/<shareToken>`。
+  const archiveShareTokenField=(
+    <div className="archive-share-token" data-share-token="true" data-share-token-state={shareTokenPanel.state} data-share-token-gate={shareTokenGate.allowed?'allowed':'blocked'} data-share-token-value={shareTokenPanel.tokenText} data-share-token-link={shareTokenPanel.link} data-share-token-expires-at={shareTokenPanel.token?shareTokenPanel.token.expiresAt:''} data-share-token-revoked-at={shareTokenPanel.token?shareTokenPanel.token.revokedAt:''} data-share-token-valid-days-value={String(shareTokenValidDays)} data-share-token-history={String(shareTokenPanel.historyCount)}>
+      <div className="archive-share-token-head">
+        <Link2 size={14}/>
+        <b>{SHARE_TOKEN_LINK_HEADING}</b>
+        <em className={`is-${shareTokenPanel.state}`}>{shareTokenPanel.stateLabel}</em>
+      </div>
+      {shareTokenPanel.tokenText?<div className="archive-share-token-link-row">
+        <code data-share-token-link-text="true">{shareTokenPanel.link}</code>
+        <small data-share-token-expiry="true">{shareTokenPanel.expiresText}</small>
+        {shareTokenStrengthView?<small data-share-token-strength="true">令牌 {shareTokenStrengthView.length} 位随机字符（约 {shareTokenStrengthView.bits} 位熵），不可猜测</small>:null}
+        {shareTokenPanel.revokedText?<small data-share-token-revoked-text="true">撤回于 {shareTokenPanel.revokedText}</small>:null}
+      </div>:null}
+      {shareTokenPanel.state==='revoked'?<p className="archive-share-token-note" data-share-token-revoked-note="true">{SHARE_TOKEN_REVOKE_NOTE}</p>:null}
+      {shareTokenPanel.canGenerate?<div className="archive-share-token-validity">
+        <label>
+          <span>分享有效期</span>
+          <select value={String(shareTokenValidDays)} onChange={event=>setShareTokenValidDays(Number(event.target.value))} data-share-token-valid-days="true" aria-label="分享有效期">
+            {SHARE_TOKEN_VALID_DAY_OPTIONS.map(days=><option key={days} value={days}>{shareTokenValidDaysLabel(days)}</option>)}
+          </select>
+        </label>
+        <small data-share-token-validity-note="true">{SHARE_TOKEN_VALID_DAYS_NOTE}</small>
+      </div>:null}
+      {shareTokenGate.allowed?null:<p className="archive-share-token-block" data-share-token-reason="true">{shareTokenGate.note}</p>}
+      <div className="archive-share-token-actions">
+        {shareTokenPanel.canGenerate?<Button icon={Link2} disabled={!shareTokenGate.allowed} onClick={generateParentShareLink} data-share-token-generate="true">{shareTokenPanel.actionLabel}</Button>:null}
+        {shareTokenPanel.active?(shareTokenRevokeConfirm
+          ?<><Button onClick={revokeParentShareLink} data-share-token-revoke-confirm="true">{SHARE_TOKEN_REVOKE_CONFIRM_LABEL}</Button><Button variant="secondary" onClick={()=>setShareTokenRevokeConfirm(false)} data-share-token-revoke-cancel="true">再想想</Button></>
+          :<Button variant="secondary" icon={X} onClick={()=>setShareTokenRevokeConfirm(true)} data-share-token-revoke="true">{SHARE_TOKEN_REVOKE_LABEL}</Button>):null}
+        {shareTokenGate.allowed?null:<Button variant="secondary" icon={ShieldCheck} onClick={()=>navigate('authorization')} data-share-token-consent-entry="true">{shareTokenGate.entryLabel||'去授权管理'}</Button>}
+        {shareTokenNotice.message?<small data-share-token-note="true">{shareTokenNotice.message}</small>:null}
+      </div>
+    </div>
+  );
   // 归档摘要面板：七项字段逐行渲染（`ARCHIVE_SUMMARY_FIELDS` 是顺序真源），缺项标出来。
   const archiveSummaryField=(
     <div className="archive-summary" data-archive-summary="true" data-archive-summary-state={archiveStep.state} data-archive-summary-rows={String(archiveStep.rows.length)} data-archive-summary-missing={archiveStep.missing.join(',')} data-archive-summary-warnings={archiveStep.warnings.join(',')}>
@@ -3203,6 +3308,7 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
       </ul>:null}
       <small className="archive-share-privacy">{ARCHIVE_SHARE_PRIVACY_NOTE}</small>
       <small className="archive-share-link">{ARCHIVE_SHARE_LINK_NOTE}</small>
+      {archiveShareTokenField}
       <div className="archive-share-actions">
         {archiveForward.state==='ready'?<Button icon={MessageSquareText} onClick={copyArchiveWechatText} data-share-copy="true">{ARCHIVE_SHARE_COPY_LABEL}</Button>:null}
         {archiveForward.entryLabel?<Button variant="secondary" icon={ShieldCheck} onClick={()=>navigate('authorization')} data-share-consent-entry="true">{archiveForward.entryLabel}</Button>:null}
