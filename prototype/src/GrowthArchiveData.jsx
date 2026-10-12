@@ -1,5 +1,20 @@
-import React, { useMemo, useState } from 'react';
-import { ChevronLeft, ChevronRight, Download, FileText, Film, Frame, Image, MessageSquareText, Sparkles } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Archive, ChevronLeft, ChevronRight, Download, FileText, Film, Frame, Image, MessageSquareText, Plus, Sparkles } from 'lucide-react';
+// 档案页的「对象筛选」（[第四步 US-205]）：可选项列表 / 默认选中 / 过滤 / 空态四个纯函数在这里，
+// 组件只渲染它们的产物 —— 学员与班级一个都不写死（原来写的是 `record.student === '陈一诺'`）。
+import { loadStudentManagement } from './data/studentManagement';
+import {
+  ARCHIVE_PERIOD_DEFAULT,
+  ARCHIVE_PERIODS,
+  ARCHIVE_TARGET_CLASS,
+  ARCHIVE_TARGET_PERSONAL,
+  archiveEmptyView,
+  archiveTargetLists,
+  archiveTargetOptions,
+  archiveTargetView,
+  resolveArchiveTargetValue
+} from './data/archiveTargets';
+import { Button } from './ui';
 
 const formats=[['成长集锦',Image,'课程足迹、作品、照片与阶段成长总结'],['作品集',Frame,'像 H5 一样翻阅每一幅作品'],['成长记录（视频）',Film,'课堂影像、作品与老师寄语']];
 const dimensions=['美术表达','观察感知','专注坚持','表达叙事','规划执行','互动协作'];
@@ -39,10 +54,36 @@ function Flipbook({lessons,targetName}){
   return <section className="h5-flipbook"><div className="flipbook-cover"><span>{targetName} 的作品集</span><h3>从封面、序言到寄语，完整收藏这一阶段的成长。</h3><small>{page+1} / {total}</small></div>{body}<div className="flipbook-controls"><button disabled={!page} onClick={()=>move(-1)}><ChevronLeft/>上一页</button><button disabled={page>=total-1} onClick={()=>move(1)}>下一页<ChevronRight/></button></div></section>
 }
 
-export default function GrowthArchiveData({records,setToast}){
-  const [target,setTarget]=useState('个人'); const [period,setPeriod]=useState('一学期'); const [format,setFormat]=useState('成长集锦'); const [generated,setGenerated]=useState(false);
-  const lessons=useMemo(()=>records.filter(record=>target==='班级'||record.student==='陈一诺').sort((a,b)=>a.date.localeCompare(b.date)),[records,target]);
-  const targetName=target==='班级'?'周六创意绘画 2 班':'陈一诺';
+export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,pageParams}){
+  const [target,setTarget]=useState(ARCHIVE_TARGET_PERSONAL); const [period,setPeriod]=useState(ARCHIVE_PERIOD_DEFAULT); const [format,setFormat]=useState('成长集锦'); const [generated,setGenerated]=useState(false);
+  // 可选项来自学员管理名单（与「学员管理」页同一份本地兜底），并上记录里出现过的名字 ——
+  // 记录不会因为名单被改过就再也选不到（[US-205] 第 2、3 条：学员与班级都不写死）。
+  const [management]=useState(loadStudentManagement);
+  const preferred=pageParams&&typeof pageParams==='object'?pageParams:null;
+  const targetLists=useMemo(()=>archiveTargetLists({students:management.students,classes:management.classes,records}),[management,records]);
+  const [student,setStudent]=useState(()=>resolveArchiveTargetValue(targetLists.students,preferred&&preferred.student));
+  const [className,setClassName]=useState(()=>resolveArchiveTargetValue(targetLists.classes,preferred&&preferred.className));
+  // 选中值的两件事：① 带入的偏好（第四步「进入成长档案 / 查看档案」点名的对象）**只在新偏好到来时**
+  // 生效一次 —— 否则云端记录晚一步合并、可选项一变，老师刚切走的选中值会被拽回去；
+  // ② 其余时候只做「还在可选项里吗」的守卫，不在列表里就回落到第一位（界面不会停在选不中的空名字上）。
+  const appliedPreferenceRef=useRef('');
+  useEffect(()=>{
+    const key=preferred?`${preferred.student||''}|${preferred.className||''}`:'';
+    const fresh=Boolean(key)&&key!==appliedPreferenceRef.current;
+    if(fresh) appliedPreferenceRef.current=key;
+    setStudent(current=>resolveArchiveTargetValue(targetLists.students,fresh?(preferred.student||''):current));
+    setClassName(current=>resolveArchiveTargetValue(targetLists.classes,fresh?(preferred.className||''):current));
+  },[preferred,targetLists]);
+  // 当前对象与它名下的记录（个人按 student、班级按 className）：界面只读这一份产物。
+  const archive=useMemo(()=>archiveTargetView(records,{target,student,className}),[records,target,student,className]);
+  const lessons=archive.lessons;
+  const targetName=archive.displayName;
+  const emptyView=archiveEmptyView(archive);
+  const pickerOptions=archiveTargetOptions(targetLists,target);
+  const pickerValue=archive.isClass?className:student;
+  // 切换学员 / 班级只是换过滤条件：**周期与已生成的预览都不重置**（[US-205] 第 4 条）。
+  const switchTarget=next=>{if(next!==target)setTarget(next)};
+  const pickTarget=value=>{if(archive.isClass)setClassName(value);else setStudent(value)};
   const downloadAssets=()=>{
     const assets=lessons.flatMap((item,index)=>[
       item.artworkUrl&&{url:item.artworkUrl,name:`${item.date}-${item.title}-线稿作品-${index+1}.png`},
@@ -51,5 +92,5 @@ export default function GrowthArchiveData({records,setToast}){
     assets.forEach(({url,name})=>{const link=document.createElement('a');link.href=url;link.download=name;link.click()});
     setToast(assets.length?`已开始下载 ${assets.length} 份处理后的成品素材。`:'当前档案里暂没有可下载的成品素材。');
   };
-  return <><div className="page-head"><div><div className="title-line"><h1>成长档案</h1><span className="prd-tag">PRD-12 / F-ARCHIVE-01</span></div><p>把处理后的作品、照片和点评，连成孩子自己的成长轨迹。</p></div></div><section className="growth-builder archive-data-report"><div className="growth-builder-top"><div><h2>让每一次认真，都有可以回看的位置。</h2><p>成长档案只归档线稿成品、修正照片与老师确认后的点评；原始拍摄图不作为家长版素材展示。</p></div><span className="report-panda"><Sparkles/></span></div><div className="growth-controls archive-target-controls"><label>生成对象<div className="mode-switch"><button className={target==='个人'?'active':''} onClick={()=>{setTarget('个人');setGenerated(false)}}>个人成长档案</button><button className={target==='班级'?'active':''} onClick={()=>{setTarget('班级');setGenerated(false)}}>班级成长档案</button></div></label><label>生成周期<select value={period} onChange={event=>setPeriod(event.target.value)}><option>半学期</option><option>一学期</option><option>一年度</option></select></label></div><div className="archive-format-picker"><b>选择生成内容</b><div>{formats.map(([name,Icon,desc])=><button key={name} className={format===name?'active':''} onClick={()=>{setFormat(name);setGenerated(false)}}><Icon/><span><strong>{name}</strong><small>{desc}</small></span></button>)}</div></div><button className="primary" onClick={()=>{setGenerated(true);setToast(`${targetName}的${period}${format}已生成`)}}><FileText size={17}/>生成{period}{format}</button>{generated?<section className="growth-report-preview"><div className="report-title"><span>{targetName} · {period}{format}</span><h2>{format==='作品集'?'这一次的作品，正在自己的美术馆里发光。':'这一次的成长，已经被完整看见。'}</h2><p>已关联 {lessons.length} 节课程 · 成品素材与点评均来自归档后的处理结果。</p></div>{format==='作品集'?<Flipbook lessons={lessons} targetName={targetName}/>:format==='成长记录（视频）'?<div className="growth-video-hero"><Film/><b>{targetName} · {period}成长记录</b><small>将串联处理后的作品、修正照片、课堂片段和老师寄语。</small></div>:<><LessonHistory lessons={lessons}/><section className="report-radar-panel"><div><span>阶段能力观察</span><h3>把课堂中的变化，变成家长一眼看得懂的多维成长线索。</h3><p>雷达呈现美术表达、观察、专注、表达、规划与互动等课堂观察维度。</p><small>仅作教育性观察与课程规划参考，不作医学、心理或智力诊断。</small></div><Radar/></section><section className="growth-summary-plus"><div className="summary-head"><span>孩子的阶段成长总结</span><h3>成长不只在作品里，也在每一次观察、选择和表达的过程里。</h3></div><div><article><b>本阶段突破</b><p>从完成一幅作品，慢慢走向愿意讲述自己的画面选择。</p></article><article><b>下一阶段规划</b><p>继续围绕色彩层次、构图观察和主题表达安排可达成的小目标。</p></article></div></section></>}<div className="report-footer"><span>老师确认内容后，家长会收到一份只含成品素材的温暖回顾。</span><div><button onClick={downloadAssets}><Download size={17}/>下载成品</button><button className="primary" onClick={()=>setToast('家长版链接已生成，可一键转发作品、照片与点评。')}><MessageSquareText size={17}/>一键转发家长</button></div></div></section>:null}</section></>;
+  return <><div className="page-head"><div><div className="title-line"><h1>成长档案</h1><span className="prd-tag">PRD-12 / F-ARCHIVE-01</span></div><p>把处理后的作品、照片和点评，连成孩子自己的成长轨迹。</p></div></div><section className="growth-builder archive-data-report" data-archive-filter={archive.target} data-archive-filter-name={archive.name} data-archive-record-count={archive.count}><div className="growth-builder-top"><div><h2>让每一次认真，都有可以回看的位置。</h2><p>成长档案只归档线稿成品、修正照片与老师确认后的点评；原始拍摄图不作为家长版素材展示。</p></div><span className="report-panda"><Sparkles/></span></div><div className="growth-controls archive-target-controls"><label>生成对象<div className="mode-switch"><button className={target===ARCHIVE_TARGET_PERSONAL?'active':''} onClick={()=>switchTarget(ARCHIVE_TARGET_PERSONAL)} data-archive-target={ARCHIVE_TARGET_PERSONAL}>个人成长档案</button><button className={target===ARCHIVE_TARGET_CLASS?'active':''} onClick={()=>switchTarget(ARCHIVE_TARGET_CLASS)} data-archive-target={ARCHIVE_TARGET_CLASS}>班级成长档案</button></div></label><label>{archive.isClass?'选择班级':'选择学员'}<select value={pickerValue} onChange={event=>pickTarget(event.target.value)} data-archive-picker={archive.isClass?'class':'student'} data-archive-picker-value={pickerValue} aria-label={archive.isClass?'选择班级':'选择学员'}>{pickerOptions.length?pickerOptions.map(name=><option key={name} value={name}>{name}</option>):<option value="">暂无可选{archive.isClass?'班级':'学员'}</option>}</select></label><label>生成周期<select value={period} onChange={event=>setPeriod(event.target.value)} data-archive-period="true">{ARCHIVE_PERIODS.map(name=><option key={name} value={name}>{name}</option>)}</select></label></div><div className="archive-format-picker"><b>选择生成内容</b><div>{formats.map(([name,Icon,desc])=><button key={name} className={format===name?'active':''} onClick={()=>{setFormat(name);setGenerated(false)}}><Icon/><span><strong>{name}</strong><small>{desc}</small></span></button>)}</div></div>{archive.count?<><button className="primary" data-archive-generate="true" onClick={()=>{setGenerated(true);setToast(`${targetName}的${period}${format}已生成`)}}><FileText size={17}/>生成{period}{format}</button>{generated?<section className="growth-report-preview" data-archive-preview="true" data-archive-preview-count={lessons.length}><div className="report-title"><span>{targetName} · {period}{format}</span><h2>{format==='作品集'?'这一次的作品，正在自己的美术馆里发光。':'这一次的成长，已经被完整看见。'}</h2><p>已关联 {lessons.length} 节课程 · 成品素材与点评均来自归档后的处理结果。</p></div>{format==='作品集'?<Flipbook lessons={lessons} targetName={targetName}/>:format==='成长记录（视频）'?<div className="growth-video-hero"><Film/><b>{targetName} · {period}成长记录</b><small>将串联处理后的作品、修正照片、课堂片段和老师寄语。</small></div>:<><LessonHistory lessons={lessons}/><section className="report-radar-panel"><div><span>阶段能力观察</span><h3>把课堂中的变化，变成家长一眼看得懂的多维成长线索。</h3><p>雷达呈现美术表达、观察、专注、表达、规划与互动等课堂观察维度。</p><small>仅作教育性观察与课程规划参考，不作医学、心理或智力诊断。</small></div><Radar/></section><section className="growth-summary-plus"><div className="summary-head"><span>孩子的阶段成长总结</span><h3>成长不只在作品里，也在每一次观察、选择和表达的过程里。</h3></div><div><article><b>本阶段突破</b><p>从完成一幅作品，慢慢走向愿意讲述自己的画面选择。</p></article><article><b>下一阶段规划</b><p>继续围绕色彩层次、构图观察和主题表达安排可达成的小目标。</p></article></div></section></>}<div className="report-footer"><span>老师确认内容后，家长会收到一份只含成品素材的温暖回顾。</span><div><button onClick={downloadAssets}><Download size={17}/>下载成品</button><button className="primary" onClick={()=>setToast('家长版链接已生成，可一键转发作品、照片与点评。')}><MessageSquareText size={17}/>一键转发家长</button></div></div></section>:null}</>:<section className="archive-empty" data-archive-empty="true" data-archive-empty-target={archive.target} data-archive-empty-name={archive.name}><Archive size={28}/><b>{emptyView.title}</b><p>{emptyView.desc}</p><small>{emptyView.hint}</small><Button icon={Plus} data-archive-empty-action="true" onClick={()=>navigate&&navigate('create')}>{emptyView.action}</Button></section>}</section></>;
 }

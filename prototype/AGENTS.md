@@ -191,6 +191,31 @@ React + Vite 单页原型（`src/main.jsx` 是主入口，另按模块拆出 `sr
   草稿把班级/学员带回来但从第一步重来）。想在第四步上做 UI 断言（390px、转发面板）**必须在离开之前做完**；
   第二轮的浏览器验证要显式把班级与学员再选一遍（「新建草稿」回到未选学员的初始态），别假设第一轮选中的学员还在。
 
+## 成长档案页的对象筛选（[第四步 US-205]）
+
+> `GrowthArchiveData.jsx` 只负责渲染；可选项 / 默认选中 / 过滤 / 空态四件事全在
+> `src/data/archiveTargets.js`（零依赖纯函数，可 `node` 直跑断言）。
+
+- **`record.student === '陈一诺'` 那类写死过滤已清零**（连同写死的班级名）：对象一律来自
+  `archiveTargetLists({students,classes,records})` = 学员管理名单 ∪ 记录里出现过的名字
+  （名单被改过的历史记录仍然选得到）+ `resolveArchiveTargetValue(options, preferred)`（偏好 → 第一位）。
+- **「未选择」不是「全部」**：`filterArchiveRecords` 在选中值为空时返回**空列表**（界面给空态）。
+  串档的历史成因就是把「未选择对象」当成通配；个人按 `record.student`、班级按 `record.className`，日期升序。
+- **切换对象只过滤、不重置**：`switchTarget` 只 `setTarget`，学员 / 班级切换只改选中值 ——
+  **周期（`period`）与已生成的预览（`generated`）都不重置**，预览当场跟着换（US-205 第 4 条）。
+  只有换「生成内容（`format`）」才把 `generated` 置回 false（那是另一种选择）。
+- **没有匹配记录时**渲染 `.archive-empty`（`data-archive-empty`）而不是空报告，并**不渲染**「生成」按钮
+  （`data-archive-generate` 只在 `archive.count>0` 时出现）；入口是 `data-archive-empty-action` →
+  `navigate('create')`。空态文案在 `archiveEmptyView`（沿用缺课文案的温柔语气）。
+- **路由参数**：`navigate(page, params)` 支持第二段（`pageParams` 随 `PageRouter` 摊给所有页面；不带参数的
+  `navigate` 一律清空）。第四步「进入成长档案」与更新回执的「查看档案」都传 `{student, className}`，
+  档案页因此在**进入时就默认选中刚归档的那位学员 / 那个班级**。新加页面级参数时记得同时接进 `App` 的
+  `pageParams`（hook 必须放在登录页提前 `return` **之前**，US-202 的老坑）。
+- 验证口径：档案页读数挂在 `data-archive-filter` / `data-archive-filter-name` / `data-archive-record-count` /
+  `data-archive-preview-count` 上，浏览器断言用**页面内 `archiveTargets.js`** 独立重算并与 DOM 逐值比对
+  （`assert-us062-browser.mjs`，47 项）。真机入口只有会话内的两条（第四步「进入成长档案」/ 更新回执
+  「查看档案」）—— 想直接在档案页上做断言，必须在同一条会话里先归档一次。
+
 ## 老师端「课后反馈」第一步（班级 / 学员 / 课程 / 课次推荐）
 
 > **课次表单全站只有一份实现 = `TeacherFlowV2`（`main.jsx`）。** 旧的 `CreateFlow` 五步向导
