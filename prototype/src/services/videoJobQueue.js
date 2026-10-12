@@ -188,6 +188,41 @@ export function resumeVideoJobQueue(options = {}) {
 }
 
 /**
+ * 「锁屏 / 切到后台 → 回到页面」时补推进一次（[第四步 US-224] 第 1 条验收）。
+ *
+ * 为什么必须有这一段：定时器在后台 / 锁屏时会被浏览器节流（有的干脆停掉），而进度是
+ * **按真实经过时间算**的 —— 回到前台先 `resumeVideoJobQueue()` 推进一次，读数立刻追平，
+ * 不会出现「明明已经跑完，卡片还停在上一次 tick 的百分比」。`pageshow` 一并接上（iOS Safari
+ * 从后台回来走的是 bfcache 回放，不触发 `visibilitychange`）。
+ *
+ * `onResume(result)` 拿到的是补推进之后的队列读数（界面据此更新读数并记一次「回到前台补推进」）。
+ * 返回取消订阅的函数；没有 DOM 时（Node 断言）返回空函数，不抛错。
+ */
+export function attachVideoJobVisibilityResume({ onResume = null, doc = null } = {}) {
+  const target = doc || (typeof document !== 'undefined' ? document : null);
+  if (!target || typeof target.addEventListener !== 'function') return () => {};
+  const win = typeof window !== 'undefined' ? window : null;
+  const handler = () => {
+    if (String(target.visibilityState || 'visible') !== 'visible') return;
+    const result = resumeVideoJobQueue();
+    if (typeof onResume === 'function') {
+      try {
+        onResume(result);
+      } catch {
+        /* 订阅者的异常不拖垮队列（与 notify 同一条口径）。 */
+      }
+    }
+    return result;
+  };
+  target.addEventListener('visibilitychange', handler);
+  if (win && typeof win.addEventListener === 'function') win.addEventListener('pageshow', handler);
+  return () => {
+    target.removeEventListener('visibilitychange', handler);
+    if (win && typeof win.removeEventListener === 'function') win.removeEventListener('pageshow', handler);
+  };
+}
+
+/**
  * 提交一条任务（幂等：同一 `jobKey` 只会有一条任务）。
  * 返回 `{ ok, job, created, issue, notice }` —— 四种结局都给同一组字段：
  *  - `created:true`：新建了这条任务；

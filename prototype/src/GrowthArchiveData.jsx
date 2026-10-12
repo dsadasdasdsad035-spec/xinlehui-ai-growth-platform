@@ -109,12 +109,31 @@ import {
   VIDEO_JOB_SUBMIT_LABEL,
   VIDEO_JOB_SUBMIT_NOTE,
   VIDEO_JOB_TYPES,
+  loadVideoJobs,
   videoJobErrorText,
   videoJobKey,
   videoJobQueueView,
   videoJobSpecSnapshot,
   videoJobSubmitIssue
 } from './data/videoJobs';
+// 移动端与弱网（[第四步 US-224]）：四条验收（提交可离开页面 / 占位竖屏可全屏 / 弱网不重复建任务 /
+// 390px 不溢出）的规则与文案全在 `data/videoMobile.js`，浏览器侧的执行（全屏 API 包装、
+// 播放器盒子与逐块溢出的测量、视口变化监听）在 `services/videoMobile.js`。
+// 这一页只渲染它们的产物 —— 组件不自己判「溢出了没有」、也不自己写全屏文案。
+import {
+  VIDEO_JOB_SUBMIT_LOCK_MS,
+  VIDEO_JOB_SUBMIT_LOCK_TEXT,
+  VIDEO_MOBILE_SECTION_DESC,
+  VIDEO_MOBILE_SECTION_TITLE,
+  VIDEO_PLAYER_EXIT_FULLSCREEN_LABEL,
+  VIDEO_PLAYER_FULLSCREEN_LABEL,
+  VIDEO_PLAYER_FULLSCREEN_NOTE,
+  VIDEO_PLAYER_FULLSCREEN_UNSUPPORTED_TEXT,
+  VIDEO_PLAYER_RATIO_LABEL,
+  videoJobVisibilityResumeNote,
+  videoMobileView,
+  videoPlayerFit
+} from './data/videoMobile';
 import {
   cancelVideoJob,
   discardVideoJob,
@@ -123,8 +142,19 @@ import {
   resumeVideoJobQueue,
   retryVideoJob,
   submitVideoJob,
-  subscribeVideoJobs
+  subscribeVideoJobs,
+  attachVideoJobVisibilityResume
 } from './services/videoJobQueue';
+import {
+  attachVideoLayoutWatch,
+  exitVideoFullscreen,
+  measureVideoOverflow,
+  measureVideoPlayerBox,
+  requestVideoFullscreen,
+  subscribeVideoFullscreen,
+  videoFullscreenElement,
+  videoFullscreenSupported
+} from './services/videoMobile';
 // 真实渲染服务的契约层（[第四步 US-213b]）：只用来**探测服务在不在**并如实显示。
 // 演示队列（上面那份）与真服务是两件事：探测不可用时，这里显示契约层抛出的原文，
 // 队列本身仍然明确标注为「演示数据 · 视频服务未接入」。
@@ -562,21 +592,30 @@ function VideoJobCard({job,isLatest,onCancel,onRetry}){
  *    读 `shareTokenGenerationGate` → `data/consent.js`）、有效期（同一份常量与下拉）、撤回
  *    （同一条 `revokeShareTokenRecord`）与图文分享完全同源，组件不自己判断「能不能生成」。
  */
-function VideoPreviewPanel({preview,share,notice,shareNotice,revokeOpen,onDownload,onShare,onGenerate,onRevoke,onRevokeOpen,onRevokeCancel,onValidDays,onGoAuthorization}){
+function VideoPreviewPanel({preview,share,notice,shareNotice,revokeOpen,playerRef=null,fullscreen=false,fullscreenSupported=false,onToggleFullscreen=()=>{},onDownload,onShare,onGenerate,onRevoke,onRevokeOpen,onRevokeCancel,onValidDays,onGoAuthorization}){
   const player=preview.player;
   return <section className="video-preview" data-video-preview="true"
     data-video-preview-ratio={player.ratioLabel} data-video-preview-aspect={String(player.aspect)}
     data-video-preview-ready={player.ready?'true':'false'} data-video-preview-src={player.src}
     data-video-preview-status={player.status} data-video-preview-playsinline={player.playsInline?'true':'false'}
-    data-video-preview-job-key={preview.jobKey} data-video-preview-mp4="none">
-    <div className="archive-section-head"><span>竖屏 9:16 · 只占位不放片</span><h4>{VIDEO_PREVIEW_SECTION_TITLE}</h4><p>{VIDEO_PREVIEW_SECTION_DESC}</p></div>
+    data-video-preview-job-key={preview.jobKey} data-video-preview-mp4="none"
+    data-video-preview-player-portrait="true" data-video-preview-fullscreen-active={fullscreen?'true':'false'}
+    data-video-preview-fullscreen-supported={fullscreenSupported?'true':'false'}>
+    <div className="archive-section-head"><span>{VIDEO_PLAYER_RATIO_LABEL} · 只占位不放片</span><h4>{VIDEO_PREVIEW_SECTION_TITLE}</h4><p>{VIDEO_PREVIEW_SECTION_DESC}</p></div>
     <div className="video-preview-body">
-      <figure className="video-preview-player" style={{aspectRatio:'9 / 16'}} data-video-preview-player={player.status} data-video-preview-player-ratio={player.ratioLabel} data-video-preview-player-src={player.src}>
-        <video className="video-preview-video" playsInline webkit-playsinline="true" preload="none" controls={player.ready} src={player.src||undefined} data-video-preview-video="true" aria-label="成片预览（竖屏 9:16）"/>
+      <figure ref={playerRef} className={`video-preview-player${fullscreen?' is-fullscreen':''}`} style={{aspectRatio:'9 / 16'}} data-video-preview-player={player.status} data-video-preview-player-ratio={player.ratioLabel} data-video-preview-player-src={player.src} data-video-preview-player-fullscreen={fullscreen?'true':'false'}>
+        <video className="video-preview-video" playsInline webkit-playsinline="true" preload="none" controls={player.ready} src={player.src||undefined} data-video-preview-video="true" aria-label={`成片预览（${VIDEO_PLAYER_RATIO_LABEL}）`}/>
         {player.ready?null:<figcaption className="video-preview-hold" data-video-preview-hold="true">
           <b data-video-preview-hold-title="true">{player.placeholderTitle}</b>
           <span data-video-preview-hold-text="true">{player.placeholderText}</span>
         </figcaption>}
+        {/* 全屏入口（[第四步 US-224] 第 2 条）：占位阶段也点得动 —— 成片接入后同一个按钮就是全屏播放。
+            接口不可用时按钮仍然在（点了给那句实话），不伪造一个静默失效的控件。 */}
+        <button type="button" className="video-preview-fullscreen-button" data-video-preview-fullscreen="true"
+          data-video-preview-fullscreen-state={fullscreen?'fullscreen':'inline'}
+          data-video-preview-fullscreen-supported={fullscreenSupported?'true':'false'}
+          aria-label={fullscreen?VIDEO_PLAYER_EXIT_FULLSCREEN_LABEL:VIDEO_PLAYER_FULLSCREEN_LABEL}
+          onClick={onToggleFullscreen}>{fullscreen?VIDEO_PLAYER_EXIT_FULLSCREEN_LABEL:VIDEO_PLAYER_FULLSCREEN_LABEL}</button>
       </figure>
       <div className="video-preview-side">
         <ul className="video-preview-rows">{preview.rows.map(row=><li key={row.id} data-video-preview-row={row.id} data-video-preview-row-value={row.value}>
@@ -588,6 +627,7 @@ function VideoPreviewPanel({preview,share,notice,shareNotice,revokeOpen,onDownlo
           <Button variant="secondary" icon={Download} data-video-preview-download="true" onClick={onDownload}>{VIDEO_DOWNLOAD_LABEL}</Button>
           <Button variant="secondary" icon={Link2} data-video-preview-share="true" onClick={onShare}>{VIDEO_SHARE_LABEL}</Button>
         </div>
+        <p className="video-preview-fullscreen-note" data-video-preview-fullscreen-note="true">{fullscreenSupported?VIDEO_PLAYER_FULLSCREEN_NOTE:VIDEO_PLAYER_FULLSCREEN_UNSUPPORTED_TEXT}</p>
         {preview.readyNote?<p className="video-preview-ready-note" data-video-preview-ready-note="true">{preview.readyNote}</p>:null}
         {notice?<p className="video-preview-unavailable" data-video-preview-unavailable="true">{notice}</p>:null}
       </div>
@@ -636,7 +676,7 @@ function VideoPreviewPanel({preview,share,notice,shareNotice,revokeOpen,onDownlo
  *  - **删除**（验收第 4 条）：两步确认后只摘掉成片与它的渲染任务记录，归档记录一个字节都不动
  *    （回执里写着这一句；级联删除归档记录那一侧在系统配置的到期清理里，走同一个数据层）。
  */
-function VideoRecordPanel({view,notice,deleteOpen,onRegenerate,onRegenerateIssue,onDeleteOpen,onDeleteCancel,onDelete,onHistoryView,onHistoryBack}){
+function VideoRecordPanel({view,notice,deleteOpen,pending=false,onRegenerate,onRegenerateIssue,onDeleteOpen,onDeleteCancel,onDelete,onHistoryView,onHistoryBack}){
   const update=view.update;
   const viewing=view.viewing;
   return <section className="video-record" data-video-record="true"
@@ -674,7 +714,7 @@ function VideoRecordPanel({view,notice,deleteOpen,onRegenerate,onRegenerateIssue
           <small data-video-record-update-detail="true">{update.detail}</small>
         </div>
         <div className="video-record-actions">
-          <Button data-video-record-regenerate="true" onClick={onRegenerate}>{VIDEO_RECORD_REGENERATE_LABEL}</Button>
+          <Button data-video-record-regenerate="true" data-video-record-regenerate-pending={pending?'true':'false'} onClick={onRegenerate}>{VIDEO_RECORD_REGENERATE_LABEL}</Button>
           <small data-video-record-regenerate-issue="true">{onRegenerateIssue}</small>
           {deleteOpen
             ? <span className="video-record-delete-confirm">
@@ -1089,6 +1129,61 @@ function VideoClassTimeline({plan,view,onMove,onReset}){
 }
 
 /**
+ * 移动端与弱网读数（[第四步 US-224]）。
+ *
+ * 这一块**不写结论，只显示当场量出来的读数**（判据与文案全部来自 `data/videoMobile.js`，
+ * 组件不自己判「溢出了没有」、也不自己拼「几项合格」）：
+ *  - 逐块横向溢出测量（页面整体 / 任务面板 / 卡片列表 / 任务卡片 / 音乐选择面板 / 预览 / 成片版本面板）；
+ *  - 播放器占位的实测盒子 + 竖屏自适应判定（9:16、高 ≤70vh、不超视口宽）；
+ *  - 全屏接口在这台设备上可不可用（不可用时如实说明，不假装能全屏）；
+ *  - 弱网那两条：同一条 jobKey 只有一条任务（镜像里的键 vs 界面上的卡片）+ 本次挡下几次重复点击、
+ *    回到前台补推进了几次。
+ * 「重新测量」按钮给老师（与验证脚本）一个当场复量的入口；视口变化（resize / 转屏）也会自动重量一次。
+ */
+function VideoMobilePanel({view, notice, onMeasure}){
+  return <section className="video-mobile" data-video-mobile="true"
+    data-video-mobile-viewport={`${view.viewportWidth}×${view.viewportHeight}`}
+    data-video-mobile-mobile-width={view.mobileWidth?'true':'false'}
+    data-video-mobile-ok={view.ok?'true':'false'}
+    data-video-mobile-failed={view.failedIds.join(',')}
+    data-video-mobile-overflow-state={view.overflowState}
+    data-video-mobile-overflow={view.offenders.join(',')}
+    data-video-mobile-player={view.player?`${Math.round(view.player.width)}×${Math.round(view.player.height)}`:'none'}
+    data-video-mobile-player-portrait={view.playerFit&&view.playerFit.portrait?'true':'false'}
+    data-video-mobile-player-height-pct={view.playerFit?String(view.playerFit.heightPct):''}
+    data-video-mobile-fullscreen-supported={view.fullscreenSupported?'true':'false'}
+    data-video-mobile-mirror={String(view.mirrorCount)}
+    data-video-mobile-cards={String(view.cardCount)}
+    data-video-mobile-duplicates={String(view.duplicateKeys)}
+    data-video-mobile-blocked={String(view.blocked)}
+    data-video-mobile-visibility-resumes={String(view.visibilityResumes)}
+    data-video-mobile-summary-text={view.summary}>
+    <div className="archive-section-head"><span>当场量出来的四条读数</span><h4>{VIDEO_MOBILE_SECTION_TITLE}</h4><p>{VIDEO_MOBILE_SECTION_DESC}</p></div>
+    <ul className="video-mobile-rows" data-video-mobile-rows="true">
+      {view.rows.map(row=><li key={row.id} data-video-mobile-row={row.id} data-video-mobile-row-ok={row.ok?'true':'false'} data-video-mobile-row-value={row.value}>
+        <b data-video-mobile-row-label="true">{row.label}</b>
+        <span data-video-mobile-row-text="true">{row.value}</span>
+        {row.note?<small data-video-mobile-row-note="true">{row.note}</small>:null}
+      </li>)}
+    </ul>
+    <ul className="video-mobile-targets" data-video-mobile-targets="true">
+      {view.overflowRows.map(row=><li key={row.id} data-video-mobile-target={row.id}
+        data-video-mobile-target-missing={row.missing?'true':'false'} data-video-mobile-target-overflow={row.overflow?'true':'false'}
+        data-video-mobile-target-scroll={String(row.scrollWidth)} data-video-mobile-target-client={String(row.clientWidth)}>
+        <span>{row.label}</span>
+        <b data-video-mobile-target-value="true">{row.missing?'不在页面上':`${row.scrollWidth} / ${row.clientWidth}px`}</b>
+      </li>)}
+    </ul>
+    <p className="video-jobs-note" data-video-mobile-lock-note="true">{VIDEO_JOB_SUBMIT_LOCK_TEXT}</p>
+    <p className="video-mobile-summary" data-video-mobile-summary="true">{view.summary}</p>
+    <div className="video-mobile-actions">
+      <Button variant="secondary" icon={Gauge} data-video-mobile-measure="true" onClick={onMeasure}>重新测量</Button>
+    </div>
+    {notice?<p className="video-mobile-notice" data-video-mobile-notice="true">{notice}</p>:null}
+  </section>;
+}
+
+/**
  * 视频任务（演示队列）面板（[第四步 US-213a]，[第四步 US-214] 补入口 / 预估剩余时间 / 恢复读数）。
  *
  * 这一块是「渲染服务还没接进来，但前端不能空等」的落地：
@@ -1117,6 +1212,17 @@ function VideoClassTimeline({plan,view,onMove,onReset}){
  * 段首 1.5 秒姓名卡（姓名 + 作品数）、本期无作品的学员保留留白卡、全班串成一条且总时长不超过 5 分钟。
  * 它读的是 `classEntries`（这个班级在这个周期的记录）与 `roster`（班级名单 = 顺序真源）；
  * 「顺序默认按班级名单、生成前可调整」用面板自己的 `classOrder` 局部 state 实现。
+ *
+ * 移动端与弱网（[第四步 US-224]）：四条验收在界面上都是**当场量出来的读数**，不是写死的结论 ——
+ *  - **提交后可离开页面 / 锁屏回来**：面板挂载 `resumeVideoJobQueue()`；`visibilitychange` / `pageshow`
+ *    回到前台再补推进一次（`attachVideoJobVisibilityResume`），进度按真实经过时间接着算；
+ *  - **播放器占位竖屏自适应并支持全屏**：占位盒子的宽度 = `min(容器宽, 70vh × 9/16)`（CSS 与
+ *    `data/videoMobile.js` 的 `videoPlayerBox` 同值），全屏按钮挂在占位元素上（标准 / webkit 两条路，
+ *    失败给可读原因，不伪造一个静默失效的控件）；
+ *  - **弱网重复点击不创建多条任务**：`data/videoMobile.js` 的 `VIDEO_JOB_SUBMIT_LOCK_MS` 是一道
+ *    **按 jobKey** 的提交锁窗（窗口内的重复点击直接忽略并计数），结构性保证仍是服务层按 jobKey upsert；
+ *  - **390px 不溢出**：`measureVideoOverflow()` 按 `VIDEO_MOBILE_TARGETS` 逐块量 `scrollWidth / clientWidth`。
+ *  六行读数与逐块测量都渲染在 `VideoMobilePanel`（`data-video-mobile-*`）。
  */
 function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkCount,photoCount,teacherName,setToast,entries=[],scopeEntries=[],classEntries=[],roster=[],tokens=[],records=[],musicTracks=[],videoRecords=[],consents=null,setShareTokens=()=>{},setVideoRecords=()=>{},recordAudit=()=>{},auditActor=null,auditLog=[],videoQuota=null,videoRetention=null,management=null,navigate=null}){
   const [jobs,setJobs]=useState(()=>listVideoJobs());
@@ -1141,6 +1247,22 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
   const [latestKey,setLatestKey]=useState('');
   // 本次进入页面的时刻（组件挂载）：`videoJobResumed` 用它判断「这条是离开页面前提交的」。
   const sessionStartRef=useRef(Date.now());
+  // ---- 移动端与弱网（[第四步 US-224]）-----------------------------------------------------------
+  // 四条验收在界面侧的状态：提交锁窗（弱网重复点击）、回到前台补推进的次数、当场量到的布局读数
+  // 与全屏状态。判据与文案全在 `data/videoMobile.js`，这里只保管读数。
+  const [submitPending,setSubmitPending]=useState(false);
+  const [submitBlocked,setSubmitBlocked]=useState(0);
+  const [visibilityResumes,setVisibilityResumes]=useState(0);
+  const [mobileNotice,setMobileNotice]=useState('');
+  const [mobileMeasure,setMobileMeasure]=useState(null);
+  const [playerFullscreen,setPlayerFullscreen]=useState(false);
+  const [fullscreenSupported]=useState(()=>videoFullscreenSupported());
+  const playerRef=useRef(null);
+  // 锁窗**按 jobKey 记**：同一个键在窗口内的第二次点击直接忽略并计数；
+  // 换成别的周期是别的 jobKey（一次新的生成请求），不受影响（US-072 的并发用例就是这样连提三条的）。
+  const submitLockRef=useRef({key:'',until:0});
+  const submitLockTimerRef=useRef(null);
+  const mobileSignatureRef=useRef('');
   // 真实渲染服务在不在（[第四步 US-213b]）：进面板探测一次并**如实显示** —— 不可用时那句话
   // 就是契约层抛出来的原文（`services/videoApi.js` 的「视频服务暂不可用」），
   // 于是下面这条演示队列是**明确标注的演示**，不是假装成片的来源。
@@ -1161,6 +1283,47 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
   useEffect(()=>{setJobs(resumeVideoJobQueue().jobs)},[]);
   // 探测一次渲染服务（挂载时一次；之后由「重新探测」按钮手动触发）。
   useEffect(()=>probe(),[probe]);
+  // 当场量一次布局读数（逐块横向溢出 / 播放器占位盒子 / 全屏接口）。**签名没变就不 setState**
+  // （不然「每次渲染后量一次」会变成 setState → 渲染 → 量的死循环）。
+  const measureMobileLayout=useCallback(()=>{
+    if(typeof document==='undefined'||typeof window==='undefined')return;
+    const overflowRows=measureVideoOverflow();
+    const playerBox=measureVideoPlayerBox(playerRef.current);
+    const next={
+      viewportWidth:Math.round(window.innerWidth),
+      viewportHeight:Math.round(window.innerHeight),
+      overflowRows,
+      player:playerBox,
+      playerFit:playerBox?videoPlayerFit(playerBox,{viewportWidth:playerBox.viewportWidth||window.innerWidth,viewportHeight:playerBox.viewportHeight||window.innerHeight}):null,
+      fullscreenSupported:videoFullscreenSupported()
+    };
+    // 全屏状态在这里对一次账：`fullscreenchange` 在部分环境（headless / 无窗口管理器 / 某些内嵌浏览器）
+    // **根本不派发**（本轮实测：进入全屏后页面级监听一个事件都收不到，`document.fullscreenElement` 却是真的）——
+    // 所以每次测量（挂载 / resize / 转屏 / 回到前台 / 手动重新测量）都拿 DOM 的真实值校一次界面状态。
+    const actual=videoFullscreenElement();
+    setPlayerFullscreen(Boolean(actual&&actual===playerRef.current));
+    // 签名里**不能有时间戳**：它是「量到的值有没有变」的判据，掺进变化的字段会让
+    // 「每次渲染后量一次」变成 setState → 渲染 → 量的死循环（本轮真踩：Maximum update depth exceeded）。
+    const signature=JSON.stringify(next);
+    if(signature===mobileSignatureRef.current)return;
+    mobileSignatureRef.current=signature;
+    setMobileMeasure(next);
+  },[]);
+  // 每次渲染后重量一次（签名相同则不动 state），视口变化（resize / 转屏）时也自动重量一次。
+  useEffect(()=>{measureMobileLayout();});
+  useEffect(()=>attachVideoLayoutWatch(()=>measureMobileLayout()),[measureMobileLayout]);
+  // 全屏状态跟着浏览器的 `fullscreenchange` 走（进入 / 退出 / 按 Esc 退出都同步到按钮与读数）。
+  useEffect(()=>subscribeVideoFullscreen(element=>{setPlayerFullscreen(Boolean(element&&element===playerRef.current));}),[]);
+  // 锁屏 / 切到后台 → 回到页面：**先按真实经过时间补推进一次**（`services/videoJobQueue` 的实现），
+  // 界面记下这一次补推进并按 data 层文案说清「锁屏那段时间也算数、没有重新开始」。
+  useEffect(()=>attachVideoJobVisibilityResume({onResume:result=>{
+    setJobs(result.jobs);
+    setVisibilityResumes(count=>count+1);
+    setMobileNotice(videoJobVisibilityResumeNote(result));
+    measureMobileLayout();
+  }}),[measureMobileLayout]);
+  // 卸载时撤掉锁窗的定时器（不留一个到点还在改 state 的定时器）。
+  useEffect(()=>()=>{if(submitLockTimerRef.current)clearTimeout(submitLockTimerRef.current)},[]);
   // 提交完把那条卡片滚进视野（`block:'nearest'`：已经看得见就不动滚动位置）。
   useEffect(()=>{
     if(!latestKey||typeof document==='undefined')return;
@@ -1446,11 +1609,15 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
     return next;
   },[records,recordIdentity,objectName,lessonCount,artworkCount,photoCount,videoRecords,jobKey,teacherName,setVideoRecords]);
   const regenerateVideo=()=>{
+    // 弱网重复点击（[第四步 US-224] 第 3 条验收）：重新生成也是同一条 jobKey，
+    // 锁窗内的第二次点击直接忽略 —— 否则会出现「摘掉任务 → 重排 → 又摘掉 → 又重排」的连击。
+    if(blockRepeatSubmit(jobKey)){setRecordNotice(VIDEO_JOB_SUBMIT_LOCK_TEXT);setToast(VIDEO_JOB_SUBMIT_LOCK_TEXT);return;}
     if(regenerateIssue){setRecordNotice(regenerateIssue);setToast(regenerateIssue);return;}
     // 权限与配额两道闸（[第四步 US-223] 第 1、4 条）：重新生成也是「提交一条渲染任务」，
     // 同一份判据 —— 跨班老师 / 管理员 / 配额满都在这里被拦下并给出可读原因。
     if(!submitAccess.allowed){setRecordNotice(submitAccess.deniedText||submitAccess.reason);setToast(submitAccess.deniedText||submitAccess.reason);return;}
     if(quotaIssue){setRecordNotice(quotaIssue);setToast(quotaIssue);return;}
+    beginSubmitLock(jobKey);
     const at=new Date().toISOString();
     const submittedMusic=musicJobMusicFromSelection(musicSelection,{capturedAt:at});
     // 重新生成 = 把上一轮的渲染任务记录摘掉、用同一个 jobKey 重新排一轮（不是新键、不是新对象）。
@@ -1482,12 +1649,41 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
     setToast(VIDEO_RECORD_DELETE_DONE);
   };
   const report=result=>{setJobs(listVideoJobs());setNotice(result.ok?result.notice:result.issue);setToast(result.ok?result.notice:result.issue)};
+  /**
+   * 提交锁窗（[第四步 US-224] 第 3 条验收）：
+   *  - `beginSubmitLock(jobKey)`：这一次提交开始，锁窗到 `VIDEO_JOB_SUBMIT_LOCK_MS`；
+   *  - `blockRepeatSubmit(jobKey)`：同一个键在窗口内的下一次点击**直接忽略并计数**（返回 `true`）。
+   *
+   * 为什么锁窗按 jobKey 记：验收要的是「重复点击生成不创建多条任务」——换一个周期就是另一次生成
+   * （另一个 jobKey），不该被上一次的窗口挡住。为什么按钮不在这段窗口里禁用：被禁用的按钮收不到
+   * 点击，就**数不出**「挡下了几次重复点击」（弱网那条验收的证据正是这个数）。
+   * 结构性保证仍是幂等键：服务层每次提交都按 jobKey upsert，重复提交命中同一条（`没有重复创建`）。
+   */
+  const beginSubmitLock=useCallback(key=>{
+    const until=Date.now()+VIDEO_JOB_SUBMIT_LOCK_MS;
+    submitLockRef.current={key:String(key||''),until};
+    setSubmitPending(true);
+    if(submitLockTimerRef.current)clearTimeout(submitLockTimerRef.current);
+    submitLockTimerRef.current=setTimeout(()=>{
+      submitLockTimerRef.current=null;
+      if(Date.now()>=submitLockRef.current.until){submitLockRef.current={key:'',until:0};setSubmitPending(false);}
+    },VIDEO_JOB_SUBMIT_LOCK_MS);
+  },[]);
+  const blockRepeatSubmit=useCallback(key=>{
+    const lock=submitLockRef.current;
+    if(!lock.until||lock.key!==String(key||'')||Date.now()>=lock.until)return false;
+    setSubmitBlocked(count=>count+1);
+    return true;
+  },[]);
   const submit=()=>{
+    // 弱网重复点击：同一条 jobKey 在锁窗内的第二次点击直接忽略（连队列都不进），并计数。
+    if(blockRepeatSubmit(jobKey)){setNotice(VIDEO_JOB_SUBMIT_LOCK_TEXT);setToast(VIDEO_JOB_SUBMIT_LOCK_TEXT);measureMobileLayout();return;}
     // 权限与配额两道闸（[第四步 US-223] 第 1、4 条）：
     //  ① 只有本班老师可提交（`videoTaskAccess` 的唯一判据，跨班 / 管理员各给一句可读原因）；
     //  ② 存储或本月流量超限时阻止新任务并给出提示（`videoQuotaSubmitIssue`）。
     if(!submitAccess.allowed){setNotice(submitAccess.deniedText||submitAccess.reason);setToast(submitAccess.deniedText||submitAccess.reason);return;}
     if(quotaIssue){setNotice(quotaIssue);setToast(quotaIssue);return;}
+    beginSubmitLock(jobKey);
     // 版权证据随任务一起写进 `specSnapshot.music`（FR-295）：静音也是一个明确结论，老任务没有这一项。
     const submittedMusic=musicJobMusicFromSelection(musicSelection,{capturedAt:new Date().toISOString()});
     const result=submitVideoJob({type,studentId:isClass?'':objectName,classId:isClass?objectName:'',period,objectName,lessonCount,artworkCount,photoCount,createdBy:teacherName,simulate:simulateFail?'fail':'success',simulateErrorCode,music:submittedMusic});
@@ -1514,6 +1710,41 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
   };
   const cancel=key=>report(cancelVideoJob(key));
   const retry=key=>report(retryVideoJob(key));
+  // ---- 移动端与弱网的面板读数（[第四步 US-224]）--------------------------------------------------
+  // 全屏入口（第 2 条验收）：占位阶段也点得动（成片接入后同一个按钮就是全屏播放）。
+  // 失败 / 不支持时把那句话照原样显示（data 层的 `requestVideoFullscreen` 的 `issue`），不静默。
+  const togglePlayerFullscreen=useCallback(async()=>{
+    if(playerFullscreen){
+      const result=await exitVideoFullscreen();
+      // 乐观同步：`exitFullscreen()` 的承诺在**已经退出全屏**之后才兑现，界面按结果改就是了 ——
+      // 不能把界面状态绑死在 `fullscreenchange` 上（headless / 内嵌浏览器可能永远不派发它）。
+      if(result.ok)setPlayerFullscreen(false);
+      else{setOutputNotice(result.issue);setToast(result.issue);}
+      return;
+    }
+    const result=await requestVideoFullscreen(playerRef.current);
+    if(!result.ok){setOutputNotice(result.issue);setToast(result.issue);return;}
+    setPlayerFullscreen(true);
+    setOutputNotice('');
+    measureMobileLayout();
+  },[playerFullscreen,measureMobileLayout]);
+  // 当前这条 jobKey 是否还在锁窗里（换周期 = 换 jobKey，不受上一次的窗口影响）。
+  const submitPendingForCurrent=submitPending&&submitLockRef.current.key===jobKey;
+  // 面板读数：镜像（本机持久的那一份）与界面上的卡片各数一遍 —— 「按 jobKey 恢复」与
+  // 「同一条 jobKey 只有一条任务」都由这两个真实读数判定（判据在 data 层，组件不自己判）。
+  const mobileView=useMemo(()=>videoMobileView({
+    viewportWidth:mobileMeasure?mobileMeasure.viewportWidth:0,
+    viewportHeight:mobileMeasure?mobileMeasure.viewportHeight:0,
+    overflowRows:mobileMeasure?mobileMeasure.overflowRows:[],
+    player:mobileMeasure?mobileMeasure.player:null,
+    playerFit:mobileMeasure?mobileMeasure.playerFit:null,
+    fullscreenSupported:mobileMeasure?mobileMeasure.fullscreenSupported:fullscreenSupported,
+    mirrorJobs:loadVideoJobs(),
+    cardKeys:view.jobs.map(job=>job.jobKey),
+    duplicatesBlocked:submitBlocked,
+    visibilityResumes,
+    resumeNote:mobileNotice
+  }),[mobileMeasure,fullscreenSupported,jobs,view.jobs,submitBlocked,visibilityResumes,mobileNotice]);
   return <section className="video-jobs" data-video-jobs-panel="true" data-video-jobs-count={view.total} data-video-jobs-active={view.active} data-video-jobs-empty={view.empty?'true':'false'} data-video-jobs-demo={VIDEO_JOB_DEMO_LABEL} data-video-jobs-source={view.sourceLabel} data-video-jobs-latest-key={latestKey} data-video-jobs-resumed-count={view.resumedCount}>
     <div className="archive-section-head"><span>{VIDEO_JOB_SECTION_TITLE} · {view.sourceLabel}</span><h3>视频任务（演示队列）</h3><p>{VIDEO_JOB_SECTION_DESC}</p></div>
     <p className="video-jobs-demo" data-video-demo-label={VIDEO_JOB_DEMO_LABEL}>{VIDEO_JOB_DEMO_LABEL}</p>
@@ -1527,7 +1758,7 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
       <label>生成周期<select value={period} onChange={event=>onPeriod(event.target.value)} data-video-submit-period="true" aria-label="生成周期">{ARCHIVE_PERIODS.map(name=><option key={name} value={name}>{name}</option>)}</select></label>
       <label className="video-jobs-simulate"><input type="checkbox" checked={simulateFail} onChange={event=>setSimulateFail(event.target.checked)} data-video-simulate-fail="true"/>演示失败（跑到 45% 时失败，用于验证失败态与重试）</label>
       {simulateFail?<label>演示失败原因<select value={simulateErrorCode} onChange={event=>setSimulateErrorCode(event.target.value)} data-video-simulate-error="true" aria-label="演示失败原因">{VIDEO_JOB_SIMULATE_ERROR_OPTIONS.map(option=><option key={option.id} value={option.id}>{option.label}</option>)}</select><small data-video-simulate-error-text="true">{videoJobErrorText(simulateErrorCode)}</small></label>:null}
-      <Button icon={Clapperboard} data-video-submit="true" data-video-submit-key={jobKey} disabled={Boolean(submitIssue)||!submitAccess.allowed||Boolean(quotaIssue)} onClick={submit}>{VIDEO_JOB_SUBMIT_LABEL}</Button>
+      <Button icon={Clapperboard} data-video-submit="true" data-video-submit-key={jobKey} data-video-submit-pending={submitPendingForCurrent?'true':'false'} disabled={Boolean(submitIssue)||!submitAccess.allowed||Boolean(quotaIssue)} onClick={submit}>{VIDEO_JOB_SUBMIT_LABEL}</Button>
     </div>
     <p className="video-jobs-note" data-video-submit-note="true">{VIDEO_JOB_SUBMIT_NOTE}</p>
     {submitIssue?<p className="video-jobs-issue" data-video-submit-issue="true">{submitIssue}</p>:null}
@@ -1567,6 +1798,10 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
       notice={outputNotice}
       shareNotice={shareNotice}
       revokeOpen={shareRevokeOpen}
+      playerRef={playerRef}
+      fullscreen={playerFullscreen}
+      fullscreenSupported={fullscreenSupported}
+      onToggleFullscreen={togglePlayerFullscreen}
       onDownload={()=>runPreviewAction(preview.actions.find(action=>action.id==='download'))}
       onShare={()=>runPreviewAction(preview.actions.find(action=>action.id==='share'))}
       onGenerate={generateVideoShare}
@@ -1580,6 +1815,7 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
       view={recordView}
       notice={recordNotice}
       deleteOpen={recordDeleteOpen}
+      pending={submitPendingForCurrent}
       onRegenerate={regenerateVideo}
       onRegenerateIssue={regenerateIssue}
       onDeleteOpen={()=>setRecordDeleteOpen(true)}
@@ -1588,6 +1824,7 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
       onHistoryView={version=>setRecordViewingVersion(version)}
       onHistoryBack={()=>setRecordViewingVersion(0)}
     />
+    <VideoMobilePanel view={mobileView} notice={mobileNotice} onMeasure={measureMobileLayout}/>
     {notice?<p className="video-jobs-notice" data-video-notice="true">{notice}</p>:null}
     {view.resumeSummary?<p className="video-jobs-resumed" data-video-jobs-resumed="true">{view.resumeSummary}</p>:null}
     <p className="video-jobs-summary" data-video-jobs-summary="true">{view.summary}</p>

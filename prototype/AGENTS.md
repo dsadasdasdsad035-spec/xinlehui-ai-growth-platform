@@ -3334,7 +3334,60 @@ US-222 管「成片怎么版本化」，这一节管「谁能碰这些成片、�
   US-072~079/082/083 browser 全绿（US-072 那 1 项「提交按钮文案」在 HEAD 上就已失败，属 US-214 口径变更）；
   截图 421~426 留档。
 
+## 视频模块的移动端与弱网（[第四步 US-224] / FR-316 ~ FR-320）
+
+四条验收（提交后可离开页面 / 锁屏回来恢复进度、播放器占位竖屏自适应并支持全屏、弱网重复点击不重复建任务、
+390px 任务卡片与音乐面板不溢出）各有一份真源，界面只渲染**当场量出来的读数**：
+
+| 关注点 | 唯一真源 | 界面 / 消费点 |
+|---|---|---|
+| 占位盒子尺寸（9:16、高 ≤70vh、不超容器宽）与合格判定 | `data/videoMobile.js` 的 `videoPlayerBox` / `videoPlayerFit`（CSS 里是同一套数字：`width:min(100%,calc(70vh * 9 / 16))`） | 老师端 `[data-video-preview-player]` + 读数面板 `[data-video-mobile-row="player"]` |
+| 逐块横向溢出判定 + 被测量的块清单 | `data/videoMobile.js` 的 `VIDEO_MOBILE_TARGETS` / `videoOverflowReport`（页面整体那一块**用视口宽当客户宽**，`html.clientWidth` 会被内容一起撑大） | `[data-video-mobile-target]` 逐行读数（`-scroll` / `-client` / `-overflow`） |
+| 六项读数与总判定 | `data/videoMobile.js` 的 `videoMobileView`（所有状态同形状；`ok:false` 时点名哪几项） | `VideoMobilePanel`（`data-video-mobile-*`），「重新测量」按钮 = 当场复量 |
+| 全屏 API（标准 + webkit 两条路） | `services/videoMobile.js` 的 `videoFullscreenSupported` / `requestVideoFullscreen` / `exitVideoFullscreen` / `subscribeVideoFullscreen` | 占位元素上的 `[data-video-preview-fullscreen]`（文案 `全屏查看` / `退出全屏`） |
+| 「锁屏回来补推进一次」 | `services/videoJobQueue.js` 的 `attachVideoJobVisibilityResume`（`visibilitychange` + `pageshow`）+ `data/videoMobile.js` 的 `videoJobVisibilityResumeNote` | `[data-video-mobile-visibility-resumes]` 计数 + 面板上那句话 |
+| 提交锁窗（弱网重复点击） | `data/videoMobile.js` 的 `VIDEO_JOB_SUBMIT_LOCK_MS` / `VIDEO_JOB_SUBMIT_LOCK_TEXT`；**结构性保证仍是 jobKey 幂等** | 提交 / 重新生成两条入口共用 `beginSubmitLock` / `blockRepeatSubmit`，读数 `[data-video-mobile-blocked]` |
+
+- **锁窗按 jobKey 记，不按按钮记**：同一个键在窗口内的第二次点击直接忽略并计数（回执里点名
+  「同一条 jobKey 只会有一条任务，没有重复创建」）；**换周期 = 换 jobKey，不受上一次窗口影响** ——
+  US-072 的并发用例就是 250ms 间隔连提三个周期，按按钮记会把那三条拦掉。
+- **锁窗里不要禁用按钮**：被禁用的按钮收不到点击，就**数不出**「挡下了几次重复点击」，
+  而「弱网不重复建任务」的证据正是那个数。按钮保持可点、由处理函数按键判并在面板上报数。
+- **重新生成也是同一条 jobKey**：`regenerateVideo` 先过锁窗再走 `discardVideoJob` + 重排；
+  连点 4 次只落地一次的表现是「成片版本 +1、attempts 从 0 数到 1」，不是 attempts 累加
+  （重排会摘掉任务记录重建，所以 attempts 归 1 是正常的）。
+- **`fullscreenchange` 可能永远不派发**（本故事实测，headless Chrome：`document.fullscreenElement`
+  真的变了、页面级监听一个事件都收不到）。所以界面状态**不能绑死在事件上**：
+ ① 点按钮时按 `requestFullscreen()/exitFullscreen()` 的结果**乐观同步**；
+ ② 每次测量（挂载 / resize / 转屏 / 回到前台 / 「重新测量」）拿 DOM 的真实值**对一次账**；
+ ③ 事件订阅只负责带外变化（Esc、系统控件、页面里直接调 API）。断言时也要两条都验
+（浏览器层 `document.fullscreenElement` + 界面层 `data-*` 读数）。
+- **「进度按真实经过时间推」的可验证口径**：任务自己记着 `startedAt` / `updatedAt`，
+ 用 `videoJobProgressFromElapsed(updatedAt - startedAt, mockSeconds×1000)` 独立重算应当等于卡片上的
+  `data-video-job-progress`（±1）——**基线要取任务自己的时间戳**，不要取「脚本此刻的 Date.now()」：
+  后台 / headless 里 `setInterval` 会被节流，按此刻重算必然对不上（US-085 第一版就这么假红一次）。
+- **验证方式（本故事实测）**：`pnpm run build` 通过（396~455ms）；Node 直跑 **76 项**
+  （`/tmp/assert-us085-data.mjs`：盒子数学 / 越界与容差 / 逐块溢出（含页面整体用视口宽）/ 六项读数
+  与失败点名 / 恢复文案）；浏览器 **107 项**（`/tmp/assert-us085-browser.mjs`：真实鼠标手势进出全屏
+  + 带外退出后对账、连点 6 次只建一条任务（挡下 5 次）、重新生成连点 4 次只 +1 版、
+  锁屏 → 回到前台进度按真实时间接着算且 attempts 不重置、390px 逐块不溢出 + 横屏自适应 + 44px、
+  刷新后按 jobKey 恢复）；回归 US-072~079/082/083/084 data 全绿、
+  US-072 82/83（那 1 项「提交按钮文案」在 HEAD 上就已失败）、US-079 110/110、US-082 100/100、
+  US-083 62/62；截图 427~434 留档。
+
 ## 容易踩的坑
+
+- **「每次渲染后量一次」的测量签名里不能有时间戳**（US-224 真踩）：`useEffect(()=>{measure()})`
+  （无依赖数组）+ 签名内含 `new Date().toISOString()` 时，每次测量都「有新值」→ `setState` →
+  渲染 → 再测量 → **Maximum update depth exceeded** 的死循环（页面直接卡死，`Runtime.evaluate` 超时）。
+  签名只能用**会真的影响结论的字段**（视口 / 测到的盒子 / 逐块宽高）。同一个坑还有第二种表现：
+  「口径变了才 setState」的判据必须是可比较的稳定值，不是「这一次算的对象」。
+- **`fullscreenchange` 不是全屏状态的可靠真源**（US-224 实测：headless Chrome 里
+  `document.fullscreenElement` 变了但一个事件都不派发）。凡是「浏览器之外还有一份界面状态」的能力
+  （全屏 / 可见性 / 锁屏 / 媒体播放），都要**动作结果乐观同步 + 定期拿 DOM 对账**，事件只做带外变化。
+- **回归 / 验证脚本跑之前先清干净进程**（US-224 实测）：上一次被中断的 Chrome（`Google Chrome for
+  Testing` 主进程）会拖满 CPU，表现是**随机**的「等待条件超时 / Runtime.evaluate 超时 / 页面像卡死」，
+  很容易被误判成产品 bug。`pkill -9 -f "Google Chrome for Testing"` 之后再跑。
 
 - **派生值（`const x = f(state)`）必须排在被它读的 state 之后**（US-108b 真踩）：把
   `evaluateReviewArchiveGate({… generated: reviewGenerated …})` 放在
