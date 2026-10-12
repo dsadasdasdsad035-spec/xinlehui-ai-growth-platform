@@ -1073,3 +1073,67 @@
   .poster-report-long-pages button{min-height:44px}
   .poster-report-long-actions button{width:100%;min-height:44px;justify-content:center}
 }
+
+/* 一键转发海报弹窗（[海报 US-308]）：左侧模板缩略图列表（用当前对象的真实数据渲染的小图）+ 右侧 1:1 实时预览。
+   三条与验收一一对应的样式决定：
+   ① 预览区**固定高度 + 自己滚动**：换模板时高度不跳（`min-height`），长图（report-long）在框里滚而不是把弹窗撑爆；
+   ② 缩略图用 `object-fit` 无关的 max-width/max-height 双约束：五种画布比例（3:4 / 9:16 / 长条）都等比放进 76×88 的框；
+   ③ ≤800px 时列表变成横向滑动条（PRD 8.3），可点区域 ≥44px。 */
+.poster-dialog-scrim{position:fixed;inset:0;z-index:70;display:grid;place-items:center;padding:14px;background:rgba(41,39,32,.5);overflow:auto}
+.poster-dialog{position:relative;width:min(1080px,100%);max-height:94vh;overflow:auto;display:flex;flex-direction:column;gap:10px;padding:14px;border-radius:18px;background:#fffdf7;box-shadow:0 26px 64px rgba(41,31,13,.3);text-align:left;min-width:0}
+.poster-dialog-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.poster-dialog-head b{font-size:14px;color:#332f27}
+.poster-dialog-head small{font-size:11px;color:#8b8064;word-break:break-word}
+.poster-dialog-close{margin-left:auto;display:inline-flex;align-items:center;justify-content:center;width:44px;height:44px;border:1px solid #e3ddcc;border-radius:999px;background:#fff;color:#6a6252}
+.poster-dialog-controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11px;color:#6a6252}
+.poster-dialog-controls label{display:inline-flex;align-items:center;gap:6px}
+.poster-dialog-controls select{font-size:11px;padding:6px 8px;border:1px solid #d9d7e0;border-radius:8px;background:#fff;min-height:32px}
+.poster-dialog-controls small{font-size:10px;color:#8b8064;word-break:break-word}
+.poster-dialog-period-note{color:#9a6a1f;background:#fff6df;border-radius:8px;padding:5px 8px}
+.poster-dialog-perf{display:flex;gap:6px;flex-wrap:wrap;margin-left:auto}
+.poster-dialog-perf span{font-size:10px;font-weight:700;padding:4px 8px;border-radius:999px;background:#eee9dd;color:#6f6551}
+.poster-dialog-perf span[data-poster-dialog-perf-ok="true"]{background:#e6f5ea;color:#2f7a45}
+.poster-dialog-perf span[data-poster-dialog-perf-ok="false"]{background:#f7e3e0;color:#a5452f}
+.poster-dialog-body{display:grid;grid-template-columns:minmax(0,300px) minmax(0,1fr);gap:12px;align-items:start;min-width:0}
+.poster-dialog-templates{display:flex;flex-direction:column;gap:8px;max-height:74vh;overflow-y:auto;padding-right:4px;min-width:0}
+.poster-dialog-template{display:grid;grid-template-columns:76px minmax(0,1fr);gap:9px;align-items:center;padding:8px;border:1px solid #e3ddcc;border-radius:12px;background:#fff;text-align:left;min-height:44px;color:#3f3b33}
+.poster-dialog-template.is-selected{border-color:#cfa52e;background:#fdf6e3;box-shadow:0 0 0 1px #f0e2b6 inset}
+.poster-dialog-template.is-disabled{opacity:.55;cursor:not-allowed}
+.poster-dialog-template.is-mine{border-style:dashed}
+.poster-dialog-thumb{display:flex;align-items:center;justify-content:center;width:76px;height:88px;border:1px solid #e6e1d2;border-radius:8px;background:#fdfbf5;overflow:hidden}
+.poster-dialog-thumb img{display:block;max-width:100%;max-height:100%;width:auto;height:auto}
+.poster-dialog-thumb-hold{font-size:9px;color:#a79b7d;text-align:center;padding:4px;display:inline-flex;align-items:center;gap:4px}
+.poster-dialog-template-meta{display:flex;flex-direction:column;gap:3px;min-width:0}
+.poster-dialog-template-meta b{font-size:11px;color:#3f3b33;word-break:break-word}
+.poster-dialog-template-meta small{font-size:10px;color:#8b8064;word-break:break-word}
+.poster-dialog-template.is-disabled .poster-dialog-template-meta small{color:#a5452f}
+.poster-dialog-preview{display:flex;flex-direction:column;gap:8px;min-width:0}
+/* 预览：默认**整张放进框里**（老师要判断的是「这张好不好看」，不是「右上角画了什么」）——
+   图片同时受 max-width / max-height 约束并等比缩小，框本身限高，弹窗永远不顶破屏幕。 */
+.poster-dialog-preview-figure{margin:0;display:grid;place-items:center;border:1px solid #d9d7e0;border-radius:12px;background:#fff;min-height:320px;max-height:min(76vh,780px);overflow:hidden}
+.poster-dialog-preview-figure img{display:block;max-width:100%;max-height:min(76vh,780px);width:auto;height:auto}
+/* 长图（report-long）是唯一的例外：它可能有 2000~4000px 高，等比缩进框里会糊成一条 ——
+   改成「按宽度铺满 + 框内自己滚动」（与成长报告长图面板同一口径）。 */
+.poster-dialog[data-poster-dialog-selected-kind="report-long"] .poster-dialog-preview-figure{display:block;overflow:auto}
+.poster-dialog[data-poster-dialog-selected-kind="report-long"] .poster-dialog-preview-figure img{width:100%;max-height:none}
+.poster-dialog-hold{display:flex;align-items:center;justify-content:center;gap:6px;min-height:320px;font-size:11px;color:#8a7d5e;padding:20px;text-align:center}
+.poster-dialog-meta{display:flex;flex-direction:column;gap:6px;font-size:11px;color:#544d40;min-width:0}
+.poster-dialog-meta ul{margin:0;padding-left:14px;display:flex;flex-direction:column;gap:3px;word-break:break-word}
+.poster-dialog-notes{color:#8a7d5e;font-size:10px}
+.poster-dialog-warning{color:#a5452f;font-size:10px;margin:0}
+.poster-dialog-empty{display:flex;flex-direction:column;gap:8px;align-items:flex-start;font-size:11px;color:#8a7d5e;padding:8px 2px}
+.poster-dialog-empty b{font-size:13px;color:#3f3b33}
+.poster-dialog-empty p{margin:0;color:#544d40}
+.poster-dialog-empty small{color:#9a6a1f}
+@media(max-width:800px){
+  .poster-dialog{padding:10px;max-height:96vh}
+  .poster-dialog-body{grid-template-columns:minmax(0,1fr)}
+  .poster-dialog-templates{flex-direction:row;overflow-x:auto;overflow-y:hidden;max-height:none;padding-bottom:4px}
+  .poster-dialog-template{grid-template-columns:minmax(0,1fr);min-width:150px;max-width:180px}
+  .poster-dialog-thumb{width:100%;height:96px}
+  .poster-dialog-preview-figure{max-height:56vh}
+  .poster-dialog-preview-figure img{max-height:56vh}
+  .poster-dialog-controls select{min-height:44px}
+  .poster-dialog-perf{margin-left:0}
+  .poster-dialog-empty button{min-height:44px}
+}

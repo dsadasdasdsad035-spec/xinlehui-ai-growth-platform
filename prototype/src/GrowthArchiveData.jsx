@@ -38,7 +38,7 @@ import {
   archiveResidentStateView,
   archiveResidentView
 } from './data/archiveResident';
-import { ARCHIVE_SHARE_LINK_NOTE, archiveVersionLabel } from './data/archiveSummary';
+import { archiveVersionLabel } from './data/archiveSummary';
 // 移动端与性能（[第四步 US-212]）：分页窗口 / 首屏预算 / 滚动帧率 / 缩略图四项规则在
 // `data/archivePerformance.js`（零依赖纯函数），浏览器侧的执行（缩略图、首屏计时、滚动采帧）
 // 在 `services/archivePerformance.js`。这一页只渲染它们的产物，不自己写阈值。
@@ -380,6 +380,13 @@ import { videoSignedUrlView } from './data/videoSignedUrl';
 // 成片分享的授权闸门读的是第四步那一份归档摘要产物（`archiveStepView` → `archiveForwardView`
 // → `data/consent.js`），与图文分享**同一道校验**，这里不另写一套。
 import { archiveStepView } from './data/archiveSummary';
+// 一键转发海报弹窗（[海报 US-308] / FR-327 ~ FR-334）：「一键转发家长」不再只弹 toast，而是打开这个弹窗
+// （左侧模板缩略图列表 + 右侧 1:1 实时预览，缩略图用当前对象的真实数据渲染）。规则（入口匹配 / 适用性 /
+// 默认选中 / 空态 / 五类版式的装配）在 `data/posterDialog.js`，落笔在 `services/posterDialog.js`，
+// 弹窗本体是 `PosterDialog.jsx` —— 课后反馈第四步的入口（US-309）复用同一个组件；
+// 这一页只负责把「当前对象 + 当前周期筛选 + 已归档记录」传进去。
+import PosterDialog from './PosterDialog';
+import { POSTER_DIALOG_ENTRY_ARCHIVE } from './data/posterDialog';
 import { Button } from './ui';
 
 /**
@@ -2433,6 +2440,9 @@ export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,p
   const [videoPeriod,setVideoPeriod]=useState(ARCHIVE_PERIOD_DEFAULT);
   const [reportBusy,setReportBusy]=useState(false); const [reportNotice,setReportNotice]=useState('');
   const [reportDeleteOpen,setReportDeleteOpen]=useState(false); const [reportHistoryVersion,setReportHistoryVersion]=useState(0);
+  // 一键转发海报弹窗（[海报 US-308]）的开合：**弹窗自己的状态（选中模板 / 周期 / 预览 / 缩略图队列）在
+  // `PosterDialog` 内部**，这一页只管开合 —— 关掉再打开就是一次干净的「重新进入」（不用手写重置）。
+  const [posterDialogOpen,setPosterDialogOpen]=useState(false);
   // 可选项来自学员管理名单（与「学员管理」页同一份本地兜底），并上记录里出现过的名字 ——
   // 记录不会因为名单被改过就再也选不到（[US-205] 第 2、3 条：学员与班级都不写死）。
   const [management]=useState(loadStudentManagement);
@@ -2526,6 +2536,9 @@ export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,p
   },[thumbStates,expectedImages]);
   // 缩略图状态回填（`useCallback` 是为了让卡片的 IntersectionObserver 不因每次渲染换回调而重建）。
   const noteThumb=useCallback((key,state)=>setThumbStates(current=>current[key]===state?current:{...current,[key]:state}),[]);
+  // 海报弹窗的对象（学员 / 班级）：**memo 住引用** —— 弹窗每收到一个新对象都会重建「模板清单 + 五类版式的
+  // 装配」，普通的重渲染（比如时间线缩略图回填）不该让那 8 份 plan 白算一遍。
+  const posterDialogObjectProp=useMemo(()=>({target:view.target,name:view.name,students:management.students}),[view.target,view.name,management]);
   // 数据就绪时刻：时间线第一次真的有内容可渲染的那一刻（首屏计时的起点）。
   useEffect(()=>{
     if(showTimeline&&view.count>0&&!perfProbeRef.current.dataAt) perfProbeRef.current.dataAt=nowMs();
@@ -2712,7 +2725,23 @@ export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,p
             <b>{row.label}</b><span data-archive-perf-row-value="true">{row.value||'待测'}{row.budget?` / ${row.budget}`:''}</span><em>{row.text}</em>
           </li>)}</ul>
         </section>
-        <div className="report-footer"><span>家长看到的与这里同一份内容：只含成品素材与老师确认后的点评。</span><div><button onClick={downloadAssets} data-archive-download="true"><Download size={17}/>下载成品</button><button className="primary" onClick={()=>setToast(ARCHIVE_SHARE_LINK_NOTE)}><MessageSquareText size={17}/>一键转发家长</button></div></div>
+        <div className="report-footer"><span>家长看到的与这里同一份内容：只含成品素材与老师确认后的点评。</span><div><button onClick={downloadAssets} data-archive-download="true"><Download size={17}/>下载成品</button><button className="primary" onClick={()=>setPosterDialogOpen(true)} data-archive-forward-poster="true"><MessageSquareText size={17}/>一键转发家长</button></div></div>
+        {/* 「一键转发家长」打开的是**海报弹窗**（[海报 US-308]）：数据来源 = 当前对象 + 当前周期筛选。
+            空态（没有归档记录）在弹窗里给「去创建课后反馈」，这里不预判。 */}
+        {posterDialogOpen?<PosterDialog
+          entry={POSTER_DIALOG_ENTRY_ARCHIVE}
+          object={posterDialogObjectProp}
+          periodFilter={period}
+          records={records}
+          lessons={lessonList}
+          tokens={shareTokens}
+          videoRecords={videoRecords}
+          teacherName={teacherName}
+          orgName={DEFAULT_ORG_NAME}
+          logo={archivePosterLogo}
+          navigate={navigate}
+          onClose={()=>setPosterDialogOpen(false)}
+        />:null}
       </>:null}
     </section>
   </>;

@@ -3895,6 +3895,61 @@ US-303 补的是后半截，两个模块：
   且如果调用点写了 `.catch(()=>{})` 就变成「390px 断言静默跑在 1440px 上」。只传两个参数（用默认页面会话）。
   390px 段先断言 `window.innerWidth === 390`，再断言没有横向溢出。
 
+## 一键转发海报弹窗：模板清单 · 适用性 · 缩略图队列（[海报 US-308] / FR-327 ~ FR-334）
+
+「点一键转发家长 → 打开弹窗，左侧选模板、右侧看 1:1 实时预览」。三层分工（沿「规则在 data / 落笔在
+services / 界面只渲染产物」）：
+
+- `src/data/posterDialog.js`（data 层纯函数，可 `node` 直跑）= 入口匹配 / 适用性 / 默认选中 / 空态 / 周期口径 / **五类版式分派**：
+  - **`posterDialogObject()` 把「档案页选中的对象」解析成学员 / 班级**：学员对象带**班级归属与班级名单**
+    （班级版式在个人档案里也能出图 —— 用这位学员的班级）；班级名优先查学员名单，查不到时退回记录自带的
+    `className`。**别把 `false` 交给 `str()`**（`str(false)` = "false"，班级名会变成假的 —— 本轮真踩，Node 断言抓到的）。
+  - **`posterDialogTemplateRows()` 是适用性的唯一真源**（三条，逐条给可读原因）：① 入口（`entryScope` 命中
+    `archive` / `feedback` / `both`）；② 主体（**班级对象**下按学员生成的版式置灰；学员对象下班级版式仍可用）；
+    ③ 数据（学员对象 + 班级版式但**没有班级归属** → 置灰，`buildPosterDialogPlan` 那边也不会拿学员名当班级名）。
+    停用的模板（`enabled === false`）**不出现**（`selectablePosterTemplates` 过滤）。
+  - **课后反馈入口的置灰文案就是验收原文**：`POSTER_DIALOG_ARCHIVE_ONLY_NOTE = '需在成长档案中生成'`
+    （US-309 复用同一条）；逆向那条（只服务反馈的版式在档案入口置灰）也先立在这里。
+  - **默认选中 = 模板库的 `isDefault` → 第一张单作品 → 第一张可用的**（`posterDialogSelectTemplate()`
+    是选择守卫：换对象 / 换入口 / 模板被停用后老选择不适用就回落，别让界面停在「选不中的灰选项」上）。
+  - **周期口径**：海报只能表达 `半学期 / 一学期 / 一年度`；档案页的周期筛选是 `全部（默认档）` 时
+    `posterDialogPeriod()` 回落 `ARCHIVE_PERIOD_DEFAULT`，并由 `posterDialogPeriodNote()` 把这件事写在弹窗里
+    （**不静默换周期**）。空态分两种口径：`none`（一条归档都没有 → 去创建课后反馈）/`period`
+    （只是不在这个周期 → 提示换周期，并如实报「另有 N 条在其他周期」）。
+  - **分派只有一份**：`buildPosterDialogPlan({kind, template, object, period, ...})` 按模板的 `kind` 交给
+    `buildPosterSingle/Period/Class/VideoCover/ReportLongPlan`，`template` 一律透传（模板库选中的那一套）。
+    单作品取「本周期**最近一条有成品图**的记录」（占位不该当主角）；反馈入口由调用方把本次课次放进
+    `object.record`（`posterDialogSubjectRecord` 优先它）。
+  - **`posterDialogPlanKey(plan)` 是预览 / 缩略图的重绘键**：五类版式的字段各不相同，按 `kind` 分别取
+    （漏字段 = 「换了内容预览不动」，多算 = 白重绘，前者是错的、后者只是慢）。
+  - **两条时间预算是常量**：`POSTER_DIALOG_FIRST_PREVIEW_BUDGET_MS = 3000` / `POSTER_DIALOG_SWITCH_BUDGET_MS = 300`；
+    `posterDialogPerfChecks()` 只认**真量到的**（`Number(null)` 是 0 —— 用 `Number.isFinite(Number(x))` 判
+    「还没测」会读成「0ms、达标」，本轮真踩）。缩略图 `POSTER_DIALOG_THUMB_SCALE = 0.25`（PRD 9.5）。
+- `src/services/posterDialog.js` = **按 `kind` 分派到五支 `renderPosterX`**（最终都进同一个 `services/poster.js`
+  的 `renderPoster`，预览 / 缩略图 / 导出只差 `scale`）—— 组件不该知道「哪一类用哪个渲染函数」，
+  US-309 的另一处入口复用同一支分派就不会分叉出第二份渲染实现。
+- `src/PosterDialog.jsx` = 弹窗本体（**两处入口共用**，别在组件里写「成长档案专属」的东西）：
+  - **先预览、后缩略图**：打开弹窗先把选中模板的 1× 预览画出来，8 张 0.25× 缩略图排在它后面
+    **逐张**画（`preview.phase === 'ready' || 'failed'` 之后才排队列）—— 一口气发 9 个渲染会把首张拖慢。
+  - 预览区**高度固定 + 加载态**：`pending` 时显示「正在生成第一张预览… / 正在换模板…」，
+    不闪白也不跳高度；换模板的耗时从**点击那一刻**记账（`perfRef.requestAt`），周期变化不算「换模板」。
+  - 预览默认**整张放进框里**（max-width + max-height 等比缩小）；长图（`data-poster-dialog-selected-kind="report-long"`）
+    是唯一例外：按宽度铺满 + 框内滚动（与成长报告长图面板同一口径）。≤800px 模板列表变横向滑动条。
+  - 缩略图 object URL 在换模板与关闭弹窗时都要 `releasePosterDialogUrl` 回收（`thumbsRef` 记全部地址）。
+- 档案页（`GrowthArchiveData.jsx`）只做三件事：`posterDialogOpen` 开合、把**当前对象 + 当前周期筛选 +
+  已归档记录**传进去、以及把对象 prop `useMemo` 住（弹窗每收到新对象都会重建 8 份 plan，别让时间线
+  缩略图回填这类普通重渲染白算）。「一键转发家长」不再是 `setToast(...)`。
+- 验收口径：`/tmp/assert-us097.mjs`（Node，**94 项**：常量真源 / 对象解析 / 记录窗口 / 适用性 / 守卫 /
+  空态 / 周期 / 8 份 plan 的真实数据 / 重绘键 / 性能读数三种口径 / **源码级分层纪律**）+ 
+  `/tmp/assert-us097-browser.mjs`（CDP，**106 项**：真机链路走到成长档案 → 打开弹窗（首张预览面板 73ms、
+  脚本计时 193ms，均 ≤3s）→ 8 张缩略图全部就绪（270×360 / 270×480）→ **切换 8 套模板每套都出真图**
+  （画布 / 模板 id / 墨迹 0.067~0.98、39~59 个色块 / 独立重算同源）→ 换模板重绘 23~100ms（≤300ms）→
+  周期跟随与回落说明 → 班级对象下 6 套置灰 → 390px 无横向溢出且可点区域 ≥44px → 空态与「去创建课后反馈」
+  → 同页别的海报面板不受影响 → console 干净）。截图 470~476。
+- **「去创建课后反馈」会让页面离开成长档案，而刷新后回不到档案页**（老师侧到档案的唯一入口是四步流程，
+  导航状态在内存里）—— 浏览器脚本里这类「离开当前页」的用例要排在最后，别在中途 `Page.reload` 之后
+  再指望能回到档案页。
+
 ## 容易踩的坑
 
 - **「每次渲染后量一次」的测量签名里不能有时间戳**（US-224 真踩）：`useEffect(()=>{measure()})`
