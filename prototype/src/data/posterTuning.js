@@ -19,7 +19,7 @@
 //      「老师把标题清空」与「老师没改标题」是两件事，前者不该把标题位变成空白。
 
 import { formatLessonDateDots, normalizeLessonDate } from './lessons';
-import { POSTER_KIND_LABELS } from './posterTemplates';
+import { POSTER_KIND_LABELS, POSTER_VARIABLE_KEYS, normalizePosterSpec } from './posterTemplates';
 
 const isPlainObject = (value) => !!value && typeof value === 'object' && !Array.isArray(value);
 const str = (value) => String(value === null || value === undefined ? '' : value).trim();
@@ -97,6 +97,13 @@ export const POSTER_TUNING_TITLE_NOTE = (text) => `标题已改为老师填写�
 export const POSTER_TUNING_QUOTE_NOTE = (text) => `金句位已改为老师手写的寄语「${str(text)}」（不再是点评原文的截取）。`;
 export const POSTER_TUNING_DATE_NOTE = (text) => `日期已改为 ${str(text)}（默认取课次日期）。`;
 export const POSTER_TUNING_QR_NOTE = '二维码区已按老师的设置隐藏（不画、也不留空白占位）。';
+/**
+ * 「这套模板本身就没画二维码」时的原因（[海报 US-310b] 起会出现这种模板：老师把一张隐藏了二维码的图
+ * 另存成了自己的模板）。与「没有二维码位」分开说：**一个是真的没有这个位，一个是有位但模板关掉了** ——
+ * 后者换一套模板就能改，前者换哪套都一样。这一条也是「不给一个改了没反应的勾选框」那条纪律的延伸：
+ * 勾上不会把码画出来（覆盖只能关不能开），于是置灰并写清原因。
+ */
+export const POSTER_TUNING_QRCODE_TEMPLATE_OFF = '这套模板本身没有画二维码（是在模板里关掉的）：换成别的模板，或让管理员在「海报模板库」里打开它。';
 export const POSTER_TUNING_TRUNCATED_NOTE = (label, limit) => `${label}超过 ${limit} 字上限：超出部分已截断（逐字保留前 ${limit} 字）。`;
 export const POSTER_TUNING_LOCKED_NOTE_INLINE = '微调只改文案与作品：坐标 / 字体 / 配色属于模板，改动不会生效。';
 export const POSTER_TUNING_RESET_LABEL = '恢复默认文案';
@@ -140,9 +147,13 @@ function posterTuningDateSlotId(plan) {
 }
 
 /** 二维码位：`type === 'qrcode'`，或没有有效分享时那几个占位位（`qr` / `qrPending`）。 */
-function posterTuningQrSlotIds(plan) {
+function posterTuningQrSlots(plan) {
   return posterTuningSlots(plan)
-    .filter((item) => isPlainObject(item) && (item.type === 'qrcode' || item.id === 'qr' || item.id === 'qrPending'))
+    .filter((item) => isPlainObject(item) && (item.type === 'qrcode' || item.id === 'qr' || item.id === 'qrPending'));
+}
+
+function posterTuningQrSlotIds(plan) {
+  return posterTuningQrSlots(plan)
     .map((item) => str(item.id))
     .filter((id, index, list) => id && list.indexOf(id) === index);
 }
@@ -204,6 +215,9 @@ export function posterTuningTargets(plan) {
   const quoteSlotId = posterTuningQuoteSlotId(value);
   const dateSlotId = posterTuningDateSlotId(value);
   const qrSlotIds = posterTuningQrSlotIds(value);
+  // 「这一张现在画不画二维码」：模板自己关掉的（US-310b 起会有这种模板）与画着的分开 ——
+  // 关掉的那一种**不给勾选框**（勾上也不会画出来：覆盖只写 visible:false），置灰并写清原因。
+  const qrVisible = posterTuningQrSlots(value).some((slot) => slot.visible !== false);
   const artworks = posterTuningArtworkItems(value);
   return {
     kind,
@@ -229,9 +243,10 @@ export function posterTuningTargets(plan) {
     },
     qrcode: {
       id: POSTER_TUNING_FIELD_QRCODE,
-      available: qrSlotIds.length > 0,
+      available: qrSlotIds.length > 0 && qrVisible,
       slotIds: qrSlotIds,
-      reason: qrSlotIds.length ? '' : '这套版式没有二维码位。'
+      visible: qrVisible,
+      reason: qrSlotIds.length ? (qrVisible ? '' : POSTER_TUNING_QRCODE_TEMPLATE_OFF) : '这套版式没有二维码位。'
     },
     artworks: {
       id: POSTER_TUNING_FIELD_ARTWORKS,
@@ -283,21 +298,36 @@ export function normalizePosterTuning(raw = null) {
   };
 }
 
-/** 面板的**默认值读数**：这一张海报当前的标题文案 / 金句原文 / 日期（老师看到的就是「改之前」的样子）。 */
+/**
+ * 面板的**默认值读数**：这一张海报当前的标题文案 / 金句 / 日期（老师看到的就是「改之前」的样子）。
+ *
+ * 标题与金句都取**画在那一格上的字**（`posterTuningSlotText`）：[海报 US-310b] 起「我的海报模板」
+ * 可能把文案存成了字面量，那时 `plan.quote.text` 仍然是点评原文，而图上画的是模板里那一句 ——
+ * 读数必须跟着图走，否则占位提示会指着一个画不出来的值。
+ */
 export function posterTuningDefaults(plan) {
   const value = isPlainObject(plan) ? plan : {};
+  const quoteSlotId = posterTuningQuoteSlotId(value);
+  const drawnQuote = quoteSlotId ? posterTuningSlotText(value, quoteSlotId) : '';
   const quoteText = value.quote && typeof value.quote === 'object' ? str(value.quote.text) : str(value.quote);
   return {
     title: posterTuningTitleText(value),
-    quote: quoteText,
+    // 没有金句位时回落「这一次的点评金句」（那个字段本来就不可编辑，读数只是不上当）。
+    quote: drawnQuote || quoteText,
     date: str(value.dateDots) || formatLessonDateDots(value.date)
   };
 }
 
 /** 这一张海报当前的标题文案（标题位模板替换变量后的**字面口径**：只换得出值的变量）。 */
 export function posterTuningTitleText(plan) {
+  return posterTuningSlotText(plan, 'title');
+}
+
+/** 某个文字位**画出来的字**（模板串里认得出来的变量换成真值，认不出来 / 没值的保留原文）。 */
+export function posterTuningSlotText(plan, slotId) {
   const value = isPlainObject(plan) ? plan : {};
-  const slot = posterTuningSlots(value).find((item) => isPlainObject(item) && item.id === 'title' && item.type === 'text');
+  const id = str(slotId);
+  const slot = posterTuningSlots(value).find((item) => isPlainObject(item) && item.type === 'text' && str(item.id) === id);
   if (!slot) return '';
   const data = isPlainObject(value.data) ? value.data : {};
   const context = {
@@ -306,7 +336,10 @@ export function posterTuningTitleText(plan) {
     周期: str(data.period) || str(value.periodLabel),
     班级名: str(data.className) || str(value.className),
     机构名: str(data.orgName),
-    老师姓名: str(data.teacherName)
+    老师姓名: str(data.teacherName),
+    // 金句与日期也要解得出来：`{点评金句}` 是金句位的默认写法，解不出来时读数会露出一个占位符。
+    点评金句: str(data.quote) || str(value.quote && value.quote.text),
+    日期: str(value.dateDots) || formatLessonDateDots(data.date || value.date)
   };
   return String(slot.template || '').replace(/\{([^{}]+)\}/g, (whole, name) => {
     const key = str(name);
@@ -544,4 +577,89 @@ function posterClassWallGridShape(count) {
   const columns = Math.ceil(Math.sqrt(total));
   const rows = Math.ceil(total / columns);
   return { columns, rows, capacity: columns * rows, count: total };
+}
+
+// ---------------------------------------------------------------------------
+// 另存为我的海报模板（[海报 US-310b] / FR-353、FR-354）：一份 plan → 一份可保存的 spec
+//
+// 「老师把这张图调好 → 存成我的模板」存下来的必须是**他此刻看到的那一份文案与版式**：
+//   · **进模板**的三项（`POSTER_PRESET_SAVED_FIELDS`）：标题 / 金句 / 二维码显隐 ——
+//     标题与二维码显隐微调已经写在 spec 里，金句写在 `data` 里，所以这里把它落成**字面量**
+//     （`{点评金句}` 换成老师写的那一句）：存一份「模板 + 覆盖值」的结构要新开一个云表列，
+//     而「所见即所存」是这一仓的既有口径（另存为我的装裱模板同一个写法）。
+//     存下来的字面量同时是**这套模板的默认文案**：下一张海报可以照它出图，也可以在微调面板里改。
+//   · **不进模板**的两项（`POSTER_PRESET_UNSAVED_FIELDS`）：
+//       `date` —— **日期永远取课次日期**（US-038 的既有口径：模板只承载日期的格式与位置，
+//                 不承载具体日期值）。老师改的日期只作用于这一张图，另存不会把它固定下来。
+//       `artworks` —— 那是「这一次收哪几幅」的数据，下一张海报的名单不同，存一份名单只会让下一次画错。
+//
+// 两条结构性写法，别改：
+//   ① 底稿取 `plan.baseSpec`（**模板自己的那份 spec**）而不是 `plan.spec`：后者带着这一次的数据占位
+//      （作品缺失时的「作品尚未同步完成」、没有分享链接时的二维码占位文字、班级墙按人数算的网格）。
+//      把占位文案或某一班的网格存进模板，下一张图就永远是那一版了。
+//   ② 只有白名单里的字段会从「渲染层真正读到的那一份」抄进模板（文字位的 `template` / 二维码位的
+//      `visible`）—— 坐标 / 字体 / 配色逐槽保持模板原值，断言可以用逐槽 diff 证明这一点。
+// ---------------------------------------------------------------------------
+
+/** 微调里**进模板**的三项（顺序即回执文案里的顺序）。 */
+export const POSTER_PRESET_SAVED_FIELDS = [
+  POSTER_TUNING_FIELD_TITLE,
+  POSTER_TUNING_FIELD_QUOTE,
+  POSTER_TUNING_FIELD_QRCODE
+];
+
+/** 微调里**不进模板**的项（数据与日期）：见上面的解释。 */
+export const POSTER_PRESET_UNSAVED_FIELDS = [POSTER_TUNING_FIELD_DATE, POSTER_TUNING_FIELD_ARTWORKS];
+
+/** 回执文案的固定后半句（哪些项不在模板里、为什么）—— 界面不自己拼这句话。 */
+export const POSTER_PRESET_UNSAVED_NOTE = '不含「日期」（始终取课次日期，与展签同一口径）与「收录哪些作品」（那是这一次的数据）。';
+
+/** 保存成功的回执（哪几项是老师改过的、其余沿用模板默认；界面不自己拼这句话）。 */
+export function posterPresetSaveNote(plan) {
+  const applied = isPlainObject(plan) && isPlainObject(plan.tuning) && Array.isArray(plan.tuning.applied) ? plan.tuning.applied : [];
+  const saved = POSTER_PRESET_SAVED_FIELDS.filter((id) => applied.includes(id)).map((id) => POSTER_TUNING_FIELD_LABELS[id]);
+  const head = saved.length
+    ? `含改过的 ${saved.join(' / ')}（其余沿用模板默认）`
+    : '当前一项都没改：存下来的是这套模板的默认样式';
+  return `${head}；${POSTER_PRESET_UNSAVED_NOTE}`;
+}
+
+/** 变量表的反向查找：字段名 → 模板里写的那个占位符（`quote` → `{点评金句}`）。真源仍是 `POSTER_VARIABLE_KEYS`。 */
+function posterVariableToken(field) {
+  const name = Object.keys(POSTER_VARIABLE_KEYS).find((key) => POSTER_VARIABLE_KEYS[key] === field) || '';
+  return name ? `{${name}}` : '';
+}
+
+/**
+ * 可保存成模板的 spec：**模板自己的版式**（`baseSpec`）+ 老师改过的标题 / 金句 / 二维码显隐。
+ * 输入是一份（可能已经过 `applyPosterTuning` 的）plan；输出的是一份过 `normalizePosterSpec` 的 spec，
+ * 可以直接写进模板记录、也可以直接渲染。没有 plan 时返回默认版式（不抛错）。
+ */
+export function posterPresetSpecFromPlan(plan) {
+  const value = isPlainObject(plan) ? plan : {};
+  const base = normalizePosterSpec(value.baseSpec || value.spec);
+  const rendered = normalizePosterSpec(value.spec);
+  const tuning = isPlainObject(value.tuning) ? value.tuning : {};
+  const applied = Array.isArray(tuning.applied) ? tuning.applied : [];
+  const values = isPlainObject(tuning.values) ? tuning.values : {};
+  const shownById = new Map(rendered.slots.map((slot) => [slot.id, slot]));
+  const quoteText = applied.includes(POSTER_TUNING_FIELD_QUOTE) ? str(values[POSTER_TUNING_FIELD_QUOTE]) : '';
+  const quoteToken = posterVariableToken('quote');
+  const slots = base.slots.map((slot) => {
+    const shown = shownById.get(slot.id);
+    let next = slot;
+    // ① 标题：微调已经把这一格的 `template` 换成了老师填的字面文案 —— 照抄渲染层读到的那一份。
+    if (slot.type === 'text' && slot.id === 'title' && shown && shown.type === 'text' && applied.includes(POSTER_TUNING_FIELD_TITLE)) {
+      next = { ...next, template: shown.template };
+    }
+    // ② 金句：渲染用的是 `data.quote`（微调写进去的）—— 模板里落成字面量，含 {点评金句} 的位都换。
+    if (slot.type === 'text' && quoteText && quoteToken && String(next.template).includes(quoteToken)) {
+      next = { ...next, template: String(next.template).split(quoteToken).join(quoteText) };
+    }
+    // ③ 日期**不写进模板**（`{日期}` 原样留着）：日期永远取课次日期（US-038 的口径）。
+    // ④ 二维码显隐：照抄渲染层读到的那一份（关掉 = false；没关就保持模板原值）。
+    if (slot.type === 'qrcode' && shown && shown.visible === false) next = { ...next, visible: false };
+    return next;
+  });
+  return normalizePosterSpec({ ...base, slots });
 }

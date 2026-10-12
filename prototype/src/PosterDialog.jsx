@@ -20,7 +20,22 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Archive, Loader2, MessageSquareText, Plus, X } from 'lucide-react';
 import { Button } from './ui';
 import { nowMs } from './services/archivePerformance';
-import { loadPosterTemplates } from './data/posterTemplates';
+import {
+  POSTER_TEMPLATE_DELETE_NOTE,
+  POSTER_TEMPLATE_MINE_LABEL,
+  POSTER_TEMPLATE_NAME_MAX,
+  POSTER_TEMPLATE_SCOPE_DENIED_TEXT,
+  buildTeacherPosterTemplate,
+  editablePosterTemplates,
+  loadPosterTemplates,
+  posterTemplateEditableBy,
+  posterTemplateNameIssue,
+  posterTemplateScopeLabel,
+  posterTemplateViewer,
+  renamePosterTemplate
+} from './data/posterTemplates';
+import { deletePosterTemplate, mirrorPosterTemplateLocally, saveRemotePosterTemplate } from './services/posterTemplatesApi';
+import { DEFAULT_ORG_ID } from './data/lessons';
 import { listVideoJobs } from './services/videoJobQueue';
 import {
   POSTER_TUNING_ARTWORKS_MIN_NOTE,
@@ -35,7 +50,10 @@ import {
   POSTER_TUNING_QUOTE_MAX_CHARS,
   POSTER_TUNING_RESET_LABEL,
   POSTER_TUNING_TITLE_MAX_CHARS,
+  POSTER_PRESET_UNSAVED_NOTE,
   applyPosterTuning,
+  posterPresetSaveNote,
+  posterPresetSpecFromPlan,
   posterTuningDefaults,
   posterTuningTargets
 } from './data/posterTuning';
@@ -75,6 +93,7 @@ import {
  * @param {'archive'|'feedback'} props.entry 入口（成长档案 / 课后反馈第四步）
  * @param {{target?:string,name?:string,record?:object,students?:Array}} props.object 档案页当前选中的对象
  * @param {string} props.periodFilter 档案页的「周期筛选」值（跟随它；`全部` 时回落默认周期并说明）
+ * @param {string} props.teacherName 当前登录老师的姓名（可见性、个人模板的 ownerKey 与落款都用它）
  */
 export default function PosterDialog({
   entry = POSTER_DIALOG_ENTRY_ARCHIVE,
@@ -87,6 +106,8 @@ export default function PosterDialog({
   jobs = null,
   templates = null,
   teacherName = '',
+  teacherId = '',
+  orgId = '',
   orgName = '',
   logo = '',
   navigate = null,
@@ -101,11 +122,23 @@ export default function PosterDialog({
   // 「文案与作品微调」（[海报 US-310a] / FR-335 ~ FR-339）：老师填的五个字段。
   // 空值 = 不改这一项（留空 = 用原值），因此初始态是「原样」，一个字段都不覆盖。
   const [tuning, setTuning] = useState({ title: '', quote: '', date: '', qrcode: true, artworks: [] });
+  // 模板库这一份**归弹窗自己管**（[海报 US-310b]）：另存 / 重命名 / 删除都会改它，
+  // 改完就用本机镜像重读一次（`savePosterTemplate` 先写镜像、再推云端）—— 于是「退出重进」看到的
+  // 就是刚存下的那一份，不依赖父组件的 state 是否记得刷新。调用方显式传了 `templates` 才以它为准。
+  const [library, setLibrary] = useState(() => (Array.isArray(templates) && templates.length ? templates : loadPosterTemplates()));
   const thumbsRef = useRef({});
   const perfRef = useRef({ openAt: nowMs(), requestAt: nowMs(), request: 'open', firstDone: false });
   const tuningSignatureRef = useRef('');
 
-  const templateList = useMemo(() => (Array.isArray(templates) ? templates : loadPosterTemplates()), [templates]);
+  // 观察者（可见性 + 个人模板的归属）：身份串用当前登录老师 —— 与装裱同一套规则（`teacherIdentityKeys`）。
+  // 「我的模板」的 ownerKey 落的就是这里传出去的姓名；别人的个人模板因此不会出现在列表里。
+  const viewer = useMemo(() => posterTemplateViewer({
+    role: 'teacher',
+    teacherName,
+    teacherId,
+    orgId: orgId || DEFAULT_ORG_ID
+  }), [teacherName, teacherId, orgId]);
+  const templateList = library;
   const videoJobList = useMemo(() => (Array.isArray(jobs) ? jobs : listVideoJobs()), [jobs]);
   const videoRecordList = useMemo(() => (Array.isArray(videoRecords) ? videoRecords : []), [videoRecords]);
   // 对象（学员 / 班级）与模板清单：规则全在 data 层，这里只读产物。
@@ -115,7 +148,7 @@ export default function PosterDialog({
     record: object && object.record,
     students: (object && object.students) || []
   }), [object]);
-  const rows = useMemo(() => posterDialogTemplateRows({ templates: templateList, entry, object: subject }), [templateList, entry, subject]);
+  const rows = useMemo(() => posterDialogTemplateRows({ templates: templateList, entry, object: subject, viewer }), [templateList, entry, subject, viewer]);
   const selectedId = useMemo(() => posterDialogSelectTemplate(rows, pickedId), [rows, pickedId]);
   const selectedRow = rows.find((row) => row.id === selectedId) || null;
   const empty = useMemo(() => posterDialogEmptyView({ records, object: subject, period }), [records, subject, period]);
@@ -270,8 +303,7 @@ export default function PosterDialog({
     if (!row.applicable || row.id === selectedId) return;
     perfRef.current = { ...perfRef.current, requestAt: nowMs(), request: 'switch' };
     setPickedId(row.id);
-  };
-  const pickPeriod = (value) => {
+  };  const pickPeriod = (value) => {
     // 换周期不是「换模板」：不记进换模板的耗时读数（那是 FR-362 的口径）。
     perfRef.current = { ...perfRef.current, request: 'idle' };
     setPeriod(value);
@@ -295,6 +327,153 @@ export default function PosterDialog({
   };
   const resetTuning = () => setTuning({ title: '', quote: '', date: '', qrcode: true, artworks: [] });
 
+  // ---- 我的海报模板：另存为 / 重命名 / 删除（[海报 US-310b]）--------------------------------
+  // 「老师把这张图调好 → 存成我的模板」：三件事都只对自己的个人模板开放 —— 平台与机构模板由管理员
+  // 在「海报模板库」里维护，这里**连编辑入口都不渲染**（写入侧再由 `posterTemplateEditableBy` 拦一道）。
+  const myTemplates = useMemo(() => editablePosterTemplates(templateList, viewer), [templateList, viewer]);
+  const [mineForm, setMineForm] = useState({ name: '', description: '' });
+  // 保存 / 重命名 / 删除的回执与拒绝原因（内联文案，不只靠 2.6 秒的 toast）。
+  const [mineNotice, setMineNotice] = useState('');
+  const [mineSaving, setMineSaving] = useState(false);
+  const [renamingMineId, setRenamingMineId] = useState('');
+  const [renameMineValue, setRenameMineValue] = useState('');
+
+  const saveAsMyTemplate = async () => {
+    if (mineSaving) return;
+    if (!selectedPlan || !selectedRow) { setMineNotice('先选一张能出图的模板，再保存为我的海报模板。'); return; }
+    const problem = posterTemplateNameIssue(mineForm.name, templateList);
+    if (problem) { setMineNotice(problem); return; }
+    // 存的是**老师此刻看到的那一张**：模板自己的版式 + 改过的标题 / 金句 / 日期 / 二维码显隐。
+    // 数据占位（作品缺失文案、别人的网格）与「收录哪些作品」都不进模板 —— 理由写在 posterTuning.js。
+    const spec = posterPresetSpecFromPlan(selectedPlan);
+    const note = posterPresetSaveNote(selectedPlan);
+    const preset = buildTeacherPosterTemplate({
+      name: mineForm.name,
+      description: mineForm.description,
+      spec,
+      kind: selectedRow.kind,
+      entryScope: selectedRow.entryScope,
+      viewer
+    });
+    if (!posterTemplateEditableBy(preset, viewer)) { setMineNotice(POSTER_TEMPLATE_SCOPE_DENIED_TEXT); return; }
+    setMineSaving(true);
+    // 顺序是刻意的：**先落本机镜像、先更新界面，再把写入推给云端**（服务层的 `savePosterTemplate`
+    // 把这两步合在一起，弹窗要的是「不等云端就能看到自己的模板」—— 云端表还没建立时会一直等）。
+    mirrorPosterTemplateLocally(preset);
+    setLibrary(loadPosterTemplates());
+    // 保存后直接选用这一套，并把「本次微调」清掉：微调已经并进模板 spec，留着只会让面板继续显示
+    // 「已改 N 项」（像素不变 —— 新模板的 spec 就是从当前这张图构造的，两条路径渲染结果一致）。
+    setTuning({ title: '', quote: '', date: '', qrcode: true, artworks: [] });
+    setPickedId(preset.id);
+    setMineForm({ name: '', description: '' });
+    setMineNotice(`已保存我的海报模板「${preset.name}」：${note}`);
+    try {
+      await saveRemotePosterTemplate(preset);
+    } catch {
+      setMineNotice((current) => `${current}（云端暂未连通，已保存到本机）`);
+    } finally {
+      setMineSaving(false);
+    }
+  };
+  const startRenameMineTemplate = (preset) => {
+    if (!posterTemplateEditableBy(preset, viewer)) { setMineNotice(POSTER_TEMPLATE_SCOPE_DENIED_TEXT); return; }
+    setMineNotice('');
+    setRenamingMineId(preset.id);
+    setRenameMineValue(preset.name || '');
+  };
+  const commitRenameMineTemplate = async (preset) => {
+    if (!posterTemplateEditableBy(preset, viewer)) { setMineNotice(POSTER_TEMPLATE_SCOPE_DENIED_TEXT); return; }
+    const problem = posterTemplateNameIssue(renameMineValue, templateList, { exceptId: preset.id });
+    if (problem) { setMineNotice(problem); return; }
+    const next = renamePosterTemplate(preset, renameMineValue);
+    // 与另存同一条顺序：先本机镜像 + 界面，再推云端（名字改了但云端没同步不阻断老师）。
+    mirrorPosterTemplateLocally(next);
+    setLibrary(loadPosterTemplates());
+    setRenamingMineId('');
+    setMineNotice(`已把我的海报模板重命名为「${next.name}」；模板 id 与版式都没变，已导出或转发过的海报不受影响。`);
+    try { await saveRemotePosterTemplate(next); } catch { setMineNotice((current) => `${current}（云端暂未同步）`); }
+  };
+  const removeMineTemplate = async (preset) => {
+    if (!posterTemplateEditableBy(preset, viewer)) { setMineNotice(POSTER_TEMPLATE_SCOPE_DENIED_TEXT); return; }
+    // 删除只从可选列表里移除：已经导出的海报是图片文件，不是对模板的引用。
+    setLibrary(templateList.filter((item) => item.id !== preset.id));
+    if (renamingMineId === preset.id) setRenamingMineId('');
+    if (selectedId === preset.id) setPickedId('');
+    setMineNotice(`已删除我的海报模板「${preset.name}」。${POSTER_TEMPLATE_DELETE_NOTE}`);
+    // 服务层在这一句里**先清本机镜像**（断网也真的删掉），再尽力推云端。
+    try { await deletePosterTemplate(preset.id, { existing: templateList }); } catch { setMineNotice((current) => `${current}（本机已删除，云端删除未成功）`); }
+  };
+  const minePanel = empty.on ? null : (
+    <section
+      className="poster-dialog-mine"
+      data-poster-mine="true"
+      data-poster-mine-count={String(myTemplates.length)}
+      data-poster-mine-owner={viewer.teacherName}
+      data-poster-mine-rows={String(rows.filter((row) => row.mine).length)}
+    >
+      <header className="poster-dialog-mine-head">
+        <b>我的海报模板</b>
+        <small data-poster-mine-hint="true">{myTemplates.length
+          ? `共 ${myTemplates.length} 套，排在上面列表的最前；平台与机构模板由管理员在「海报模板库」里维护，老师端不显示这些模板的编辑入口。`
+          : '还没有自己的模板：把当前这一张（含微调过的文案）存一套，下次进来自动排在最前面。'}</small>
+      </header>
+      {myTemplates.map((preset) => {
+        const editingName = renamingMineId === preset.id;
+        return (
+          <div className="poster-dialog-mine-row" key={preset.id} data-poster-mine-row={preset.id} data-poster-mine-row-scope={preset.scope} data-poster-mine-row-kind={preset.kind}>
+            <span className="poster-dialog-mine-badge" data-poster-mine-badge="true" data-poster-mine-scope-label={posterTemplateScopeLabel(preset)}>{posterTemplateScopeLabel(preset)}</span>
+            {editingName ? (
+              <>
+                <input
+                  type="text"
+                  className="poster-dialog-mine-input"
+                  data-poster-mine-rename-input={preset.id}
+                  aria-label="模板名"
+                  value={renameMineValue}
+                  onChange={(event) => setRenameMineValue(event.target.value)}
+                  onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); commitRenameMineTemplate(preset); } }}
+                />
+                <button type="button" data-poster-mine-action={`rename-confirm:${preset.id}`} onClick={() => commitRenameMineTemplate(preset)}>保存名称</button>
+                <button type="button" data-poster-mine-action={`rename-cancel:${preset.id}`} onClick={() => setRenamingMineId('')}>取消</button>
+              </>
+            ) : (
+              <>
+                <span className="poster-dialog-mine-meta">
+                  <b>{preset.name}</b>
+                  <em data-poster-mine-row-note={preset.id}>{preset.description || '无备注'}</em>
+                </span>
+                <button type="button" data-poster-mine-action={`rename:${preset.id}`} onClick={() => startRenameMineTemplate(preset)}>重命名</button>
+                <button type="button" className="danger" data-poster-mine-action={`delete:${preset.id}`} onClick={() => removeMineTemplate(preset)}>删除</button>
+              </>
+            )}
+          </div>
+        );
+      })}
+      <div className="poster-dialog-mine-save" data-poster-mine-save-form="true" data-poster-mine-save-busy={mineSaving ? 'true' : 'false'}>
+        <label>模板名<input
+          type="text"
+          className="poster-dialog-mine-input"
+          data-poster-mine-name="true"
+          maxLength={POSTER_TEMPLATE_NAME_MAX}
+          placeholder="例如：我的暖金单作品"
+          value={mineForm.name}
+          onChange={(event) => setMineForm((current) => ({ ...current, name: event.target.value }))}
+        /></label>
+        <label>备注（选填）<input
+          type="text"
+          className="poster-dialog-mine-input"
+          data-poster-mine-description="true"
+          placeholder="例如：结课展用，标题换成学生的名字"
+          value={mineForm.description}
+          onChange={(event) => setMineForm((current) => ({ ...current, description: event.target.value }))}
+        /></label>
+        <button type="button" className="poster-dialog-mine-save-button" data-poster-mine-save="true" disabled={mineSaving} onClick={saveAsMyTemplate}>{mineSaving ? '保存中…' : '保存为我的海报模板'}</button>
+        <small data-poster-mine-note="true">{`保存当前这张图：标题 / 金句 / 日期 / 二维码显隐都会存进模板；${POSTER_PRESET_UNSAVED_NOTE}`}</small>
+      </div>
+      {mineNotice ? <p className="poster-dialog-mine-notice" data-poster-mine-notice="true">{mineNotice}</p> : null}
+    </section>
+  );
+
   const perfChecks = posterDialogPerfChecks(perf);
   // 微调面板的渲染读数（只算一次：界面不自己数勾选框，也不自己判「改了什么」）。
   const tuningApplied = tuningView ? tuningView.applied : [];
@@ -305,6 +484,10 @@ export default function PosterDialog({
     ? tuning.artworks.filter((id) => artworkIds.includes(id))
     : artworkIds;
   const artworkCanUncheck = artworkPicked.length > 1;
+  // 二维码勾选框显示的是**这一刻画不画**：老师没动过这一项时跟随模板（`tuningTargets.qrcode.visible`），
+  // 动过就以老师为准 —— 于是「模板本身把码关掉了」的模板（[海报 US-310b] 起会出现）不会显示成一个
+  // 勾着的「显示二维码」而图里没有码；那一种直接置灰 + 写清原因（勾上也不会画出来）。
+  const qrEffective = tuning.qrcode === false ? false : tuningTargets.qrcode.visible;
   const tuningPanel = empty.on ? null : (
     <section
       className="poster-dialog-tuning"
@@ -396,8 +579,10 @@ export default function PosterDialog({
             type="checkbox"
             data-poster-tuning-field={POSTER_TUNING_FIELD_QRCODE}
             data-poster-tuning-field-available={tuningTargets.qrcode.available ? 'true' : 'false'}
-            data-poster-tuning-field-value={tuning.qrcode === false ? 'off' : 'on'}
-            checked={tuning.qrcode !== false}
+            data-poster-tuning-field-value={qrEffective ? 'on' : 'off'}
+            data-poster-tuning-field-override={tuning.qrcode === false ? 'off' : 'none'}
+            data-poster-tuning-field-template={tuningTargets.qrcode.visible ? 'on' : 'off'}
+            checked={qrEffective}
             disabled={!tuningTargets.qrcode.available}
             onChange={(event) => setTuningField(POSTER_TUNING_FIELD_QRCODE, event.target.checked)}
           />
@@ -507,6 +692,11 @@ export default function PosterDialog({
         data-poster-dialog-period-source={periodSource}
         data-poster-dialog-templates={String(rows.length)}
         data-poster-dialog-templates-applicable={String(rows.filter((row) => row.applicable).length)}
+        data-poster-dialog-mine={String(rows.filter((row) => row.mine).length)}
+        data-poster-dialog-mine-total={String(myTemplates.length)}
+        data-poster-dialog-mine-first={rows.length && rows[0].mine ? 'true' : 'false'}
+        data-poster-dialog-mine-owner={viewer.teacherName}
+        data-poster-dialog-mine-editable={String(rows.filter((row) => row.editable).length)}
         data-poster-dialog-archive-only={String(archiveOnlyRows.length)}
         data-poster-dialog-archive-only-note={archiveOnlyRows.length ? POSTER_DIALOG_ARCHIVE_ONLY_NOTE : ''}
         data-poster-dialog-selected={selectedId}
@@ -554,6 +744,9 @@ export default function PosterDialog({
           </div>
         ) : (
           <div className="poster-dialog-body">
+            {/* 左栏 = 模板清单 + 「我的海报模板」（[海报 US-310b]）：两份东西都是「模板库」那一侧的事，
+                并且「我的」那一块直接管着列表里排在最前的那几条，放在一起老师一眼看得到。 */}
+            <div className="poster-dialog-left">
             <div className="poster-dialog-templates" role="listbox" aria-label="海报模板" data-poster-dialog-list="true">
               {rows.map((row) => {
                 const thumb = thumbs[row.id] || { phase: 'idle', url: '', width: 0, height: 0 };
@@ -566,7 +759,7 @@ export default function PosterDialog({
                     aria-selected={selected}
                     aria-disabled={!row.applicable}
                     disabled={!row.applicable}
-                    className={`poster-dialog-template${selected ? ' is-selected' : ''}${row.applicable ? '' : ' is-disabled'}${row.scope === 'teacher' ? ' is-mine' : ''}`}
+                    className={`poster-dialog-template${selected ? ' is-selected' : ''}${row.applicable ? '' : ' is-disabled'}${row.mine ? ' is-mine' : ''}`}
                     data-poster-dialog-template-option={row.id}
                     data-poster-dialog-template-option-kind={row.kind}
                     data-poster-dialog-template-option-subject={posterDialogKindSubject(row.kind)}
@@ -574,6 +767,9 @@ export default function PosterDialog({
                     data-poster-dialog-template-option-selected={selected ? 'true' : 'false'}
                     data-poster-dialog-template-option-reason={row.reason}
                     data-poster-dialog-template-option-default={row.isDefault ? 'true' : 'false'}
+                    data-poster-dialog-template-option-scope={row.scope}
+                    data-poster-dialog-template-option-mine={row.mine ? 'true' : 'false'}
+                    data-poster-dialog-template-option-editable={row.editable ? 'true' : 'false'}
                     data-poster-dialog-template-option-thumb={thumb.phase}
                     title={row.applicable ? row.name : `${row.name}：${row.reason}`}
                     onClick={() => pickTemplate(row)}
@@ -584,12 +780,17 @@ export default function PosterDialog({
                         : <span className="poster-dialog-thumb-hold" data-poster-dialog-thumb-hold={row.id}>{thumb.phase === 'failed' ? '缩略图没出来' : (thumb.phase === 'pending' ? <Loader2 size={14} /> : '待渲染')}</span>}
                     </span>
                     <span className="poster-dialog-template-meta">
-                      <b>{row.name}</b>
+                      <b>{row.name}
+                        {/* 「我的」徽标（AC2）：个人模板与系统 / 机构模板在列表里一眼可分。 */}
+                        {row.mine ? <em className="poster-dialog-template-mine" data-poster-dialog-template-badge={row.id}>{POSTER_TEMPLATE_MINE_LABEL}</em> : null}
+                      </b>
                       <small data-poster-dialog-template-option-line={row.id}>{`${row.kindLabel}${row.applicable ? '' : ` · ${row.reason}`}`}</small>
                     </span>
                   </button>
                 );
               })}
+            </div>
+            {minePanel}
             </div>
             <div className="poster-dialog-preview" data-poster-dialog-preview-box="true" data-poster-dialog-preview-canvas={canvasLine}>
               {/* 微调面板放在预览**上面**：一打开弹窗就看得见「能改哪几项」，改完往下一眼就是这张图

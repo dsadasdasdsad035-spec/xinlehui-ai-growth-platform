@@ -4025,8 +4025,64 @@ services / 界面只渲染产物」）：
   「恢复默认文案」回到最初那一张（逐字节）→ 档案入口的阶段海报 3 幅收 2 幅（网格与素材同步）→
   二维码那一格的暗像素从「有」到「0」→ 390px 无溢出且控件 ≥44px → console 干净）。截图 484~490。
 
+### 我的海报模板：另存 / 重命名 / 删除（[海报 US-310b] / FR-353、FR-354）
+
+老师把弹窗里这张图调好之后存成**自己的模板**，下次进来自动排在最前面。三块规则都在
+`src/data/posterTemplates.js`（记录层，与装裱 `data/framingPresets.js` 同一套三层语义），
+界面只有 `PosterDialog.jsx` 左栏的 `[data-poster-mine]` 那一块。
+
+- **三层归属逐条对齐装裱**（PRD 9.2 第 7 条：不发明第二套权限模型）：
+  `posterTemplateVisibleTo()`（平台全员 / 机构限本机构 / **teacher 只有本人**；缺 ownerKey 一律不可见，
+  fail-safe）与 `posterTemplateEditableBy()`（**看得见 ≠ 改得动**：老师只改得动自己的个人模板，
+  平台与机构模板连编辑入口都不渲染）。身份串复用装裱的 `teacherIdentityKeys`（id 与姓名都收）。
+- **`posterDialogTemplateRows({ …, viewer })` 是可见性的唯一入口**：先
+  `filterPosterTemplatesForViewer` 再排序 —— 老师的个人模板排最前（`sortPosterTemplatesForViewer`，
+  AC2「在列表上方优先展示」），其余仍按库顺序（**别去改 `sortPosterTemplates`**：那是全仓的库顺序真源，
+  管理端要的是三层按排序号混排）。**不传 viewer 时按 fail-safe**（`viewer = {}`：平台模板可见，
+  缺 ownerKey 的 org / teacher 模板不可见）。两处入口（成长档案 / 课后反馈第四步）都通过 `teacherName`
+  （+ 可选 `teacherId` / `orgId`，缺省 `DEFAULT_ORG_ID`）构造 viewer。
+- **另存的是「老师此刻看到的那一张」**（`posterPresetSpecFromPlan(plan)`，在 `data/posterTuning.js`）：
+  - 底稿取 **`plan.baseSpec`**（模板自己的 spec）而不是 `plan.spec` —— 后者带着这一次的数据占位
+    （「作品尚未同步完成」「分享链接待生成」、班级墙按人数算的网格），存进模板下一张图就永远是那一版。
+  - **进模板的三项**（`POSTER_PRESET_SAVED_FIELDS`）：标题 / 金句 / 二维码显隐。标题与二维码显隐
+    微调已经写在 spec 里；金句写在 `data.quote` 里，所以落成**字面量**（`{点评金句}` → 老师写的那一句）。
+    写入白名单仍是 `template` / `visible`（US-310a 的 `POSTER_TUNING_WRITTEN_FIELDS`），坐标 / 字体 /
+    配色逐槽不变（断言用逐槽 diff 证明）。
+  - **不进模板的两项**：`date` —— **日期永远取课次日期**（US-038 的口径：模板只承载日期的格式与位置，
+    不承载具体日期值；另存后换一堂课就是那节课的日期）；`artworks` —— 那是「这一次收哪几幅」的数据。
+    回执文案由 `posterPresetSaveNote()` 唯一产出（含「不含「日期」…与「收录哪些作品」…」）。
+- **保存 / 改名 / 删除都先落本机镜像 + 更新界面，再推云端**：`mirrorPosterTemplateLocally(preset)` →
+  `setLibrary(loadPosterTemplates())` → `await saveRemotePosterTemplate(preset)`（失败只补一句
+  「云端暂未连通，已保存到本机」）。服务层的 `savePosterTemplate` 把前两步合在一起，弹窗不用它是因为
+  **不能等云端**（`poster_templates` 云表还没建立，等下去界面就不动了）。弹窗自己持有模板库
+  （`useState(() => loadPosterTemplates())`），保存后直接用镜像重读 —— 「退出重进」看到的就是刚存下的。
+- **模板自带的字面量会改变面板读数的口径**（US-310b 起）：`posterTuningDefaults()` 的标题与金句都取
+  **画在那一格上的字**（`posterTuningSlotText()` 按变量表解出），否则占位提示会指着一个画不出来的值；
+  二维码位在「模板自己把它关掉了」时**置灰并写原因**（`POSTER_TUNING_QRCODE_TEMPLATE_OFF`：覆盖只写
+  `visible:false`，勾上也不会画出来）——别给一个「改了没反应」的勾选框，这是本仓的既有纪律。
+- 验收口径：`/tmp/assert-us100.mjs`（Node，**74 项**：可见性 / 可编辑性 / 记录形状 / 置顶排序 /
+  可保存 spec 的逐槽口径与重放一致 / 重命名删除 / 结构守卫与源码接线）+
+  `/tmp/assert-us100-browser.mjs`（CDP，**63 项**：真机走到第四步 → 改标题 / 金句 / 关二维码 → 另存 →
+  **保存前后预览逐字节相同** → 徽标与「我的优先」→ 空名 / 重名被拒 → 改名三处同步 → 关弹窗重进 →
+  **刷新 + 重新登录 + 重新走到第四步**（镜像仍在那份 spec 一个字节没变）→ 390px → 删除后回落默认模板 →
+  console 干净）。截图 491~497。
+
 ## 容易踩的坑
 
+- **「另存下来的东西」要不要跟着图走，先问一句「下一张海报还用得上吗」**（US-310b）：
+  同一次调整里的五项，结局分了三类 —— 标题 / 金句 / 二维码显隐进模板（所见即所存），
+  日期**不进模板**（US-038 早就定了「模板只承载日期的格式与位置」；把某一天固定进模板会与展签口径打架），
+  收录哪些作品也不进（那是这一次的名单）。存错的判据很隐蔽：图是对的，但下一张海报会印上上个孩子的日期。
+- **模板里存成字面量之后，面板的「默认值读数」也要跟着改口径**（US-310b 真踩一次）：
+  `posterTuningDefaults()` 原先直接读 `plan.quote.text`（点评原文）与 `value.dateDots`（课次日期）——
+  另存出来的模板把文案存成了字面量，图上画的是模板里那一句，读数却还指着点评原文，
+  占位提示当场变成一个画不出来的值。判据：**读数按变量表解出「那一格上的字」**
+  （`posterTuningSlotText()`），并让旧断言（US-099 的 E6 就是这一条）继续成立 ——
+  同一份输入下解出来的值必须与从前逐字符相同。
+- **模板自己关掉了某支元素时，别给它一个「勾了也不会画」的勾选框**（US-310b）：
+  二维码的覆盖只写 `visible:false`（关得掉、开不回来），所以「模板本身没画码」的那种模板上，
+  勾选框置灰并写清原因（`POSTER_TUNING_QRCODE_TEMPLATE_OFF`）。这与「没有这个位」分开说：
+  一个换模板就能改，一个换哪套都一样。
 - **`attachToPage()` 返回后页面可能还没导航提交**（US-099 连踩两次）：CDP 的 `Target.createTarget`
   建完标签页就返回，此时文档还是 `about:blank` —— 脚本第一句 `localStorage.clear()` 会抛
   `SecurityError: Failed to read the 'localStorage' property from 'Window': Access is denied`（表现得像

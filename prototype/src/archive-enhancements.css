@@ -1146,6 +1146,31 @@
 .poster-dialog-meta ul{margin:0;padding-left:14px;display:flex;flex-direction:column;gap:3px;word-break:break-word}
 .poster-dialog-notes{color:#8a7d5e;font-size:10px}
 .poster-dialog-warning{color:#a5452f;font-size:10px;margin:0}
+/* 我的海报模板（[海报 US-310b] / FR-353、FR-354）：左栏 = 模板清单 + 这一块。
+   「我的」那几条由 data 层排在列表最前（`sortPosterTemplatesForViewer`），这里只做视觉区分：
+   列表里的个人模板用金色虚线边 + 「我的」徽标，与系统 / 机构模板一眼可分。
+   注意列表的 max-height 从 74vh 降到 52vh：它下面多了「我的模板」一块，两块合起来仍要装进弹窗首屏。 */
+.poster-dialog-left{display:flex;flex-direction:column;gap:10px;min-width:0}
+.poster-dialog-templates{max-height:52vh}
+.poster-dialog-template-mine{font-style:normal;margin-left:6px;padding:1px 6px;border-radius:999px;background:#fdf0cd;color:#8a6a15;font-size:9px;font-weight:700;white-space:nowrap}
+.poster-dialog-mine{display:flex;flex-direction:column;gap:8px;border:1px solid #e6e1d2;border-radius:12px;background:#fffdf6;padding:10px;min-width:0}
+.poster-dialog-mine-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.poster-dialog-mine-head b{font-size:12px;color:#3f3b33}
+.poster-dialog-mine-head small{font-size:10px;color:#8b8064;flex:1 1 180px;min-width:0}
+.poster-dialog-mine-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;gap:6px;align-items:center;border:1px dashed #e0d4b3;border-radius:10px;padding:6px 8px;background:#fff;min-width:0}
+.poster-dialog-mine-badge{font-size:9px;font-weight:700;padding:2px 6px;border-radius:999px;background:#fdf0cd;color:#8a6a15;white-space:nowrap}
+.poster-dialog-mine-meta{display:flex;flex-direction:column;gap:1px;min-width:0}
+.poster-dialog-mine-meta b{font-size:11px;color:#3f3b33;word-break:break-word}
+.poster-dialog-mine-meta em{font-style:normal;font-size:10px;color:#8b8064;word-break:break-word}
+.poster-dialog-mine-row button{font-size:10px;padding:4px 8px;border:1px solid #e3ddcc;border-radius:8px;background:#fff;color:#6a6252;min-height:32px}
+.poster-dialog-mine-row button.danger{color:#a5452f;border-color:#f0d6cf}
+.poster-dialog-mine-input{width:100%;min-width:0;font-size:11px;padding:6px 8px;border:1px solid #d9d7e0;border-radius:8px;background:#fff;color:#3f3b33;min-height:32px;font-family:inherit}
+.poster-dialog-mine-save{display:flex;flex-direction:column;gap:6px}
+.poster-dialog-mine-save label{display:flex;flex-direction:column;gap:3px;font-size:10px;color:#544d40}
+.poster-dialog-mine-save-button{font-size:11px;padding:6px 10px;border:1px solid #cfa52e;border-radius:8px;background:#fdf6e3;color:#6a5316;font-weight:700;min-height:32px}
+.poster-dialog-mine-save-button:disabled{opacity:.6;cursor:not-allowed}
+.poster-dialog-mine-save small{font-size:10px;color:#8b8064;word-break:break-word}
+.poster-dialog-mine-notice{margin:0;font-size:10px;color:#8a6a15;background:#fff6df;border-radius:8px;padding:5px 8px;word-break:break-word}
 .poster-dialog-empty{display:flex;flex-direction:column;gap:8px;align-items:flex-start;font-size:11px;color:#8a7d5e;padding:8px 2px}
 .poster-dialog-empty b{font-size:13px;color:#3f3b33}
 .poster-dialog-empty p{margin:0;color:#544d40}
@@ -1174,4 +1199,12 @@
      否则「全选」这种两个字的按钮会变成一个 20×44 的细条（实测断言抓到的）。 */
   .poster-dialog-tuning-head .text-link{min-height:44px;min-width:44px;display:inline-flex;align-items:center;justify-content:center;padding:0 6px}
   .poster-dialog-tuning-row-head .text-link{min-height:44px;min-width:44px;display:inline-flex;align-items:center;justify-content:center;padding:0 6px}
+  /* 「我的海报模板」在手机上单列堆叠：输入框与按钮一律 ≥44px（重命名 / 删除是两个字的按钮 ——
+     只有高度不够，宽度也要够，否则会变成一个 20×44 的细条，US-310a 踩过同一件事）。 */
+  .poster-dialog-left{gap:8px}
+  .poster-dialog-mine{padding:8px}
+  .poster-dialog-mine-row{grid-template-columns:minmax(0,1fr)}
+  .poster-dialog-mine-row button{min-height:44px;min-width:44px}
+  .poster-dialog-mine-input{min-height:44px}
+  .poster-dialog-mine-save-button{min-height:44px}
 }

@@ -18,7 +18,10 @@
 import {
   POSTER_ENTRY_SCOPE_LABELS,
   POSTER_KIND_LABELS,
-  selectablePosterTemplates
+  filterPosterTemplatesForViewer,
+  selectablePosterTemplates,
+  posterTemplateEditableBy,
+  sortPosterTemplatesForViewer
 } from './posterTemplates';
 import {
   ARCHIVE_EMPTY_ACTION,
@@ -232,7 +235,15 @@ export function posterDialogSubjectRecord({ records = [], object = {}, period = 
 
 /**
  * 弹窗的模板清单：**停用的不出现**（与装裱 / 模板库同一口径），其余逐条给出
- * `applicable` 与「为什么不能用」的可读原因。顺序沿用模板库的 `sortOrder`（唯一排序真源）。
+ * `applicable` 与「为什么不能用」的可读原因。
+ *
+ * 顺序（[海报 US-310b] AC2）：**个人模板排在最前面**（`sortPosterTemplatesForViewer`），
+ * 其余沿用模板库的 `sortOrder`（唯一排序真源）。
+ *
+ * 可见范围（FR-353）：传了 `viewer` 就只列**这位观察者看得见**的模板 —— 老师的个人模板只有本人看得到，
+ * 别人的个人模板既不出现在列表里、也不可能被选中。**不传 viewer 时按 fail-safe 处理**
+ * （`viewer = {}`：平台模板可见，缺 ownerKey 的 org / teacher 模板不可见）——
+ * 「少显示一套」比「越权展示别人的模板」安全；两处入口都传真实 viewer。
  *
  * 适用性三条，逐条给原因（先说的那条优先）：
  *   ① 入口：`entryScope` 命中当前入口（`both` 两处都算）；
@@ -240,12 +251,13 @@ export function posterDialogSubjectRecord({ records = [], object = {}, period = 
  *      （名单与班级记录都来自档案页那一份，不另选一个班级）；
  *   ③ 数据：学员对象 + 班级版式但没有班级归属 → 置灰并说清需要班级名单。
  */
-export function posterDialogTemplateRows({ templates = [], entry = POSTER_DIALOG_ENTRY_ARCHIVE, object = {} } = {}) {
+export function posterDialogTemplateRows({ templates = [], entry = POSTER_DIALOG_ENTRY_ARCHIVE, object = {}, viewer = {} } = {}) {
   const subject = isPlainObject(object) ? object : {};
+  const observer = isPlainObject(viewer) ? viewer : {};
   const objectKind = subject.kind === 'class' ? 'class' : 'student';
   const hasName = Boolean(str(subject.name));
   const className = str(subject.className);
-  return selectablePosterTemplates(templates).map((template) => {
+  return sortPosterTemplatesForViewer(selectablePosterTemplates(filterPosterTemplatesForViewer(templates, observer)), observer).map((template) => {
     const kind = template.kind;
     const templateSubject = posterDialogKindSubject(kind);
     const entryOk = template.entryScope === entry || template.entryScope === 'both';
@@ -268,6 +280,9 @@ export function posterDialogTemplateRows({ templates = [], entry = POSTER_DIALOG
       entryLabel: POSTER_DIALOG_ENTRY_LABELS[template.entryScope] || '',
       scope: template.scope,
       ownerKey: template.ownerKey,
+      // 「我的」= 个人模板（scope teacher）：徽标、列表里的排序与「能不能改名 / 删除」都读它。
+      mine: template.scope === 'teacher',
+      editable: posterTemplateEditableBy(template, observer),
       isDefault: Boolean(template.isDefault),
       sortOrder: template.sortOrder,
       subject: templateSubject,

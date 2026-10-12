@@ -23,7 +23,7 @@
 // 「与装裱 PRD 的模板层级策略保持一致，避免每个需求都发明一套权限模型」），所以 scope 的收敛
 // 直接取 `data/framingPresets.js` 的 `normalizeFrameScope`。
 
-import { DEFAULT_FRAME_SCOPE, normalizeFrameScope } from './framingPresets';
+import { DEFAULT_FRAME_SCOPE, normalizeFrameScope, teacherIdentityKeys } from './framingPresets';
 
 // ---------------------------------------------------------------------------
 // 收敛小工具（本模块自用；全部「永不抛错」，拿到脏数据就退回 fallback）
@@ -687,6 +687,9 @@ export function posterSlotsOfType(spec, type) {
 export const POSTER_TEMPLATE_STORAGE_KEY = 'xinlehui-poster-templates-v1';
 /** 排序缺省值（与装裱的 90 同一口径：没写排序号的排在有号的之后）。 */
 export const POSTER_TEMPLATE_SORT_FALLBACK = 90;
+/** 模板名 / 备注的字数上限（收敛器与「另存为我的模板」的表单读同一份，别在两处各写一个数）。 */
+export const POSTER_TEMPLATE_NAME_MAX = 32;
+export const POSTER_TEMPLATE_DESCRIPTION_MAX = 80;
 
 /** 模板的幂等键：`id`（云端列 `template_key`）。 */
 export function posterTemplateKey(template) {
@@ -704,8 +707,8 @@ export function normalizePosterTemplate(raw) {
   const scope = normalizeFrameScope(source.scope);
   return {
     id: posterTemplateKey(source),
-    name: str(source.name).slice(0, 32) || '未命名海报',
-    description: str(source.description).slice(0, 80),
+    name: str(source.name).slice(0, POSTER_TEMPLATE_NAME_MAX) || '未命名海报',
+    description: str(source.description).slice(0, POSTER_TEMPLATE_DESCRIPTION_MAX),
     kind: oneOf(source.kind, POSTER_KINDS, spec.kind),
     spec,
     scope,
@@ -758,6 +761,160 @@ export function posterTemplateDeleteIssue(template) {
   if (!item.id) return '缺少模板 id（云端 template_key 是幂等键）。';
   if (item.builtin) return POSTER_TEMPLATE_BUILTIN_DELETE_NOTE;
   return '';
+}
+
+// ---------------------------------------------------------------------------
+// 三层归属的可见性 · 老师个人模板（另存 / 重命名 / 删除）
+// （[海报 US-310b] / FR-353、FR-354、FR-359）
+//
+// 与装裱 `data/framingPresets.js` 的同一套规则**逐条对齐**（PRD 9.2 第 7 条：不发明第二套权限模型）：
+//   · 平台模板全员可见；机构模板限本机构；**个人（teacher）模板只有本人看得见**；
+//   · 缺 ownerKey 的 org / teacher 模板对老师**不可见**（fail-safe：宁可少显示，也不越权展示）；
+//   · 老师只能改 / 删**自己的**个人模板 —— 平台与机构模板由管理员在「海报模板库」里维护（US-312a），
+//     老师端连编辑入口都不出现（写入侧再由 `posterTemplateEditableBy` 拦一道）。
+//
+// 三条纪律，改代码前先读：
+//   ① **可见性与可编辑性是两件事**：看得见 ≠ 改得动（老师看得见平台模板，但改不了、删不了）。
+//   ② 个人模板的 `ownerKey` **必须落下来**：缺了它对谁都不可见（fail-safe），保存那条路因此统一走
+//      `buildTeacherPosterTemplate`，界面不许自己拼一个 ownerKey（拼错的表现是「存了自己看不见」）。
+//   ③ 删除**只影响以后的可选列表**：已经导出 / 转发过的海报是图片文件，不是对模板的引用。
+// ---------------------------------------------------------------------------
+
+/** 模板层级徽标（列表与「我的」标记读同一份文案）：平台 / 机构 / 我的。 */
+export const POSTER_TEMPLATE_SCOPE_LABELS = { platform: '平台', org: '机构', teacher: '我的' };
+
+/** 个人模板的标记文案（验收原文就是这两个字：列表里带「我的」标记的即本人的模板）。 */
+export const POSTER_TEMPLATE_MINE_LABEL = POSTER_TEMPLATE_SCOPE_LABELS.teacher;
+
+/** 删除模板时的说明（不阻断、不吓人，但要说清「已经产出的图不受影响」）。 */
+export const POSTER_TEMPLATE_DELETE_NOTE = '删除只影响以后的可选列表；已经导出、转发或下载过的海报文件不会被改动。';
+
+/** 老师端对平台 / 机构模板动手时的统一拒绝文案（界面与写入侧读同一句）。 */
+export const POSTER_TEMPLATE_SCOPE_DENIED_TEXT = '平台与机构模板由管理员在「海报模板库」里维护，老师端不能修改或删除。';
+
+/**
+ * 观察者（老师 / 管理员）→ 可见性与可编辑性的入参。
+ * 身份串的两个来源（teacherId 与 teacherName）与装裱共用 `teacherIdentityKeys`：
+ * 业务数据里 id（teacher-linxiao）与姓名（林晓老师）都出现过，两个都收。
+ */
+export function posterTemplateViewer({ role = 'teacher', teacherName = '', teacherId = '', orgId = '', seeAllScopes = false, manageAllScopes = false } = {}) {
+  return {
+    role,
+    teacherName: str(teacherName),
+    teacherId: str(teacherId),
+    orgId: str(orgId),
+    seeAllScopes: seeAllScopes === true,
+    manageAllScopes: manageAllScopes === true
+  };
+}
+
+/**
+ * 某位观察者能不能看到这套模板：
+ * - 管理端（`role: 'admin'`）要维护三层模板，读全量；
+ * - 老师端只读「平台 + 本机构 + ownerKey 命中自己的个人模板」，**别人的个人模板一律看不到**；
+ * - org / teacher 模板缺 ownerKey 时对老师不可见（fail-safe）。
+ */
+export function posterTemplateVisibleTo(template, viewer = {}) {
+  if (viewer.role === 'admin' || viewer.seeAllScopes === true) return true;
+  const item = normalizePosterTemplate(template);
+  if (item.scope === DEFAULT_FRAME_SCOPE) return true;
+  if (!item.ownerKey) return false;
+  if (item.scope === 'org') return Boolean(viewer.orgId) && item.ownerKey === str(viewer.orgId);
+  return teacherIdentityKeys(viewer).includes(item.ownerKey);
+}
+
+/** 过滤出观察者可见的模板（保持原顺序，排序由 `sortPosterTemplatesForViewer` 决定）。 */
+export function filterPosterTemplatesForViewer(templates, viewer = {}) {
+  return list(templates).filter((item) => posterTemplateVisibleTo(item, viewer));
+}
+
+/**
+ * 列表顺序的唯一来源（老师端视角）：**个人模板排在最前面**，其余仍按 `sortPosterTemplates`
+ * （sortOrder 升序 → id）—— AC 原文「个人模板…在列表上方优先展示」就落在这一条上。
+ * 为什么不是改 `sortPosterTemplates`：那是**全仓的排序真源**（云端返回 / 本机兜底 / 管理端列表都读它），
+ * 「我的优先」是**观察者视角**的排序，管理端要的是库顺序（三层混排按排序号）。
+ */
+export function sortPosterTemplatesForViewer(templates, viewer = {}) {
+  const ordered = sortPosterTemplates(templates);
+  const mine = (item) => item.scope === 'teacher' && posterTemplateEditableBy(item, viewer);
+  return [...ordered.filter(mine), ...ordered.filter((item) => !mine(item))];
+}
+
+/**
+ * 这份模板能不能由这位观察者改写（重命名 / 删除）：
+ * 管理端可维护三层；老师端**只有自己的个人模板**可改可删；平台与机构模板一律不可（老师端不显示入口）。
+ */
+export function posterTemplateEditableBy(template, viewer = {}) {
+  if (viewer.role === 'admin' || viewer.manageAllScopes === true) return true;
+  const item = normalizePosterTemplate(template);
+  if (item.scope !== 'teacher') return false;
+  return Boolean(item.ownerKey) && teacherIdentityKeys(viewer).includes(item.ownerKey);
+}
+
+/** 可编辑的模板列表（界面只给它渲染改名 / 删除入口）。 */
+export function editablePosterTemplates(templates, viewer = {}) {
+  return list(templates).filter((item) => posterTemplateEditableBy(item, viewer));
+}
+
+/** 模板名归一化：去首尾空格、把连续空白压成一个空格、截到上限；空值用 `fallback`。 */
+export function normalizePosterTemplateName(value, fallback = '') {
+  const raw = str(value).replace(/\s+/g, ' ').trim();
+  return (raw || str(fallback)).slice(0, POSTER_TEMPLATE_NAME_MAX);
+}
+
+/**
+ * 模板名的问题（空名 / 重名）→ 可读文案；没问题返回空串。
+ * 重名在**同一份列表内**判断：老师端这份列表就是「平台 + 本机构 + 我的」可见集合，
+ * 让老师不必靠「哪个是我的 XX」来分辨两套同名模板。重命名时用 `exceptId` 排除自己。
+ */
+export function posterTemplateNameIssue(name, templates, { exceptId = '' } = {}) {
+  const clean = normalizePosterTemplateName(name);
+  if (!clean) return '请填写模板名';
+  const clash = list(templates).some((item) => item && item.id !== exceptId
+    && normalizePosterTemplateName(item.name) === clean);
+  return clash ? `已有名为「${clean}」的模板，请换个名字` : '';
+}
+
+/**
+ * 「另存为我的海报模板」：把老师此刻看到的那一张（含改过的文案）存成一套**个人模板**。
+ *
+ * ownerKey 取观察者身份串（老师姓名优先）—— 缺了 ownerKey 的个人模板对谁都不可见（fail-safe），
+ * 所以这里必须落下来；id 仍用随机唯一值（`template_key` 是 upsert 冲突键，不能由自然键派生）。
+ * `kind` / `entryScope` 从**来源模板**带过来：存下来的这套要能在这两处入口同样被选中，
+ * 而不是只在这一处能用的半张模板。
+ */
+export function buildTeacherPosterTemplate({ name, description = '', spec = null, kind = '', entryScope = '', viewer = {}, sortOrder } = {}) {
+  const now = Date.now();
+  const ownerKey = str(viewer.teacherName || viewer.teacherId || teacherIdentityKeys(viewer)[0] || '');
+  return normalizePosterTemplate({
+    id: `poster-teacher-${now.toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+    name: normalizePosterTemplateName(name, '我的海报'),
+    description: str(description).replace(/\s+/g, ' ').slice(0, POSTER_TEMPLATE_DESCRIPTION_MAX),
+    spec,
+    kind,
+    scope: 'teacher',
+    ownerKey,
+    entryScope,
+    enabled: true,
+    builtin: false,
+    // 默认模板是**库级设置**（管理端 US-312b 的事）：个人模板天然不是默认模板。
+    isDefault: false,
+    sortOrder: Number.isFinite(sortOrder) ? sortOrder : POSTER_TEMPLATE_SORT_FALLBACK,
+    updatedBy: ownerKey,
+    updatedAt: new Date(now).toISOString()
+  });
+}
+
+/** 重命名：只改名字，模板 id、spec 与 kind 一个字段都不动（已经导出的海报引用的就是那份 spec）。 */
+export function renamePosterTemplate(template, name) {
+  const item = normalizePosterTemplate(template);
+  return { ...item, name: normalizePosterTemplateName(name, normalizePosterTemplateName(item.name, '我的海报')) };
+}
+
+/** 模板层级徽标：平台 / 机构 / 我的（`我的` 就是个人模板的标记）。 */
+export function posterTemplateScopeLabel(template) {
+  const scope = normalizeFrameScope(group(template).scope);
+  return POSTER_TEMPLATE_SCOPE_LABELS[scope] || POSTER_TEMPLATE_SCOPE_LABELS.platform;
 }
 
 // ---------------------------------------------------------------------------
