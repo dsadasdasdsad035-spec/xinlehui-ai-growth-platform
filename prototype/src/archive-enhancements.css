@@ -998,7 +998,31 @@
 .poster-class-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .poster-class-actions small{font-size:10px;color:#7c7259}
 .poster-class-empty{font-size:11px;color:#8a7d5e;margin:0}
+/* 成长视频封面海报（[海报 US-306]）：贴着成片预览放，预览按竖屏比例显示（与视频同比例）。 */
+.poster-video-cover{display:flex;flex-direction:column;gap:8px;margin-top:12px;padding:12px;border:1px solid #e0dfe8;border-radius:12px;background:#fbfaf7;text-align:left;min-width:0}
+.poster-video-cover-head{display:flex;align-items:center;gap:7px}
+.poster-video-cover-head b{font-size:12px;color:#3f3b33}
+.poster-video-cover-head em{margin-left:auto;font-size:10px;font-style:normal;font-weight:800;padding:3px 8px;border-radius:999px;background:#eee9dd;color:#6f6551}
+.poster-video-cover-head em.is-ready{background:#e6f5ea;color:#2f7a45}
+.poster-video-cover-head em.is-blocked,.poster-video-cover-head em.is-failed{background:#f7e3e0;color:#a5452f}
+.poster-video-cover-head small{font-size:10px;color:#8b8064}
+.poster-video-cover-body{display:grid;grid-template-columns:minmax(0,220px) minmax(0,1fr);gap:12px;align-items:start}
+/* 竖屏预览：容器按 9:16 收窄，图 `height:auto` 保证不会被压扁（比例由渲染结果决定）。 */
+.poster-video-cover-preview{margin:0;border:1px solid #d9d7e0;border-radius:10px;overflow:hidden;background:#241f1a;min-height:200px;max-width:220px;display:grid;place-items:center}
+.poster-video-cover-preview img{display:block;width:100%;height:auto}
+.poster-video-cover-hold{font-size:11px;color:#c8c2b6;padding:20px;text-align:center}
+.poster-video-cover-meta{display:flex;flex-direction:column;gap:6px;font-size:11px;color:#544d40;min-width:0}
+.poster-video-cover-meta ul{margin:0;padding-left:14px;display:flex;flex-direction:column;gap:3px;word-break:break-word}
+.poster-video-cover-notes{color:#8a7d5e;font-size:10px}
+.poster-video-cover-warning{color:#a5452f;font-size:10px;margin:0}
+.poster-video-cover-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.poster-video-cover-actions small{font-size:10px;color:#7c7259}
+.poster-video-cover-empty{font-size:11px;color:#8a7d5e;margin:0}
 @media(max-width:800px){
+  .poster-video-cover{padding:10px}
+  .poster-video-cover-body{grid-template-columns:minmax(0,1fr)}
+  .poster-video-cover-preview{max-width:none}
+  .poster-video-cover-actions button{width:100%;min-height:44px;justify-content:center}
   .poster-class{padding:10px}
   .poster-class-body{grid-template-columns:minmax(0,1fr)}
   .poster-class-controls select{min-height:44px}

@@ -286,6 +286,25 @@ import {
   renderPosterClass
 } from './services/posterClass';
 import { POSTER_SINGLE_SHARE_PENDING_TEXT } from './data/posterSingle';
+// 成长视频封面海报（[海报 US-306] / FR-316、FR-323、FR-345）：画布比例、四条叠加件、时长角标与
+// 成片状态的联动、导出门全在 `data/posterVideoCover.js`（零依赖纯函数，可 node 直跑断言），
+// 渲染与下载在 `services/posterVideoCover.js`（预览 1×、导出 2×，同一个 `renderPoster`）。
+// 这一页只渲染它们的产物 —— 组件不自己判「视频生成了没」，也不自己拼占位文案。
+import {
+  POSTER_VIDEO_COVER_OPTIONS,
+  POSTER_VIDEO_COVER_TITLE_TEXT,
+  POSTER_VIDEO_COVER_EXPORT_BLOCKED_TITLE,
+  buildPosterVideoCoverPlan,
+  posterVideoCoverExportGate
+} from './data/posterVideoCover';
+import {
+  POSTER_VIDEO_COVER_PREVIEW_SCALE,
+  POSTER_VIDEO_COVER_RENDER_FAILED_TEXT,
+  createPosterVideoCoverUrl,
+  exportPosterVideoCoverPng,
+  releasePosterVideoCoverUrl,
+  renderPosterVideoCover
+} from './services/posterVideoCover';
 // 机构 Logo 的取值与第四步海报同一支判据：默认装裱模板里配置的那张水印图（没配置就用机构名兜底）。
 import { defaultFramingPreset } from './data/framingPresets';
 import { frameSpecRenderView } from './services/frameSpec';
@@ -1448,7 +1467,156 @@ function ClassPosterPanel({className,roster=[],records=[],tokens=[],teacherName=
   );
 }
 
-function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkCount,photoCount,teacherName,setToast,entries=[],scopeEntries=[],classEntries=[],roster=[],tokens=[],records=[],musicTracks=[],videoRecords=[],consents=null,setShareTokens=()=>{},setVideoRecords=()=>{},recordAudit=()=>{},auditActor=null,auditLog=[],videoQuota=null,videoRetention=null,management=null,navigate=null}){
+/**
+ * 成长视频封面海报（[海报 US-306] / FR-316、FR-323、FR-345）：给「视频链接」配一张能当封面的图。
+ *
+ * 三件事都在数据层，组件只渲染产物 + 一个导出动作：
+ *  - **画布 1080×1920 与成长视频输出口径同比例**（竖屏 9:16），主视觉只做 `contain` 等比缩放、不裁切
+ *    ——「不拉伸」的判据是 `plan.ratio`（画布比例 vs 视频模块口径 + 主视觉 fit），界面不自己比一遍；
+ *  - **时长角标与视频模块状态联动**：时长只取成片记录的成片三件套（`videoOutputView` 同一支判据）；
+ *    还没有成片时角标写占位且导出被拦下 —— 但**预览照出**，老师看得见那是占位，而不是一个编出来的数字；
+ *  - 二维码指向**成片的有效分享令牌**（撤回 / 过期都不算数），没有就显示「分享链接待生成」。
+ *
+ * 周期沿用视频模块的「生成周期」（同一个 `period` 传进来）：封面是这条成片的封面，两者不许各说一套。
+ * `data-poster-video-cover-*` 上的读数全部来自 `buildPosterVideoCoverPlan()` 的产物。
+ */
+function VideoCoverPosterPanel({isClass=false,objectName='',period='',jobKey='',records=[],videoRecords=[],jobs=[],tokens=[],teacherName='',orgName='',logo='',setToast=()=>{}}){
+  const [preview,setPreview]=useState({key:'',url:'',phase:'idle',warnings:[],width:0,height:0});
+  const [notice,setNotice]=useState({phase:'idle',message:''});
+  const [busy,setBusy]=useState(false);
+  const shareOrigin=typeof window==='undefined'?'':(window.location?.origin||'');
+  const plan=useMemo(()=>buildPosterVideoCoverPlan({
+    records,videoRecords,jobs,objectName,isClass,period,jobKey,tokens,
+    teacherName,orgName,logo,origin:shareOrigin
+  }),[records,videoRecords,jobs,objectName,isClass,period,jobKey,tokens,teacherName,orgName,logo,shareOrigin]);
+  const gate=posterVideoCoverExportGate(plan);
+  // 预览重绘键 = 真正会改变这张图的所有输入（对象 / 周期 / 主视觉 / 模板 / 角标 / 链接 / 机构标识）。
+  // 注意：**视频没成片时预览照出**（角标就是占位），所以这里不看导出闸门 —— 只看「有没有东西可画」。
+  const renderKey=plan.renderable?[
+    plan.templateKey,plan.objectName,plan.periodLabel,plan.artwork.url||'no-artwork',plan.artwork.dateDots,
+    plan.cover.durationBadgeText,plan.data.logo||'',plan.data.shareUrl||''
+  ].join('|'):'';
+  useEffect(()=>{
+    if(!renderKey){
+      setPreview({key:'',url:'',phase:'idle',warnings:[],width:0,height:0});
+      return ()=>{};
+    }
+    let cancelled=false;
+    let createdUrl='';
+    setPreview({key:renderKey,url:'',phase:'pending',warnings:[],width:0,height:0});
+    renderPosterVideoCover(plan,{scale:POSTER_VIDEO_COVER_PREVIEW_SCALE}).then(rendered=>{
+      if(cancelled) return;
+      if(!rendered||!rendered.blob){
+        setPreview({key:renderKey,url:'',phase:'failed',warnings:[],width:0,height:0});
+        return;
+      }
+      createdUrl=createPosterVideoCoverUrl(rendered);
+      setPreview({key:renderKey,url:createdUrl,phase:'ready',warnings:rendered.warnings||[],width:rendered.width,height:rendered.height});
+    }).catch(()=>{
+      if(!cancelled) setPreview({key:renderKey,url:'',phase:'failed',warnings:[],width:0,height:0});
+    });
+    return ()=>{ cancelled=true; if(createdUrl) releasePosterVideoCoverUrl(createdUrl); };
+  // 预览随「重绘键」重跑：键里已经包含了 plan 上所有会影响这张图的输入。
+  },[renderKey]);
+  useEffect(()=>{setNotice({phase:'idle',message:''})},[objectName,period,isClass]);
+  const exportCover=async()=>{
+    if(!gate.allowed){setNotice({phase:'blocked',message:gate.reason});return;}
+    setBusy(true);
+    const result=await exportPosterVideoCoverPng(plan);
+    setBusy(false);
+    if(!result.ok){setNotice({phase:'failed',message:result.reason});return;}
+    const message=`封面已导出：${result.filename} · ${result.rendered.width}×${result.rendered.height} · ${artworkExportSizeText(result.bytes)}`;
+    setNotice({phase:'done',message});
+    setToast(`${result.filename} 已下载`);
+  };
+  const videoState=plan.duration.ready?'ready':(plan.duration.jobPresent?'running':'missing');
+  // 面板状态把「视频成没成片」算进去：只有成片就绪且预览出图才是「已生成」。
+  // 视频还没成片时角标是**占位**、导出被拦下 —— 面板头必须如实写「待成片」，不能显示一个绿色的「已生成」。
+  const state=!plan.hasObject
+    ?'empty'
+    :(!plan.renderable?'blocked'
+    :(preview.phase==='failed'?'failed'
+    :(!plan.duration.ready?'pending':(preview.phase==='ready'?'ready':preview.phase))));
+  const badge=state==='ready'?'已生成':state==='pending'?'待成片':state==='failed'?'生成失败':state==='blocked'?'缺主视觉':state==='empty'?'待选对象':'准备中';
+  return (
+    <section className="poster-video-cover" data-poster-video-cover="true"
+      data-poster-video-cover-state={state}
+      data-poster-video-cover-template={plan.templateKey}
+      data-poster-video-cover-canvas={`${plan.spec.canvas.width}x${plan.spec.canvas.height}`}
+      data-poster-video-cover-video-ratio={plan.ratio.videoLabel}
+      data-poster-video-cover-ratio-ok={plan.ratio.ok?'true':'false'}
+      data-poster-video-cover-ratio-note={plan.ratio.note}
+      data-poster-video-cover-fit={plan.ratio.fit}
+      data-poster-video-cover-object={plan.objectName}
+      data-poster-video-cover-type={plan.type}
+      data-poster-video-cover-period={plan.period}
+      data-poster-video-cover-period-label={plan.periodLabel}
+      data-poster-video-cover-window-from={plan.window.from}
+      data-poster-video-cover-window-to={plan.window.to}
+      data-poster-video-cover-cover-slot={plan.cover.slotId}
+      data-poster-video-cover-title={plan.cover.titleText}
+      data-poster-video-cover-play-icon={plan.cover.playIcon}
+      data-poster-video-cover-overlays={plan.cover.overlays.rows.map(row=>`${row.id}:${row.present?'on':'off'}`).join(',')}
+      data-poster-video-cover-overlay-missing={plan.cover.overlays.missing.join('、')}
+      data-poster-video-cover-artwork={plan.artwork.url}
+      data-poster-video-cover-artwork-date={plan.artwork.date}
+      data-poster-video-cover-artwork-title={plan.artwork.title}
+      data-poster-video-cover-artwork-missing={plan.artwork.missing?'true':'false'}
+      data-poster-video-cover-duration={plan.cover.durationBadgeText}
+      data-poster-video-cover-duration-ready={plan.duration.ready?'true':'false'}
+      data-poster-video-cover-duration-source={plan.duration.from}
+      data-poster-video-cover-duration-placeholder={plan.duration.placeholder}
+      data-poster-video-cover-video-state={videoState}
+      data-poster-video-cover-video-status={plan.duration.status}
+      data-poster-video-cover-video-status-label={plan.duration.statusLabel}
+      data-poster-video-cover-job-key={plan.video.jobKey}
+      data-poster-video-cover-record-id={plan.video.recordId}
+      data-poster-video-cover-video-key={plan.video.videoKey}
+      data-poster-video-cover-version={String(plan.video.version)}
+      data-poster-video-cover-share={plan.share.active?'active':'pending'}
+      data-poster-video-cover-share-link={plan.share.link}
+      data-poster-video-cover-logo={plan.logo.url||plan.logo.fallbackText}
+      data-poster-video-cover-export={gate.allowed?'allowed':'blocked'}
+      data-poster-video-cover-export-reason={gate.reason}
+      data-poster-video-cover-preview={preview.phase}
+      data-poster-video-cover-warnings={preview.warnings.join(' / ')}>
+      <div className="poster-video-cover-head">
+        <Image size={14}/>
+        <b>成长视频封面海报</b>
+        <em className={`is-${state}`} data-poster-video-cover-badge="true">{badge}</em>
+        {plan.templateName?<small data-poster-video-cover-template-name="true">{plan.templateName}</small>:null}
+      </div>
+      {plan.hasObject?<div className="poster-video-cover-body">
+        <figure className="poster-video-cover-preview" data-poster-video-cover-preview-box="true">
+          {preview.url
+            ?<img src={preview.url} alt={`${plan.objectName}的成长视频封面预览（${plan.ratio.canvasLabel}，与成长视频同比例）`} data-poster-video-cover-image="true"/>
+            :<span className="poster-video-cover-hold" data-poster-video-cover-hold="true">{preview.phase==='failed'?POSTER_VIDEO_COVER_RENDER_FAILED_TEXT:(plan.renderable?'正在生成封面预览…':plan.artwork.placeholderText)}</span>}
+        </figure>
+        <div className="poster-video-cover-meta">
+          <ul>
+            <li data-poster-video-cover-line="object">对象：{plan.objectName}（{plan.typeLabel}）· 周期：{plan.periodLabel}</li>
+            <li data-poster-video-cover-line="visual">主视觉：{plan.artwork.missing?'待补作品（这个周期还没有成品图）':`${plan.artwork.title||'未命名作品'} · ${plan.artwork.dateDots}`}</li>
+            <li data-poster-video-cover-line="overlays">叠加件：{plan.cover.overlays.rows.map(row=>`${row.label}${row.present?'（有）':'（缺）'}`).join(' · ')}</li>
+            <li data-poster-video-cover-line="duration">时长角标：{plan.cover.durationBadgeText}（{plan.duration.ready?`取成片记录的第 ${plan.video.version} 版 · ${plan.duration.durationText}`:'占位 —— 视频还没成片'}）</li>
+            <li data-poster-video-cover-line="ratio">画布 {plan.ratio.canvasLabel} · 与成长视频 {plan.ratio.videoLabel} 同比例（{plan.ratio.ratioLabel}）· 主视觉 {plan.ratio.fit} 等比缩放</li>
+            <li data-poster-video-cover-line="share">分享：{plan.share.pending?POSTER_SINGLE_SHARE_PENDING_TEXT:`链接可用 · ${plan.share.link}`}</li>
+          </ul>
+          {plan.notes.length?<ul className="poster-video-cover-notes">
+            {plan.notes.map(note=><li key={note} data-poster-video-cover-note="true">{note}</li>)}
+          </ul>:null}
+          {preview.warnings.length?<p className="poster-video-cover-warning" data-poster-video-cover-warning="true">{preview.warnings.join('；')}</p>:null}
+          <div className="poster-video-cover-actions">
+            <Button icon={Download} disabled={!gate.allowed||busy} onClick={exportCover} data-poster-video-cover-export-button="true">{busy?'正在导出…':gate.allowed?'导出封面 PNG':POSTER_VIDEO_COVER_EXPORT_BLOCKED_TITLE}</Button>
+            {gate.allowed?null:<small data-poster-video-cover-block-reason="true">{gate.reason}</small>}
+            {notice.message?<small data-poster-video-cover-notice="true">{notice.message}</small>:null}
+          </div>
+        </div>
+      </div>:<p className="poster-video-cover-empty" data-poster-video-cover-empty="true">{plan.notes[0]}</p>}
+    </section>
+  );
+}
+
+function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkCount,photoCount,teacherName,setToast,entries=[],scopeEntries=[],classEntries=[],roster=[],tokens=[],records=[],musicTracks=[],videoRecords=[],consents=null,setShareTokens=()=>{},setVideoRecords=()=>{},recordAudit=()=>{},auditActor=null,auditLog=[],videoQuota=null,videoRetention=null,management=null,navigate=null,logo=''}){
   const [jobs,setJobs]=useState(()=>listVideoJobs());
   const [notice,setNotice]=useState('');
   const [simulateFail,setSimulateFail]=useState(false);
@@ -2035,6 +2203,22 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
       onValidDays={value=>setShareValidDays(value)}
       onGoAuthorization={goAuthorization}
     />
+    {/* 封面是给「发到微信的那条视频链接」配的图（[海报 US-306]）：贴着成片预览放，
+        周期沿用这一屏的「生成周期」，时长角标读这条成片的记录。 */}
+    <VideoCoverPosterPanel
+      isClass={isClass}
+      objectName={objectName}
+      period={period}
+      jobKey={jobKey}
+      records={records}
+      videoRecords={videoRecords}
+      jobs={jobs}
+      tokens={tokens}
+      teacherName={teacherName}
+      orgName={DEFAULT_ORG_NAME}
+      logo={logo}
+      setToast={setToast}
+    />
     <VideoRecordPanel
       view={recordView}
       notice={recordNotice}
@@ -2118,10 +2302,10 @@ export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,p
       .map(item=>String((item&&item.name)||'').trim())
       .filter(Boolean);
   },[management,view.isClass,view.name]);
-  // 班级作品墙的机构 Logo（[海报 US-305] / FR-323）：取**默认装裱模板**里配置的那张水印图 ——
-  // 与第四步海报同一支判据（`frameSpecRenderView().overlays.watermark.logo.url`）；没配置时
-  // 数据层会把 Logo 位换成机构名（占位补丁），这里不编一个假地址。
-  const classPosterLogo=useMemo(()=>{
+  // 海报上的机构 Logo（[海报 US-305] 班级墙 / [海报 US-306] 视频封面 / FR-323）：取**默认装裱模板**
+  // 里配置的那张水印图 —— 与第四步海报同一支判据（`frameSpecRenderView().overlays.watermark.logo.url`）；
+  // 没配置时数据层会把 Logo 位换成机构名（占位补丁），这里不编一个假地址。
+  const archivePosterLogo=useMemo(()=>{
     const preset=defaultFramingPreset(framingPresets);
     if(!preset) return '';
     const renderView=frameSpecRenderView(preset.spec);
@@ -2341,8 +2525,8 @@ export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,p
             {timelineWindow.hasMore?<button type="button" className="primary" data-archive-page-more="true" onClick={()=>setTimelinePage(page=>Math.min(timelineWindow.pageCount,page+1))}>{timelineWindow.moreLabel}</button>:null}
           </nav>:null}
         </section>
-        {view.isClass?<ClassPosterPanel className={view.name} roster={classRoster} records={records} tokens={shareTokens} teacherName={teacherName} orgName={DEFAULT_ORG_NAME} logo={classPosterLogo} setToast={setToast}/>:null}
-        <VideoJobsPanel isClass={view.isClass} objectName={view.name} period={videoPeriod} onPeriod={setVideoPeriod} lessonCount={view.summary.lessons} artworkCount={view.summary.artworks} photoCount={view.summary.photos} teacherName={teacherName} setToast={setToast} entries={videoEntries} scopeEntries={videoScopeEntries} classEntries={videoClassEntries} roster={classRoster} tokens={shareTokens} records={records} consents={consents} musicTracks={musicTracks} videoRecords={videoRecords} auditLog={auditLog} videoQuota={videoQuota} videoRetention={videoRetention} management={management} setShareTokens={setShareTokens} setVideoRecords={setVideoRecords} recordAudit={recordAudit} auditActor={auditActor} navigate={navigate}/>
+        {view.isClass?<ClassPosterPanel className={view.name} roster={classRoster} records={records} tokens={shareTokens} teacherName={teacherName} orgName={DEFAULT_ORG_NAME} logo={archivePosterLogo} setToast={setToast}/>:null}
+        <VideoJobsPanel logo={archivePosterLogo} isClass={view.isClass} objectName={view.name} period={videoPeriod} onPeriod={setVideoPeriod} lessonCount={view.summary.lessons} artworkCount={view.summary.artworks} photoCount={view.summary.photos} teacherName={teacherName} setToast={setToast} entries={videoEntries} scopeEntries={videoScopeEntries} classEntries={videoClassEntries} roster={classRoster} tokens={shareTokens} records={records} consents={consents} musicTracks={musicTracks} videoRecords={videoRecords} auditLog={auditLog} videoQuota={videoQuota} videoRetention={videoRetention} management={management} setShareTokens={setShareTokens} setVideoRecords={setVideoRecords} recordAudit={recordAudit} auditActor={auditActor} navigate={navigate}/>
         <section className="archive-perf-panel" data-archive-perf="true" data-archive-perf-measured={String(perfChecks.measured)} data-archive-perf-total={String(perfChecks.total)} data-archive-perf-all-ok={perfChecks.allOk?'true':'false'} data-archive-perf-summary-text={perfChecks.summary}>
           <div className="archive-perf-head"><Gauge size={15}/><b>档案性能</b><em data-archive-perf-summary="true">{perfChecks.summary}</em><small>{ARCHIVE_PERF_HINT}</small></div>
           <ul className="archive-perf-list">{perfChecks.rows.map(row=><li key={row.id} data-archive-perf-row={row.id} data-archive-perf-state={row.ok===null?'pending':row.ok?'ok':'over'} data-archive-perf-value={row.value} data-archive-perf-budget={row.budget} data-archive-perf-text={row.text}>

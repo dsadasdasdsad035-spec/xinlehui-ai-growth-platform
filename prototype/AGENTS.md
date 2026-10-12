@@ -3799,6 +3799,39 @@ US-303 补的是后半截，两个模块：
 - 已知边界：内置班级模板的版式（作品墙占上部、底部机构与二维码）沿用 US-302a 的参数，**底部留白较多**
   是模板 `y` 比例（相对短边）在 1920 高画布上的既有表现 —— 改版式属后台模板参数，不在本故事范围。
 
+## 成长视频封面海报：画布比例与「时长角标跟视频状态联动」（[海报 US-306] / FR-316、FR-323、FR-345）
+
+给「发到微信的那条视频链接」配一张封面（1080×1920，与成长视频输出口径同比例）。仍是
+`data` 定规则 + `services` 落笔的分工：
+
+- `src/data/posterVideoCover.js`（data 层纯函数，可 `node` 直跑）：
+  - **画布与成长视频同比例是机器判据，不是口头约定**：`posterVideoCoverRatio(spec)` 同时给出画布比例、
+    视频模块自己的输出口径（`VIDEO_PERSONAL_RENDER` = 1080×1920 · 9:16，来自 `data/videoPersonal.js`）
+    与 `ok`。视频改口径，这条当场变红 —— 别在封面这一侧手写 1080/1920。
+  - **时长只有一个来源：成片三件套**（`videoOutputView()`，与视频预览 / 下载 / 分享同一支判据）。
+    成片记录优先（`findVideoRecord(videoRecords, videoRecordKey({…}))`），其次任务上挂的输出；
+    还没有成片时角标写占位（`POSTER_VIDEO_COVER_DURATION_PLACEHOLDER` = 「待生成」）且
+    `posterVideoCoverExportGate()` 拦下导出 —— **演示队列的 `normalizeVideoJob` 会把三件套清空**，
+    所以「任务跑到 100%」也拿不到时长，这正是「尚未生成」的结构性保证（别去判断进度数字）。
+  - **「出预览」与「能导出」是两件事**：`plan.renderable`（有对象 + 有主视觉）决定出不出预览，
+    `plan.exportGate` 决定能不能下载。视频没成片时**预览照出**（角标就是占位），导出被拦 ——
+    验收要的正是「看得见占位、但下载不了」；把预览也一起关掉就看不到占位了。
+  - 四条叠加件的读数在 `posterVideoCoverOverlays()`（id 就是内置模板的占位区 id：`title` / `student` /
+    `duration` / `play`），模板被后台改坏时如实点名缺哪一条。主视觉取**本周期最新一幅有成品图的作品**
+    （读不出日期的记录不顶掉有空日期的；一条有日期的都没有时才按列表顺序取最后一条）。
+  - 二维码指向**成片的有效分享令牌**（`activeVideoShareToken(tokens, jobKey, now)`，撤回 / 过期都不算数），
+    没有就换成「分享链接待生成」的文字位（复用 `posterSingleSpecPatch`）。
+- `src/services/posterVideoCover.js` = `renderPosterVideoCover`（预览 1×）/ `exportPosterVideoCoverPng`
+  （导出 2×，先过导出门）；下载走共用的 `downloadPosterSingleBlob`。文件名 `{对象名}_{周期}_视频封面.png`。
+- 界面（`GrowthArchiveData.jsx` 的 `VideoCoverPosterPanel`，挂在 `VideoJobsPanel` 里、贴着成片预览）：
+  **周期沿用视频模块的「生成周期」**（同一个 `period` 传进来，面板里不再放第二个周期选择器 ——
+  封面就是那条成片的封面，两者不许各说一套）；面板状态把「视频成没成片」算进去，没成片时头部的徽标写
+  「待成片」而不是绿色的「已生成」（否则老师会以为视频已经好了）。
+- 验证口径：`/tmp/assert-us095.mjs`（Node，**152 项**）+ `/tmp/assert-us095-browser.mjs`（CDP，**81 项**：
+  真机链路走到成长档案 → 画布 1080×1920 与视频 9:16 同比例、预览真图 1080×1920、四条叠加件都真的有墨迹、
+  画心盒子比例 == 素材原图比例（不拉伸）且落在盒子内、导出 2160×3840 + 文件名、切成没有成片记录的周期 →
+  角标占位「时长 待生成」+ 导出禁用 + **预览照出**，切回去又放行）。
+
 ## 容易踩的坑
 
 - **「每次渲染后量一次」的测量签名里不能有时间戳**（US-224 真踩）：`useEffect(()=>{measure()})`
