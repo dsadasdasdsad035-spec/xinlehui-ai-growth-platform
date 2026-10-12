@@ -112,3 +112,62 @@
   .archive-resident-local-note{margin:14px 20px 0}
   .history-dimensions>div{grid-template-columns:1fr;gap:2px}
 }
+
+/* 阶段报告（[第四步 US-207a]）：周期 / 类型选择 + 报告卡（注解 / 概况 / 覆盖课次 / 历史版本 / 删除）。
+   与档案页其余区块同一套视觉（#eadfbd 边框 + 米白底 + 金色小标题）。 */
+.archive-report{margin:24px 0;padding:22px;border:1px solid #eadfbd;border-radius:16px;background:#fffdf7}
+.archive-report-controls{display:grid;grid-template-columns:1fr 1fr auto;gap:12px;align-items:end;margin-top:16px}
+.archive-report-controls label{display:block;font-size:11px;font-weight:700;color:#514a38}
+.archive-report-controls select{display:block;width:100%;height:44px;margin-top:7px;padding:0 11px;border:1px solid #e6d9b8;border-radius:10px;background:#fff;color:#3b362a}
+.archive-report-controls .primary{height:44px;white-space:nowrap}
+.archive-report-controls .primary:disabled{opacity:.55;cursor:not-allowed}
+.archive-report-hint{display:block;margin-top:6px;font-size:9px;line-height:1.5;color:#8a7c64}
+.archive-report-issue{margin:14px 0 0;padding:10px 12px;border-radius:10px;background:#fff4e2;font-size:10px;line-height:1.65;color:#8a5a20}
+.archive-report-notice{margin:14px 0 0;padding:10px 12px;border-radius:10px;background:#f4fbe9;font-size:10px;line-height:1.65;color:#4c6b2a}
+.archive-report-empty{margin:16px 0 0;padding:16px;border:1px dashed #dfcfaa;border-radius:12px;background:#fffdf6;font-size:11px;line-height:1.7;color:#756d5c}
+.archive-report-card{margin-top:16px;border:1px solid #eee2c9;border-radius:14px;background:#fff;overflow:hidden}
+.archive-report-card>header{display:flex;justify-content:space-between;gap:12px;align-items:flex-start;padding:16px 18px;background:linear-gradient(120deg,#fff6d8,#fffdf5)}
+.archive-report-card>header span{font-size:9px;font-weight:800;letter-spacing:.04em;color:#9a7200}
+.archive-report-card>header h4{margin:6px 0;font-size:17px;color:#2f2b21}
+.archive-report-card>header b{display:block;font-size:11px;color:#6b5b3d}
+.archive-report-card>header small{display:block;margin-top:5px;font-size:9px;color:#8a7c64}
+.archive-report-badges{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.archive-report-badges em{font-style:normal;padding:5px 9px;border-radius:20px;background:#292720;color:#fff;font-size:10px;font-weight:800}
+.archive-report-badges .secondary{border:1px solid #e6d9b8;background:#fff;color:#6b5b3d;font-size:10px}
+.archive-report-facts{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;padding:16px 18px 0}
+.archive-report-facts>div{min-width:0;padding:11px 12px;border:1px solid #efe5cf;border-radius:12px;background:#fffdf6}
+.archive-report-facts span{display:block;font-size:9px;font-weight:800;letter-spacing:.04em;color:#9a7200}
+.archive-report-facts b{display:block;margin-top:5px;font-size:19px;color:#3b3223}
+.archive-report-facts small{display:block;margin-top:4px;font-size:9px;line-height:1.5;color:#8a7c64}
+.archive-report-lessons-head{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;padding:18px 18px 0}
+.archive-report-lessons-head b{font-size:12px;color:#3a3427}
+.archive-report-lessons-head span{font-size:9px;color:#8a7c64}
+.archive-report-lessons{display:grid;gap:7px;margin:10px 0 0;padding:0 18px;list-style:none}
+.archive-report-lessons li{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;padding:9px 11px;border:1px solid #efe5cf;border-radius:10px;background:#fffdf6}
+.archive-report-lessons b{font-size:10px;color:#9a7200;font-weight:800}
+.archive-report-lessons span{font-size:11px;color:#3d3527}
+.archive-report-lessons small{font-size:9px;color:#8a7c64}
+.archive-report-empty-line{margin:12px 18px 0;font-size:10px;color:#8a7c64}
+.archive-report-stale{margin:14px 18px 0;padding:10px 12px;border-radius:10px;background:#fff7de;font-size:10px;line-height:1.65;color:#756348}
+.archive-report-local{display:block;margin:10px 18px 0;font-size:9px;line-height:1.6;color:#9a7b34}
+.archive-report-history{padding:18px;border-top:1px dashed #decca1;margin-top:16px}
+.archive-report-history>b{font-size:12px;color:#3a3427}
+.archive-report-history p{margin:10px 0 0;font-size:10px;line-height:1.65;color:#8a7c64}
+.archive-report-history ul{display:grid;gap:6px;margin:10px 0 0;padding:0;list-style:none}
+.archive-report-history li{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 11px;border:1px solid #efe5cf;border-radius:10px;background:#fffdf6}
+.archive-report-history li span{font-size:10px;color:#5f5748}
+.archive-report-history li .text-link{font-size:10px;color:#795a00;font-weight:700}
+.archive-report-history small{display:block;margin-top:9px;font-size:9px;line-height:1.6;color:#8a7c64}
+.archive-report-actions{display:flex;justify-content:flex-end;padding:0 18px 18px}
+.archive-report-actions .secondary{border:1px solid #e8c9bd;background:#fff;color:#9c4a2c;font-size:10px}
+.archive-report-delete-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 18px 18px;padding:12px;border:1px solid #eccfb0;border-radius:12px;background:#fffaf1}
+.archive-report-delete-bar p{flex:1 1 220px;margin:0;font-size:10px;line-height:1.65;color:#7a5a34}
+.archive-report-delete-bar .secondary{border:1px solid #e0b493;background:#fff;color:#9c4a2c;font-size:10px}
+.archive-report-delete-bar .text-link{font-size:10px;color:#795a00;font-weight:700}
+@media(max-width:800px){
+  .archive-report{padding:16px}
+  .archive-report-controls{grid-template-columns:1fr}
+  .archive-report-facts{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .archive-report-card>header{flex-direction:column}
+  .archive-report-history li{flex-direction:column;align-items:flex-start;gap:6px}
+}

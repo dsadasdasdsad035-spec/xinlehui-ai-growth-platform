@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, Download, Frame, MessageSquareText, Plus, RefreshCw, Sparkles } from 'lucide-react';
+import { Archive, Download, FileText, Frame, MessageSquareText, Plus, RefreshCw, Sparkles, Trash2 } from 'lucide-react';
 // 档案页的「常驻视图」（[第四步 US-206]）：
 //  - 对象 / 周期 / 缺课筛选的**可选项、默认选中、过滤、空态**在 `data/archiveTargets.js` 与
 //    `data/archiveResident.js` 两份零依赖模块里，组件只渲染它们的产物（一个名字都不写死）；
@@ -7,14 +7,19 @@ import { Archive, Download, Frame, MessageSquareText, Plus, RefreshCw, Sparkles 
 //    只有数据源还在读 / 读失败 / 真的一条都没有时才渲染状态面板（US-206 第 1、5 条）。
 //  - 「切换只过滤不重置内容」：学员 / 班级 / 周期 / 缺课筛选都只改筛选 state，
 //    时间线、概况、空态当场跟着换，周期与已选对象一律保留。
+// 阶段报告（[第四步 US-207a]）：键（对象 + 周期 + 类型）、快照、版本与历史、落库状态全在
+// `data/archiveReports.js`（零依赖纯函数）里，这一页只渲染它的产物 + 把结果写进 `archiveReports`。
 import { loadStudentManagement } from './data/studentManagement';
 import {
+  ARCHIVE_PERIOD_DEFAULT,
   ARCHIVE_PERIOD_FILTER_DEFAULT,
   ARCHIVE_PERIOD_FILTERS,
+  ARCHIVE_PERIODS,
   ARCHIVE_TARGET_CLASS,
   ARCHIVE_TARGET_PERSONAL,
   archiveTargetLists,
   archiveTargetOptions,
+  filterArchiveRecordsByPeriod,
   resolveArchiveTargetValue
 } from './data/archiveTargets';
 import {
@@ -30,6 +35,44 @@ import {
   archiveResidentView
 } from './data/archiveResident';
 import { ARCHIVE_SHARE_LINK_NOTE } from './data/archiveSummary';
+import {
+  ARCHIVE_REPORT_DELETE_CANCEL_LABEL,
+  ARCHIVE_REPORT_DELETE_CONFIRM_LABEL,
+  ARCHIVE_REPORT_DELETE_LABEL,
+  ARCHIVE_REPORT_DELETE_NOTE,
+  ARCHIVE_REPORT_DELETE_DONE,
+  ARCHIVE_REPORT_EMPTY_TEXT,
+  ARCHIVE_REPORT_HISTORY_BACK,
+  ARCHIVE_REPORT_HISTORY_EMPTY,
+  ARCHIVE_REPORT_HISTORY_NOTE,
+  ARCHIVE_REPORT_HISTORY_TITLE,
+  ARCHIVE_REPORT_HISTORY_VIEW,
+  ARCHIVE_REPORT_LESSON_TITLE,
+  ARCHIVE_REPORT_LOCAL_NOTE,
+  ARCHIVE_REPORT_SECTION_DESC,
+  ARCHIVE_REPORT_SECTION_TITLE,
+  ARCHIVE_REPORT_STATUSES,
+  ARCHIVE_REPORT_STALE_HINT,
+  ARCHIVE_REPORT_TYPE_DEFAULT,
+  ARCHIVE_REPORT_TYPE_OPTIONS,
+  ARCHIVE_REPORT_TYPES,
+  archiveReportAction,
+  archiveReportActionLabel,
+  archiveReportDefaultSelection,
+  archiveReportGenerateIssue,
+  archiveReportKey,
+  archiveReportStale,
+  archiveReportVersionLabel,
+  archiveReportView,
+  buildArchiveReportSnapshot,
+  createArchiveReport,
+  findArchiveReport,
+  applyArchiveReport,
+  removeArchiveReport,
+  setArchiveReportStatus,
+  updateArchiveReport
+} from './data/archiveReports';
+import { deleteRemoteArchiveReport, saveRemoteArchiveReport } from './services/archiveReportsApi';
 import { Button } from './ui';
 
 /** 一节课在时间线上的卡：日期与作品名 · 成品作品图 · 课堂照片 · 五维点评摘要。 */
@@ -59,8 +102,79 @@ function ResidentAbsence({entry}){
   </article>;
 }
 
-export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,pageParams,recordsSource=null,reloadRecords=null}){
+/** 报告的概况四行（快照产物；历史版本回看时渲染的是**那一版**的四行）。 */
+function ReportFacts({facts}){
+  return <div className="archive-report-facts">{facts.map(field=><div key={field.id} data-archive-report-fact={field.id} data-archive-report-fact-value={field.value}>
+    <span>{field.label}</span><b>{field.value}</b><small>{field.detail}</small>
+  </div>)}</div>;
+}
+
+/** 报告覆盖的课次（快照里的那一份，不是拿今天的记录重算 —— 历史版本回看时才对得上）。 */
+function ReportLessons({rows}){
+  return <ul className="archive-report-lessons" data-archive-report-lessons={rows.length}>
+    {rows.map(row=><li key={row.id||`${row.date}-${row.title}`} data-archive-report-lesson="true" data-archive-report-lesson-date={row.date} data-archive-report-lesson-status={row.status}>
+      <b>{row.date||'未记录日期'}</b>
+      {row.title?<span>《{row.title}》</span>:null}
+      <small>{row.isAbsence?'缺课 · 温柔留白':`${row.dimensionCount} 维点评${row.hasArtwork?' · 有成品作品图':''}${row.photoCount?` · 课堂照片 ${row.photoCount} 张`:''}`}</small>
+    </li>)}
+  </ul>;
+}
+
+/**
+ * 阶段报告面板（[第四步 US-207a]）：周期 / 类型两个选择 + 生成（已有 = 更新）+ 删除 + 历史版本回看。
+ * 判据全部读 `data/archiveReports.js` 的产物（键、按钮语义、注解、禁用原因、历史行），组件不自己算。
+ */
+function ArchiveReportPanel({reportKey, reportView, period, type, issue, busy, notice, stale, deleteOpen, historyVersion, onPeriod, onType, onGenerate, onDeleteOpen, onDeleteCancel, onDelete, onHistoryView, onHistoryBack}){
+  const historyEntry=reportView&&historyVersion?reportView.history.find(entry=>entry.version===historyVersion)||null:null;
+  const typeHint=(ARCHIVE_REPORT_TYPE_OPTIONS.find(option=>option.name===type)||{}).hint||'';
+  return <section className="archive-report" data-archive-report-section="true" data-archive-report-key={reportKey} data-archive-report-period={period} data-archive-report-type={type} data-archive-report-exists={reportView?'true':'false'} data-archive-report-stale={stale?'true':'false'} data-archive-report-busy={busy?'true':'false'}>
+    <div className="archive-section-head"><span>阶段报告 · 按「对象 + 周期 + 类型」落库</span><h3>{ARCHIVE_REPORT_SECTION_TITLE}</h3><p>{ARCHIVE_REPORT_SECTION_DESC}</p></div>
+    <div className="archive-report-controls">
+      <label>报告周期<select value={period} onChange={event=>onPeriod(event.target.value)} data-archive-report-period-field="true" aria-label="报告周期">{ARCHIVE_PERIODS.map(name=><option key={name} value={name}>{name}</option>)}</select></label>
+      <label>报告类型<select value={type} onChange={event=>onType(event.target.value)} data-archive-report-type-field="true" aria-label="报告类型">{ARCHIVE_REPORT_TYPES.map(name=><option key={name} value={name}>{name}</option>)}</select><small className="archive-report-hint" data-archive-report-type-hint={type}>{typeHint}</small></label>
+      <Button icon={FileText} data-archive-report-generate="true" data-archive-report-action={archiveReportAction(reportView)} disabled={Boolean(issue)||busy} onClick={onGenerate}>{busy?'正在生成报告…':archiveReportActionLabel(reportView)}</Button>
+    </div>
+    {issue?<p className="archive-report-issue" data-archive-report-issue="true">{issue}</p>:null}
+    {notice?<p className="archive-report-notice" data-archive-report-notice="true">{notice}</p>:null}
+    {reportView?<article className="archive-report-card" data-archive-report-card="true" data-archive-report-version={reportView.version} data-archive-report-status={reportView.status} data-archive-report-generated={reportView.generatedAtText} data-archive-report-generated-by={reportView.generatedBy} data-archive-report-preview-version={historyEntry?historyEntry.version:''}>
+      <header>
+        <div><span data-archive-report-status-label="true">{reportView.statusLabel}</span><h4>{reportView.title}</h4>
+          <b data-archive-report-annotation="true">{historyEntry?historyEntry.annotation:reportView.annotation}</b>
+          <small>{historyEntry?`历史版本 ${historyEntry.versionLabel}`:reportView.versionLabel} · {historyEntry?(historyEntry.generatedBy?`由 ${historyEntry.generatedBy} 生成`:'生成人未记录'):reportView.generatedByText}</small>
+        </div>
+        <div className="archive-report-badges">
+          <em data-archive-report-version-label="true">{historyEntry?historyEntry.versionLabel:reportView.versionLabel}</em>
+          {historyEntry?<Button variant="secondary" data-archive-report-history-back="true" onClick={onHistoryBack}>{ARCHIVE_REPORT_HISTORY_BACK}</Button>:null}
+        </div>
+      </header>
+      <ReportFacts facts={historyEntry?historyEntry.facts:reportView.facts}/>
+      <div className="archive-report-lessons-head"><b>{ARCHIVE_REPORT_LESSON_TITLE}</b><span>来自归档数据的聚合结果（生成那一刻的快照）</span></div>
+      {reportView.lessonRows.length||historyEntry?<ReportLessons rows={historyEntry?historyEntry.lessonRows:reportView.lessonRows}/>:<p className="archive-report-empty-line">这个周期里还没有可聚合的课次。</p>}
+      {stale&&!historyEntry?<p className="archive-report-stale" data-archive-report-stale-hint="true">{ARCHIVE_REPORT_STALE_HINT}</p>:null}
+      {reportView.status===ARCHIVE_REPORT_STATUSES.local&&!historyEntry?<small className="archive-report-local" data-archive-report-local-note="true">{ARCHIVE_REPORT_LOCAL_NOTE}</small>:null}
+      <div className="archive-report-history">
+        <b>{ARCHIVE_REPORT_HISTORY_TITLE}（{reportView.historyCount}）</b>
+        {reportView.hasHistory?<ul>{reportView.history.map(entry=><li key={entry.version} data-archive-report-history-entry={entry.version} data-archive-report-history-entry-date={entry.generatedAtText}>
+          <span>{entry.versionLabel} · {entry.annotation}</span>
+          <button type="button" className="text-link" data-archive-report-history-view={entry.version} onClick={()=>onHistoryView(entry.version)}>{ARCHIVE_REPORT_HISTORY_VIEW}</button>
+        </li>)}</ul>:<p>{ARCHIVE_REPORT_HISTORY_EMPTY}</p>}
+        <small>{ARCHIVE_REPORT_HISTORY_NOTE}</small>
+      </div>
+      {deleteOpen?<div className="archive-report-delete-bar" data-archive-report-delete-bar="true">
+        <p>{ARCHIVE_REPORT_DELETE_NOTE}</p>
+        <Button variant="secondary" icon={Trash2} data-archive-report-delete-confirm="true" onClick={onDelete}>{ARCHIVE_REPORT_DELETE_CONFIRM_LABEL}</Button>
+        <button type="button" className="text-link" data-archive-report-delete-cancel="true" onClick={onDeleteCancel}>{ARCHIVE_REPORT_DELETE_CANCEL_LABEL}</button>
+      </div>:<div className="archive-report-actions"><Button variant="secondary" icon={Trash2} data-archive-report-delete="true" onClick={onDeleteOpen}>{ARCHIVE_REPORT_DELETE_LABEL}</Button></div>}
+    </article>:<p className="archive-report-empty" data-archive-report-empty="true">{ARCHIVE_REPORT_EMPTY_TEXT}</p>}
+  </section>;
+}
+
+export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,pageParams,recordsSource=null,reloadRecords=null,archiveReports=[],setArchiveReports=()=>{},teacherName=''}){
   const [target,setTarget]=useState(ARCHIVE_TARGET_PERSONAL); const [period,setPeriod]=useState(ARCHIVE_PERIOD_FILTER_DEFAULT); const [absenceFilter,setAbsenceFilter]=useState(ARCHIVE_ABSENCE_ALL);
+  // 阶段报告（[第四步 US-207a]）的界面 state：两个选择器 + 生成中 / 回执 / 待确认的删除 / 正在回看的历史版本。
+  const [reportPeriod,setReportPeriod]=useState(ARCHIVE_PERIOD_DEFAULT); const [reportType,setReportType]=useState(ARCHIVE_REPORT_TYPE_DEFAULT);
+  const [reportBusy,setReportBusy]=useState(false); const [reportNotice,setReportNotice]=useState('');
+  const [reportDeleteOpen,setReportDeleteOpen]=useState(false); const [reportHistoryVersion,setReportHistoryVersion]=useState(0);
   // 可选项来自学员管理名单（与「学员管理」页同一份本地兜底），并上记录里出现过的名字 ——
   // 记录不会因为名单被改过就再也选不到（[US-205] 第 2、3 条：学员与班级都不写死）。
   const [management]=useState(loadStudentManagement);
@@ -110,6 +224,86 @@ export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,p
     assets.forEach(({url,name})=>{const link=document.createElement('a');link.href=url;link.download=name;link.click()});
     setToast(assets.length?`已开始下载 ${assets.length} 份处理后的成品素材。`:'当前档案里暂没有可下载的成品素材。');
   };
+
+  // ---- 阶段报告（[第四步 US-207a]）------------------------------------------------------------
+  // 报告键 = 当前对象 + 当前选的周期与类型（键怎么拼只由 `archiveReportKey` 决定）。
+  const reportKey=view.name?archiveReportKey({target:view.target,name:view.name,period:reportPeriod,type:reportType}):'';
+  const existingReport=useMemo(()=>findArchiveReport(archiveReports,reportKey),[archiveReports,reportKey]);
+  // 界面读的是「报告视图」这一份产物：注解（生成于 X 月 X 日 · 共 N 节课）、版本、历史版本都在里面。
+  const reportView=useMemo(()=>archiveReportView(existingReport),[existingReport]);
+  // 这个周期窗口里有多少节课：决定生成按钮能不能点（点不了时给具体原因，不用笼统的「请完善信息」）。
+  const reportLessonCount=useMemo(()=>filterArchiveRecordsByPeriod(view.targetView.lessons,reportPeriod).length,[view.targetView.lessons,reportPeriod]);
+  const reportIssue=archiveReportGenerateIssue({name:view.name,total:view.total,count:reportLessonCount,period:reportPeriod});
+  // 生成之后归档里又有新内容 → 给出「为什么值得点一次更新」的具体理由。
+  const reportStale=useMemo(()=>archiveReportStale(existingReport,view.targetView.lessons),[existingReport,view.targetView.lessons]);
+  // 再次进入这一页：把这位对象**最近生成的那一份**报告的周期与类型回填给下拉 —— 已有同 reportKey 的报告
+  // 就被直接展示出来，而不是让老师重新做一遍生成选择题（验收第 3 条）。只在换了对象时回填一次：
+  // 老师自己切过周期 / 类型之后，别的 state 变化不许把他拽回去（US-205 的 appliedPreferenceRef 同款纪律）。
+  const appliedReportTargetRef=useRef('');
+  useEffect(()=>{
+    const key=`${view.target}|${view.name}`;
+    if(!view.name||key===appliedReportTargetRef.current) return;
+    appliedReportTargetRef.current=key;
+    const seeded=archiveReportDefaultSelection({reports:archiveReports,target:view.target,name:view.name});
+    setReportPeriod(seeded.period);
+    setReportType(seeded.type);
+    setReportHistoryVersion(0);
+    setReportDeleteOpen(false);
+    setReportNotice('');
+  },[view.target,view.name,archiveReports]);
+  const pickReportPeriod=value=>{setReportPeriod(value);setReportHistoryVersion(0);setReportDeleteOpen(false)};
+  const pickReportType=value=>{setReportType(value);setReportHistoryVersion(0);setReportDeleteOpen(false)};
+  /**
+   * 生成 / 更新一份报告（同一个动作，两种语义 —— 词都在 data 层）：
+   *  ① 纯聚合出快照 → `createArchiveReport` / `updateArchiveReport`（后者 version 自增、上一版进历史）；
+   *  ② **先落本机镜像**（`setArchiveReports`，App 的 effect 负责写 localStorage）—— 云端不通也不丢；
+   *  ③ 再推云端；推成功把状态翻成「已同步」，失败就如实标注「仅本机镜像」（不假装成功）。
+   *  `generatedBy` 用会话里的老师姓名（与课次 `teacherId` / 写回 `operatorId` 同一口径）。
+   */
+  const generateReport=async()=>{
+    if(reportBusy||reportIssue||!reportKey) return;
+    setReportBusy(true);
+    setReportNotice('');
+    const generatedBy=teacherName||'';
+    const snapshot=buildArchiveReportSnapshot({records,target:view.target,name:view.name,period:reportPeriod,type:reportType});
+    const next=existingReport
+      ?updateArchiveReport(existingReport,{snapshot,generatedBy,status:ARCHIVE_REPORT_STATUSES.local})
+      :createArchiveReport({snapshot,generatedBy,status:ARCHIVE_REPORT_STATUSES.local});
+    const verb=existingReport?'更新':'生成';
+    setArchiveReports(list=>applyArchiveReport(list,next));
+    setReportHistoryVersion(0);
+    try{
+      await saveRemoteArchiveReport(next);
+      setArchiveReports(list=>applyArchiveReport(list,setArchiveReportStatus(next,ARCHIVE_REPORT_STATUSES.synced)));
+      setReportNotice(`${next.displayName}的${next.period}${next.type}已${verb}（${archiveReportVersionLabel(next.version)}），并已同步到云端。`);
+      setToast(`${next.displayName}的${next.period}${next.type}已${verb}（${archiveReportVersionLabel(next.version)}）`);
+    }catch{
+      // 云端表还没建 / 这次没接到：报告已经在本机镜像里，如实说明同步状态（不静默降级）。
+      setReportNotice(`${next.displayName}的${next.period}${next.type}已${verb}（${archiveReportVersionLabel(next.version)}）：${ARCHIVE_REPORT_LOCAL_NOTE}`);
+      setToast(`${next.displayName}的${next.period}${next.type}已${verb}（${archiveReportVersionLabel(next.version)}），先保存在本机`);
+    }finally{
+      setReportBusy(false);
+    }
+  };
+  /** 删除报告：只摘掉这一份（`removeArchiveReport` 只动报告列表），归档记录一条都不碰（FR-241）。 */
+  const deleteReport=async()=>{
+    if(!reportKey) return;
+    const removed=findArchiveReport(archiveReports,reportKey);
+    setReportDeleteOpen(false);
+    setReportHistoryVersion(0);
+    setArchiveReports(list=>removeArchiveReport(list,reportKey));
+    try{ await deleteRemoteArchiveReport(reportKey); }
+    catch{ /* 云端表还没建 / 这次没接到：本机镜像里已经摘掉了，云端下次写入时自然不会再带上它 */ }
+    setReportNotice(`${removed?`${removed.displayName}的${removed.period}${removed.type}`:''}${ARCHIVE_REPORT_DELETE_DONE}`);
+    setToast(ARCHIVE_REPORT_DELETE_DONE);
+  };
+  const reportPanel=showTimeline?<ArchiveReportPanel
+    reportKey={reportKey} reportView={reportView} period={reportPeriod} type={reportType} issue={reportIssue} busy={reportBusy}
+    notice={reportNotice} stale={reportStale} deleteOpen={reportDeleteOpen} historyVersion={reportHistoryVersion}
+    onPeriod={pickReportPeriod} onType={pickReportType} onGenerate={generateReport}
+    onDeleteOpen={()=>setReportDeleteOpen(true)} onDeleteCancel={()=>setReportDeleteOpen(false)} onDelete={deleteReport}
+    onHistoryView={version=>setReportHistoryVersion(version)} onHistoryBack={()=>setReportHistoryVersion(0)}
+  />:null;
   return <>
     <div className="page-head"><div><div className="title-line"><h1>成长档案</h1><span className="prd-tag">PRD-12 / F-ARCHIVE-01</span></div><p>把处理后的作品、照片和点评，连成孩子自己的成长轨迹。</p></div></div>
     <section className="growth-builder archive-data-report archive-resident" data-archive-filter={view.target} data-archive-filter-name={view.name} data-archive-record-count={view.total} data-archive-visible-count={view.count} data-archive-period-value={view.period} data-archive-absence={view.absenceFilter} data-archive-state={phase} data-archive-hidden-by-period={view.hiddenByPeriod} data-archive-hidden-by-absence={view.hiddenByAbsence}>
@@ -133,6 +327,7 @@ export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,p
           <div className="archive-overview-head"><span>档案概况</span><h3>{targetName} · 按当前筛选</h3></div>
           <div className="archive-overview-grid">{view.overview.map(field=><div key={field.id} data-archive-overview-field={field.id} data-archive-overview-ok={field.ok?'true':'false'}><span>{field.label}</span><b>{field.value}</b><small>{field.detail}</small></div>)}</div>
         </section>
+        {reportPanel}
         <section className="archive-lesson-history" data-archive-timeline="true" data-archive-timeline-count={view.count}>
           <div className="archive-section-head"><span>课次时间线 · 按日期升序</span><h3>{ARCHIVE_TIMELINE_TITLE}</h3><p>{ARCHIVE_TIMELINE_DESC}</p></div>
           <div className="history-list">{view.entries.map(entry=>entry.isAbsence?<ResidentAbsence key={entry.id||entry.recordKey} entry={entry}/>:<ResidentLesson key={entry.id||entry.recordKey} entry={entry}/>)}</div>

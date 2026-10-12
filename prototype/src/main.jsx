@@ -58,6 +58,10 @@ import ReviewTraceLogsPanel from './admin/ReviewTraceLogsPanel';
 import { loadStudentManagement } from './data/studentManagement';
 import StudentArchiveData from './StudentArchiveData';
 import GrowthArchiveData from './GrowthArchiveData';
+// 阶段报告（[第四步 US-207a]）：报告实体（reportKey / 快照 / 版本与历史 / 落库状态）的规则全在
+// data 层纯函数里；云端表 `archive_reports` 的读写映射在 service 层；本机镜像是兜底。
+import { loadArchiveReports, mergeArchiveReports, persistArchiveReports } from './data/archiveReports';
+import { loadRemoteArchiveReports } from './services/archiveReportsApi';
 import { requestAiReview, uploadControlledMedia } from './services/reviewApi';
 import { ARTWORK_CLEAN_ALGORITHM, createExhibitionFrame, createPortraitPrint, extractArtworkSurfaceDetails, measureFramingCoverage, renderFramedArtwork } from './services/framing';
 // 作品编辑器（US-004a 旋转与撤销重做 / US-004b 裁剪框与比例预设）：单幅作品的编辑状态 `artworkEdit`、
@@ -393,6 +397,10 @@ function App(){
   if(keywordTemplateSeedRef.current===undefined) keywordTemplateSeedRef.current=!reviewKeywordTemplateMirrorStored();
   // 点评轨迹的留存与披露策略（[第三步 US-112]）：系统配置里可改，缺省「保留 90 天 + 允许老师看提示词正文」。
   const [tracePolicy,setTracePolicy]=useState(loadReviewTracePolicy);
+  // 阶段报告（[第四步 US-207a]）：本机镜像先渲染，云端 `archive_reports` 表回来就并进来
+  // （表还没建 → 写入被拒，报告只在本机镜像里 —— 与审计日志 / 装裱模板同一套兜底口径；
+  //  合并方向本机优先：刚生成、还没推上云的那一版不能被云端旧记录顶掉）。
+  const [archiveReports,setArchiveReports]=useState(loadArchiveReports);
   // 管理端「生成日志 → 点评轨迹」读的轨迹账：本机镜像先渲染，云端表 / 开发适配器回来后并进去
   // （合并方向：`mergeReviewTraces` 按 traceId 去重、时间倒序）。清理（到期）也写回这一份。
   const [traceLog,setTraceLog]=useState(loadReviewTraces);
@@ -423,6 +431,11 @@ function App(){
   useEffect(()=>{persistLessons(lessons)},[lessons]);
   useEffect(()=>{persistCourses(courses)},[courses]);
   useEffect(()=>{persistAuditLog(auditLog)},[auditLog]);
+  // 阶段报告只在**本机镜像**里落盘（云端 archive_reports 表还没建，写入会被拒）；
+  // 推云端是生成动作那一条路径自己做的事（`GrowthArchiveData` 的 generateReport），
+  // 这里不整表回写 —— 否则每次读到云端旧数据都会把本机的新版本覆盖回去。
+  useEffect(()=>{persistArchiveReports(archiveReports)},[archiveReports]);
+  useEffect(()=>{let active=true;loadRemoteArchiveReports().then(remote=>{if(active&&remote.length)setArchiveReports(current=>mergeArchiveReports(current,remote))}).catch(()=>{});return()=>{active=false}},[]);
   // 策略落盘（保留期 + 披露开关）：本机镜像是唯一真源（云端没有这张配置表的口径）。
   useEffect(()=>{persistReviewTracePolicy(tracePolicy)},[tracePolicy]);
   useEffect(()=>{let active=true;loadRemoteAuditLog().then(remote=>{if(active&&remote.length)setAuditLog(current=>mergeAuditLog(remote,current))}).catch(()=>{});return()=>{active=false}},[]);
@@ -535,7 +548,7 @@ function App(){
     <main className="main">
       <Topbar role={role} onMenu={()=>setMobileNav(true)} onSwitch={(r)=>login(r,'demo')} onGuide={()=>navigate('guide')} onLogout={()=>setAuth(false)}/>
       <div className="content">
-        <PageRouter {...{page,role,navigate,setToast,setModal,apps,setApps,tasks,setTasks,demoState,setDemoState,records:archivedRecords,setRecords,recordsSource,reloadRecords:reloadFeedbackRecords,parentStudent,parentStudents,parentPhone,parentSession,setParentStudent,teacherProfiles,setTeacherProfiles,framingPresets,setFramingPresets,skillLibrary,setSkillLibrary,agentFiles,setAgentFiles,adminName:roleMeta.admin.name,galleryVenues,setGalleryVenues,galleryExhibitions,setGalleryExhibitions,lessons,setLessons,courses,setCourses,auditLog,recordAudit,reviewModels,reviewModelDefaults,setReviewModelDefaults,keywordTemplates,setKeywordTemplates,keywordTemplateRemote,traceLog,setTraceLog,tracePolicy,setTracePolicy,traceSource,refreshReviewTraces,cleanupReviewTraces,auditTraceEntry,adminTraceViewer,teacherTraceViewer,pageParams}}/>
+        <PageRouter {...{page,role,navigate,setToast,setModal,apps,setApps,tasks,setTasks,demoState,setDemoState,records:archivedRecords,setRecords,recordsSource,reloadRecords:reloadFeedbackRecords,parentStudent,parentStudents,parentPhone,parentSession,setParentStudent,teacherProfiles,setTeacherProfiles,framingPresets,setFramingPresets,skillLibrary,setSkillLibrary,agentFiles,setAgentFiles,adminName:roleMeta.admin.name,galleryVenues,setGalleryVenues,galleryExhibitions,setGalleryExhibitions,lessons,setLessons,courses,setCourses,auditLog,recordAudit,reviewModels,reviewModelDefaults,setReviewModelDefaults,keywordTemplates,setKeywordTemplates,keywordTemplateRemote,traceLog,setTraceLog,tracePolicy,setTracePolicy,traceSource,refreshReviewTraces,cleanupReviewTraces,auditTraceEntry,adminTraceViewer,teacherTraceViewer,archiveReports,setArchiveReports,teacherName:roleMeta.teacher.name,pageParams}}/>
       </div>
     </main>
     {toast?<div className="toast panda-toast"><img src={pandaWave} alt="熊猫鼓励"/><span><CircleCheck size={18}/>{toast}</span>{toastAction?<button type="button" className="toast-action" data-toast-action={toastAction.label} onClick={()=>{const run=toastAction.onClick;setToastRaw('');setToastAction(null);if(run)run()}}>{toastAction.label}</button>:null}</div>:null}

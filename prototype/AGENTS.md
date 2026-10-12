@@ -251,6 +251,56 @@ React + Vite 单页原型（`src/main.jsx` 是主入口，另按模块拆出 `sr
   `TypeError: Illegal invocation`（现改名 `data-archive-period-value`）。
   同理 `data-archive-lesson-dimensions` 这类读数要挂在**卡片根节点**上，别挂内层元素，否则断言读不到。
 
+## 阶段报告（archive_reports）的实体与落库（[第四步 US-207a] / FR-235 ~ FR-238）
+
+> 老师按学期做一份给家长看的阶段报告，**下次打开还想看到它**。规则全在 `src/data/archiveReports.js`
+> （零依赖纯函数，可 `node` 直跑断言），云端行映射在 `src/services/archiveReportsApi.js`，
+> 档案页只渲染它的产物（`ArchiveReportPanel`，`GrowthArchiveData.jsx`）。
+
+- **报告键 `reportKey` = 对象（`student::` / `class::` 前缀）+ 周期 + 类型**，只由 `archiveReportKey()` 拼一次
+  （界面不许再拼一遍 —— 两处各拼一次就会「提示说更新了、实际新建了一份」，与 US-201 的 `recordKey` 同一条纪律）。
+  空对象名 → 空键 → 生成按钮禁用。对象名相同、一个是学员一个是班级时靠前缀区分，不会撞键。
+- **周期只认三个真实周期**（半学期 / 一学期 / 一年度，`resolveArchiveReportPeriod`）：报告**没有「全部」这一档**
+  —— 它必须是一个可命名的阶段（档案页的**筛选器**才有「全部」，两者不是一件事）。
+  类型的三个词（成长集锦 / 作品集 / 成长记录）由 `ARCHIVE_REPORT_TYPES` 提供。
+- **快照是冻结的**：`buildArchiveReportSnapshot()` 用 `archiveTargetView` + `filterArchiveRecordsByPeriod`
+  聚合出「关联课次 / 作品数 / 照片数 / 缺课数 + 每节课的日期、作品名、点评维度原文」，**只留文本、
+  不带素材地址**（素材不进数据模型）。历史版本回看读的是**那一版的快照**，不是拿今天的记录重算。
+- **版本与历史**：`updateArchiveReport()` 让 `version` 自增，被替换的那一版整份进 `history`（最新在前，
+  上限 `ARCHIVE_REPORT_VERSION_LIMIT = 6`）；`reportKey` / `id` 全程不变。更新必须传**同一个键**的快照
+  —— 键的身份只由 `current` 决定（界面天然一致：快照就是按当前选中的周期 / 类型聚合的）。
+- **落库状态是两层的读数**（`ARCHIVE_REPORT_STATUSES`）：`local`（已生成 · 仅本机镜像）/
+  `synced`（已生成 · 已同步云端）。写入口径与全站一致：**先落本机镜像，再推云端**；推失败只改这句话、
+  不假称成功、也不阻断生成。`archiveReportToRow()` 写云端时把行标成 `synced`（**行存在 = 这一版在云端**，
+  写失败不会留下行）；`mergeArchiveReports` 只在两边**版本号一致**时把状态读成 `synced`，
+  本机版本更新时保持原状态（否则「已同步」会被下一次读盘悄悄降级成假消息）。
+- **本机镜像键 `xinlehui-archive-reports-v1`**（与归档记录 `xinlehui-feedback-records-v1` 是两套数据 ——
+  这就是「删除报告不影响归档记录」的结构保证）。写不下时 `slimArchiveReportsForStorage` 先降级
+  （历史版本只留「哪一版 / 什么时候 / 多少节课」、当前快照的课次明细截到 40 条）再写第二次。
+- **再次进入直接展示**：`archiveReportDefaultSelection({reports,target,name})` 挑这位对象**最近生成**的那一份，
+  把它的周期与类型回填给下拉 —— 档案页用一个 `appliedReportTargetRef` 只在**换了对象**时回填一次
+  （老师自己切过周期 / 类型之后不许被拽回去，与 US-205 的 `appliedPreferenceRef` 同一条纪律）。
+- **「更新报告」要有理由**：`archiveReportStale(report, records)` 比记录上的 `updatedAt` / `archivedAt` 与
+  报告的 `generatedAt`，有更新时界面明示「归档里有比这份报告更新的内容」。判据只看时间戳，
+  推不出时间的一律不算「更新了」。
+- **界面钩子**（断言读这些，别读文案）：`data-archive-report-section`（区块，带 key / period / type /
+  exists / stale / busy）、`data-archive-report-period-field` / `-type-field`、`data-archive-report-generate`
+  （同一个按钮，`data-archive-report-action` = `create` / `update`）、`data-archive-report-annotation`
+  （验收点名的「生成于 X 月 X 日 · 共 N 节课」）、`data-archive-report-fact=<id>`（四项概况）、
+  `data-archive-report-history-entry=<version>` + `-history-view` / `-history-back`、`-delete` /
+  `-delete-confirm` / `-delete-cancel`、`-local-note`。
+- **已知边界 / 踩过的坑**：
+  - 云端 `archive_reports` 表**还没建**（与 `audit_logs` 同一处境）：真机上报告只落本机镜像，
+    状态如实显示「仅本机镜像」。验「已同步」那一路要**在页内打桩 `cloud.database.from`**
+    （只拦 `archive_reports`、其余走原函数），断言写出的行是 snake_case 九列 + `payload`。
+  - 档案页老师端的真机入口**只有流程内的那两条**（第四步「进入成长档案」/ 更新回执「查看档案」）——
+    侧边栏没有「成长档案」项。浏览器断言必须在同一条会话里先归档一次；想验「重新进入」，
+    就把流程再走一遍（`Page.reload` 后同理），别去找别的入口。
+  - `data-archive-report-period` 挂在区块上、筛选器的周期是 `data-archive-period="true"`
+    —— 别让根节点属性与控件选择器同名（US-206 的 `Illegal invocation` 老坑）。
+  - 四项概况的 DOM 读数里 `label` 与 `value` 是连着的（`<span>` + `<b>` 无空格）：
+    断言标签要读 `span` 的文本，不要对整块 `textContent` 用 `split(' ')`；历史行的文本里还带着
+    「查看这一版」按钮的文案，断言注解要读行内的 `span`。
 
 ## 老师端「课后反馈」第一步（班级 / 学员 / 课程 / 课次推荐）
 
