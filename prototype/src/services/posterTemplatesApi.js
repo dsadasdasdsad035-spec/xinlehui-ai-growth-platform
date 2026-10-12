@@ -290,17 +290,52 @@ export async function savePosterTemplate(template) {
 }
 
 /**
+ * 一次保存**多条**模板（库级动作：排序 / 设为默认会一次改动几行）。
+ *
+ * 两条纪律（US-312b 真踩到过）：
+ *   ① **先把本机镜像写全，再逐条推云端** —— 逐条「先镜像再云端」的写法在第一条云端失败时
+ *      会中断整个循环，后面几行的镜像压根没写（表现：排序换了位、镜像是半新半旧的）。
+ *   ② 云端失败**不抛错**，逐条记进 `failed`（本机镜像已经是最新的那一份，界面如实说一句即可）。
+ *
+ * @returns `{ saved, failed, mirror }`：`failed` 是 `{ id, message }[]`，`mirror` 是写完后的本机列表。
+ */
+export async function savePosterTemplates(templates) {
+  const list = (Array.isArray(templates) ? templates : []).map((item) => normalizePosterTemplate(item));
+  const failed = [];
+  const saved = [];
+  // ① 本机镜像一次写全：新行在前、本机剩下的照旧（同一 `template_key` 只留前面那一份）。
+  const mirror = mergePosterTemplates(list, loadLocalPosterTemplates());
+  persistLocalPosterTemplates(mirror);
+  // ② 再逐条推云端（失败只记账）。
+  for (const item of list) {
+    try {
+      unwrap(await cloud.database.from(TABLE).upsert(posterTemplateToRow(item), { onConflict: POSTER_TEMPLATE_ROW_FIELDS.id }));
+      saved.push(item);
+    } catch (error) {
+      failed.push({ id: item.id, message: posterTemplateErrorMessage(error) });
+    }
+  }
+  return { saved, failed, mirror };
+}
+
+/**
  * 删除一条模板：内置模板**不可删除**（FR-357，只可停用），在碰云端之前就拒。
  * 非内置的模板：先清本机镜像（断网也要真的删掉），再尽力推云端。
- * 「已被使用过的模板只允许停用」那一条要数引用范围（FR-358），属 US-312b 的界面校验。
+ *
+ * 「已被使用过的模板只允许停用」（FR-358）：调用方把 `posterAdminTemplateUsage()` 的读数作为
+ * `usage` 传进来，`usage.referenced` 为真时同样在碰云端之前就拒 —— 界面上的删除按钮是第一道，
+ * 这里是第二道（绕过界面直接调服务层也删不掉）。`kind` 用 `posterAdminDeleteVerdict()` 的读数。
  */
-export async function deletePosterTemplate(templateKey, { existing = null } = {}) {
+export async function deletePosterTemplate(templateKey, { existing = null, usage = null } = {}) {
   const key = String(templateKey || '').trim();
   if (!key) throw new Error('缺少要删除的海报模板标识。');
   const list = sortPosterTemplates(existing || loadLocalPosterTemplates());
   const target = list.find((template) => template.id === key) || normalizePosterTemplate({ id: key });
   const issue = posterTemplateDeleteIssue(target);
   if (issue) throw new PosterTemplateDeleteError(key, issue);
+  if (usage && usage.referenced) {
+    throw new PosterTemplateDeleteError(key, `被使用过的模板只能停用、不能删除（${(usage.reasons || []).join('、') || '有引用'}）。`);
+  }
   persistLocalPosterTemplates(list.filter((template) => template.id !== key));
   try {
     await deleteRemotePosterTemplate(key);

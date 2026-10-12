@@ -4206,6 +4206,55 @@ services / 界面只渲染产物」）：
   启用保存 → 切老师端走一遍真机归档 → 弹窗里选到新模板 + **像素判据**（背景角点 = 管理端刚设的自定义色）→
   停用后老师端不再出现 → 390px 单列 ≥44px → console 0 error）。截图 511~515。
 
+## 管理端海报模板：启停 / 排序 / 默认 / 适用范围 / 保存前校验 / 引用范围与留痕（[海报 US-312b] / FR-350、FR-353 ~ FR-359）
+
+同一页（`src/admin/PosterTemplatesPage.jsx`）的第二批能力：让模板**能上线、能下线、能排顺序、能被校验**。
+`src/data/posterAdmin.js` 仍是全部规则的唯一出处；`src/services/posterTemplatesApi.js` 多了一支批写入。
+
+- **库级动作（AC1）**都在 data 层，且**全部过 `stampPosterTemplateUpdate()`**（`data/posterTemplates.js`）：
+  `posterAdminSetEnabled()`（启用 / 停用，状态没变就一个字段都不动）、
+  `posterAdminMoveTemplate(list, id, delta, { by, at, viewer })`（**只在同一层 scope 内**换位，按位次重排
+  `(位置+1)×10`，只有被挪动的那一套进变更历史）、`posterAdminApplyDefault(list, id, { by, at, viewer })`
+  （**全局唯一默认**：设为默认时把别人的标记一并清掉，传空 id = 取消默认；老师端
+  `posterDialogDefaultTemplateId()` 取的就是列表里第一套 `isDefault`，所以「设成默认」在老师端**立刻**生效）。
+  页面上的入口有两处：列表行上的 ↑ / ↓ / 启停（`data-poster-admin-row-up|down|toggle`）与面板上的
+  「上移 / 下移 / 设为默认模板 / 删除模板」（`data-poster-admin-library-actions`）。
+- **适用范围（AC2）= 两个字段 + 一句读数**：`kind`（海报类型）与 `entryScope`（成长档案 / 课后反馈 / 两处），
+  读数由 `posterAdminScopeView()` 给出（`data-poster-admin-scope-*`）。真正的过滤在老师端那支既有判据里
+  （`posterDialogTemplateRows`：入口命中 + 主体匹配 + 数据齐），**这一页不另写一套适用性规则**。
+- **保存前三项校验（AC3）= `posterAdminPreSaveChecks(template, { data })`**，一次给出三行读数与处置：
+
+  | 行 | 怎么算（都在 data 层，不碰 canvas） | 处置 |
+  |---|---|---|
+  | `bounds` 占位区越界 | 收敛后的比例坐标 × 画布短边折算；画布在「短边比例」里是 `W/短边 × H/短边`（1080×1440 = 1 × 1.333）。**高度是估算值的位（文字 / Logo）只看宽度与左上角** | **拦保存** |
+  | `text` 文字可能溢出 | `posterAdminEstimatedLines()`：样例数据代入文案模板，用渲染层同一支 `estimateTextWidth()`（CJK 1em / 其余 0.55em）估行数；估算行数 > `maxLines` 即警告 | **估算警告**（PRD 9.4 原文「保存前给出估算警告」），只提示不拦 |
+  | `qrcode` 二维码可扫性 | `sizeRatio × 画布短边 ≥ POSTER_QR_MIN_PIXELS`（120，**从 `posterTemplates` 取**，面板不写死） | **拦保存** |
+
+  `posterAdminSaveFacts()` 的 `ready` 仍是「名字 / id」那一档（老口径不动），拦保存的那两句读
+  `checks.blockers`；估算警告进回执。内置 8 套模板逐套**全过**（断言 A3）。
+- **引用范围与删除判据（AC4 / FR-358）**：`posterAdminTemplateUsage(template, { audit })` 数**审计日志**里带
+  `templateId` 的 `poster.export` / `poster.forward` 两条留痕（次数 / 最近时间 / 对象），叠加「当前是默认模板」；
+  `posterAdminDeleteVerdict(template, usage)` 给 `{ allowed, kind, message, usageText }`（`kind` =
+  `builtin` / `used` / `invalid` / `ok`）。**删除是两步**：先点「删除模板」摆出影响范围与判据
+  （`data-poster-admin-delete-panel`，allowed 时给「确认删除」，否则给「改为停用」），再点确认。
+  服务层 `deletePosterTemplate(key, { existing, usage })` 是第二道闸门（绕过界面也删不掉），
+  与装裱 `framingPresetDeleteVerdict` 逐条对齐（PRD 9.2 第 7 条）。
+- **留痕（AC5 / FR-359）**：`updated_by` / `updated_at` 只由 `stampPosterTemplateUpdate()` 写；
+  `history`（上限 20 条）**留在记录对象与本机镜像里，不进云表** —— 云表仍是固定的 14 列
+  （`POSTER_TEMPLATE_ROW_FIELDS`，断言逐字比），`posterTemplateToRow()` 不输出 `history`。
+  界面读 `posterAdminHistoryRows()`（最新在前、当前那条 `isLatest`）/ `posterAdminUpdatedFacts()`。
+- **批写入这一支**（`services/posterTemplatesApi.js` 的 `savePosterTemplates(list)`）：排序 / 设为默认会一次
+  改动**几行**，先**一次写全本机镜像**再逐条推云端、逐条记 `failed`、**不抛错**（见下「容易踩的坑」）。
+  页面只调它（`savePosterTemplates(rows)`），不自己逐条 save。
+- 验收口径：`/tmp/assert-us104.mjs`（Node，**62 项**：三项校验的常量与行读数 / 反向注入能不能抓到 /
+  库级动作与留痕 / 适用范围读数与老师端口径一致 / 引用范围与删除判据 / 服务层第二道 / 多行保存写全 /
+  页面与 data 层的「用到的标识符都 import 过」结构守卫）
+  + `/tmp/assert-us104-browser.mjs`（CDP，**83 项**：行上启停与排序真的落库 → 默认徽标搬家（同一时间只有一套）→
+  保存前三项校验（二维码 46px 与作品位越界**拦保存**、超长文案**估算警告放行**）→ 适用范围改一处入口 →
+  删除两步确认（未使用可删 / 被使用只能停用 / 内置只能停用）→ 老师端真机用管理端新建的版式**导出一次** →
+  回管理端点删除**被拦**（影响范围点名次数与学员）→ 改为停用 → 变更历史可查看 → 390px 单列 ≥44px →
+  console 0 error）。截图 516~524。
+
 ## 容易踩的坑
 
 - **「出现过这个名字」不等于「消费它」：结构性判据别用子串**（US-103 真踩一条老断言）：
@@ -4224,6 +4273,24 @@ services / 界面只渲染产物」）：
   与「用户在这期间刚新增 / 刚保存的那一套」形成竞态：界面看着好好的、镜像是空的、老师端弹窗里没有它。
   做法：让页面**独占**写镜像（`{ persist: false }`）+ `touchedRef` 标记「读回之前用户已经动过手」→
   直接放弃回灌（合并方向仍是本机优先）。凡是「异步读云端 + 同步给用户写」的页面都按这条走。
+- **「先镜像再推云端」的循环会在第一条云端失败时中断**（US-312b 真踩，本轮的新变种）：
+  排序 / 设为默认一次要改**几行**，写成 `for (const row of rows) await savePosterTemplate(row)` 时，
+  第一个 `savePosterTemplate` 内部「镜像 → 云端 push」的 push 一失败就抛错跳出整个循环 ——
+  **后面几行的镜像压根没写**（表现：列表顺序换了、镜像是半新半旧的、老师端按旧顺序显示）。
+  做法：`services/posterTemplatesApi.js` 的 `savePosterTemplates(list)` —— **先把本机镜像一次写全**
+  （`mergePosterTemplates(list, loadLocalPosterTemplates())` 一次落盘），再逐条推云端、逐条记 `failed`、
+  **不抛错**。凡是「一次动作改多行」的库级操作都按这一条来（浏览器断言 `[2.2]/[3.1]` 抓到的）。
+- **页面里用到的常量 / 函数必须真的 import 到，`pnpm run build` 不会告诉你**（US-312b 真踩，与
+  US-103 的「私有函数没 import」同类，但这次在**页面**里）：我在 JSX 里写了 `POSTER_ADMIN_HISTORY_EMPTY`
+  却漏了那一行 import → 构建全绿、`#root.innerHTML.length === 0`（白屏，`ReferenceError` 只在运行时炸）。
+  判据：Node 断言里加一段**静态守卫** —— 把文件里 `POSTER_ADMIN_* / POSTER_TEMPLATE_* / posterAdmin* /
+  posterTemplate*` 的**使用**集合（先剥注释、再去掉 import 语句与引号字符串）逐个查「imported ∪ declared」
+  （`importedNames()` / `declaredNames()` / `usedPosterIdentifiers()`，见 `/tmp/assert-us104.mjs` 的 G6/G7）。
+  这类白屏只有**浏览器回归**会第一时间抓到 —— 改完页面先跑一遍进页面的那条 CDP 脚本。
+- **「值比框长」不是布局溢出**（US-312b 真踩一条自己写的断言）：390px 逐块量横向溢出时，
+  `input` 的 `scrollWidth > clientWidth` 是**文本滚动的正常现象**（长文案、长文件名都会这样），
+  它不是「块溢出了」。逐块判据要把 `INPUT / SELECT / TEXTAREA` 排掉，页面级的
+  `document.documentElement.scrollWidth` 才是「有没有横向滚动条」的判据。
 - **同一个概念散落在五个 plan 的五个字段名里时，只给界面留一个出口**（US-102）：
   「这张海报对应哪条归档记录」在阶段 / 长图叫 `shareRecordId`、班级叫 `share.recordId`、
   封面叫 `artwork.recordId`、单作品原本**压根没带**（本轮补上 `plan.recordId`）。

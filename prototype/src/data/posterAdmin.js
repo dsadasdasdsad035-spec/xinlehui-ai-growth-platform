@@ -1,11 +1,12 @@
 /**
- * 管理端「海报模板」的数据层（[海报 US-312a] / F-POSTER-ADMIN-01 / FR-355、FR-356、FR-359）。
+ * 管理端「海报模板」的数据层（[海报 US-312a / US-312b] / F-POSTER-ADMIN-01 / FR-350、FR-353 ~ FR-359）。
  *
  * 这一页要解决的事：**没有设计交付也能做出一套海报版式**。所以参数面板把 spec 的每一个可编辑叶子
  * 都摆出来（画布 / 背景 / 边框 / 装饰线 / 每个 slot 的类型与位置尺寸样式 / 字体与字号比例 / 二维码尺寸），
  * 右侧预览用**与老师端同一支渲染分派**（`services/posterDialog.js` 的 `renderPosterDialog`）当场出图。
  *
- * 本模块是**零依赖纯函数 + 常量**（只 import 其它 data 模块），Node 直跑断言，三条纪律：
+ * 本模块是**零依赖纯函数 + 常量**（只 import 其它 data 模块与零依赖的 `services/overlayLayout.js`），
+ * Node 直跑断言，五条纪律：
  *
  *   ① **写权限不发明第二套**：三层归属（platform / org / teacher）的写规则整支复用装裱的
  *      `data/framingPermissions.js`（PRD 9.2 第 7 条）。本模块只做一层薄壳（`posterAdminTemplateWriteIssue`），
@@ -19,6 +20,12 @@
  *      plan（`hasRecord` / `hasStudent` / `hasClass` / `hasObject` / `pages` 五个门都在），
  *      交给 `renderPosterDialog()` 出图 —— 预览与老师端出图是同一次绘制的两个倍数，
  *      **不存在「后台预览一套画法、老师端另一套」**。
+ *   ④ **库级改动都过留痕**（US-312b / FR-359）：启停 / 排序 / 设为默认 / 保存 / 删除全部走
+ *      `stampPosterTemplateUpdate()`（`data/posterTemplates.js`），由它统一写 `updatedBy` / `updatedAt`
+ *      与一条变更历史 —— 界面里手改这三个字段必然漂移。
+ *   ⑤ **保存前的三项校验在 data 层算**（US-312b / FR-355）：`posterAdminPreSaveChecks()` 一次给出
+ *      「占位区越界 / 文字可能溢出 / 二维码可扫性」三行读数与处置（越界与二维码**拦保存**、
+ *      文字溢出是**估算警告**，见 PRD 9.4）。几何用短边比例坐标，文字宽度用渲染层同一支估算器。
  *
  * 与老师端的关系：存下的平台模板在老师端「一键转发」弹窗里按同一套可见性/适用性规则出现
  * （`posterDialogTemplateRows`），所以这一页新增的模板**默认停用**（草稿态）——
@@ -39,25 +46,38 @@ import {
   POSTER_KIND_LABELS,
   POSTER_KINDS,
   POSTER_MAX_LINES_RANGE,
+  POSTER_QR_MIN_PIXELS,
   POSTER_SLOT_TYPE_LABELS,
   POSTER_SLOT_TYPES,
   POSTER_TEMPLATE_DESCRIPTION_MAX,
+  POSTER_TEMPLATE_HISTORY_EMPTY,
   POSTER_TEMPLATE_NAME_MAX,
   POSTER_TEMPLATE_SORT_FALLBACK,
   POSTER_TEXT_ALIGNS,
   POSTER_VARIABLES,
+  POSTER_VARIABLE_KEYS,
   normalizePosterSpec,
   normalizePosterTemplate,
   normalizePosterTemplateName,
+  posterShortEdge,
   posterSpecIssues,
+  posterTemplateChangeText,
+  posterTemplateDeleteIssue,
+  POSTER_TEMPLATE_BUILTIN_DELETE_NOTE,
+  posterTemplateHistoryRows as posterTemplateHistoryRowsOf,
   posterTemplateIssues,
   posterTemplateKey,
   posterTemplateNameIssue,
   posterUnknownVariables,
-  sortPosterTemplates
+  sortPosterTemplates,
+  stampPosterTemplateUpdate
 } from './posterTemplates';
+import { AUDIT_ACTIONS } from './auditLog';
 import { DEFAULT_ORG_NAME, DEFAULT_ORG_ID } from './lessons';
 import { FRAMING_PRESET_READONLY_NOTE, framingPresetWriteIssue, framingPresetWriteOwnerText } from './framingPermissions';
+// 「没有 canvas 时的文字宽度估算」与渲染层是**同一把尺子**（`services/overlayLayout.js` 是零依赖纯函数，
+// `data/lessonOverlays.js` 也这么用）—— 后台的溢出估算因此不会比真机乐观。
+import { applyOverlayVariables, estimateTextWidth } from '../services/overlayLayout';
 
 /** 路由 id（`PageRouter` 的 map 键 / 侧边栏 `navByRole.admin` 的键），三处必须同名。 */
 export const POSTER_ADMIN_PAGE_ID = 'posterTemplates';
@@ -526,6 +546,495 @@ export function posterAdminCopyTemplate(source, { templates = [], actor = '' } =
 }
 
 // ---------------------------------------------------------------------------
+// 库级动作：启用 / 停用 · 排序 · 设为默认 · 删除前的引用范围（[海报 US-312b] / FR-350、FR-353、FR-358）
+//
+// 三条纪律：
+//   ① **所有库级改动都过 `stampPosterTemplateUpdate()`**（FR-359）：它同时写 `updatedBy` / `updatedAt`
+//      并追加一条变更历史 —— 界面里手改这三个字段必然漂移，别这么干。
+//   ② **默认模板全局唯一**（老师端 `posterDialogDefaultTemplateId()` 取列表里第一套 `isDefault`）：
+//      设为默认时把别人的标记一并清掉，于是「默认是哪一套」在任何时刻都是一个确定的值。
+//   ③ **排序只在同一层（scope）内挪动**：三层分组分别由三个写入方维护，平台管理员挪机构层的序号
+//      既写不进云端（越权）也没有意义。同层按位次重排 `(位置+1)×10`，只有被挪动的那一套进变更历史。
+// ---------------------------------------------------------------------------
+
+export const POSTER_ADMIN_ENABLE_ACTION = '启用模板';
+export const POSTER_ADMIN_DISABLE_ACTION = '停用模板';
+export const POSTER_ADMIN_SORT_ACTION = '调整排序';
+export const POSTER_ADMIN_DEFAULT_ACTION = '设为默认模板';
+export const POSTER_ADMIN_UNDEFAULT_ACTION = '取消默认模板';
+export const POSTER_ADMIN_SAVE_ACTION = '保存模板';
+export const POSTER_ADMIN_DELETE_ACTION = '删除模板';
+
+/** 启用 / 停用的一句话说明（列表与面板读同一份）。 */
+export const POSTER_ADMIN_ENABLED_NOTE = '启用后老师端「一键转发」的版式列表里才会出现这套模板；停用只影响以后的可选列表，已经导出或转发过的海报图片不受影响。';
+/** 默认模板的说明（与装裱同一口径：同一时间只有一套）。 */
+export const POSTER_ADMIN_DEFAULT_NOTE = '默认模板：老师端打开「一键转发」弹窗时默认选中的就是它。同一时间只有一套默认模板。';
+/** 排序的说明。 */
+export const POSTER_ADMIN_SORT_NOTE = '排序决定老师端版式列表的先后（同层内上下移动；老师个人模板始终排在最前面）。';
+
+/** 当前会话能不能改这套模板（不能改的行没有排序 / 默认 / 删除入口）。 */
+function assertWritable(action, template, viewer) {
+  const item = normalizePosterTemplate(template);
+  return { item, issue: posterAdminTemplateWriteIssue(item, viewer) };
+}
+
+/** 启用 / 停用（一次写入 + 一条变更历史；状态没变则一个字段都不动）。 */
+export function posterAdminSetEnabled(template, enabled, { by = '', at = 0, viewer = {} } = {}) {
+  const { item, issue } = assertWritable('启用停用', template, viewer);
+  if (issue) return item;
+  const next = enabled !== false;
+  if (next === (item.enabled !== false)) return item;
+  return stampPosterTemplateUpdate({ ...item, enabled: next }, {
+    by,
+    at,
+    action: next ? POSTER_ADMIN_ENABLE_ACTION : POSTER_ADMIN_DISABLE_ACTION,
+    detail: next ? '老师端可选' : '老师端不再出现'
+  });
+}
+
+/**
+ * 同层内上下移动（`delta` 为 -1 上移 / +1 下移）。返回**新的列表**（已按新顺序排好）。
+ * 只有被挪动的那一套进变更历史 —— 其余只是让位，序号被动重排（与装裱 `moveFramingPreset` 同一口径）。
+ */
+export function posterAdminMoveTemplate(templates, id, delta, { by = '', at = 0, viewer = {} } = {}) {
+  const ordered = sortPosterTemplates(templates);
+  const target = ordered.find((template) => template.id === String(id));
+  if (!target || posterAdminTemplateWriteIssue(target, viewer)) return ordered;
+  const peers = ordered.filter((template) => template.scope === target.scope);
+  const index = peers.findIndex((template) => template.id === target.id);
+  const step = Number(delta) > 0 ? 1 : Number(delta) < 0 ? -1 : 0;
+  const to = index + step;
+  if (!step || index < 0 || to < 0 || to >= peers.length) return ordered;
+  const moved = peers.slice();
+  const [item] = moved.splice(index, 1);
+  moved.splice(to, 0, item);
+  const positions = new Map(moved.map((entry, position) => [entry.id, (position + 1) * 10]));
+  return sortPosterTemplates(ordered.map((entry) => {
+    const sortOrder = positions.get(entry.id);
+    if (!Number.isFinite(sortOrder) || entry.sortOrder === sortOrder) return entry;
+    return entry.id === item.id
+      ? stampPosterTemplateUpdate({ ...entry, sortOrder }, { by, at, action: POSTER_ADMIN_SORT_ACTION, detail: `移到第 ${to + 1} 位` })
+      : { ...entry, sortOrder };
+  }));
+}
+
+/** 一套模板在同层里的位次读数（界面据此禁用「上移 / 下移」，不改任何数据）。 */
+export function posterAdminSortPosition(templates, id) {
+  const ordered = sortPosterTemplates(templates);
+  const target = ordered.find((template) => template.id === String(id));
+  if (!target) return { position: 0, count: 0, canUp: false, canDown: false };
+  const peers = ordered.filter((template) => template.scope === target.scope);
+  const index = peers.findIndex((template) => template.id === target.id);
+  return {
+    position: index + 1,
+    count: peers.length,
+    canUp: index > 0,
+    canDown: index >= 0 && index < peers.length - 1
+  };
+}
+
+/** 当前默认模板的 id（读的是排序后的第一套 `isDefault`，与老师端的取法一致）。 */
+export function posterAdminDefaultId(templates) {
+  return (sortPosterTemplates(templates).find((template) => template.isDefault) || { id: '' }).id;
+}
+
+/**
+ * 设为默认模板（传空 id = 取消默认）。返回**新的列表**：命中的那套打上 `isDefault: true`、
+ * 原来的默认取消标记 —— 两边各记一条变更历史（FR-359：「默认模板是谁」也是模板变更）。
+ * 不可写的模板一个字段都不动（平台管理员改不动机构 / 老师层的默认标记）。
+ */
+export function posterAdminApplyDefault(templates, id, { by = '', at = 0, viewer = {} } = {}) {
+  const list = sortPosterTemplates(templates);
+  const key = String(id || '');
+  const target = key ? list.find((template) => template.id === key) : null;
+  if (key && (!target || posterAdminTemplateWriteIssue(target, viewer))) return list;
+  return list.map((item) => {
+    const wanted = Boolean(key) && Boolean(target) && item.id === target.id;
+    if (wanted === item.isDefault) return item;
+    if (posterAdminTemplateWriteIssue(item, viewer)) return item;
+    return stampPosterTemplateUpdate({ ...item, isDefault: wanted }, {
+      by,
+      at,
+      action: wanted ? POSTER_ADMIN_DEFAULT_ACTION : POSTER_ADMIN_UNDEFAULT_ACTION,
+      detail: wanted ? item.name : (target ? `改由「${target.name}」当默认` : '取消默认标记')
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 引用范围与删除判据（FR-358）：**被使用过的模板只允许停用**，删除前提示影响范围
+//
+// 「被使用过」在数据里有两处痕，都读：
+//   ① **审计日志**：老师导出（`poster.export`）与转发（`poster.forward`）的留痕里带 `templateId`
+//      —— 那是「这套版式真的产出过要发出去的东西」；
+//   ② **默认标记**：它现在是默认模板（老师端一开弹窗就选中它）。
+// 口径与装裱的 `framingPresetUsage` / `framingPresetDeleteVerdict` 逐条对齐（PRD 9.2 第 7 条）。
+// ---------------------------------------------------------------------------
+
+/** 算「被使用过」的两个动作（审计日志里带 `templateId` 的海报留痕）。 */
+export const POSTER_ADMIN_USAGE_ACTIONS = [AUDIT_ACTIONS.posterExport, AUDIT_ACTIONS.posterForward];
+
+/** 引用范围的一句话（面板上就显示这句；没有引用时也要明确说「没有」）。 */
+export const POSTER_ADMIN_USAGE_EMPTY_TEXT = '引用范围：还不是默认模板、也没有老师用它导出或转发过。';
+
+/**
+ * 一套模板的引用范围（删除前的提示与「只允许停用」的判据都读它）：
+ *   · `isDefault` —— 是不是当前的默认模板；
+ *   · `exportCount` / `forwardCount` —— 审计日志里按它导出 / 转发的次数（`poster.export` / `poster.forward`）；
+ *   · `lastUsedAt` / `subjects` —— 最近一次使用的时间与对象（学员 / 班级名，最近 3 个）。
+ * `referenced` 为真 = 有老师在用 / 有产出引用，按 PRD 只允许停用、不允许删除。
+ */
+export function posterAdminTemplateUsage(template, { audit = [] } = {}) {
+  const item = normalizePosterTemplate(template);
+  const id = item.id;
+  const entries = id
+    ? (Array.isArray(audit) ? audit : []).filter((entry) => entry
+      && String(entry.templateId || '') === id
+      && POSTER_ADMIN_USAGE_ACTIONS.includes(String(entry.action || '')))
+    : [];
+  const countOf = (action) => entries.filter((entry) => String(entry.action || '') === action).length;
+  const exportCount = countOf(AUDIT_ACTIONS.posterExport);
+  const forwardCount = countOf(AUDIT_ACTIONS.posterForward);
+  const ordered = entries.slice().sort((left, right) => String(right.at || '').localeCompare(String(left.at || '')));
+  const lastUsedAt = ordered.length ? String(ordered[0].at || '') : '';
+  const subjects = [...new Set(ordered.map((entry) => String(entry.objectName || entry.studentName || '').trim()).filter(Boolean))].slice(0, 3);
+  const reasons = [];
+  if (item.isDefault === true) reasons.push('当前是默认模板');
+  if (exportCount || forwardCount) {
+    const parts = [];
+    if (exportCount) parts.push(`${exportCount} 次导出`);
+    if (forwardCount) parts.push(`${forwardCount} 次转发`);
+    reasons.push(`有 ${parts.join(' / ')}按它生成`);
+  }
+  return {
+    id,
+    name: item.name,
+    builtin: item.builtin === true,
+    isDefault: item.isDefault === true,
+    exportCount,
+    forwardCount,
+    count: entries.length,
+    lastUsedAt,
+    subjects,
+    referenced: reasons.length > 0,
+    reasons
+  };
+}
+
+/** 引用范围的可读文案（审计时间用 `auditTimeText()` 那一套口径展示在界面上）。 */
+export function posterAdminUsageText(template, usage) {
+  const info = usage || posterAdminTemplateUsage(template);
+  if (!info.referenced) return POSTER_ADMIN_USAGE_EMPTY_TEXT;
+  const tail = info.lastUsedAt ? `（最近一次 ${info.lastUsedAt}${info.subjects.length ? ` · ${info.subjects.join('、')}` : ''}）` : '';
+  return `引用范围：${info.reasons.join('、')}${tail}。`;
+}
+
+/**
+ * 删除判据（FR-357 + FR-358）：内置模板不可删（只可停用）；**被使用过的模板同样只允许停用**。
+ * 返回 `{ allowed, kind, message, usageText, usage }`：
+ *   - `message` 就是界面要显示的那句（两种情形都带影响范围）；
+ *   - `kind` = `builtin` / `used` / `ok`，界面据此决定按钮（「改为停用」还是「确认删除」）。
+ */
+export function posterAdminDeleteVerdict(template, usage) {
+  const item = normalizePosterTemplate(template);
+  const info = usage || posterAdminTemplateUsage(item);
+  const usageText = posterAdminUsageText(item, info);
+  const builtinIssue = posterTemplateDeleteIssue(item);
+  if (builtinIssue) {
+    const kind = item.builtin ? 'builtin' : 'invalid';
+    return {
+      allowed: false,
+      kind,
+      usage: info,
+      usageText,
+      message: kind === 'builtin'
+        ? `「${item.name}」是内置模板：${POSTER_TEMPLATE_BUILTIN_DELETE_NOTE}${usageText}`
+        : `「${item.name}」不可删除：${builtinIssue}${usageText}`,
+      reason: builtinIssue
+    };
+  }
+  if (info.referenced) {
+    return {
+      allowed: false,
+      kind: 'used',
+      usage: info,
+      usageText,
+      message: `「${item.name}」${info.reasons.join('、')}，被使用过的模板只能停用、不能删除。停用后老师端不再出现，已经导出或转发过的海报图片不受影响。${usageText}`,
+      reason: '被使用过的模板只允许停用'
+    };
+  }
+  return {
+    allowed: true,
+    kind: 'ok',
+    usage: info,
+    usageText,
+    message: `「${item.name}」${usageText}${POSTER_ADMIN_DELETE_NOTE}`,
+    reason: ''
+  };
+}
+
+/** 删除的二次确认文案（界面上的确认条读它，别自己拼）。 */
+export const POSTER_ADMIN_DELETE_CONFIRM_TEXT = '删除会同时从本机镜像与云端模板库摘掉这套模板，且不可撤销。';
+/** 删除之后的影响范围（回执与判据读同一句）。 */
+export const POSTER_ADMIN_DELETE_NOTE = '删除只影响以后的可选列表：已经导出、转发或下载过的海报图片不会被改动。';
+export const POSTER_ADMIN_DELETE_ERROR_TEXT = '删除没有成功：';
+export const POSTER_ADMIN_DISABLE_INSTEAD_LABEL = '改为停用';
+
+// ---------------------------------------------------------------------------
+// 变更历史（FR-359）：`updated_by / updated_at` + 逐条历史
+// ---------------------------------------------------------------------------
+
+export const POSTER_ADMIN_HISTORY_TITLE = '变更历史';
+export const POSTER_ADMIN_HISTORY_EMPTY = POSTER_TEMPLATE_HISTORY_EMPTY;
+/** 历史行的文案（`2026-10-13 01:20 · 平台管理员 · 保存模板：改动：版式参数`）。 */
+export const POSTER_ADMIN_HISTORY_NOTE = '每次保存 / 启停 / 排序 / 设为默认都会写一条（最近 20 条）。';
+
+/** 变更历史的行（最新在前；界面与断言读同一份）。 */
+export function posterAdminHistoryRows(template) {
+  return posterTemplateHistoryRowsOf(template).map((entry) => ({
+    ...entry,
+    text: [entry.action, entry.detail].filter(Boolean).join('：') || '更新模板'
+  }));
+}
+
+/** 「最后变更」的读数：`{ by, at, text }`（空的时候给一句可读的话，不显示空白）。 */
+export function posterAdminUpdatedFacts(template, { timeText = null } = {}) {
+  const item = normalizePosterTemplate(template);
+  const at = item.updatedAt;
+  const by = item.updatedBy;
+  const shown = typeof timeText === 'function' ? timeText(at) : at;
+  return {
+    by,
+    at,
+    text: by || at ? `${shown || at}${by ? ` · ${by}` : ''}` : POSTER_ADMIN_HISTORY_EMPTY
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 适用范围读数（AC2：按**海报类型**与**入口**配置）
+//
+// 类型与入口是两件事：类型决定版式长什么样（谁做这张图），入口决定它出现在哪儿
+// （成长档案里的一键转发 / 课后反馈第四步的转发）。配置本身是两个字段（`kind` / `entryScope`），
+// 这里只把「配置成了什么」翻译成一句可读的读数，界面与断言读同一份。
+// ---------------------------------------------------------------------------
+
+/** 两处入口的 id（与老师端弹窗的 `POSTER_DIALOG_ENTRY_*` 同一套口径）。 */
+export const POSTER_ADMIN_ENTRY_IDS = ['archive', 'feedback'];
+export const POSTER_ADMIN_ENTRY_LABELS = { archive: '成长档案', feedback: '课后反馈' };
+
+export const POSTER_ADMIN_SCOPE_NOTE = '适用范围 = 海报类型（谁做这张图）＋ 入口（老师从哪儿发出去）：两者都对上，那处入口才会列出这套版式。';
+
+/** 某类型的版式通常出在哪个入口（读数，不是校验：单作品两处都用得上，其余四类在成长档案里才有数据）。 */
+export const POSTER_ADMIN_KIND_ENTRY_NOTES = {
+  single: '单作品海报两处入口都用得上：课后反馈里就是这一节课的这一幅作品。',
+  period: '阶段成长海报要有阶段报告数据：成长档案入口（课后反馈里先做单作品转发）。',
+  class: '班级集体海报要有班级名单与归档作品：成长档案入口。',
+  'video-cover': '成长视频封面随成片走：成长档案入口。',
+  'report-long': '成长报告长图要有整期归档：成长档案入口。'
+};
+
+/** 适用范围读数：`{ kind, kindLabel, entryScope, entryLabel, entries, kindNote, text }`。 */
+export function posterAdminScopeView(template) {
+  const item = normalizePosterTemplate(template);
+  const entries = item.entryScope === 'both' ? POSTER_ADMIN_ENTRY_IDS.slice() : (POSTER_ADMIN_ENTRY_IDS.includes(item.entryScope) ? [item.entryScope] : []);
+  const labels = entries.map((entry) => POSTER_ADMIN_ENTRY_LABELS[entry] || entry);
+  return {
+    kind: item.kind,
+    kindLabel: POSTER_KIND_LABELS[item.kind] || item.kind,
+    entryScope: item.entryScope,
+    entryLabel: POSTER_ENTRY_SCOPE_LABELS[item.entryScope] || '',
+    entries,
+    entryLabels: labels,
+    kindNote: POSTER_ADMIN_KIND_ENTRY_NOTES[item.kind] || '',
+    text: `${POSTER_KIND_LABELS[item.kind] || item.kind} · 适用入口：${labels.length ? labels.join('、') : '未配置'}`
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 保存前的三项校验（[海报 US-312b] / FR-355）
+//
+// 三项 = PRD 原文的三条：**slot 是否越界** · **文字是否可能溢出** · **二维码是否小于可扫阈值**。
+// 三条都在 data 层算（不碰 canvas）：几何用收敛后的比例坐标 + 画布短边折算，
+// 文字宽度用渲染层同一支估算器（`services/overlayLayout.js` 的 `estimateTextWidth`）。
+//
+// 处置（PRD 9.4 的原文）：越界与二维码不达标**拦保存**（「管理端必须做最小尺寸校验」），
+// 文字溢出是**估算警告**（「在管理端保存前给出估算警告」）—— 拦下来的是确定的错，放行的是估出来的险。
+// ---------------------------------------------------------------------------
+
+export const POSTER_ADMIN_CHECK_IDS = ['bounds', 'text', 'qrcode'];
+export const POSTER_ADMIN_CHECK_LABELS = { bounds: '占位区越界', text: '文字可能溢出', qrcode: '二维码可扫性' };
+export const POSTER_ADMIN_CHECK_POLICY = { bounds: 'block', text: 'warn', qrcode: 'block' };
+/** 三项校验的处置说明（界面常驻一行；与 `POSTER_ADMIN_CHECK_POLICY` 同一份口径）。 */
+export const POSTER_ADMIN_CHECK_POLICY_NOTE = '处置：占位区越界与二维码不达标会拦下保存；文字溢出是估算警告（把文案改短，或换一套更宽的版式）。';
+export const POSTER_ADMIN_CHECK_OK_TEXT = '三项校验都通过：占位区都在画布内、二维码达标、按样例数据估算文字不会溢出。';
+export const POSTER_ADMIN_CHECK_BLOCKED_TITLE = '保存前校验没通过，这套模板先不保存：';
+/** 越界的容差（相对短边）：比例坐标取整、描边出血这类亚像素差不算越界。 */
+export const POSTER_ADMIN_BOUNDS_TOLERANCE = 0.02;
+/** 估算的出处说明（界面常驻一句，别让人以为这是真机渲染的结果）。 */
+export const POSTER_ADMIN_CHECK_ESTIMATE_NOTE = '文字溢出按样例数据里的最长内容估算（真机以渲染结果为准：超出的字会被截断并加省略号）。';
+
+/** 兜底画布（比例坐标的尺子）：拿不到画布时按默认类型的预设画布算，别让几何读数崩在 undefined 上。 */
+const POSTER_ADMIN_FALLBACK_CANVAS = (() => {
+  const preset = POSTER_CANVAS_PRESETS[DEFAULT_POSTER_KIND] || POSTER_CANVAS_PRESETS.single;
+  return { width: preset.width, height: preset.height };
+})();
+
+/**
+ * 占位区在「短边比例」坐标系里的外接框（`{ x, y, w, h, heightEstimated }`）。
+ * `heightEstimated` 为真表示**高度是按估算给的**，越界判定只用宽度（见下）：
+ *   · 文字位没有 `h`（高度由内容决定）→ 按「估算行数 × 字号 × 行高」折算；
+ *   · Logo 位的高度由图片自身长宽比决定，**数据层拿不到**（同一条模板配不同 Logo 高度就不同）
+ *     → 判「到边没到边」只看宽度，高度不参与，别把一套合法模板按 1:1 的假想高度判成越界
+ *     （内置的「暖金留白 · 单作品」就这么被误伤过一次）。
+ */
+export function posterAdminSlotBox(slot, canvas = null) {
+  const source = slot && typeof slot === 'object' ? slot : {};
+  const theme = canvas || POSTER_ADMIN_FALLBACK_CANVAS;
+  const shortEdge = posterShortEdge(theme);
+  const box = { x: Number(source.x) || 0, y: Number(source.y) || 0, w: 0, h: 0, heightEstimated: false };
+  if (source.type === 'image') {
+    box.w = Number(source.w) || 0;
+    box.h = Number(source.h) || 0;
+  } else if (source.type === 'qrcode') {
+    box.w = Number(source.sizeRatio) || 0;
+    // 说明写在码框下方（`plate.y + plate.height + fontSize * 0.4`，行高 1.3）→ 大约 1.7 个字号的额外高度。
+    box.h = box.w + (String(source.caption || '').trim() ? (Number(source.captionSizeRatio) || 0) * 1.7 : 0);
+  } else if (source.type === 'text') {
+    box.w = Number(source.w) || 0;
+    // 文字位没有 h：高度按「估算行数 × 字号 × 行高」折算（短边比例）。
+    const lines = Number(source.estimatedLines) > 0 ? Number(source.estimatedLines) : (Number(source.maxLines) || 1);
+    box.h = (Number(source.sizeRatio) || 0) * (Number(source.lineHeight) || 1.4) * Math.max(1, lines);
+    box.heightEstimated = true;
+  } else {
+    box.w = Number(source.maxWRatio) || 0;
+    box.h = box.w; // 仅用于读数展示；越界判定按 `heightEstimated` 只用宽度
+    box.heightEstimated = true;
+  }
+  void shortEdge;
+  return box;
+}
+
+/** 画布在「短边比例」坐标系里的宽高（1080×1440 的画布 = 1 × 1.333）。 */
+export function posterAdminCanvasUnits(canvas) {
+  const theme = canvas || POSTER_ADMIN_FALLBACK_CANVAS;
+  const shortEdge = posterShortEdge(theme);
+  return { width: theme.width / shortEdge, height: theme.height / shortEdge };
+}
+
+/** 一段文字在某文字位里要占几行（用渲染层同一支宽度估算；`estimateTextWidth` 是零依赖纯函数）。 */
+export function posterAdminEstimatedLines(slot, content = '') {
+  const source = slot && typeof slot === 'object' ? slot : {};
+  const text = String(content || '').trim();
+  if (!text || source.type !== 'text') return 0;
+  const shortEdge = posterShortEdge(source.canvas || POSTER_ADMIN_FALLBACK_CANVAS);
+  const fontSize = (Number(source.sizeRatio) || 0) * shortEdge;
+  const maxWidth = (Number(source.w) || 0) * shortEdge;
+  const spacing = (Number(source.letterSpacingRatio) || 0) * shortEdge;
+  if (!(fontSize > 0) || !(maxWidth > 0)) return 0;
+  const chars = [...text].length;
+  const width = estimateTextWidth(text, fontSize) + spacing * Math.max(0, chars - 1);
+  return Math.max(1, Math.ceil(width / maxWidth));
+}
+
+/**
+ * 三项校验（界面逐行渲染 `rows`，保存前拦的是 `blockers`）。
+ * `data` 是估算用的样例内容（默认取 `POSTER_ADMIN_PREVIEW_DATA` —— 界面预览放的就是它）。
+ */
+export function posterAdminPreSaveChecks(template, { data = POSTER_ADMIN_PREVIEW_DATA } = {}) {
+  const item = normalizePosterTemplate(template);
+  const normalized = normalizePosterSpec(item.spec);
+  const units = posterAdminCanvasUnits(normalized.canvas);
+  const shortEdge = posterShortEdge(normalized.canvas);
+  const context = data && typeof data === 'object' ? data : {};
+  const slots = normalized.slots.map((slot) => {
+    const withCanvas = { ...slot, canvas: normalized.canvas };
+    const resolved = slot.type === 'text' ? applyOverlayVariables(slot.template, context, POSTER_VARIABLE_KEYS).text : '';
+    const estimatedLines = posterAdminEstimatedLines(withCanvas, resolved);
+    return { ...withCanvas, resolvedText: resolved, estimatedLines, box: posterAdminSlotBox(withCanvas, normalized.canvas) };
+  });
+  const tol = POSTER_ADMIN_BOUNDS_TOLERANCE;
+
+  // ① 占位区越界：右下角超出画布（左上角为负也算：负坐标是「画出画布外」的意图）。
+  // 高度是估算值的占位区（文字 / Logo）**只看宽度与左上角**：拿假想高度判越界会误伤合法模板。
+  const outside = slots.filter((slot) => slot.visible !== false && (
+    slot.box.x < -tol
+    || slot.box.y < -tol
+    || slot.box.x + slot.box.w > units.width + tol
+    || (!slot.box.heightEstimated && slot.box.y + slot.box.h > units.height + tol)
+  )).map((slot) => ({
+    id: slot.id,
+    typeLabel: POSTER_SLOT_TYPE_LABELS[slot.type] || slot.type,
+    right: Number((slot.box.x + slot.box.w).toFixed(3)),
+    bottom: slot.box.heightEstimated ? Number(slot.box.y.toFixed(3)) : Number((slot.box.y + slot.box.h).toFixed(3)),
+    heightEstimated: slot.box.heightEstimated
+  }));
+  const boundsRow = {
+    id: 'bounds',
+    label: POSTER_ADMIN_CHECK_LABELS.bounds,
+    level: POSTER_ADMIN_CHECK_POLICY.bounds,
+    ok: outside.length === 0,
+    value: outside.length ? `${outside.length} 个越界` : '全部在画布内',
+    detail: outside.length
+      ? `有 ${outside.length} 个占位区超出画布（画布在短边比例里是 ${Number(units.width.toFixed(2))} × ${Number(units.height.toFixed(2))}）：${outside.map((row) => `${row.typeLabel}「${row.id}」到 ${row.right}×${row.bottom}${row.heightEstimated ? '（高度按估算）' : ''}`).join('；')}`
+      : `所有占位区的右下角都在画布内（画布 ${Number(units.width.toFixed(2))} × ${Number(units.height.toFixed(2))} 短边比例，容差 ${tol}；文字 / Logo 位的高度按估算，只看宽度）。`,
+    offenders: outside
+  };
+
+  // ② 文字溢出估算：估算行数 > maxLines 的那些文字位。
+  const overflowing = slots.filter((slot) => slot.type === 'text' && slot.visible !== false
+    && slot.estimatedLines > Math.max(1, Math.round(Number(slot.maxLines) || 1)))
+    .map((slot) => ({
+      id: slot.id,
+      estimatedLines: slot.estimatedLines,
+      maxLines: Math.max(1, Math.round(Number(slot.maxLines) || 1)),
+      preview: String(slot.resolvedText || '').slice(0, 18)
+    }));
+  const textRow = {
+    id: 'text',
+    label: POSTER_ADMIN_CHECK_LABELS.text,
+    level: POSTER_ADMIN_CHECK_POLICY.text,
+    ok: overflowing.length === 0,
+    value: overflowing.length ? `${overflowing.length} 处可能溢出` : '按样例数据不会溢出',
+    detail: overflowing.length
+      ? `有 ${overflowing.length} 个文字位按样例数据估算会超出 maxLines（超出的字会被截断并加省略号）：${overflowing.map((row) => `「${row.id}」约 ${row.estimatedLines} 行 > ${row.maxLines} 行（${row.preview}…）`).join('；')}`
+      : '所有文字位按样例数据估算都在自己的 maxLines 之内。',
+    offenders: overflowing
+  };
+
+  // ③ 二维码可扫性：边长（短边比例 → 像素）≥ 可扫阈值。
+  const qrSlots = slots.filter((slot) => slot.type === 'qrcode' && slot.visible !== false);
+  const qrPixels = qrSlots.map((slot) => Math.round((Number(slot.sizeRatio) || 0) * shortEdge));
+  const qrOk = qrSlots.every((slot) => Math.round((Number(slot.sizeRatio) || 0) * shortEdge) >= POSTER_QR_MIN_PIXELS);
+  const qrRow = {
+    id: 'qrcode',
+    label: POSTER_ADMIN_CHECK_LABELS.qrcode,
+    level: POSTER_ADMIN_CHECK_POLICY.qrcode,
+    ok: qrOk,
+    value: qrSlots.length ? qrPixels.map((px) => `${px}px`).join(' / ') : '这套版式没有可见的二维码位',
+    detail: qrSlots.length
+      ? (qrOk
+        ? `二维码边长 ${qrPixels.join(' / ')}px ≥ 可扫阈值 ${POSTER_QR_MIN_PIXELS}px（画布短边 ${shortEdge}px）。`
+        : `二维码过小：边长 ${qrPixels.join(' / ')}px < 可扫阈值 ${POSTER_QR_MIN_PIXELS}px（画布短边 ${shortEdge}px）——手机上扫不出来，把「二维码尺寸比例」调大或换更大的画布。`)
+      : '这套版式里二维码位是关闭的：不校验可扫性。',
+    offenders: qrSlots.filter((slot) => Math.round((Number(slot.sizeRatio) || 0) * shortEdge) < POSTER_QR_MIN_PIXELS).map((slot) => ({ id: slot.id }))
+  };
+
+  const rows = [boundsRow, textRow, qrRow];
+  const blockers = rows.filter((row) => !row.ok && row.level === 'block').map((row) => row.detail);
+  const warnings = rows.filter((row) => !row.ok && row.level === 'warn').map((row) => row.detail);
+  return {
+    rows,
+    blockers,
+    warnings,
+    ok: rows.every((row) => row.ok),
+    blocked: blockers.length > 0,
+    slots,
+    summary: rows.every((row) => row.ok) ? POSTER_ADMIN_CHECK_OK_TEXT : rows.filter((row) => !row.ok).map((row) => row.detail).join(' '),
+    note: POSTER_ADMIN_CHECK_ESTIMATE_NOTE
+  };
+}
+
+// ---------------------------------------------------------------------------
 // 保存前的读数（与装裱面板同一口径：**收敛不改阻塞**，重名 / 空名才拦）
 // ---------------------------------------------------------------------------
 
@@ -572,6 +1081,21 @@ export function posterAdminSaveFacts(template, { templates = [] } = {}) {
     ready: blockers.length === 0,
     note: POSTER_ADMIN_SAVE_NOTE
   };
+}
+
+/**
+ * 保存：把草稿并进记录并**过留痕**（FR-359）—— `updatedBy` / `updatedAt` / 一条变更历史。
+ * `previous` 是已保存的那一份（用来算「改动：…」）；没有改动时也记一条（保存本身是一次留痕）。
+ */
+export function posterAdminStampSave(template, { previous = null, by = '', at = 0 } = {}) {
+  const item = normalizePosterTemplate(template);
+  const changeText = previous ? posterTemplateChangeText(previous, item) : '';
+  return stampPosterTemplateUpdate(item, {
+    by,
+    at,
+    action: POSTER_ADMIN_SAVE_ACTION,
+    detail: changeText ? `改动：${changeText}` : '参数与库级设置都没有变化'
+  });
 }
 
 // ---------------------------------------------------------------------------

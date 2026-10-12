@@ -697,9 +697,53 @@ export function posterTemplateKey(template) {
   return str(source.id || source.templateKey);
 }
 
+// ---------------------------------------------------------------------------
+// 变更留痕：updated_by / updated_at + 变更历史（[海报 US-312b] / FR-359）
+//
+// 与装裱 `framingPresets.js` 的 `stampFramingPresetUpdate` **同一套口径**：
+//   · 任何库级改动都过 `stampPosterTemplateUpdate()` —— 它同时更新 `updatedBy` / `updatedAt`
+//     并往 `history` 追加一条；界面里手改这几个字段必然漂移，别这么干。
+//   · `history` 只留在**本机镜像与记录对象**里：云端行仍是固定的 14 列
+//     （`POSTER_TEMPLATE_ROW_FIELDS`，历史不进云表 —— 云表结构见 PRD 9.3，加列会让既有写入整条被拒）。
+// ---------------------------------------------------------------------------
+
+/** 变更历史最多留多少条（超出丢最旧的）；与装裱同一口径。 */
+export const POSTER_TEMPLATE_HISTORY_LIMIT = 20;
+
+/** 变更历史为空时的文案（面板与断言读同一句）。 */
+export const POSTER_TEMPLATE_HISTORY_EMPTY = '还没有变更记录：这套模板从建立以来没有被改动过。';
+
+/** 一条变更历史（`谁 · 什么时候 · 做了什么`）：脏值收敛成空串，缺内容的条目丢掉。 */
+export function normalizePosterTemplateHistory(raw) {
+  return (Array.isArray(raw) ? raw : [])
+    .map((entry) => {
+      const source = group(entry);
+      return {
+        at: str(source.at),
+        by: str(source.by),
+        action: str(source.action),
+        detail: str(source.detail)
+      };
+    })
+    .filter((entry) => entry.at || entry.action || entry.detail);
+}
+
+/** 「改了什么」的字段名（保存回执与变更历史行读它，别在界面里再比一遍）。 */
+export const POSTER_TEMPLATE_FIELD_LABELS = {
+  name: '名称',
+  description: '一句话说明',
+  kind: '海报类型',
+  spec: '版式参数',
+  entryScope: '适用入口',
+  enabled: '启停',
+  isDefault: '默认模板',
+  sortOrder: '排序'
+};
+
 /**
  * 模板记录归一化：spec 过 `normalizePosterSpec`，`scope` 复用装裱的三层语义
  * （缺失 / 非法一律读成 platform，与老记录兼容），库级属性脏值收敛成安全值，永不抛错。
+ * `history` 与 `updatedBy` / `updatedAt` 都是**留痕字段**（只由 `stampPosterTemplateUpdate` 写）。
  */
 export function normalizePosterTemplate(raw) {
   const source = group(raw);
@@ -720,8 +764,67 @@ export function normalizePosterTemplate(raw) {
     isDefault: bool(source.isDefault, false),
     sortOrder: intIn(source.sortOrder, { min: 0, max: 999 }, POSTER_TEMPLATE_SORT_FALLBACK),
     updatedBy: str(source.updatedBy),
-    updatedAt: str(source.updatedAt)
+    updatedAt: str(source.updatedAt),
+    history: normalizePosterTemplateHistory(source.history)
   };
+}
+
+/**
+ * 变更留痕的**唯一写入口**：更新 `updatedBy` / `updatedAt`，并往 `history` 末尾追加一条
+ * （超出上限丢最旧的那条）。`posterAdmin.js` 的每一个库级动作都过它。
+ */
+export function stampPosterTemplateUpdate(template, { by = '', at = 0, action = '', detail = '' } = {}) {
+  const item = normalizePosterTemplate(template);
+  const timestamp = Number.isFinite(Number(at)) && Number(at) > 0 ? Number(at) : Date.now();
+  const iso = new Date(timestamp).toISOString();
+  const entry = {
+    at: iso,
+    by: str(by),
+    action: str(action) || '更新模板',
+    detail: str(detail)
+  };
+  return {
+    ...item,
+    updatedBy: entry.by,
+    updatedAt: iso,
+    history: [...item.history, entry].slice(-POSTER_TEMPLATE_HISTORY_LIMIT)
+  };
+}
+
+/**
+ * 两次保存之间「改了什么」→ 可读清单（保存回执与变更历史读它）。
+ * 只比对模板自己的字段；`updatedBy / updatedAt / history` 不参与（它们就是变更记录本身）。
+ */
+export function posterTemplateChangeSummary(previous, next) {
+  const before = group(previous);
+  const after = group(next);
+  return Object.keys(POSTER_TEMPLATE_FIELD_LABELS).filter((key) => {
+    if (key === 'spec') return JSON.stringify(normalizePosterSpec(before.spec)) !== JSON.stringify(normalizePosterSpec(after.spec));
+    if (key === 'kind') return oneOf(before.kind, POSTER_KINDS, '') !== oneOf(after.kind, POSTER_KINDS, '');
+    if (key === 'entryScope') return oneOf(before.entryScope, POSTER_ENTRY_SCOPES, '') !== oneOf(after.entryScope, POSTER_ENTRY_SCOPES, '');
+    if (key === 'enabled') return bool(before.enabled, true) !== bool(after.enabled, true);
+    if (key === 'isDefault') return bool(before.isDefault, false) !== bool(after.isDefault, false);
+    if (key === 'sortOrder') return num(before.sortOrder, POSTER_TEMPLATE_SORT_FALLBACK) !== num(after.sortOrder, POSTER_TEMPLATE_SORT_FALLBACK);
+    return str(before[key]) !== str(after[key]);
+  });
+}
+
+/** 变更清单的可读文案（`改动：版式参数 · 启停`）；没有改动时返回空串。 */
+export function posterTemplateChangeText(previous, next) {
+  const keys = posterTemplateChangeSummary(previous, next);
+  return keys.length ? keys.map((key) => POSTER_TEMPLATE_FIELD_LABELS[key]).join(' · ') : '';
+}
+
+/** 变更历史的行（最新在前；界面与断言读同一份，别在组件里 reverse）。 */
+export function posterTemplateHistoryRows(template) {
+  const item = normalizePosterTemplate(template);
+  return item.history
+    .map((entry, index) => ({
+      ...entry,
+      isLatest: index === item.history.length - 1,
+      text: [entry.action, entry.detail].filter(Boolean).join('：')
+    }))
+    .reverse();
 }
 
 /** 列表顺序的唯一来源：sortOrder 升序，再按 id（云端返回与本地兜底走同一套）。 */
@@ -1789,7 +1892,9 @@ export function persistPosterTemplates(templates) {
 // 校验读数（AC 的「非法字段被收敛」要看得见；管理端保存前与断言共用这一份）
 //
 // 这里只报**结构与参数**层面的问题（越界 / 未知枚举 / 丢弃的占位区 / 变量不在白名单 /
-// 蓝色主视觉 / 二维码数量）。「可扫性、文字溢出」那两类要真渲染一次才算得出来，属 US-311a 的校验。
+// 蓝色主视觉 / 二维码数量）。「可扫性、文字溢出」那两类要真渲染一次才算得出来，属 US-311a 的导出校验；
+// 管理端**保存前**的那一份估算（估算行数 / 最小边长）在 `data/posterAdmin.js` 的
+// `posterAdminPreSaveChecks()`（US-312b / FR-355），两处读同一份阈值常量。
 // ---------------------------------------------------------------------------
 
 /** 判断一个十六进制色是不是「蓝」的（FR/AC：品牌主视觉不得用蓝）。 */

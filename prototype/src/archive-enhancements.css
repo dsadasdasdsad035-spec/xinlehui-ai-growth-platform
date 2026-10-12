@@ -1306,6 +1306,43 @@
 .poster-admin-row-tags em.is-builtin{background:#fdf0d5;color:#8a6a1f}
 .poster-admin-row-tags em.is-default{background:#eaf2fb;color:#2f5b8a}
 .poster-admin-row-tags em.is-dirty{background:#fbe8e4;color:#a5452f}
+/* 被使用过（有导出 / 转发留痕或当前是默认模板）：删除判据会拦，行上先标出来。 */
+.poster-admin-row-tags em.is-used{background:#eef7f2;color:#2f6f57}
+/* 行上的快捷动作（启用 / 停用 + 排序）：与「点开这一行」分开，点排序时不会把面板切走。 */
+.poster-admin-row-actions{display:flex;align-items:center;gap:6px;padding:0 8px 8px}
+.poster-admin-row-actions .icon-btn{width:32px;height:32px;border:1px solid #e3ddcc;border-radius:8px;background:#fffdf6;color:#6f6551;cursor:pointer;display:inline-flex;align-items:center;justify-content:center}
+.poster-admin-row-actions .icon-btn:disabled{color:#c8bfab;cursor:not-allowed}
+.poster-admin-row-actions .text-link{font-size:10px;color:#9a6a1f;background:none;border:0;text-decoration:underline;cursor:pointer;min-height:32px;margin-left:auto}
+.poster-admin-row-actions .text-link:disabled{color:#b9b0a0;cursor:not-allowed;text-decoration:none}
+/* 库级动作行（排序 / 设为默认 / 删除）+ 删除的两步确认面板。 */
+.poster-admin-library-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;border-top:1px dashed #e6e1d2;padding-top:8px}
+.poster-admin-library-actions .text-link{font-size:10px;color:#9a6a1f;background:none;border:0;text-decoration:underline;cursor:pointer;min-height:32px;display:inline-flex;align-items:center;gap:4px}
+.poster-admin-library-actions .text-link:disabled{color:#b9b0a0;cursor:not-allowed;text-decoration:none}
+.poster-admin-library-actions .text-link.is-danger{color:#a5452f}
+.poster-admin-delete-panel{border:1px solid #e9c9bd;border-radius:10px;background:#fdf3ef;padding:9px;display:flex;flex-direction:column;gap:6px}
+.poster-admin-delete-panel.is-blocked{border-color:#dcd3ea;background:#f6f3fb}
+.poster-admin-delete-panel p{margin:0;font-size:11px;color:#7a4030;line-height:1.6}
+.poster-admin-delete-panel.is-blocked p{color:#544d77}
+.poster-admin-delete-panel small{font-size:10px;color:#8b8064;line-height:1.5}
+.poster-admin-delete-panel .row-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.poster-admin-delete-panel .text-link{font-size:10px;color:#6a6252;background:none;border:0;text-decoration:underline;cursor:pointer;min-height:32px}
+/* 变更历史（FR-359）：谁 · 什么时候 · 做了什么。 */
+.poster-admin-history{border:1px solid #eae4d5;border-radius:10px;background:#fff;padding:8px}
+.poster-admin-history>summary{display:flex;align-items:center;gap:8px;font-size:11px;color:#3f3b33;cursor:pointer;min-height:32px;list-style:none}
+.poster-admin-history>summary::-webkit-details-marker{display:none}
+.poster-admin-history>summary span{margin-left:auto;font-size:10px;color:#8b8064}
+.poster-admin-history-rows{margin:6px 0 0;padding:0;list-style:none;display:flex;flex-direction:column;gap:4px}
+.poster-admin-history-rows li{display:flex;align-items:baseline;gap:8px;font-size:10px;color:#6a6252;line-height:1.6;flex-wrap:wrap}
+.poster-admin-history-rows li b{color:#3f3b33}
+.poster-admin-history-rows li em{font-style:normal;color:#8b8064}
+.poster-admin-history-rows li[data-poster-admin-history-latest="true"] em{color:#2f6f57;font-weight:700}
+.poster-admin-history>small{display:block;margin-top:6px;font-size:10px;color:#8b8064}
+/* 三项校验（FR-355）：通过 / 警告 / 不通过各一档颜色。 */
+.poster-admin-checks li{line-height:1.6}
+.poster-admin-checks li b{display:block;color:#3f3b33}
+.poster-admin-checks li.is-ok b{color:#2f7a45}
+.poster-admin-checks li.is-warn b{color:#8b6a2f}
+.poster-admin-checks li.is-error b{color:#a5452f}
 .poster-admin-offline{margin:0;font-size:10px;color:#9a6a1f;background:#fff6df;border-radius:8px;padding:6px 8px}
 .poster-admin-panel,.poster-admin-preview{display:flex;flex-direction:column;gap:10px}
 .poster-admin-panel .panel-head,.poster-admin-preview .panel-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-wrap:wrap}
@@ -1367,6 +1404,9 @@
   .poster-admin-check{min-height:44px}
   .poster-admin-panel .row-actions button{min-width:44px}
   .poster-admin-actions .text-link{min-height:44px;min-width:44px;display:inline-flex;align-items:center;justify-content:center}
+  /* 列表行上的快捷动作（↑ / ↓ / 停用）与库级动作行同样要 ≥44px 的触控面。 */
+  .poster-admin-row-actions .icon-btn{width:44px;height:44px}
+  .poster-admin-row-actions .text-link,.poster-admin-library-actions .text-link,.poster-admin-delete-panel .text-link{min-height:44px;min-width:44px;display:inline-flex;align-items:center;justify-content:center}
   .poster-admin-preview-figure{max-height:60vh}
   .poster-admin-preview-figure img{max-height:60vh}
 }
