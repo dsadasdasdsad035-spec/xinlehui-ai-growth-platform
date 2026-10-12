@@ -8275,4 +8275,19 @@ function GuidePage({navigate}){const sections=[
 function Modal({type,close,setToast,apps,setApps}){const kind=type.kind;const [error,setError]=useState('');const save=()=>{if(kind==='add-provider'){const name=document.querySelector('#provider-name')?.value;if(!name)return setError('请输入供应商名称')}if(kind==='add-app'){const name=document.querySelector('#app-name')?.value;if(!name)return setError('请输入应用名称');setApps(xs=>[...xs,{id:`custom-${Date.now()}`,name,desc:'配置式外部 API 应用',icon:Package,color:'blue',status:'disabled',version:'0.1.0'}])}if(kind==='confirm-uninstall'){setApps(xs=>xs.filter(x=>x.id!==type.id))}setToast(kind==='confirm-uninstall'?'应用已卸载，历史任务和档案仍保留':'配置已保存');close()};return <div className="modal-backdrop" onMouseDown={e=>e.target===e.currentTarget&&close()}><div className="modal"><div className="modal-head"><div><h2>{kind==='add-app'?'新增 AI 应用':kind==='add-provider'?'新增模型供应商':kind==='invite-user'?'邀请用户':'确认卸载应用'}</h2><p>{kind==='confirm-uninstall'?'卸载后将阻止新任务，但不会删除历史数据。':'填写必要信息后可继续完善配置。'}</p></div><button className="icon-btn" onClick={close}><X/></button></div>{kind==='confirm-uninstall'?<div className="danger-note"><CircleAlert/><span>请先确保没有运行中任务，并确认机构已停用该应用。</span></div>:<div className="modal-form">{kind==='add-app'?<><label>应用名称<input id="app-name" placeholder="例如：课堂语音转写"/></label><label>能力类型<select><option>外部 API</option><option>文本生成</option><option>图片生成/编辑</option><option>视频生成</option></select></label><label>输入 Schema<textarea placeholder={'{"type":"object","properties":{...}}'}/></label></>:kind==='add-provider'?<><label>供应商名称<input id="provider-name" placeholder="例如：VisualCloud"/></label><label>供应商类型<select><option>OpenAI Compatible</option><option>图片供应商</option><option>视频供应商</option></select></label><label>API Endpoint<input placeholder="https://api.example.com/v1"/></label><label>API Key<input type="password" placeholder="仅加密保存，不会明文返回"/></label></>:<><label>手机号<input placeholder="请输入手机号"/></label><label>角色<select><option>老师</option><option>家长</option><option>管理员</option></select></label><label>数据范围<select><option>星河校区</option><option>指定班级</option><option>全平台</option></select></label></>}</div>}{error?<div className="form-error"><CircleAlert/>{error}</div>:null}<div className="modal-actions"><Button variant="secondary" onClick={close}>取消</Button><Button variant={kind==='confirm-uninstall'?'danger':'primary'} onClick={save}>{kind==='confirm-uninstall'?'确认卸载':'保存并继续'}</Button></div></div></div>}
 function NotFound({navigate}){return <EmptyState icon={FolderOpen} title="页面不存在" desc="这个原型页面可能已移动。" action="返回工作台" onClick={()=>navigate('dashboard')}/>}
 
+// 开发自检入口（[海报 US-302a]）：`pnpm run dev` 下在浏览器控制台执行
+//   `await window.__xinlehuiPosterSelfCheck()`
+// 会对 8 套内置海报模板各调用一次 `renderPoster`，回报是否全部返回非空 Blob、有没有抛错
+// （判据与文本输出都在 `services/posterSelfCheck.js`，这里只挂一个只读钩子 —— 与
+// `window.__xinlehuiFeedbackMode` / `window.__xinlehuiReviewTrace` 同一类）。
+// 出厂构建里 `import.meta.env.DEV` 被替换成 `false`，这段是死代码：海报自检不进 dist。
+if(import.meta.env&&import.meta.env.DEV){
+  import('./services/posterSelfCheck').then(m=>{
+    if(typeof window!=='undefined'){
+      window.__xinlehuiPosterSelfCheck=m.runPosterSelfCheck;
+      window.__xinlehuiPosterSelfCheckText=m.posterSelfCheckText;
+    }
+  }).catch(()=>{});
+}
+
 createRoot(document.getElementById('root')).render(<App/>);

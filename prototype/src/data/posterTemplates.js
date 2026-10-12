@@ -744,14 +744,44 @@ export function disabledPosterTemplateKeys(templates) {
 }
 
 // ---------------------------------------------------------------------------
-// 内置模板库（骨架；US-302a 补到不少于 8 套、覆盖五类场景）
+// 内置模板库（[海报 US-302a]：8 套、覆盖五类场景，每类至少 1 套、主流三类各 2 套）
 //
 // 出厂的模板就是「一份 spec + 一句场景说明」。这里用 `builtinPosterSpec` 构造：
 // 写法上只写有意为之的字段，其余交给收敛器补齐 —— 于是「内置模板一定合法」是结构保证，
 // 而不是「写的时候小心点」。
+//
+// 两条配色纪律（AC）：只用品牌色（暖金 #CFA52E / 墨黑 #2B271F / 暖白 #FBF8F2）。
+// 辅助色取 `POSTER_MUTED_COLORS`（褐 / 深褐 / 米线 / 暖沙，都是同一色系的中性色）——
+// **不出现蓝色作为主视觉**，`posterIsBlueHex()` 是这条纪律的机器判据（断言与自检读它）。
+//
+// 四条版式纪律：① 每套都预留二维码位与机构 Logo 位（FR-323）；② 二维码边长 ≥ 120px（可扫性）；
+// ③ 所有几何落在画布内（短边是比例尺，长画布的 y 可以 >1）；④ Logo 按 3:1 横幅估高不越界。
+// 这四条都由断言逐套兜住（`/tmp/assert-us090.mjs`，与渲染自检各管一半）。
 // ---------------------------------------------------------------------------
 
 const builtinPosterSpec = (fields) => normalizePosterSpec({ ...fields, version: POSTER_SPEC_VERSION });
+
+/** 品牌三色与辅助色的短别名（下面每套模板的配色一眼可读，别在各处再抄十六进制串）。 */
+const BRAND_GOLD = POSTER_BRAND_COLORS.gold;
+const BRAND_INK = POSTER_BRAND_COLORS.ink;
+const BRAND_PAPER = POSTER_BRAND_COLORS.paper;
+const MUTED_BROWN = POSTER_MUTED_COLORS.brown;
+const MUTED_DEEP = POSTER_MUTED_COLORS.deep;
+const MUTED_LINE = POSTER_MUTED_COLORS.line;
+const MUTED_SAND = POSTER_MUTED_COLORS.sand;
+
+/** 二维码位（每套模板都带一个；内容固定为分享令牌链接，老师端不给自由填写 URL 的口子）。 */
+const builtinQrSlot = (fields) => ({
+  id: 'qr',
+  type: 'qrcode',
+  value: '{分享链接}',
+  caption: '扫码看完整成长档案',
+  captionSizeRatio: 0.0125,
+  ...fields
+});
+
+/** 机构 Logo 位（`url` 留空 = 用渲染时传进来的 `data.logo`）。 */
+const builtinLogoSlot = (fields) => ({ id: 'logo', type: 'logo', maxWRatio: 0.15, opacity: 0.9, ...fields });
 
 /** 「暖金留白 · 单作品」的版式：作品区占上部约 55%，下方是展签式信息带。 */
 const singleStarlightSpec = builtinPosterSpec({
@@ -848,11 +878,546 @@ const periodOakSpec = builtinPosterSpec({
   ]
 });
 
+/** 「墨色留白 · 单作品」的版式：暖白纯色底 + 墨黑细框，标题居中如展签（与暖金版构成一对）。 */
+const singleInkSpec = builtinPosterSpec({
+  kind: 'single',
+  canvas: { ...POSTER_CANVAS_PRESETS.single },
+  background: { type: 'solid', stops: [BRAND_PAPER] },
+  frame: { enabled: true, color: BRAND_INK, widthRatio: 0.005, cornerRadiusRatio: 0.008 },
+  // 一条居中的短金线：给居中的标题一个「落款位」的呼吸感。
+  decor: { hairline: { color: BRAND_GOLD, widthRatio: 0.0018, x: 0.42, y: 0.7, w: 0.16 } },
+  slots: [
+    { ...DEFAULT_POSTER_IMAGE_SLOT, x: 0.14, y: 0.125, w: 0.72, h: 0.52, radiusRatio: 0.008, paddingRatio: 0.014, shadow: false },
+    {
+      id: 'title',
+      type: 'text',
+      x: 0.14,
+      y: 0.71,
+      w: 0.72,
+      align: 'center',
+      font: 'serif',
+      weight: 'bold',
+      sizeRatio: 0.034,
+      color: BRAND_INK,
+      maxLines: 1,
+      template: '《{作品名}》'
+    },
+    {
+      id: 'student',
+      type: 'text',
+      x: 0.14,
+      y: 0.772,
+      w: 0.72,
+      align: 'center',
+      font: 'sans-serif',
+      sizeRatio: 0.021,
+      color: MUTED_BROWN,
+      maxLines: 1,
+      template: '{学员名} · {日期}'
+    },
+    {
+      id: 'quote',
+      type: 'text',
+      x: 0.2,
+      y: 0.825,
+      w: 0.6,
+      align: 'center',
+      font: 'serif',
+      sizeRatio: 0.02,
+      color: MUTED_DEEP,
+      maxLines: 2,
+      lineHeight: 1.7,
+      template: '{点评金句}'
+    },
+    builtinQrSlot({ x: 0.4425, y: 0.955, sizeRatio: 0.115, captionColor: MUTED_BROWN }),
+    builtinLogoSlot({ x: 0.14, y: 0.058, maxWRatio: 0.13, opacity: 0.85 })
+  ]
+});
+
+/** 「墨色九宫 · 阶段成长」的版式：三行三列固定九宫格，每格标注课次日期。 */
+const periodNineGridSpec = builtinPosterSpec({
+  kind: 'period',
+  canvas: { ...POSTER_CANVAS_PRESETS.period },
+  background: { type: 'linear-gradient', angle: 150, stops: [BRAND_PAPER, MUTED_SAND] },
+  frame: { enabled: true, color: BRAND_INK, widthRatio: 0.006, cornerRadiusRatio: 0.014 },
+  decor: { hairline: { color: BRAND_GOLD, widthRatio: 0.0018, x: 0.08, y: 1.075, w: 0.84 } },
+  slots: [
+    {
+      id: 'title',
+      type: 'text',
+      x: 0.08,
+      y: 0.062,
+      w: 0.84,
+      align: 'left',
+      font: 'serif',
+      weight: 'bold',
+      sizeRatio: 0.038,
+      color: BRAND_INK,
+      maxLines: 1,
+      template: '{学员名} 的成长记录'
+    },
+    {
+      id: 'period',
+      type: 'text',
+      x: 0.08,
+      y: 0.122,
+      w: 0.84,
+      align: 'left',
+      font: 'sans-serif',
+      sizeRatio: 0.019,
+      color: MUTED_BROWN,
+      maxLines: 1,
+      template: '{周期} · 共 {作品数} 幅'
+    },
+    {
+      id: 'collage',
+      type: 'image',
+      x: 0.08,
+      y: 0.178,
+      w: 0.84,
+      h: 0.86,
+      bg: '#FFFFFF',
+      radiusRatio: 0.016,
+      paddingRatio: 0.01,
+      shadow: false,
+      border: { color: MUTED_LINE, widthRatio: 0.0015 },
+      // 固定 3×3 九宫格（与「原木素雅」的自适应网格构成两种取向）：9 格以内每格都在。
+      grid: { columns: 3, rows: 3, gapRatio: 0.014, maxItems: 9 },
+      cellCaption: { visible: true, position: 'below', sizeRatio: 0.0135, color: MUTED_BROWN }
+    },
+    {
+      id: 'summary',
+      type: 'text',
+      x: 0.08,
+      y: 1.105,
+      w: 0.84,
+      align: 'left',
+      font: 'serif',
+      sizeRatio: 0.02,
+      color: MUTED_DEEP,
+      maxLines: 3,
+      lineHeight: 1.6,
+      template: '{阶段总结}'
+    },
+    builtinQrSlot({ x: 0.755, y: 1.26, sizeRatio: 0.125, captionSizeRatio: 0.013, captionColor: MUTED_BROWN }),
+    builtinLogoSlot({ x: 0.08, y: 1.62, maxWRatio: 0.15 })
+  ]
+});
+
+/** 「墨色作品墙 · 班级集体」的版式：全班每人一格，格下标注学员姓名，底部机构落款与二维码。 */
+const classInkWallSpec = builtinPosterSpec({
+  kind: 'class',
+  canvas: { ...POSTER_CANVAS_PRESETS.class },
+  background: { type: 'linear-gradient', angle: 135, stops: [BRAND_PAPER, MUTED_SAND] },
+  frame: { enabled: true, color: BRAND_INK, widthRatio: 0.005, cornerRadiusRatio: 0.01 },
+  decor: { hairline: { color: BRAND_GOLD, widthRatio: 0.0018, x: 0.08, y: 0.152, w: 0.84 } },
+  slots: [
+    {
+      id: 'title',
+      type: 'text',
+      x: 0.08,
+      y: 0.058,
+      w: 0.84,
+      align: 'left',
+      font: 'serif',
+      weight: 'bold',
+      sizeRatio: 0.036,
+      color: BRAND_INK,
+      maxLines: 1,
+      template: '{班级名} 作品墙'
+    },
+    {
+      id: 'period',
+      type: 'text',
+      x: 0.08,
+      y: 0.115,
+      w: 0.84,
+      align: 'left',
+      font: 'sans-serif',
+      sizeRatio: 0.019,
+      color: MUTED_BROWN,
+      maxLines: 1,
+      template: '{周期} · 共 {作品数} 幅作品'
+    },
+    {
+      id: 'wall',
+      type: 'image',
+      x: 0.07,
+      y: 0.19,
+      w: 0.86,
+      h: 0.85,
+      bg: '#FFFFFF',
+      radiusRatio: 0.014,
+      paddingRatio: 0.008,
+      shadow: false,
+      border: { color: MUTED_LINE, widthRatio: 0.0015 },
+      // 自适应网格：人数多时自动换更密的档位，上限 = 班级作品墙的口径（30）。
+      grid: { columns: 0, rows: 0, gapRatio: 0.014, maxItems: POSTER_CLASS_MAX_ITEMS_DEFAULT },
+      cellCaption: { visible: true, position: 'below', sizeRatio: 0.0135, color: MUTED_BROWN }
+    },
+    {
+      id: 'org',
+      type: 'text',
+      x: 0.08,
+      y: 1.1,
+      w: 0.5,
+      align: 'left',
+      font: 'serif',
+      weight: 'bold',
+      sizeRatio: 0.022,
+      color: BRAND_INK,
+      maxLines: 1,
+      template: '{机构名}'
+    },
+    {
+      id: 'teacher',
+      type: 'text',
+      x: 0.08,
+      y: 1.142,
+      w: 0.5,
+      align: 'left',
+      font: 'sans-serif',
+      sizeRatio: 0.017,
+      color: MUTED_BROWN,
+      maxLines: 1,
+      template: '{老师姓名} · {日期}'
+    },
+    builtinQrSlot({ x: 0.7, y: 1.075, sizeRatio: 0.13, captionSizeRatio: 0.0125, captionColor: MUTED_BROWN }),
+    builtinLogoSlot({ x: 0.08, y: 1.23, maxWRatio: 0.16 })
+  ]
+});
+
+/** 「暖金名片 · 班级集体」的版式：暖沙底 + 金框 + 四行三列名片格（12 人以内一人一格）。 */
+const classGoldCardsSpec = builtinPosterSpec({
+  kind: 'class',
+  canvas: { ...POSTER_CANVAS_PRESETS.class },
+  background: { type: 'solid', stops: [MUTED_SAND] },
+  frame: { enabled: true, color: BRAND_GOLD, widthRatio: 0.009, cornerRadiusRatio: 0.028 },
+  decor: { hairline: { color: BRAND_INK, widthRatio: 0.0016, x: 0.08, y: 0.155, w: 0.84 } },
+  slots: [
+    {
+      id: 'title',
+      type: 'text',
+      x: 0.08,
+      y: 0.06,
+      w: 0.84,
+      align: 'center',
+      font: 'serif',
+      weight: 'bold',
+      sizeRatio: 0.034,
+      color: BRAND_INK,
+      maxLines: 1,
+      template: '{班级名} 作品墙'
+    },
+    {
+      id: 'period',
+      type: 'text',
+      x: 0.08,
+      y: 0.118,
+      w: 0.84,
+      align: 'center',
+      font: 'sans-serif',
+      sizeRatio: 0.019,
+      color: MUTED_BROWN,
+      maxLines: 1,
+      template: '{周期} · 共 {作品数} 幅'
+    },
+    {
+      id: 'wall',
+      type: 'image',
+      x: 0.075,
+      y: 0.192,
+      w: 0.85,
+      h: 0.83,
+      bg: '#FFFFFF',
+      radiusRatio: 0.012,
+      paddingRatio: 0.008,
+      shadow: true,
+      border: { color: MUTED_LINE, widthRatio: 0.0015 },
+      // 名片墙：固定四行三列（12 格），超过 12 位学员时由渲染层按课次均匀精选并提示。
+      grid: { columns: 4, rows: 3, gapRatio: 0.012, maxItems: 12 },
+      cellCaption: { visible: true, position: 'below', sizeRatio: 0.013, color: MUTED_BROWN }
+    },
+    {
+      id: 'org',
+      type: 'text',
+      x: 0.08,
+      y: 1.1,
+      w: 0.84,
+      align: 'center',
+      font: 'serif',
+      sizeRatio: 0.021,
+      color: BRAND_INK,
+      maxLines: 1,
+      template: '{机构名} · {老师姓名}'
+    },
+    builtinQrSlot({ x: 0.4075, y: 1.17, sizeRatio: 0.115, captionColor: MUTED_BROWN }),
+    builtinLogoSlot({ x: 0.435, y: 1.375, maxWRatio: 0.13 })
+  ]
+});
+
+/** 「深墨画框 · 成长视频封面」的版式：深墨底衬暖白画框，含「成长记录」标题与时长角标。 */
+const videoInkCoverSpec = builtinPosterSpec({
+  kind: 'video-cover',
+  canvas: { ...POSTER_CANVAS_PRESETS['video-cover'] },
+  background: { type: 'linear-gradient', angle: 160, stops: [BRAND_INK, MUTED_DEEP] },
+  frame: { enabled: true, color: BRAND_GOLD, widthRatio: 0.008, cornerRadiusRatio: 0.03 },
+  decor: { hairline: { color: BRAND_GOLD, widthRatio: 0.0016, x: 0.4, y: 0.765, w: 0.2, opacity: 0.9 } },
+  slots: [
+    {
+      id: 'cover',
+      type: 'image',
+      x: 0.1,
+      y: 0.125,
+      w: 0.8,
+      h: 0.6,
+      bg: BRAND_PAPER,
+      radiusRatio: 0.022,
+      paddingRatio: 0.012,
+      shadow: true,
+      border: { color: BRAND_GOLD, widthRatio: 0.0012 }
+    },
+    // 播放图标：四种占位区里没有「图形」这一类，用一个衬线的实心三角字符表达
+    // （US-306 要的是「有播放图标」，不新增 slot 类型；压在画框下沿外侧不遮作品主体）。
+    {
+      id: 'play',
+      type: 'text',
+      x: 0.7,
+      y: 0.585,
+      w: 0.14,
+      align: 'center',
+      font: 'sans-serif',
+      weight: 'bold',
+      sizeRatio: 0.075,
+      color: BRAND_PAPER,
+      maxLines: 1,
+      template: '▶'
+    },
+    {
+      id: 'title',
+      type: 'text',
+      x: 0.1,
+      y: 0.795,
+      w: 0.8,
+      align: 'center',
+      font: 'serif',
+      weight: 'bold',
+      sizeRatio: 0.052,
+      color: BRAND_PAPER,
+      maxLines: 1,
+      template: '成长记录'
+    },
+    {
+      id: 'student',
+      type: 'text',
+      x: 0.1,
+      y: 0.875,
+      w: 0.8,
+      align: 'center',
+      font: 'sans-serif',
+      sizeRatio: 0.024,
+      color: BRAND_GOLD,
+      maxLines: 1,
+      template: '{学员名} · {周期}'
+    },
+    {
+      id: 'duration',
+      type: 'text',
+      x: 0.1,
+      y: 0.935,
+      w: 0.8,
+      align: 'center',
+      font: 'sans-serif',
+      sizeRatio: 0.022,
+      color: MUTED_SAND,
+      maxLines: 1,
+      letterSpacingRatio: 0.004,
+      template: '时长 {时长}'
+    },
+    builtinQrSlot({ x: 0.42, y: 1.065, sizeRatio: 0.13, captionColor: MUTED_SAND }),
+    builtinLogoSlot({ x: 0.43, y: 1.34, maxWRatio: 0.14, opacity: 0.85 })
+  ]
+});
+
 /**
- * 内置模板（出厂种子）。两条共同约定（FR-323 / US-302）：
+ * 「暖白长卷 · 成长报告」的版式：1080×3240（3 个短边）的长图，自上而下四段 ——
+ * 头图 → 课程时间线（周期与课时数）→ 作品与点评 → 成长概览 → 二维码与落款。
+ * 分段标题是版式文字（与二维码说明同一类），**内容一律来自变量**（FR-326：不许写死示例文案）。
+ */
+const reportLongScrollSpec = builtinPosterSpec({
+  kind: 'report-long',
+  canvas: { width: 1080, height: 3240 },
+  background: { type: 'solid', stops: [BRAND_PAPER] },
+  frame: { enabled: true, color: BRAND_GOLD, widthRatio: 0.004, cornerRadiusRatio: 0 },
+  decor: { hairline: { color: BRAND_GOLD, widthRatio: 0.0016, x: 0.08, y: 0.82, w: 0.84 } },
+  slots: [
+    {
+      id: 'title',
+      type: 'text',
+      x: 0.08,
+      y: 0.1,
+      w: 0.84,
+      align: 'left',
+      font: 'serif',
+      weight: 'bold',
+      sizeRatio: 0.034,
+      color: BRAND_INK,
+      maxLines: 1,
+      template: '{学员名} 的成长报告'
+    },
+    {
+      id: 'period',
+      type: 'text',
+      x: 0.08,
+      y: 0.165,
+      w: 0.84,
+      align: 'left',
+      font: 'sans-serif',
+      sizeRatio: 0.019,
+      color: MUTED_BROWN,
+      maxLines: 1,
+      template: '{周期} · {课程名}'
+    },
+    {
+      id: 'cover',
+      type: 'image',
+      x: 0.08,
+      y: 0.215,
+      w: 0.84,
+      h: 0.56,
+      bg: '#FFFFFF',
+      radiusRatio: 0.012,
+      paddingRatio: 0.01,
+      shadow: false,
+      border: { color: MUTED_LINE, widthRatio: 0.0015 }
+    },
+    {
+      id: 'timelineTitle',
+      type: 'text',
+      x: 0.08,
+      y: 0.86,
+      w: 0.84,
+      align: 'left',
+      font: 'sans-serif',
+      weight: 'bold',
+      sizeRatio: 0.022,
+      color: BRAND_INK,
+      maxLines: 1,
+      template: '课程时间线'
+    },
+    {
+      id: 'timeline',
+      type: 'text',
+      x: 0.08,
+      y: 0.905,
+      w: 0.84,
+      align: 'left',
+      font: 'serif',
+      sizeRatio: 0.02,
+      color: MUTED_DEEP,
+      maxLines: 2,
+      lineHeight: 1.7,
+      template: '{周期} · 共 {课时数} 次课'
+    },
+    {
+      id: 'worksTitle',
+      type: 'text',
+      x: 0.08,
+      y: 1.03,
+      w: 0.84,
+      align: 'left',
+      font: 'sans-serif',
+      weight: 'bold',
+      sizeRatio: 0.022,
+      color: BRAND_INK,
+      maxLines: 1,
+      template: '作品与点评'
+    },
+    {
+      id: 'collage',
+      type: 'image',
+      x: 0.08,
+      y: 1.075,
+      w: 0.84,
+      h: 0.78,
+      bg: '#FFFFFF',
+      radiusRatio: 0.014,
+      paddingRatio: 0.01,
+      shadow: false,
+      border: { color: MUTED_LINE, widthRatio: 0.0015 },
+      grid: { columns: 0, rows: 0, gapRatio: 0.014, maxItems: 9 },
+      cellCaption: { visible: true, position: 'below', sizeRatio: 0.0135, color: MUTED_BROWN }
+    },
+    {
+      id: 'quote',
+      type: 'text',
+      x: 0.08,
+      y: 1.92,
+      w: 0.84,
+      align: 'left',
+      font: 'serif',
+      sizeRatio: 0.021,
+      color: MUTED_DEEP,
+      maxLines: 3,
+      lineHeight: 1.7,
+      template: '{点评金句}'
+    },
+    {
+      id: 'summaryTitle',
+      type: 'text',
+      x: 0.08,
+      y: 2.08,
+      w: 0.84,
+      align: 'left',
+      font: 'sans-serif',
+      weight: 'bold',
+      sizeRatio: 0.022,
+      color: BRAND_INK,
+      maxLines: 1,
+      template: '成长概览'
+    },
+    {
+      id: 'summary',
+      type: 'text',
+      x: 0.08,
+      y: 2.125,
+      w: 0.84,
+      align: 'left',
+      font: 'serif',
+      sizeRatio: 0.021,
+      color: MUTED_DEEP,
+      maxLines: 8,
+      lineHeight: 1.75,
+      template: '{阶段总结}'
+    },
+    builtinQrSlot({ x: 0.42, y: 2.5, sizeRatio: 0.16, captionSizeRatio: 0.013, captionColor: MUTED_BROWN }),
+    builtinLogoSlot({ x: 0.08, y: 0.045, maxWRatio: 0.14 }),
+    {
+      id: 'footer',
+      type: 'text',
+      x: 0.08,
+      y: 2.8,
+      w: 0.84,
+      align: 'center',
+      font: 'sans-serif',
+      sizeRatio: 0.018,
+      color: MUTED_BROWN,
+      maxLines: 1,
+      template: '{机构名} · {老师姓名}'
+    }
+  ]
+});
+
+/**
+ * 内置模板（出厂种子，[海报 US-302a]）。三条共同约定（FR-323 / US-302）：
  *   - 每套都**预留二维码位与机构 Logo 位**（可以 `visible: false` 关掉显示，但字段要在）；
- *   - `builtin: true` + `enabled: true`，且**不可删除、只可停用**。
- * `entryScope` 写的是「这套版式适合哪个入口」：单作品两处都能用，阶段拼贴只有档案里有多幅作品。
+ *   - `builtin: true` + `enabled: true`，且**不可删除、只可停用**（US-312b 的门槛）；
+ *   - 名称可读、`description` 一句话说清「什么场景、什么色系」。
+ * `entryScope` 写的是「这套版式适合哪个入口」：单作品两处都能用（课后反馈里只有一幅作品），
+ * 阶段 / 班级 / 封面 / 长图都要多幅作品与周期数据，只有成长档案里有（US-309 据此置灰入口）。
+ *
+ * 排序即 `sortOrder`（1 起、与数组顺序一致）：单作品 → 阶段 → 班级 → 封面 → 长图，
+ * 每类内部先暖金后墨色。`poster-warm-gold-single` 仍是唯一默认模板（老师端首次进装裱/转发默认选它）。
  */
 export const seedPosterTemplates = [
   {
@@ -870,6 +1435,20 @@ export const seedPosterTemplates = [
     sortOrder: 1
   },
   {
+    id: 'poster-ink-quiet-single',
+    name: '墨色留白 · 单作品',
+    description: '墨黑细框配暖白纸感底色，标题居中如展签。适合国画、线描这类素雅作品。',
+    kind: 'single',
+    spec: singleInkSpec,
+    scope: 'platform',
+    ownerKey: '',
+    entryScope: 'both',
+    enabled: true,
+    builtin: true,
+    isDefault: false,
+    sortOrder: 2
+  },
+  {
     id: 'poster-oak-period',
     name: '原木素雅 · 阶段成长',
     description: '原木色细框配米白底，自适应拼贴网格。适合一学期多幅作品的阶段回顾。',
@@ -881,7 +1460,77 @@ export const seedPosterTemplates = [
     enabled: true,
     builtin: true,
     isDefault: false,
-    sortOrder: 2
+    sortOrder: 3
+  },
+  {
+    id: 'poster-ink-nine-period',
+    name: '墨色九宫 · 阶段成长',
+    description: '三行三列的作品九宫格，每格标注课次日期。适合 9 幅以内的阶段性回顾。',
+    kind: 'period',
+    spec: periodNineGridSpec,
+    scope: 'platform',
+    ownerKey: '',
+    entryScope: 'archive',
+    enabled: true,
+    builtin: true,
+    isDefault: false,
+    sortOrder: 4
+  },
+  {
+    id: 'poster-ink-wall-class',
+    name: '墨色作品墙 · 班级集体',
+    description: '全班每人一格的作品墙，格下标注学员姓名。适合带班老师发到班级群里。',
+    kind: 'class',
+    spec: classInkWallSpec,
+    scope: 'platform',
+    ownerKey: '',
+    entryScope: 'archive',
+    enabled: true,
+    builtin: true,
+    isDefault: false,
+    sortOrder: 5
+  },
+  {
+    id: 'poster-gold-card-class',
+    name: '暖金名片 · 班级集体',
+    description: '暖沙底色与四行三列名片格，金框收边。适合 12 人以内的班级点名式展示。',
+    kind: 'class',
+    spec: classGoldCardsSpec,
+    scope: 'platform',
+    ownerKey: '',
+    entryScope: 'archive',
+    enabled: true,
+    builtin: true,
+    isDefault: false,
+    sortOrder: 6
+  },
+  {
+    id: 'poster-ink-video-cover',
+    name: '深墨画框 · 成长视频封面',
+    description: '深墨底衬暖白画框，含成长记录标题与时长角标。适合给成长视频当封面。',
+    kind: 'video-cover',
+    spec: videoInkCoverSpec,
+    scope: 'platform',
+    ownerKey: '',
+    entryScope: 'archive',
+    enabled: true,
+    builtin: true,
+    isDefault: false,
+    sortOrder: 7
+  },
+  {
+    id: 'poster-paper-report-long',
+    name: '暖白长卷 · 成长报告',
+    description: '1080×3240 长图，头图、作品与点评、成长概览自上而下。适合微信里滑读。',
+    kind: 'report-long',
+    spec: reportLongScrollSpec,
+    scope: 'platform',
+    ownerKey: '',
+    entryScope: 'archive',
+    enabled: true,
+    builtin: true,
+    isDefault: false,
+    sortOrder: 8
   }
 ].map((template) => normalizePosterTemplate(template));
 

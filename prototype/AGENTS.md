@@ -3499,10 +3499,8 @@ US-222 管「成片怎么版本化」，这一节管「谁能碰这些成片、�
 - **两处「看起来像 bug 的默认值」**：`image.border` 显式写 `null` 才是**没有边框**，不写则回落默认细边框；
   `normalizePosterSpec` 的数值收敛**不认**布尔 / 数组 / 对象（`Number(true) === 1`、`Number([]) === 0`
   会把「字段缺失」悄悄变成「一个像样的值」），只认数字与数字串。
-- **内置模板数据**（AC1 的「内置模板数据」）：`seedPosterTemplates` 目前是 2 套骨架
-  （`poster-warm-gold-single` 单作品 / `poster-oak-period` 阶段成长），走 `builtinPosterSpec()`
-  构造 —— 种子过同一个收敛器，所以「内置模板一定合法」是结构保证。**US-302a 要把它补到
-  ≥8 套、覆盖 `single / period / class / video-cover / report-long` 五类**（每类至少 1 套）。
+- **内置模板数据**（AC1 的「内置模板数据」）：`seedPosterTemplates` 现在是 **8 套**（US-302a 补齐，
+  见下一节），走 `builtinPosterSpec()` 构造 —— 种子过同一个收敛器，所以「内置模板一定合法」是结构保证。
   每套必须预留**二维码位与 Logo 位**（可 `visible: false`，字段要在）且二维码可见数 ≤1（FR-323 / FR-325），
   这两条与 `posterSpecIssues()` 读同一份判据。模板记录的库级字段沿用装裱：
   `enabled / builtin / isDefault / sortOrder / entryScope`（`archive | feedback | both`，US-309 用它置灰入口）。
@@ -3579,6 +3577,53 @@ US-222 管「成片怎么版本化」，这一节管「谁能碰这些成片、�
 - 本故事**没有 UI 消费点**（弹窗 / 五类版式入口在 US-302a、US-303 起），浏览器验证 = 页面里
   `await import('/src/services/poster.js')` 直接渲染 + 逐像素断言（合成作品图四边各有色带，
   专门验「不裁切」；中心色块验「不调色」）。截图 441 留档。
+
+## 内置海报模板库与「开发自检入口」（[海报 US-302a] / FR-313 ~ FR-323）
+
+**8 套内置模板**（`data/posterTemplates.js` 的 `seedPosterTemplates`，是按 `sortOrder` 排好的数组）：
+
+| # | id | 名称 | kind | 版式特征 |
+|---|---|---|---|---|
+| 1 | `poster-warm-gold-single` | 暖金留白 · 单作品 | single | 金框 + 金线，一张作品占上部 55%（**唯一默认模板**） |
+| 2 | `poster-ink-quiet-single` | 墨色留白 · 单作品 | single | 墨框 + 暖白底，标题居中如展签 |
+| 3 | `poster-oak-period` | 原木素雅 · 阶段成长 | period | 自适应拼贴（4→2×2 / 6–9→3×3 / 10–12→3×4） |
+| 4 | `poster-ink-nine-period` | 墨色九宫 · 阶段成长 | period | **固定 3×3** 九宫格，每格标课次日期 |
+| 5 | `poster-ink-wall-class` | 墨色作品墙 · 班级集体 | class | 自适应作品墙（上限 30），格下标学员姓名 |
+| 6 | `poster-gold-card-class` | 暖金名片 · 班级集体 | class | **固定 4×3 = 12 格**名片墙，暖沙底 + 金框 |
+| 7 | `poster-ink-video-cover` | 深墨画框 · 成长视频封面 | video-cover | 深墨底衬暖白画框，含「成长记录」标题、`{时长}` 角标、`▶` 播放字符 |
+| 8 | `poster-paper-report-long` | 暖白长卷 · 成长报告 | report-long | 1080×**3240**，头图 → 课程时间线 → 作品与点评 → 成长概览 → 码与落款 |
+
+- **五类覆盖是硬约束**：`single / period / class` 各 2 套（主流场景），`video-cover / report-long` 各 1 套。
+  `entryScope` 只有单作品是 `both`（课后反馈里只有一幅作品），其余一律 `archive` —— US-309 据此置灰入口。
+- **image 占位区的 id 有约定**（自检样例与断言读它，新增模板照抄）：`artwork` / `cover` = **单图位**
+  （一幅代表作）；`collage` / `wall` = **拼贴位**（走 `grid`）。
+- **配色纪律**：只用品牌三色（`#CFA52E` / `#2B271F` / `#FBF8F2`）+ 同色系中性色（`POSTER_MUTED_COLORS`）。
+  `posterIsBlueHex()` 是「不得用蓝做主视觉」的机器判据，内置模板的**每一个色值**都被它扫过。
+- **加一套内置模板的姿势**：写一份 `builtinPosterSpec({...})`（只写有意为之的字段）→ 端点进
+  `seedPosterTemplates`（`sortOrder` 必须等于数组下标 + 1，有断言）→ 跑 `/tmp/assert-us090.mjs`。
+  四条几何纪律由断言兜住：几何在画布内（长画布的 `y` 可以 >1）、二维码 ≥120px 且可见数 =1、
+  Logo 按 3:1 估高不越界、**占位区不重叠**（文字按墨迹宽度估，白名单只有「播放角标压在封面上」这一处有意重叠）。
+
+### 开发自检入口（AC5）：`services/posterSelfCheck.js`
+
+- **为什么需要它**：数据层的模板是参数，参数写错了 `pnpm run build` **照样绿** —— 只有真画一次才知道能不能出图。
+- **入口挂法**：`main.jsx` 末尾在 `if(import.meta.env&&import.meta.env.DEV)` 里**动态 import** 并挂到
+  `window.__xinlehuiPosterSelfCheck`（+ `__xinlehuiPosterSelfCheckText`）。出厂构建里 `import.meta.env.DEV`
+  是 `false` → 整段是死代码，**自检不进 dist**（`grep dist -e 海报模板自检` 必须为空，断言查这一条）。
+  新增 dev 钩子照这个写法：只读、catch 掉、别进生产包。
+- **跑法**：`pnpm run dev` → 浏览器控制台 `await window.__xinlehuiPosterSelfCheck()` → 返回
+  `{ ok, total, checked, failed, entries[], failures[], text }`；`entries[]` 每套一行
+  （`bytes / mimeType / width / height / slots{drawn,total,skipped} / warnings`），`skipped` 直接读渲染层的
+  `plan.reason`（**不在这里重算版式**）。
+- **素材是现画的合成图**（`createSelfCheckArtwork` / `createSelfCheckLogo`，暖色色块 + 圆点）：
+  自检要能在任何机器上跑，不能依赖「先上传一张示例作品」。**按位分数量**：单图位 1 张、拼贴位 9 张
+  （固定网格按格数）—— 喂 9 张给单图位会把「单作品」模板渲染成九宫格（本轮真踩，是自检样例的错不是模板的错）。
+- **永不抛错**：某套渲染炸了只让它进 `failures`，其余照跑（浏览器断言用一个 `Proxy` 化的假 spec 验这条）。
+- **验证口径**：`/tmp/assert-us090.mjs`（Node，**26 项**：覆盖 / 命名 / 配色 / builtin / 几何 / 不重叠 /
+  自检入口与文本 / 与收敛器兼容 / 反向注入校验器）+ `/tmp/assert-us090-browser.mjs`（CDP，**86 项**：
+  真跑自检入口 8/8 出非空 Blob、逐套独立复算 Blob 类型与字节与画布、plan 逐位读数、成图墨迹、
+  播放字符是实心三角而不是豆腐块、失败路径、8 套拼图截图 442）。回归：US-088 data 39 项（E6 已改成
+  「与种子自身顺序比」，种子再长也不用改）、US-089 data 104 项、US-089 浏览器 83 项。
 
 ## 容易踩的坑
 
