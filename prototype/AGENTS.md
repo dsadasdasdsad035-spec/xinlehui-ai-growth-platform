@@ -39,6 +39,33 @@ React + Vite 单页原型（`src/main.jsx` 是主入口，另按模块拆出 `sr
   要拿 id 去关联课次时走 `resolveCourseId(list, value)`（先按 id 查、再按名字查）。
 - 新建课程主键用随机的 `makeUniqueCourseId()`；`makeCourseIdFromName()` 的确定性派生只用于读取没有 id 的旧数据。
 
+## 归档记录（feedback_records）的模型与规则（[第四步 US-201]）
+
+一条记录 = **「某位学员的某一次课」**。`data/feedbackRecords.js` 是记录模型的唯一真源（零依赖纯函数，
+可 `node` 直跑断言），`services/feedbackRecordsApi.js` 只做 snake_case 行映射。
+
+- **业务唯一键 `recordKey`**：优先 `lessonId::studentId`（两段）；没有课次实体时退化为
+  `className::date::studentId::title`（四段）。`studentId` 缺省由姓名确定性派生
+  （`lessons.js` 的 `makeStudentId`），`date` 一律先过 `normalizeLessonDate` ——
+  `2026.08.04` 与 `2026-08-04` 必须得到同一个键。
+- **`id` 由 `recordKey` 派生**：`deriveRecordId(recordKey)` = `feedback-<FNV-1a 8 位十六进制>`，
+  与业务键一一对应。同一次课重复归档 → 同一个 `id` → 同一个云端 `record_key`（幂等 upsert 的基础）。
+  老记录**保留原 id**（换掉会凭空多出云端孤儿行）。
+- **两条日期口径并存，别互相覆盖**：`date` = 课次日期的 ISO（**不是归档当天**）；
+  `lessonDate` = 展签口径 `2026.08.04`（US-008b 的既有断言按它校验）。
+- **`title` 只能来自真实数据**（`resolveRecordTitle`：老师填的作品名 → 模板的 `plaqueTitle` → 本次课题），
+  **禁止**写死「未命名作品」这类占位名（FR-205）。
+- 其余字段：`lessonId / courseId / classId / studentId / archivedAt / updatedAt / version` 与
+  `reviewTraceId`（关联第三步落盘的推理轨迹，`xinlehui-review-traces-v1` 里按 `recordId` 回指）。
+- **读盘一律过 `normalizeFeedbackRecord`**（`loadFeedbackRecords` / `mergeFeedbackRecords` 都调它）：
+  旧记录补出新字段、原字段一个都不丢。云端 payload 也要过这一道，否则新字段在界面上是 undefined。
+- **按 `recordKey` 去重兜底**（`dedupeFeedbackRecords`，FR-207）：读盘、新记录入列、写盘都过它 ——
+  确定性 id 意味着同一个键只该有一条记录。同键再归档的「更新同一条 + version 自增」是 US-202。
+- 就地更新记录走 `updateFeedbackRecord(record, patch)`：`recordKey`/`id` 不变、`updatedAt` 刷新、
+  `version` 自增（成品图写回 US-008b 与将来的同键再归档共用这一个入口）。
+- `data/feedbackRecords.js` 的三条 `seedRecords` **刻意保持旧口径**（无新字段）：它们是兼容映射的活样例，
+  别顺手给它们补上 `lessonId` 之类的新字段。
+
 ## 老师端「课后反馈」第一步（班级 / 学员 / 课程 / 课次推荐）
 
 > **课次表单全站只有一份实现 = `TeacherFlowV2`（`main.jsx`）。** 旧的 `CreateFlow` 五步向导

@@ -9,12 +9,17 @@ const TABLE = 'feedback_records';
 // blob: / data: 这类只在当前浏览器会话有效的地址不入库，避免云端存下失效素材。
 const httpOnly = value => (/^https?:\/\//.test(String(value || '')) ? String(value) : '');
 
+// 云端行是 **snake_case**，应用内是 camelCase，转换只在这里做（见 AGENTS.md 的数据层分层）。
+// 新增字段（recordKey / lessonId / classId / courseId / studentId / archivedAt / updatedAt /
+// version / reviewTraceId）都在 `payload` 里原样透传：给云表加列会被 PostgREST 整条拒掉
+// （DATABASE_PGRST204 的教训），幂等键仍是既有的 `record_key`（= 记录的确定性 id）。
 const toRow = record => ({
   record_key: String(record.id),
   student: String(record.student || ''),
   class_name: String(record.className || ''),
   record_date: String(record.date || ''),
-  title: String(record.title || '未命名作品'),
+  // title 就是记录上的作品名：取不到时留空，**不写「未命名作品」这类占位名**（FR-205）。
+  title: String(record.title || ''),
   status: String(record.status || '已归档'),
   payload: {
     ...record,

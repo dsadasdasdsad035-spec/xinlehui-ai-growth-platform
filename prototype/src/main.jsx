@@ -32,7 +32,9 @@ import './gallery/gallery.css';
 import pandaMascot from './assets/panda-gold-hero.png';
 import pandaObserve from './assets/panda-gold-observe.png';
 import pandaWave from './assets/panda-poses/01-wave-paintbrush.png';
-import { createFeedbackRecord, loadFeedbackRecords, persistFeedbackRecords } from './data/feedbackRecords';
+// 归档记录（[第四步 US-201]）：业务唯一键 `recordKey`、由它派生的确定性 `id`、课次日期与
+// 展签作品名的取值规则、旧记录的兼容映射与按 `recordKey` 去重兜底，全在 data 层纯函数里。
+import { createFeedbackRecord, dedupeFeedbackRecords, loadFeedbackRecords, mergeFeedbackRecords, persistFeedbackRecords, updateFeedbackRecord } from './data/feedbackRecords';
 import { createParentSession, loadParentFeedbackRecords, loadRemoteFeedbackRecords, saveRemoteFeedbackRecords } from './services/feedbackRecordsApi';
 import { REVIEW_TRACE_TASKS, loadReviewTraces, makeReviewTraceId, mergeReviewTraces, persistReviewTrace, persistReviewTraces, reviewTraceSummary } from './data/reviewTrace';
 // 两次生成的对比（US-107b）：`parentTraceId` 关联的上一次 vs 本次的模型 / 耗时 / 推理，
@@ -306,15 +308,8 @@ const taskSeed = [
   {id:'T-0821',title:'创意线描 · 照片美化',student:'小艺术家班',app:'照片美化',model:'VisionArt Edit',status:'部分成功',time:'29/30'}
 ];
 
-const mergeFeedbackRecords = (localRecords, remoteRecords) => {
-  const byId = new Map(remoteRecords.map(record => [record.id, record]));
-  localRecords.forEach(record => {
-    const remote = byId.get(record.id);
-    byId.set(record.id, remote ? { ...remote, ...record, reviews: { ...remote.reviews, ...record.reviews } } : record);
-  });
-  return [...byId.values()].sort((a, b) => String(b.date).localeCompare(String(a.date)));
-};
-
+// 本地镜像 + 云端记录的合并（同 id 本地优先、reviews 逐维合并、按 recordKey 去重兜底）
+// 收在 data 层（与 `mergeLessons` 同一套写法）：云端回来的 payload 也要过旧记录兼容映射。
 function App(){
   const [auth,setAuth]=useState(false), [authMode,setAuthMode]=useState('login'), [role,setRole]=useState('teacher');
   const [parentStudent,setParentStudent]=useState(''),[parentStudents,setParentStudents]=useState([]),[parentPhone,setParentPhone]=useState(''),[parentSession,setParentSession]=useState('');
@@ -2907,6 +2902,15 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
       if(reviewAbort.current===controller) reviewAbort.current=null;
     }
   };
+  // ---- 归档记录的业务键与上下文（[第四步 US-201]）------------------------------------
+  // 一条记录 = 「某位学员的某一次课」。下面这两份派生值决定记录的 `recordKey` 与由它派生的
+  // 确定性 `id`（同一次课重复归档 = 同一条记录、同一个云端 record_key），归档（本故事）与
+  // 后续的幂等更新（US-202）读的必须是同一份，别在两处各算一遍。
+  // 学员 id 取作品位的主人（`selectedParticipant`），与记录上的 `student` 同源，不会串档。
+  const archiveStudentId=selectedParticipant?.studentId||'';
+  // title 的取值来源（优先级在 data 层的 `resolveRecordTitle` 里定义：老师逐幅填的作品名 →
+  // 装裱模板里的展签作品名 → 本次课题）。班级反馈读本班第一幅上传条目 —— 与展签、导出口径一致。
+  const archiveArtworkTitle=mode==='班级反馈'?(classArtworkItems[0]?.title||''):(media.artwork?.title||'');
   const archiveRecord=()=>{
     if(!hasProcessedArtwork||!reviewGenerated){setToast('请先完成线稿提取和智能点评，才能归档给家长。');return;}
     // 归档强校验（US-108b）：按钮已经按它禁用，这里再拦一道（顶栏流程导航也能调归档附近的路径），
@@ -2923,11 +2927,24 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
         media,subject:reviewSubjectValue,reviews,mode,
         student:selectedStudentLabel,
         className:selectedClassLabel,
+        // 业务键的上下文（US-201）：课次 + 学员 + 班级 + 课程，四个 id 都来自真实实体。
+        studentId:archiveStudentId,
+        classId:selectedClass?.id||'',
+        courseId:activeCourseId||'',
+        // title 取装裱展签上的作品名（见 `resolveRecordTitle`），不写「未命名作品」这类占位名。
+        artworkTitle:archiveArtworkTitle,
+        plaqueTitle:activeFrame?.plaqueTitle||'',
+        topic:reviewSubjectValue,
         framedArtwork,
         lessonId:currentLessonId,
-        lessonDate:reviewLessonDateDots
+        // 展签口径的课次日期（`2026.08.04`）：记录里的 `date` 由它换算成 ISO，不再取归档当天。
+        lessonDate:reviewLessonDateDots,
+        // 第三步推理轨迹的关联（US-102 的轨迹在下面 `commitReviewTrace` 里才落盘）。
+        reviewTraceId:reviewTraceRef.current?.traceId||''
       });
-      setRecords(list=>[record,...list]);
+      // 按 `recordKey` 去重兜底（FR-207）：确定性 id 意味着同一个键只该有一条记录，
+      // 列表里也不会出现两个相同的 React key。同键再归档的「更新同一条 + version 自增」是 US-202。
+      setRecords(list=>dedupeFeedbackRecords([record,...list]));
       // 记住这一次的归档 id：之后再保存图片时，写回要**就地更新**这一条（换班/换学员会清掉它）。
       setCurrentRecordId(record.id);
       setArchived(true);
@@ -4039,8 +4056,10 @@ function TeacherFlowV2({navigate,setToast,setRecords,framingPresets=[],setFramin
         setMedia(current=>({...current,artwork:applyWriteBackToSlot(current.artwork,record)}));
       }
       // ② 已经归档过的记录就地更新：3D 画廊读的就是这条记录（重新进入第二步改完再保存的场景）。
+      //    走 `updateFeedbackRecord`：`recordKey` / `id` 不变，`updatedAt` 刷新、`version` 自增
+      //    （[第四步 US-201] 的记录模型 —— 「同一条记录被更新过」这件事必须看得见）。
       if(currentRecordId){
-        setRecords(list=>list.map(item=>item.id===currentRecordId?{...item,framedArtwork:record}:item));
+        setRecords(list=>list.map(item=>item.id===currentRecordId?updateFeedbackRecord(item,{framedArtwork:record}):item));
       }
       const suffix=currentRecordId?'（成长档案已同步更新）':'（归档时会带着它一起进成长档案）';
       setWriteBackAttempt({status:'synced',quality:entry.id,message:`成品图已写回本次课后反馈：${artworkWriteBackSummaryText(record)}${suffix}`});
