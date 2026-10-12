@@ -854,3 +854,11 @@
   .video-record-history>ul>li{flex-direction:column;align-items:stretch}
   .video-record-history>ul>li .text-link{min-height:44px;display:flex;align-items:center;justify-content:center}
 }
+
+/* 视频任务的权限 / 配额 / 签名地址读数（[第四步 US-223]）：老师端面板上的四行读数 + 管理端合规面板。 */
+.video-jobs-permission,.video-jobs-quota,.video-jobs-signed-url,.video-jobs-audit{display:flex;flex-direction:column;gap:3px;margin:0;font-size:10px;line-height:1.7;border-radius:10px;padding:8px 10px;border:1px solid #e5e0f2;background:#faf8ff;min-width:0}
+.video-jobs-permission b,.video-jobs-quota b,.video-jobs-signed-url b,.video-jobs-audit b{font-size:11px;font-weight:800;color:#3a2f5c;word-break:break-word}
+.video-jobs-permission small,.video-jobs-quota small,.video-jobs-signed-url small,.video-jobs-audit small{font-size:10px;color:#7b738d;word-break:break-word}
+.video-jobs-permission[data-video-access-state="denied"]{border-color:#f0d7bd;background:#fdf1e4}
+.video-jobs-quota[data-video-quota-exceeded="true"]{border-color:#f0c9c9;background:#fdf0f0}
+.video-compliance .compliance-matrix li em.denied{color:#b4483a}

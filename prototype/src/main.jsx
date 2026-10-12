@@ -337,7 +337,28 @@ import { loadRemoteMusicTracks } from './services/musicLibraryApi';
 // 云端读写走 services/videoRecordsApi.js。
 import { loadVideoRecords, mergeVideoRecords, persistVideoRecords, videoRecordCascadeNotice, videoRecordsCascadeRemoved } from './data/videoRecords';
 import { deleteRemoteVideoRecord, loadRemoteVideoRecords } from './services/videoRecordsApi';
-
+// 视频任务的权限 / 留痕 / 保留期 / 配额 / 签名地址（[第四步 US-223] / FR-311 ~ FR-315）：
+// 五件事各有一份零依赖数据模块 —— 权限判定（`data/videoPermissions.js`，班级归属委托 US-211）、
+// 六条留痕的构造与复核（`data/videoTaskAudit.js`）、两份保留期与「先预览影响范围」
+// （`data/videoRetention.js`）、存储与流量配额（`data/videoQuota.js`）、成片地址的签名与有效期
+// 判定（`data/videoSignedUrl.js`）。界面只渲染它们的产物，判据与文案读同一份。
+import {
+  VIDEO_RETENTION_CLEANUP_LABEL,
+  VIDEO_RETENTION_INTERMEDIATE_OPTIONS, VIDEO_RETENTION_OUTPUT_OPTIONS, VIDEO_RETENTION_POLICY_NOTE,
+  VIDEO_RETENTION_PREVIEW_LABEL, VIDEO_RETENTION_SECTION_DESC, VIDEO_RETENTION_SECTION_TITLE,
+  applyVideoRetentionCleanup, loadVideoRetentionPolicy, normalizeVideoRetentionPolicy, persistVideoRetentionPolicy,
+  videoCleanupNotice, videoRetentionPolicyPatch, videoRetentionPreview, videoRetentionSummary
+} from './data/videoRetention';
+import {
+  VIDEO_QUOTA_STORAGE_OPTIONS, VIDEO_QUOTA_TRAFFIC_OPTIONS, VIDEO_QUOTA_SECTION_DESC, VIDEO_QUOTA_SECTION_TITLE,
+  VIDEO_QUOTA_POLICY_NOTE, loadVideoQuotaPolicy, persistVideoQuotaPolicy, videoQuotaPolicyPatch, videoQuotaView
+} from './data/videoQuota';
+import {
+  VIDEO_TASK_PERMISSION_SUMMARY,
+  videoTaskPermissionRows
+} from './data/videoPermissions';
+import { VIDEO_TASK_AUDIT_SECTION_DESC, VIDEO_TASK_AUDIT_SECTION_TITLE, videoAuditEntryProblem, videoTaskAuditStats } from './data/videoTaskAudit';
+import { VIDEO_SIGNED_URL_NOTE, VIDEO_SIGNED_URL_SECTION_TITLE, VIDEO_SIGNED_URL_TTL_OPTIONS, videoSignedUrlPolicy, videoSignedUrlView } from './data/videoSignedUrl';
 // 五个维度各自的留空提示语 —— 只说明「这一维该看什么」，不预填任何成句的点评。
 const REVIEW_DIMENSION_HINTS = {
   美术能力: '等待大模型读取作品后生成：画面里能指认的色彩、构图、造型或材料使用。',
@@ -486,6 +507,10 @@ function App(){
   // （表还没建 → 写入被拒，成片记录只在本机镜像里 —— 与阶段报告同一套兜底口径；
   //  合并方向本机镜像优先：刚重新生成、还没推上云的那一版不能被云端旧版本顶回去）。
   const [videoRecords,setVideoRecords]=useState(loadVideoRecords);
+  // 视频产物的保留期与配额（[第四步 US-223] 第 3、4 条）：两份配置都只在本机镜像里落盘
+  // （与归档保留期 / 轨迹策略同一套口径），放在 App 层是因为**老师端要读它**（配额满了阻止新任务）。
+  const [videoRetention,setVideoRetention]=useState(loadVideoRetentionPolicy);
+  const [videoQuota,setVideoQuota]=useState(loadVideoQuotaPolicy);
   // 阶段报告（[第四步 US-207a]）：本机镜像先渲染，云端 `archive_reports` 表回来就并进来
   // （表还没建 → 写入被拒，报告只在本机镜像里 —— 与审计日志 / 装裱模板同一套兜底口径；
   //  合并方向本机优先：刚生成、还没推上云的那一版不能被云端旧记录顶掉）。
@@ -536,6 +561,8 @@ function App(){
   // 推云端是生成 / 重新生成那一条路径自己做的事（GrowthArchiveData 的 storeVideoRecord），
   // 这里不整表回写 —— 否则每次云端水合回来都会把本机刚生成的那一版覆盖回去。
   useEffect(()=>{persistVideoRecords(videoRecords)},[videoRecords]);
+  useEffect(()=>{persistVideoRetentionPolicy(videoRetention)},[videoRetention]);
+  useEffect(()=>{persistVideoQuotaPolicy(videoQuota)},[videoQuota]);
   useEffect(()=>{persistGalleryVenues(galleryVenues)},[galleryVenues]);
   useEffect(()=>{persistGalleryExhibitions(galleryExhibitions)},[galleryExhibitions]);
   useEffect(()=>{persistLessons(lessons)},[lessons]);
@@ -761,7 +788,7 @@ function App(){
     <main className="main">
       <Topbar role={role} onMenu={()=>setMobileNav(true)} onSwitch={(r)=>login(r,'demo')} onGuide={()=>navigate('guide')} onLogout={()=>setAuth(false)}/>
       <div className="content">
-        <PageRouter {...{page,role,navigate,setToast,setModal,apps,setApps,tasks,setTasks,demoState,setDemoState,records:archivedRecords,setRecords,recordsSource,reloadRecords:reloadFeedbackRecords,parentStudent,parentStudents,parentPhone,parentSession,setParentStudent,teacherProfiles,setTeacherProfiles,framingPresets,setFramingPresets,skillLibrary,setSkillLibrary,agentFiles,setAgentFiles,adminName:roleMeta.admin.name,galleryVenues,setGalleryVenues,galleryExhibitions,setGalleryExhibitions,lessons,setLessons,courses,setCourses,auditLog,recordAudit,reviewModels,reviewModelDefaults,setReviewModelDefaults,keywordTemplates,setKeywordTemplates,keywordTemplateRemote,musicTracks,setMusicTracks,videoRecords,setVideoRecords,traceLog,setTraceLog,tracePolicy,setTracePolicy,traceSource,refreshReviewTraces,cleanupReviewTraces,auditTraceEntry,auditActor:archiveAuditActor,adminTraceViewer,teacherTraceViewer,archiveReports,setArchiveReports,shareTokens,setShareTokens,teacherName:roleMeta.teacher.name,pageParams,consents,setConsents,archiveRetention,setArchiveRetention}}/>
+        <PageRouter {...{page,role,navigate,setToast,setModal,apps,setApps,tasks,setTasks,demoState,setDemoState,records:archivedRecords,setRecords,recordsSource,reloadRecords:reloadFeedbackRecords,parentStudent,parentStudents,parentPhone,parentSession,setParentStudent,teacherProfiles,setTeacherProfiles,framingPresets,setFramingPresets,skillLibrary,setSkillLibrary,agentFiles,setAgentFiles,adminName:roleMeta.admin.name,galleryVenues,setGalleryVenues,galleryExhibitions,setGalleryExhibitions,lessons,setLessons,courses,setCourses,auditLog,recordAudit,reviewModels,reviewModelDefaults,setReviewModelDefaults,keywordTemplates,setKeywordTemplates,keywordTemplateRemote,musicTracks,setMusicTracks,videoRecords,setVideoRecords,videoRetention,setVideoRetention,videoQuota,setVideoQuota,traceLog,setTraceLog,tracePolicy,setTracePolicy,traceSource,refreshReviewTraces,cleanupReviewTraces,auditTraceEntry,auditActor:archiveAuditActor,adminTraceViewer,teacherTraceViewer,archiveReports,setArchiveReports,shareTokens,setShareTokens,teacherName:roleMeta.teacher.name,pageParams,consents,setConsents,archiveRetention,setArchiveRetention}}/>
       </div>
     </main>
     {toast?<div className="toast panda-toast"><img src={pandaWave} alt="熊猫鼓励"/><span><CircleCheck size={18}/>{toast}</span>{toastAction?<button type="button" className="toast-action" data-toast-action={toastAction.label} onClick={()=>{const run=toastAction.onClick;setToastRaw('');setToastAction(null);if(run)run()}}>{toastAction.label}</button>:null}</div>:null}
@@ -7764,6 +7791,188 @@ function LogsPage({tasks,role='admin',traceLog=[],tracePolicy=null,traceSource=n
  * 报告生成、到期清理）。查询规则全在 `data/archiveAudit.js`（零依赖纯函数），这里只渲染它的产物：
  * `data-archive-audit-*` 读数与浏览器断言读同一份。
  */
+/**
+ * 视频任务的**权限 · 留痕 · 保留期 · 配额 · 签名地址**（[第四步 US-223] / FR-311 ~ FR-315）。
+ *
+ * 五件事各读一份零依赖数据模块，面板只渲染它们的产物、不自己写判据：
+ *  - **权限**（第 1 条）：`videoTaskPermissionRows` 的角色矩阵 —— 本班老师可提交 / 下载、管理员可审计、
+ *    家长仅可通过有效分享链接播放；「谁能做什么」在这里是读数，不是描述。
+ *  - **留痕**（第 2 条）：`videoTaskAuditStats` 按六条（提交 / 完成 / 下载 / 分享 / 更换音乐 / 删除）
+ *    数出各自的条数，逐条列出操作人 / 时间 / 任务键 / 成片键；缺字段的条目被点名（`videoAuditEntryProblem`）。
+ *  - **保留期**（第 3 条）：中间产物与成片两份保留期可配；到期清理**先预览影响范围**
+ *    （`videoRetentionPreview` 列出将被清理的任务与成片），预览与执行读同一份纯函数。
+ *  - **配额**（第 4 条）：存储与流量（本月下载）各一份上限，超限时老师端阻止新任务并给出提示；
+ *    这里显示用量读数与两份上限的配置。
+ *  - **签名地址**（第 5 条）：成片地址的签名有效期策略（默认 1 小时且不超过分享有效期）。
+ */
+function VideoCompliancePanel({auditLog=[],videoRecords=[],setVideoRecords=()=>{},policy=null,setPolicy=()=>{},quota=null,setQuota=()=>{},recordAudit=()=>{},setToast=()=>{}}){
+  const [preview,setPreview]=useState(null);
+  const [ttlSeconds,setTtlSeconds]=useState(VIDEO_SIGNED_URL_TTL_OPTIONS[1].seconds);
+  const actor={actorId:'platform-admin',actorName:roleMeta.admin.name,actorRole:'platform-admin',actorRoleLabel:'平台超级管理员'};
+  const current=normalizeVideoRetentionPolicy(policy);
+  const quotaView=videoQuotaView({policy:quota,records:videoRecords,auditLog});
+  const retentionSummary=videoRetentionSummary(current);
+  const permissionRows=useMemo(()=>videoTaskPermissionRows({role:'admin',adminTier:'platform',actorName:roleMeta.admin.name}),[]);
+  const auditStats=useMemo(()=>videoTaskAuditStats(auditLog),[auditLog]);
+  const signedPolicy=videoSignedUrlPolicy({ttlSeconds});
+  const demoAddress='https://cdn.example.com/video.mp4?X-Amz-Signature=demo&X-Amz-Date=20261012T080000Z&X-Amz-Expires=3600';
+  const signedView=videoSignedUrlView({
+    outputUrl:demoAddress,
+    share:{validDays:30,createdAt:new Date().toISOString()},
+    now:Date.parse('2026-10-12T08:30:00Z')
+  });
+  // 保留期改动（唯一写入口）：留痕 updatedBy / updatedAt，并把预览清掉（旧预览对应旧策略）。
+  const changeRetention=patch=>{setPolicy(prev=>videoRetentionPolicyPatch(prev,patch,{updatedBy:roleMeta.admin.name,at:new Date().toISOString()}));setPreview(null)};
+  const changeQuota=patch=>{setQuota(prev=>videoQuotaPolicyPatch(prev,patch,{updatedBy:roleMeta.admin.name,at:new Date().toISOString()}))};
+  const runPreview=()=>{
+    // 到期清理的输入 = 管理端手上这两份真源：本机演示队列里的任务（中间产物）+ 成片记录。
+    const jobs=listVideoJobs();
+    const next=videoRetentionPreview({jobs,records:videoRecords},current,new Date().toISOString());
+    setPreview(next);
+    setToast(next.expiredCount?`预览完成：${next.intermediateCount} 条中间产物、${next.outputCount} 条成片到期`:'预览完成：没有到期产物');
+    return next;
+  };
+  const runCleanup=()=>{
+    const now=new Date().toISOString();
+    const jobs=listVideoJobs();
+    const result=applyVideoRetentionCleanup({jobs,records:videoRecords},current,now);
+    // 中间产物：从演示队列里摘掉那些任务；成片：从成片账里摘掉那些记录（按 videoKey 摘，
+    // 与老师端删除成片同一条口径 —— 云端 video_records 表未建时推送失败也不阻断本机清理）。
+    result.jobs.removed.forEach(job=>discardVideoJob(job.jobKey));
+    if(result.records.removed.length){
+      const gone=new Set(result.records.removed.map(record=>record.videoKey));
+      setVideoRecords(list=>list.filter(record=>!gone.has(record.videoKey)));
+      result.records.removed.forEach(record=>{void deleteRemoteVideoRecord(record.videoKey).catch(()=>{});});
+    }
+    setPreview(videoRetentionPreview({jobs:result.jobs.kept,records:result.records.kept},current,now));
+    const message=videoCleanupNotice(result.preview);
+    setToast(message);
+    if(result.preview.expiredCount){
+      recordAudit({...actor,orgId:DEFAULT_ORG_ID,action:AUDIT_ACTIONS.retentionCleanup,detail:`视频产物到期清理：${result.preview.intermediateCount} 条渲染中间产物 + ${result.preview.outputCount} 条成片（中间产物保留 ${result.preview.intermediateText}、成片保留 ${result.preview.outputText}）`});
+    }
+    return result;
+  };
+  // 成片记录由 App 的 state 持有；清理时按 videoKey 摘掉（`setVideoRecords` 从 App 透传进来，
+  // 与老师端删除成片走同一条写入路径）。
+  return <section className="panel video-compliance" data-video-compliance="true"
+    data-video-compliance-summary={VIDEO_TASK_PERMISSION_SUMMARY}
+    data-video-compliance-actor={actor.actorId}
+    data-video-compliance-audit-total={String(auditStats.total)}
+    data-video-compliance-quota-exceeded={quotaView.exceeded?'true':'false'}
+    data-video-compliance-retention-intermediate={String(current.intermediateDays)}
+    data-video-compliance-retention-output={String(current.outputDays)}>
+    <div className="panel-head">
+      <div>
+        <h2>视频任务：权限与合规</h2>
+        <p>{VIDEO_TASK_PERMISSION_SUMMARY}</p>
+      </div>
+      <em className="compliance-actor" data-video-compliance-actor-label="true">当前会话：{roleMeta.admin.name}（平台超级管理员）</em>
+    </div>
+    <div className="compliance-grid">
+      {/* ① 权限矩阵：本班老师可提交 / 下载、管理员可审计、家长仅可播放有效分享链接。 */}
+      <div className="compliance-block" data-video-permission-matrix="true">
+        <h3>角色与动作</h3>
+        <ul className="compliance-matrix">
+          {permissionRows.map(row=><li key={row.id} data-video-permission-row={row.id}
+            data-video-permission-role={row.role}
+            data-video-permission-allowed={row.allowed?'true':'false'}
+            data-video-permission-actions={row.actions.join(',')}
+            data-video-permission-session={row.sessionMatch?'true':'false'}>
+            <b>{row.label}</b>
+            <span>可做：{row.actionText}</span>
+            <small>{row.scope}{row.note?` · ${row.note}`:''}</small>
+            <em className={row.allowed?'ok':'muted'} data-video-permission-verdict={row.allowed?'allowed':'readonly'}>{row.allowed?'放行':'拒绝'}</em>
+          </li>)}
+        </ul>
+        <p className="compliance-note">
+          判定收在 data/videoPermissions.js（班级归属委托 US-211 的 archiveRecordAccess）：提交与下载都过「本班老师」这一道，
+          管理员只审计、不代提交也不下载成片文件，家长只有「有效分享链接」一条路。
+        </p>
+      </div>
+      {/* ② 六条留痕：提交 / 完成 / 下载 / 分享 / 更换音乐 / 删除。 */}
+      <div className="compliance-block" data-video-audit-panel="true" data-video-audit-total={String(auditStats.total)} data-video-audit-missing={String(auditStats.missing)}>
+        <h3>{VIDEO_TASK_AUDIT_SECTION_TITLE}</h3>
+        <p className="compliance-note">{VIDEO_TASK_AUDIT_SECTION_DESC}</p>
+        <ul className="compliance-matrix" data-video-audit-rows="true">
+          {auditStats.rows.map(row=><li key={row.id} data-video-audit-row={row.id} data-video-audit-row-action={row.action} data-video-audit-row-count={String(row.count)}>
+            <b>{row.label}</b><span>{row.count} 条</span><small>{row.when}</small>
+          </li>)}
+        </ul>
+        <p className="compliance-note" data-video-audit-summary-text="true">{auditStats.text}</p>
+        {auditStats.total?<ul className="compliance-audit" data-video-audit-entries="true">
+          {auditLog.filter(entry=>videoTaskAuditStats([entry]).total>0).slice(0,20).map(entry=><li key={entry.id}
+            data-video-audit-entry={entry.id}
+            data-video-audit-action={entry.action}
+            data-video-audit-actor={entry.actorId}
+            data-video-audit-job={entry.jobKey}
+            data-video-audit-video={entry.videoKey}
+            data-video-audit-bytes={String(entry.bytes||0)}
+            data-video-audit-at={entry.at}
+            data-video-audit-problem={videoAuditEntryProblem(entry)}>
+            <b>{AUDIT_ACTION_LABELS[entry.action]||entry.action}</b>
+            <small>{auditTraceText(entry)}</small>
+            {entry.detail?<small className="compliance-audit-detail" data-video-audit-detail={entry.detail}>{entry.detail}</small>:null}
+          </li>)}
+        </ul>:<p className="persona-empty" data-video-audit-empty="true">还没有视频任务留痕：老师提交一条任务后，提交 / 完成 / 下载 / 分享 / 更换音乐 / 删除六个动作都会留在这里。</p>}
+      </div>
+      {/* ③ 保留期与到期清理：两份保留期可配，清理前先看影响范围。 */}
+      <div className="compliance-block" data-video-retention="true">
+        <h3>{VIDEO_RETENTION_SECTION_TITLE}</h3>
+        <p className="compliance-note">{VIDEO_RETENTION_SECTION_DESC}</p>
+        <div className="form-grid">
+          <label>渲染中间产物<select data-video-retention-intermediate="true" value={current.intermediateDays} onChange={event=>changeRetention({intermediateDays:Number(event.target.value)})}>{VIDEO_RETENTION_INTERMEDIATE_OPTIONS.map(option=><option key={option.days} value={option.days}>{option.label}</option>)}</select></label>
+          <label>成片<select data-video-retention-output="true" value={current.outputDays} onChange={event=>changeRetention({outputDays:Number(event.target.value)})}>{VIDEO_RETENTION_OUTPUT_OPTIONS.map(option=><option key={option.days} value={option.days}>{option.label}</option>)}</select></label>
+        </div>
+        <div className="archive-retention-actions">
+          <Button variant="secondary" onClick={runPreview} data-video-retention-preview="true">{VIDEO_RETENTION_PREVIEW_LABEL}</Button>
+          <Button variant="secondary" disabled={!preview||preview.expiredCount===0} onClick={runCleanup} data-video-retention-cleanup="true">{`${VIDEO_RETENTION_CLEANUP_LABEL}${preview&&preview.expiredCount?`（${preview.expiredCount} 条）`:''}`}</Button>
+          <small data-video-retention-summary="true">{retentionSummary}</small>
+        </div>
+        <small className="trace-policy-note" data-video-retention-policy-note="true">{VIDEO_RETENTION_POLICY_NOTE}</small>
+        {preview?<div className="archive-cleanup-preview" data-video-cleanup-preview="true" data-video-cleanup-intermediate={String(preview.intermediateCount)} data-video-cleanup-output={String(preview.outputCount)} data-video-cleanup-bytes={String(preview.bytes)} data-video-cleanup-intermediate-cutoff={preview.intermediateCutoff} data-video-cleanup-output-cutoff={preview.outputCutoff}>
+          <p data-video-cleanup-text="true">{preview.text}</p>
+          {preview.intermediate.length||preview.output.length?<ul data-video-cleanup-rows="true">
+            {preview.intermediate.slice(0,8).map(row=><li key={`job-${row.id}`} data-video-cleanup-row={row.jobKey}>{row.text}</li>)}
+            {preview.output.slice(0,8).map(row=><li key={`record-${row.id}`} data-video-cleanup-row={row.videoKey}>{row.text}</li>)}
+          </ul>:null}
+        </div>:null}
+      </div>
+      {/* ④ 配额：存储 + 本月流量，超限时老师端阻止新任务。 */}
+      <div className="compliance-block" data-video-quota="true" data-video-quota-exceeded={quotaView.exceeded?'true':'false'} data-video-quota-storage-used={quotaView.storage.usedText} data-video-quota-traffic-used={quotaView.traffic.usedText}>
+        <h3>{VIDEO_QUOTA_SECTION_TITLE}</h3>
+        <p className="compliance-note">{VIDEO_QUOTA_SECTION_DESC}</p>
+        <div className="form-grid">
+          <label>存储上限<select data-video-quota-storage="true" value={quotaView.storageLimitBytes} onChange={event=>changeQuota({storageLimitBytes:Number(event.target.value)})}>{VIDEO_QUOTA_STORAGE_OPTIONS.map(option=><option key={option.bytes} value={option.bytes}>{option.label}</option>)}</select></label>
+          <label>月度流量上限<select data-video-quota-traffic="true" value={quotaView.trafficLimitBytes} onChange={event=>changeQuota({trafficLimitBytes:Number(event.target.value)})}>{VIDEO_QUOTA_TRAFFIC_OPTIONS.map(option=><option key={option.bytes} value={option.bytes}>{option.label}</option>)}</select></label>
+        </div>
+        <ul className="compliance-matrix" data-video-quota-rows="true">
+          <li data-video-quota-row="storage" data-video-quota-row-used={quotaView.storage.text} data-video-quota-row-exceeded={quotaView.storage.exceeded?'true':'false'}>
+            <b>存储（成片体积）</b><span>{quotaView.storage.text}</span><em className={quotaView.storage.exceeded?'denied':'ok'}>{quotaView.storage.percentText}</em>
+          </li>
+          <li data-video-quota-row="traffic" data-video-quota-row-used={quotaView.traffic.text} data-video-quota-row-exceeded={quotaView.traffic.exceeded?'true':'false'}>
+            <b>流量（本月下载）</b><span>{quotaView.traffic.text}</span><em className={quotaView.traffic.exceeded?'denied':'ok'}>{quotaView.traffic.percentText}</em>
+          </li>
+        </ul>
+        <p className={quotaView.exceeded?'video-jobs-issue':'compliance-note'} data-video-quota-note="true">{quotaView.note}</p>
+        <small className="trace-policy-note" data-video-quota-policy-note="true">{VIDEO_QUOTA_POLICY_NOTE}</small>
+      </div>
+      {/* ⑤ 签名地址：有效期策略 + 合规判定（缺签名 / 缺有效期 / 超分享有效期都点名）。 */}
+      <div className="compliance-block" data-video-signed-url-policy="true" data-video-signed-url-ttl={String(signedPolicy.ttlSeconds)} data-video-signed-url-capped={signedPolicy.capped?'true':'false'}>
+        <h3>{VIDEO_SIGNED_URL_SECTION_TITLE}</h3>
+        <div className="form-grid">
+          <label>签名有效期<select data-video-signed-url-ttl-select="true" value={ttlSeconds} onChange={event=>setTtlSeconds(Number(event.target.value))}>{VIDEO_SIGNED_URL_TTL_OPTIONS.map(option=><option key={option.seconds} value={option.seconds}>{option.label}</option>)}</select></label>
+        </div>
+        <p className="compliance-note" data-video-signed-url-policy-text="true">{signedPolicy.text}</p>
+        <p className="compliance-note">{VIDEO_SIGNED_URL_NOTE}</p>
+        <ul className="compliance-matrix" data-video-signed-url-rows="true">
+          {signedView.rows.map(row=><li key={row.id} data-video-signed-url-row={row.id} data-video-signed-url-row-value={row.value}><b>{row.label}</b><span>{row.value}</span></li>)}
+        </ul>
+        <p className={signedView.issue?'video-jobs-issue':'compliance-note'} data-video-signed-url-verdict={signedView.issue?'invalid':'valid'}>{signedView.issue?`示例地址判定：不合规（${signedView.issue}）`:'示例地址判定：合规（https + 签名 + 有效期 ≤ 分享有效期）'}</p>
+      </div>
+    </div>
+  </section>;
+}
+
 function ArchiveAuditPanel({auditLog=[],records=[],shareTokens=[],recordAudit=()=>{},auditActor=null,setToast=()=>{}}){
   const [student,setStudent]=useState('');
   const [teacher,setTeacher]=useState('');
@@ -7820,7 +8029,7 @@ function ArchiveAuditPanel({auditLog=[],records=[],shareTokens=[],recordAudit=()
   );
 }
 
-function ArchiveAdmin({records=[],setRecords=()=>{},setToast=()=>{},auditLog=[],shareTokens=[],recordAudit=()=>{},auditActor=null}){
+function ArchiveAdmin({records=[],setRecords=()=>{},setToast=()=>{},auditLog=[],shareTokens=[],recordAudit=()=>{},auditActor=null,videoRecords=[],setVideoRecords=()=>{},videoRetention=null,setVideoRetention=()=>{},videoQuota=null,setVideoQuota=()=>{}}){
   // 「素材同步失败」清单（[第四步 US-203] 第 5 条）：待处理的素材（上传没成功 / 对象存储未接入的
   // 本地副本）按记录聚合成一行，管理端可以逐条重试。清单与「算不算待处理」的判据都在 data 层
   // （`pendingArchiveMediaRecords`），这里只负责渲染与调用同一个重试入口（老师端第四步用的是它）。
@@ -7849,6 +8058,8 @@ function ArchiveAdmin({records=[],setRecords=()=>{},setToast=()=>{},auditLog=[],
   </section>
   <div className="filters"><div className="search-field"><Search/><input placeholder="学员姓名、档案 ID 或班级"/></div><select><option>全部授权状态</option><option>有效</option><option>已撤回</option></select></div><div className="archive-admin-grid">{['陈一诺','林小满','赵禾','周子墨','苏西','陆一白'].map((s,i)=><div className="archive-admin-card" key={s}><span className={`avatar lg a${i}`}>{s[0]}</span><div><b>{s}</b><small>档案 A-2026-00{i+12}</small></div><span>{12+i} 条记录</span><Status value={i===4?'待授权':'正常'}/><button className="icon-btn"><MoreHorizontal/></button></div>)}</div>
   <ArchiveAuditPanel auditLog={auditLog} records={records} shareTokens={shareTokens} recordAudit={recordAudit} auditActor={auditActor} setToast={setToast}/>
+  {/* 视频任务的权限 / 留痕 / 保留期 / 配额 / 签名地址（[第四步 US-223] / FR-311 ~ FR-315）。 */}
+  <VideoCompliancePanel auditLog={auditLog} videoRecords={videoRecords} setVideoRecords={setVideoRecords} policy={videoRetention} setPolicy={setVideoRetention} quota={videoQuota} setQuota={setVideoQuota} recordAudit={recordAudit} setToast={setToast}/>
   </>;
 }
 function PermissionsPage({setToast}){const perms=[['课后反馈','创建课次','上传素材','审核发布'],['AI 创作','使用生图','使用视频','使用点评'],['成长档案','查看','导出','纠错','删除'],['平台治理','应用管理','供应商密钥','模型启停','生成日志']];return <><PageHeader title="角色与权限" desc="功能权限与机构、校区、班级、学员数据范围同时生效。" prd={PRD.permissions} actions={<Button icon={Plus}>新建权限组</Button>}/><div className="permission-layout"><div className="panel role-list"><h2>角色/权限组</h2>{['平台超级管理员','机构管理员','老师','家长'].map((x,i)=><button className={i===2?'active':''} key={x}><ShieldCheck/><div><b>{x}</b><small>{[2,3,28,86][i]} 位用户</small></div></button>)}</div><div className="panel permission-matrix"><div className="panel-head"><div><h2>老师</h2><p>默认角色 · 仅访问被授权班级和学员</p></div><Button onClick={()=>setToast('权限配置已保存')}>保存更改</Button></div>{perms.map((g,gi)=><div className="permission-group" key={g[0]}><b>{g[0]}</b><div>{g.slice(1).map((p,pi)=><label key={p}><input type="checkbox" defaultChecked={gi<3||pi===0}/><span/>{p}</label>)}</div></div>)}</div></div></>}

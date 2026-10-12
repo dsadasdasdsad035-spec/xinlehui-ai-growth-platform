@@ -38,7 +38,7 @@ import {
   archiveResidentStateView,
   archiveResidentView
 } from './data/archiveResident';
-import { ARCHIVE_SHARE_LINK_NOTE } from './data/archiveSummary';
+import { ARCHIVE_SHARE_LINK_NOTE, archiveVersionLabel } from './data/archiveSummary';
 // 移动端与性能（[第四步 US-212]）：分页窗口 / 首屏预算 / 滚动帧率 / 缩略图四项规则在
 // `data/archivePerformance.js`（零依赖纯函数），浏览器侧的执行（缩略图、首屏计时、滚动采帧）
 // 在 `services/archivePerformance.js`。这一页只渲染它们的产物，不自己写阈值。
@@ -90,7 +90,7 @@ import {
 } from './data/archiveReports';
 import { deleteRemoteArchiveReport, saveRemoteArchiveReport } from './services/archiveReportsApi';
 // 审计日志的动作键（[第四步 US-211]）：报告生成 / 更新也要留痕（操作人 / 时间 / 对象 / 版本）。
-import { AUDIT_ACTIONS, auditEntryMissingFields, auditTraceText } from './data/auditLog';
+import { AUDIT_ACTIONS, auditEntryMissingFields, auditTraceText, latestAuditEntry } from './data/auditLog';
 // 视频任务（[第四步 US-213a] / US-214）：任务模型 / 状态机 / jobKey 幂等 / 演示推进 / 文案全在
 // `data/videoJobs.js`（零依赖纯函数），落地与定时推演在 `services/videoJobQueue.js`。
 // 这一页只渲染视图产物 —— 图表、按钮与「演示数据 · 视频服务未接入」那句话都从数据层来。
@@ -250,6 +250,27 @@ import {
   videoRecordView
 } from './data/videoRecords';
 import { deleteRemoteVideoRecord, saveRemoteVideoRecord } from './services/videoRecordsApi';
+// 视频任务的权限 / 留痕 / 保留期 / 配额 / 签名地址（[第四步 US-223] / FR-311 ~ FR-315）：
+// 五件事各有一份零依赖数据模块，这一页只渲染它们的产物、写入侧读同一份判据 ——
+// 权限（`videoTaskAccess`：只有本班老师可提交与下载）、留痕（`videoAuditEntryInput` /
+// `VIDEO_TASK_AUDIT_SIX`：提交 / 完成 / 下载 / 分享 / 更换音乐 / 删除）、配额
+// （`videoQuotaView` + `videoQuotaSubmitIssue`：超限阻止新任务）、签名地址
+// （`videoSignedUrlView`：有效期不超过分享有效期）、保留期（老师端只读一行）。
+import {
+  VIDEO_TASK_ACTIONS,
+  videoTaskAccess,
+  videoTaskAccessReadout,
+  videoTaskViewerFromActor
+} from './data/videoPermissions';
+import {
+  VIDEO_TASK_AUDIT_SECTION_DESC,
+  VIDEO_TASK_AUDIT_SECTION_TITLE,
+  videoAuditEntryInput,
+  videoTaskAuditStats
+} from './data/videoTaskAudit';
+import { VIDEO_QUOTA_SECTION_TITLE, videoQuotaSubmitIssue, videoQuotaView } from './data/videoQuota';
+import { videoRetentionSummary } from './data/videoRetention';
+import { videoSignedUrlView } from './data/videoSignedUrl';
 // 成片分享的授权闸门读的是第四步那一份归档摘要产物（`archiveStepView` → `archiveForwardView`
 // → `data/consent.js`），与图文分享**同一道校验**，这里不另写一套。
 import { archiveStepView } from './data/archiveSummary';
@@ -1097,7 +1118,7 @@ function VideoClassTimeline({plan,view,onMove,onReset}){
  * 它读的是 `classEntries`（这个班级在这个周期的记录）与 `roster`（班级名单 = 顺序真源）；
  * 「顺序默认按班级名单、生成前可调整」用面板自己的 `classOrder` 局部 state 实现。
  */
-function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkCount,photoCount,teacherName,setToast,entries=[],scopeEntries=[],classEntries=[],roster=[],tokens=[],records=[],musicTracks=[],videoRecords=[],consents=null,setShareTokens=()=>{},setVideoRecords=()=>{},recordAudit=()=>{},auditActor=null,navigate=null}){
+function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkCount,photoCount,teacherName,setToast,entries=[],scopeEntries=[],classEntries=[],roster=[],tokens=[],records=[],musicTracks=[],videoRecords=[],consents=null,setShareTokens=()=>{},setVideoRecords=()=>{},recordAudit=()=>{},auditActor=null,auditLog=[],videoQuota=null,videoRetention=null,management=null,navigate=null}){
   const [jobs,setJobs]=useState(()=>listVideoJobs());
   const [notice,setNotice]=useState('');
   const [simulateFail,setSimulateFail]=useState(false);
@@ -1149,6 +1170,43 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
   const view=videoJobQueueView(jobs,{resumedAt:sessionStartRef.current});
   const submitIssue=videoJobSubmitIssue({type,studentId:isClass?'':objectName,classId:isClass?objectName:'',period});
   const jobKey=videoJobKey({type,studentId:isClass?'':objectName,classId:isClass?objectName:'',period});
+  // ---- 权限 · 配额（[第四步 US-223] 第 1、4 条）-----------------------------------------------
+  // 视频任务的操作人身份：与审计那条路同源（`auditActor` 是 App 按当前角色补的操作人四件套，
+  // `videoTaskViewerFromActor` 把它映射成权限判定要的 viewer 形状 —— 不另写一套「怎么认人」）。
+  const videoViewer=useMemo(()=>videoTaskViewerFromActor(auditActor||{actorId:teacherName,actorName:teacherName,actorRole:'teacher'}),[auditActor,teacherName]);
+  // 「只有本班老师可提交与下载成片」：提交与下载各判一次（判据是 `videoTaskAccess`，班级归属委托
+  // US-211 那一份）。跨班老师 / 管理员在这两处各拿到一句可读原因，界面上如实显示。
+  const videoAccessInput=useMemo(()=>({
+    viewer:videoViewer,
+    management,
+    student:isClass?'':objectName,
+    className:isClass?objectName:''
+  }),[videoViewer,management,isClass,objectName]);
+  const submitAccess=useMemo(()=>videoTaskAccess({...videoAccessInput,action:VIDEO_TASK_ACTIONS.submit}),[videoAccessInput]);
+  // 成片下载的访问判定：与提交是不同的动作（下载是「把孩子的视频拿走」，同一道本班闸门）。
+  const downloadAccess=useMemo(()=>videoTaskAccess({...videoAccessInput,action:VIDEO_TASK_ACTIONS.download}),[videoAccessInput]);
+  // 配额（存储 + 本月流量）：用量读成片记录与审计留痕，超限时 `videoQuotaSubmitIssue` 给可读原因，
+  // 提交按钮据此禁用 —— 判定与写入侧读同一份（`videoQuotaView` 是唯一真源）。
+  const quotaView=useMemo(()=>videoQuotaView({policy:videoQuota,records:videoRecords,auditLog}),[videoQuota,videoRecords,auditLog]);
+  const quotaIssue=videoQuotaSubmitIssue(quotaView);
+  // 老师端只读的那行保留期读数（配置与清理在管理端「系统配置」）。
+  const retentionNote=useMemo(()=>videoRetentionSummary(videoRetention),[videoRetention]);
+  // 这条任务的成片记录与当前任务（六条留痕、下载闸门与版本面板都读它们）：
+  // 定义放在这里是因为下面的留痕与下载闸门都要用（JS 的 const 是自上而下的）。
+  const recordIdentity=useMemo(()=>({type,studentId:isClass?'':objectName,classId:isClass?objectName:'',period}),[type,isClass,objectName,period]);
+  const videoRecord=useMemo(()=>findVideoRecord(videoRecords,jobKey),[videoRecords,jobKey]);
+  const currentJob=useMemo(()=>jobs.find(job=>job.jobKey===jobKey)||null,[jobs,jobKey]);
+  // ---- 六条留痕（[第四步 US-223] 第 2 条）------------------------------------------------------
+  // 提交 / 完成 / 下载 / 分享 / 更换音乐 / 删除各写一条审计：入参构造统一走
+  // `videoAuditEntryInput`（动作键、任务键 / 成片键、对象、体积都在那一份里拼），
+  // 界面只负责挑时机调用；最近一条挂在面板上（`data-video-audit`），六条的汇总读数据层。
+  const [videoAuditEntry,setVideoAuditEntry]=useState(null);
+  const videoAudit=useCallback(({action,job=null,record=null,bytes=0,detail='',share=null,outcome='ok'})=>{
+    const actor=auditActor||{actorId:teacherName,actorName:teacherName,actorRole:'teacher',actorRoleLabel:'老师'};
+    const entry=recordAudit(videoAuditEntryInput({action,actor,job,record,bytes,detail,share,outcome}));
+    setVideoAuditEntry(entry);
+    return entry;
+  },[recordAudit,auditActor,teacherName]);
   // 精选（[第四步 US-216]）：先定「哪些作品进成片」（时长上限 + 均匀取样 + 手动排除），
   // 帧清单再按**收录的那一批**排 —— 于是「已精选 M 幅」与帧清单上的帧数、预估时长三者同源。
   useEffect(()=>{setExcludedArtworks([])},[objectName,period,isClass]);
@@ -1203,7 +1261,10 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
       ? `已记录处置结果：${record.actionLabel}（写进这条成片记录的音乐快照）。`
       : `已记录处置结果：${record.actionLabel}（${recorded.issue}这条选择会用在下一版成片记录里。）`);
     setToast(`${record.actionLabel}：${reason}`);
-  },[musicSelection,musicView.selectionSnapshot,musicView.notice,jobKey,teacherName,setToast]);
+    // 留痕（六条之五「更换音乐」）：曲目到期或被收回后的处置必须查得到 —— 谁在什么时候把哪首曲子
+    // 换掉 / 静音，写进审计日志（成片记录里的曲目 id 与凭证快照不动，这里只记这次处置）。
+    videoAudit({action:AUDIT_ACTIONS.videoMusicChange,job:currentJob,record:videoRecord,detail:`${record.actionLabel}：${reason}（原曲目 ${record.trackId||'未记录'}）`});
+  },[musicSelection,musicView.selectionSnapshot,musicView.notice,jobKey,teacherName,setToast,videoAudit,currentJob,videoRecord]);
   const pickedEntries=selection.selectedEntries;
   const toggleExclude=useCallback(key=>{
     if(!key)return;
@@ -1266,15 +1327,57 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
   }),[gateStudents,consents,gateStep,gateRecord]);
   const sharePanel=videoSharePanelView({tokens,jobKey,gate:shareGate,validDays:shareValidDays});
   const videoShareActor=()=>auditActor||{actorId:teacherName,actorName:teacherName,actorRole:'teacher',actorRoleLabel:'老师'};
+  const videoAuditSummary=useMemo(()=>videoTaskAuditStats(
+    (Array.isArray(auditLog)?auditLog:[]).filter(entry=>{
+      const key=String((entry&&entry.jobKey)||'');
+      if(key) return key===jobKey;
+      return String((entry&&entry.videoKey)||'')===String((videoRecord&&videoRecord.videoKey)||'');
+    })
+  ),[auditLog,jobKey,videoRecord]);
+  // 成片地址的签名合规（第 5 条）：只有带签名、带有效期且不超过分享有效期的临时 URL 才可用。
+  // 分享有效期取这条成片当下可用的分享令牌（没有令牌时按默认 30 天算）。
+  const signedUrlView=useMemo(()=>videoSignedUrlView({
+    outputUrl:preview.player.src,
+    share:sharePanel.token?{validDays:sharePanel.token.validDays,createdAt:sharePanel.token.createdAt,expiresAt:sharePanel.token.expiresAt}:{validDays:shareValidDays}
+  }),[preview.player.src,sharePanel.token,shareValidDays]);
+  // **完成**（六条之二）：任务推进到「已完成」的那一刻写一条留痕（只写一次，按 jobKey 去重 ——
+  // 刷新 / 重新进入页面时重放的 `done` 不再重复记）。
+  const doneAuditedRef=useRef('');
+  useEffect(()=>{
+    if(!currentJob||String(currentJob.status)!==VIDEO_JOB_STATUSES.done) return;
+    const key=String(currentJob.jobKey||'');
+    if(!key||doneAuditedRef.current===key) return;
+    // 「完成」这件事只发生过一次：刷新 / 重新进页面时任务**还是** done，但不能再记一条
+    // （跨会话也成立 —— 先看审计日志里这条任务有没有记过，而不是只看本次挂载的 ref）。
+    if(latestAuditEntry(Array.isArray(auditLog)?auditLog:[],AUDIT_ACTIONS.videoJobDone,{jobKey:key})){doneAuditedRef.current=key;return;}
+    doneAuditedRef.current=key;
+    videoAudit({action:AUDIT_ACTIONS.videoJobDone,job:currentJob,record:videoRecord,detail:`任务已完成（成片就绪）：${typeLabel} · ${period}`});
+  },[currentJob,videoRecord,videoAudit,typeLabel,period,auditLog]);
   // 下载 / 分享（验收第 2 条）：服务未接入时两句话各不相同、都可读；真成片那条路径直接取服务地址，
   // 原型不做本机副本（地址是渲染服务的 https 持久地址）。
+  // **下载的三道闸**（[第四步 US-223] 第 1、5 条）：先过「本班老师」的权限判定，
+  // 再过成片地址的签名合规（没有有效期的 https 地址不是临时地址），最后才真的打开 ——
+  // 被拒时如实显示原因并留一条 `outcome:'denied'` 的留痕（合规要的是「谁试过」）。
   const runPreviewAction=action=>{
     if(!action) return;
     if(!action.enabled){setOutputNotice(action.unavailableText);setToast(action.unavailableText);return;}
     if(action.id==='download'){
       const url=preview.player.src;
       if(!url) return;
+      if(!downloadAccess.allowed){
+        setOutputNotice(downloadAccess.deniedText||downloadAccess.reason);
+        setToast(downloadAccess.deniedText||downloadAccess.reason);
+        videoAudit({action:AUDIT_ACTIONS.videoDownload,job:currentJob,record:videoRecord,bytes:0,detail:`下载被拒绝：${downloadAccess.reason}`});
+        return;
+      }
+      if(signedUrlView.issue){
+        setOutputNotice(`${signedUrlView.note}`);
+        setToast(signedUrlView.note);
+        return;
+      }
       if(typeof window!=='undefined') window.open(url,'_blank','noopener');
+      // 留痕（六条之三）：下载成片记下体积（流量用量读它）。
+      videoAudit({action:AUDIT_ACTIONS.videoDownload,job:currentJob,record:videoRecord,bytes:preview.output.bytes,detail:`下载成片（${preview.output.durationText||'时长待服务给出'} · ${preview.output.bytesText||'体积待服务给出'}）`});
       setOutputNotice('已从渲染服务取成片地址（新窗口打开；原型不落本机副本）。');
       setToast('已从渲染服务取成片地址。');
       return;
@@ -1299,8 +1402,9 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
     setShareNotice(sharePanel.generatedNotice);
     setToast(`${sharePanel.generatedNotice}${shareTokenLink(created.token)}`);
     void saveRemoteShareToken(created).catch(()=>{});
-    // 留痕（与图文分享共用同一张动作表）：对象 = 这次成片覆盖的学员 / 班级 + 任务键 + 令牌。
-    recordAudit({...videoShareActor(),action:AUDIT_ACTIONS.shareGenerate,objectName,studentId:isClass?'':objectName,recordId:created.jobKey,studentName:isClass?'':objectName,version:created.version,shareToken:created.token,scope:period,detail:`成片分享链接（${typeLabel} · ${period}）· 有效期 ${created.validDays} 天`});
+    // 留痕（六条之四「分享」）：与图文分享共用同一张动作表 —— 成片分享与图文分享走同一条令牌账，
+    // 只多带一个 jobKey（断言据此把它们筛成「视频任务的分享」）。
+    videoAudit({action:AUDIT_ACTIONS.shareGenerate,job:currentJob,record:videoRecord,share:created,detail:`成片分享链接（${typeLabel} · ${period}）· 有效期 ${created.validDays} 天`});
   };
   const revokeVideoShare=()=>{
     const target=sharePanel.active?sharePanel.token:null;
@@ -1312,7 +1416,7 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
     setShareNotice(sharePanel.revokedNotice);
     setToast(sharePanel.revokedNotice);
     void revokeRemoteShareToken(revoked).catch(()=>{});
-    recordAudit({...videoShareActor(),action:AUDIT_ACTIONS.shareRevoke,objectName,studentId:isClass?'':objectName,recordId:revoked.jobKey,studentName:isClass?'':objectName,version:revoked.version,shareToken:revoked.token,scope:period,detail:`撤回成片分享链接（${typeLabel} · ${period}）`});
+    recordAudit({...videoShareActor(),action:AUDIT_ACTIONS.shareRevoke,objectName,studentId:isClass?'':objectName,recordId:revoked.jobKey,jobKey:revoked.jobKey||jobKey,studentName:isClass?'':objectName,version:revoked.version,shareToken:revoked.token,scope:period,detail:`撤回成片分享链接（${typeLabel} · ${period}）`});
   };
   const goAuthorization=()=>{if(typeof navigate==='function')navigate('authorization');};
   // ---- 成片版本 · 更新与删除（[第四步 US-222] / FR-301 ~ FR-304）--------------------------------
@@ -1323,10 +1427,7 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
   const [recordDeleteOpen,setRecordDeleteOpen]=useState(false);
   const [recordViewingVersion,setRecordViewingVersion]=useState(0);
   useEffect(()=>{setRecordNotice('');setRecordDeleteOpen(false);setRecordViewingVersion(0)},[objectName,period,isClass]);
-  const recordIdentity=useMemo(()=>({type,studentId:isClass?'':objectName,classId:isClass?objectName:'',period}),[type,isClass,objectName,period]);
-  const videoRecord=useMemo(()=>findVideoRecord(videoRecords,jobKey),[videoRecords,jobKey]);
   const recordView=useMemo(()=>videoRecordView(videoRecord,{records,viewingVersion:recordViewingVersion}),[videoRecord,records,recordViewingVersion]);
-  const currentJob=useMemo(()=>jobs.find(job=>job.jobKey===jobKey)||null,[jobs,jobKey]);
   const regenerateIssue=videoRecordRegenerateIssue({record:videoRecord,jobStatus:currentJob?currentJob.status:''});
   /**
    * 生成 / 重新生成时把这一版落库（FR-301 / FR-303）。规则全在 `data/videoRecords.js`：
@@ -1346,6 +1447,10 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
   },[records,recordIdentity,objectName,lessonCount,artworkCount,photoCount,videoRecords,jobKey,teacherName,setVideoRecords]);
   const regenerateVideo=()=>{
     if(regenerateIssue){setRecordNotice(regenerateIssue);setToast(regenerateIssue);return;}
+    // 权限与配额两道闸（[第四步 US-223] 第 1、4 条）：重新生成也是「提交一条渲染任务」，
+    // 同一份判据 —— 跨班老师 / 管理员 / 配额满都在这里被拦下并给出可读原因。
+    if(!submitAccess.allowed){setRecordNotice(submitAccess.deniedText||submitAccess.reason);setToast(submitAccess.deniedText||submitAccess.reason);return;}
+    if(quotaIssue){setRecordNotice(quotaIssue);setToast(quotaIssue);return;}
     const at=new Date().toISOString();
     const submittedMusic=musicJobMusicFromSelection(musicSelection,{capturedAt:at});
     // 重新生成 = 把上一轮的渲染任务记录摘掉、用同一个 jobKey 重新排一轮（不是新键、不是新对象）。
@@ -1355,6 +1460,8 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
     if(result.job)setLatestKey(result.job.jobKey);
     const next=storeVideoRecord({at,music:submittedMusic,regenerate:true});
     setRecordViewingVersion(0);
+    // 留痕（六条之一「提交」）：重新生成同样是一次提交（attempts 自增、沿用同一个 jobKey）。
+    videoAudit({action:AUDIT_ACTIONS.videoJobSubmit,job:result.job||currentJob,record:next,detail:`重新生成${typeLabel}（${period}）· ${archiveVersionLabel(next.version)}`});
     const text=VIDEO_RECORD_REGENERATE_DONE(next.version);
     report(result);
     setRecordNotice(text);
@@ -1363,20 +1470,32 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
   /** 删除成片（FR-304）：只摘掉成片记录与它的渲染任务记录，归档记录一个字节都不动。 */
   const deleteVideoRecord=()=>{
     if(!videoRecord) return;
+    const removing=videoRecord;
     setRecordDeleteOpen(false);
     setRecordViewingVersion(0);
     setVideoRecords(list=>removeVideoRecord(list,videoRecord.videoKey));
     discardVideoJob(videoRecord.videoKey);
     void deleteRemoteVideoRecord(videoRecord.videoKey).catch(()=>{});
+    // 留痕（六条之六「删除」）：删的是哪一版成片、体积多大都记下来（归档记录不动这句也写进 detail）。
+    videoAudit({action:AUDIT_ACTIONS.videoRecordDelete,job:currentJob,record:removing,detail:`删除成片 ${removing.videoKey} · ${archiveVersionLabel(removing.version)}（归档记录一条都没有动）`});
     setRecordNotice(VIDEO_RECORD_DELETE_DONE);
     setToast(VIDEO_RECORD_DELETE_DONE);
   };
   const report=result=>{setJobs(listVideoJobs());setNotice(result.ok?result.notice:result.issue);setToast(result.ok?result.notice:result.issue)};
   const submit=()=>{
+    // 权限与配额两道闸（[第四步 US-223] 第 1、4 条）：
+    //  ① 只有本班老师可提交（`videoTaskAccess` 的唯一判据，跨班 / 管理员各给一句可读原因）；
+    //  ② 存储或本月流量超限时阻止新任务并给出提示（`videoQuotaSubmitIssue`）。
+    if(!submitAccess.allowed){setNotice(submitAccess.deniedText||submitAccess.reason);setToast(submitAccess.deniedText||submitAccess.reason);return;}
+    if(quotaIssue){setNotice(quotaIssue);setToast(quotaIssue);return;}
     // 版权证据随任务一起写进 `specSnapshot.music`（FR-295）：静音也是一个明确结论，老任务没有这一项。
     const submittedMusic=musicJobMusicFromSelection(musicSelection,{capturedAt:new Date().toISOString()});
     const result=submitVideoJob({type,studentId:isClass?'':objectName,classId:isClass?objectName:'',period,objectName,lessonCount,artworkCount,photoCount,createdBy:teacherName,simulate:simulateFail?'fail':'success',simulateErrorCode,music:submittedMusic});
     if(result.ok&&result.job)setLatestKey(result.job.jobKey);
+    if(result.ok){
+      // 留痕（六条之一「提交」）：提交成功才记（被判据拦下的提交不是一次提交）。
+      videoAudit({action:AUDIT_ACTIONS.videoJobSubmit,job:result.job,record:videoRecord,detail:`提交${typeLabel}（${period}）· 对象 ${objectName}`});
+    }
     report(result);
     // 第一版成片记录随生成一起落库（FR-301）：已有记录**不因为再点一次生成而变化**
     // （版本只在「重新生成」时自增 —— 这正是「不自动重出」的另一面，US-222）。
@@ -1408,10 +1527,35 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
       <label>生成周期<select value={period} onChange={event=>onPeriod(event.target.value)} data-video-submit-period="true" aria-label="生成周期">{ARCHIVE_PERIODS.map(name=><option key={name} value={name}>{name}</option>)}</select></label>
       <label className="video-jobs-simulate"><input type="checkbox" checked={simulateFail} onChange={event=>setSimulateFail(event.target.checked)} data-video-simulate-fail="true"/>演示失败（跑到 45% 时失败，用于验证失败态与重试）</label>
       {simulateFail?<label>演示失败原因<select value={simulateErrorCode} onChange={event=>setSimulateErrorCode(event.target.value)} data-video-simulate-error="true" aria-label="演示失败原因">{VIDEO_JOB_SIMULATE_ERROR_OPTIONS.map(option=><option key={option.id} value={option.id}>{option.label}</option>)}</select><small data-video-simulate-error-text="true">{videoJobErrorText(simulateErrorCode)}</small></label>:null}
-      <Button icon={Clapperboard} data-video-submit="true" data-video-submit-key={jobKey} disabled={Boolean(submitIssue)} onClick={submit}>{VIDEO_JOB_SUBMIT_LABEL}</Button>
+      <Button icon={Clapperboard} data-video-submit="true" data-video-submit-key={jobKey} disabled={Boolean(submitIssue)||!submitAccess.allowed||Boolean(quotaIssue)} onClick={submit}>{VIDEO_JOB_SUBMIT_LABEL}</Button>
     </div>
     <p className="video-jobs-note" data-video-submit-note="true">{VIDEO_JOB_SUBMIT_NOTE}</p>
     {submitIssue?<p className="video-jobs-issue" data-video-submit-issue="true">{submitIssue}</p>:null}
+    {/* 权限与配额两道闸（[第四步 US-223] 第 1、4 条）：判定与禁用读同一份产物 ——
+        提交按钮的 `disabled` 就是 `submitAccess.allowed` 与 `quotaIssue` 的组合，
+        这里把可读原因照原样显示（跨班 / 管理员 / 配额满各是一句不同的话）。 */}
+    <p className="video-jobs-permission" data-video-access="true" data-video-access-state={submitAccess.allowed?'allowed':'denied'} data-video-access-scope={submitAccess.scope} data-video-access-reason={submitAccess.reason} data-video-access-download={downloadAccess.allowed?'allowed':'denied'}>
+      <b data-video-access-readout="true">{videoTaskAccessReadout(submitAccess)}</b>
+      <small data-video-access-download-readout="true">{videoTaskAccessReadout(downloadAccess)}</small>
+      <small data-video-access-retention="true">{retentionNote}</small>
+    </p>
+    <p className="video-jobs-quota" data-video-quota="true" data-video-quota-exceeded={quotaView.exceeded?'true':'false'} data-video-quota-storage={quotaView.storage.text} data-video-quota-traffic={quotaView.traffic.text}>
+      <b data-video-quota-text="true">{quotaView.text}</b>
+      <small data-video-quota-note="true">{quotaView.note}</small>
+      {quotaIssue?<em className="video-jobs-issue" data-video-quota-issue="true">{quotaIssue}</em>:null}
+    </p>
+    {/* 成片地址的签名合规（第 5 条）：有效期不超过分享有效期，缺签名 / 缺有效期 / 过期都点名。 */}
+    <p className="video-jobs-signed-url" data-video-signed-url="true" data-video-signed-url-present={signedUrlView.present?'true':'false'} data-video-signed-url-signed={signedUrlView.signed?'true':'false'} data-video-signed-url-issue={signedUrlView.issue}>
+      <b data-video-signed-url-text="true">{signedUrlView.policy.text}</b>
+      <small data-video-signed-url-note="true">{signedUrlView.note}</small>
+    </p>
+    {/* 六条留痕的汇总 + 最近一条（[第四步 US-223] 第 2 条）：提交 / 完成 / 下载 / 分享 / 更换音乐 / 删除。 */}
+    <p className="video-jobs-audit" data-video-audit-summary="true" data-video-audit-total={String(videoAuditSummary.total)} data-video-audit-missing={String(videoAuditSummary.missing)}>
+      <b>{VIDEO_TASK_AUDIT_SECTION_TITLE}</b>
+      <small>{videoAuditSummary.text}</small>
+      {videoAuditEntry?<small data-video-audit="true" data-video-audit-action={videoAuditEntry.action} data-video-audit-actor={videoAuditEntry.actorId} data-video-audit-job={videoAuditEntry.jobKey} data-video-audit-video={videoAuditEntry.videoKey} data-video-audit-at={videoAuditEntry.at} data-video-audit-missing-fields={auditEntryMissingFields(videoAuditEntry).join(',')}>{auditTraceText(videoAuditEntry)}</small>:null}
+      <small data-video-audit-note="true">{VIDEO_TASK_AUDIT_SECTION_DESC}</small>
+    </p>
     <MusicSelectionPanel view={musicView} trackRows={musicView.rows} selectedTrackId={musicSelection.trackId} jobKey={jobKey} notice={musicNotice} onPick={pickMusic} onMute={muteMusic} onDisposition={disposeMusic}/>
     <VideoSelectionPanel view={selectionView} onToggleExclude={toggleExclude}/>
     <VideoTimelinePreview plan={timelinePlan} endingNote={endingNote} onEndingNote={setEndingNote}/>
@@ -1453,7 +1597,7 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
   </section>;
 }
 
-export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,pageParams,recordsSource=null,reloadRecords=null,archiveReports=[],setArchiveReports=()=>{},teacherName='',shareTokens=[],setShareTokens=()=>{},musicTracks=[],videoRecords=[],setVideoRecords=()=>{},consents=null,recordAudit=()=>{},auditActor=null}){
+export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,pageParams,recordsSource=null,reloadRecords=null,archiveReports=[],setArchiveReports=()=>{},teacherName='',shareTokens=[],setShareTokens=()=>{},musicTracks=[],videoRecords=[],setVideoRecords=()=>{},consents=null,recordAudit=()=>{},auditActor=null,auditLog=[],videoQuota=null,videoRetention=null}){
   // 报告生成 / 更新要留痕（[第四步 US-211] 第 4 条：操作人 / 时间 / 对象 / 版本）——
   // 留痕入口与报告写入在同一次动作里（`generateReport`），界面只多显示一行回执。
   const [reportAuditEntry,setReportAuditEntry]=useState(null);
@@ -1724,7 +1868,7 @@ export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,p
             {timelineWindow.hasMore?<button type="button" className="primary" data-archive-page-more="true" onClick={()=>setTimelinePage(page=>Math.min(timelineWindow.pageCount,page+1))}>{timelineWindow.moreLabel}</button>:null}
           </nav>:null}
         </section>
-        <VideoJobsPanel isClass={view.isClass} objectName={view.name} period={videoPeriod} onPeriod={setVideoPeriod} lessonCount={view.summary.lessons} artworkCount={view.summary.artworks} photoCount={view.summary.photos} teacherName={teacherName} setToast={setToast} entries={videoEntries} scopeEntries={videoScopeEntries} classEntries={videoClassEntries} roster={classRoster} tokens={shareTokens} records={records} consents={consents} musicTracks={musicTracks} videoRecords={videoRecords} setShareTokens={setShareTokens} setVideoRecords={setVideoRecords} recordAudit={recordAudit} auditActor={auditActor} navigate={navigate}/>
+        <VideoJobsPanel isClass={view.isClass} objectName={view.name} period={videoPeriod} onPeriod={setVideoPeriod} lessonCount={view.summary.lessons} artworkCount={view.summary.artworks} photoCount={view.summary.photos} teacherName={teacherName} setToast={setToast} entries={videoEntries} scopeEntries={videoScopeEntries} classEntries={videoClassEntries} roster={classRoster} tokens={shareTokens} records={records} consents={consents} musicTracks={musicTracks} videoRecords={videoRecords} auditLog={auditLog} videoQuota={videoQuota} videoRetention={videoRetention} management={management} setShareTokens={setShareTokens} setVideoRecords={setVideoRecords} recordAudit={recordAudit} auditActor={auditActor} navigate={navigate}/>
         <section className="archive-perf-panel" data-archive-perf="true" data-archive-perf-measured={String(perfChecks.measured)} data-archive-perf-total={String(perfChecks.total)} data-archive-perf-all-ok={perfChecks.allOk?'true':'false'} data-archive-perf-summary-text={perfChecks.summary}>
           <div className="archive-perf-head"><Gauge size={15}/><b>档案性能</b><em data-archive-perf-summary="true">{perfChecks.summary}</em><small>{ARCHIVE_PERF_HINT}</small></div>
           <ul className="archive-perf-list">{perfChecks.rows.map(row=><li key={row.id} data-archive-perf-row={row.id} data-archive-perf-state={row.ok===null?'pending':row.ok?'ok':'over'} data-archive-perf-value={row.value} data-archive-perf-budget={row.budget} data-archive-perf-text={row.text}>

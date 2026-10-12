@@ -49,7 +49,14 @@ export const AUDIT_ACTIONS = {
   shareRevoke: 'archive.share.revoke',
   consentRevoke: 'consent.revoke',
   reportGenerate: 'archive.report.generate',
-  retentionCleanup: 'archive.retention.cleanup'
+  retentionCleanup: 'archive.retention.cleanup',
+  // [第四步 US-223] 视频任务的五条专属留痕（「分享」复用 `archive.share.generate` / `.revoke`，
+  // 成片分享与图文分享走同一条令牌账）：提交 / 完成 / 下载 / 更换音乐 / 删除成片。
+  videoJobSubmit: 'video.job.submit',
+  videoJobDone: 'video.job.done',
+  videoDownload: 'video.output.download',
+  videoMusicChange: 'video.music.change',
+  videoRecordDelete: 'video.record.delete'
 };
 
 export const AUDIT_ACTION_LABELS = {
@@ -69,7 +76,12 @@ export const AUDIT_ACTION_LABELS = {
   'archive.share.revoke': '撤回分享',
   'consent.revoke': '家长撤回查看授权',
   'archive.report.generate': '生成阶段报告',
-  'archive.retention.cleanup': '归档到期清理'
+  'archive.retention.cleanup': '归档到期清理',
+  'video.job.submit': '提交视频任务',
+  'video.job.done': '视频任务完成（成片就绪）',
+  'video.output.download': '下载成片',
+  'video.music.change': '更换成片音乐',
+  'video.record.delete': '删除成片'
 };
 
 /**
@@ -129,8 +141,29 @@ export const AUDIT_ACTION_REQUIRED = {
   // 阶段报告：对象是学员或班级（`objectName`）+ 版本（第 N 版）。
   'archive.report.generate': ['actorId', 'at', 'objectName', 'version'],
   // 到期清理：操作人 / 时间必填，清掉了哪些写在 `detail`（条数 + 截止日）。
-  'archive.retention.cleanup': ['actorId', 'at', 'detail']
+  'archive.retention.cleanup': ['actorId', 'at', 'detail'],
+  // [第四步 US-223] 视频任务五条：操作人 / 时间 / 任务键（或成片键）必填 —— 下载与更换音乐
+  // 都挂在某一条任务上，`bytes`（下载体积）是可选读数，读不出来记 0，不算缺字段。
+  'video.job.submit': ['actorId', 'at', 'jobKey'],
+  'video.job.done': ['actorId', 'at', 'jobKey'],
+  'video.output.download': ['actorId', 'at', 'jobKey'],
+  'video.music.change': ['actorId', 'at', 'jobKey'],
+  'video.record.delete': ['actorId', 'at', 'videoKey']
 };
+
+/**
+ * 视频任务验收点名的六条留痕（[第四步 US-223] 第 2 条）：提交、完成、下载、分享、更换音乐、删除。
+ * 管理端「视频任务权限与合规」面板按它筛选，断言也读这一份（分享复用图文分享的两条动作，
+ * 因为成片分享与图文分享走同一个令牌账 —— 不另造一套「视频分享」动作）。
+ */
+export const VIDEO_TASK_AUDIT_ACTIONS = [
+  'video.job.submit',
+  'video.job.done',
+  'video.output.download',
+  'archive.share.generate',
+  'video.music.change',
+  'video.record.delete'
+];
 
 /** PRD 点名的四项溯源字段（面板上给它们一个明确位置，验证脚本点名核对）。 */
 export const AUDIT_TRACE_FIELDS = ['actorId', 'studentId', 'at', 'templateId'];
@@ -159,6 +192,11 @@ export const AUDIT_ENTRY_FIELDS = [
   'objectName',
   'version',
   'shareToken',
+  // 视频任务（[第四步 US-223]）：对象是「哪一条渲染任务」（`jobKey`）与「哪一条成片」（`videoKey`）；
+  // `bytes` 是这次动作牵涉的体积读数（下载成片时记下流量，机构配额读它）—— 都是可选读数，不是必填。
+  'jobKey',
+  'videoKey',
+  'bytes',
   'scope',
   'outcome',
   'detail',
@@ -211,6 +249,10 @@ export function buildAuditEntry(input = {}) {
     objectName: str(source.objectName),
     version: str(source.version),
     shareToken: str(source.shareToken),
+    // 视频任务（US-223）：任务键 / 成片键 / 体积（下载流量）。体积读不出记 0（不是必填）。
+    jobKey: str(source.jobKey),
+    videoKey: str(source.videoKey),
+    bytes: Math.max(0, Math.trunc(Number.isFinite(Number(source.bytes)) ? Number(source.bytes) : 0)),
     scope: str(source.scope),
     outcome: str(source.outcome) === 'denied' ? 'denied' : 'ok',
     detail: str(source.detail).slice(0, 240),
@@ -283,7 +325,7 @@ export function persistAuditLog(entries) {
   try { window.localStorage.setItem(AUDIT_LOG_STORAGE_KEY, JSON.stringify(list)); } catch { /* 配额满时不动本机镜像 */ }
 }
 
-/** 最近的某类动作（`filter` 可再按 studentId / lessonId / templateId 收窄）。 */
+/** 最近的某类动作（`filter` 可再按 studentId / lessonId / templateId / jobKey / videoKey 收窄）。 */
 export function latestAuditEntry(entries, action, filter = {}) {
   const list = Array.isArray(entries) ? entries.filter(Boolean) : [];
   const matched = list.filter(item => {
@@ -291,6 +333,9 @@ export function latestAuditEntry(entries, action, filter = {}) {
     if (filter.studentId && item.studentId !== filter.studentId) return false;
     if (filter.lessonId && item.lessonId !== filter.lessonId) return false;
     if (filter.templateId && item.templateId !== filter.templateId) return false;
+    // 视频任务（US-223）：「这条任务 / 这一版成片留痕了吗」按两个业务键收窄。
+    if (filter.jobKey && item.jobKey !== filter.jobKey) return false;
+    if (filter.videoKey && item.videoKey !== filter.videoKey) return false;
     return true;
   });
   if (!matched.length) return null;
@@ -304,7 +349,7 @@ export function auditEntryText(entry) {
   const actor = item.actorName || item.actorId || '未知操作人';
   const target = item.studentName
     ? `${item.studentName}${item.templateName ? ` · ${item.templateName}` : ''}`
-    : (item.objectName || item.templateName || item.templateId || item.recordId || item.traceId || '');
+    : (item.objectName || item.templateName || item.templateId || item.recordId || item.traceId || item.jobKey || item.videoKey || '');
   const outcome = item.outcome === 'denied' ? '（被拒绝）' : '';
   return [item.actionLabel, actor, target, auditTimeText(item.at)].filter(Boolean).join(' · ') + outcome;
 }
@@ -316,7 +361,7 @@ export function auditVersionText(entry) {
   return Number.isFinite(version) && version > 0 ? `第 ${version} 版` : '';
 }
 
-/** 四项溯源的可读一行：操作人 / 学员 / 模板 / 时间（缺的项跳过）。 */
+/** 四项溯源的可读一行：操作人 / 学员 / 模板 / 时间（缺的项跳过；视频留痕另外补任务键与成片键）。 */
 export function auditTraceText(entry) {
   const item = normalizeAuditEntry(entry);
   if (!item) return '';
@@ -324,6 +369,8 @@ export function auditTraceText(entry) {
     item.actorName || item.actorId ? `操作人 ${item.actorName || item.actorId}` : '',
     item.studentId || item.studentName ? `学员 ${item.studentName || item.studentId}${item.studentId && item.studentName ? `（${item.studentId}）` : ''}` : '',
     item.templateId ? `模板 ${item.templateName ? `${item.templateName}（${item.templateId}）` : item.templateId}` : '',
+    item.jobKey ? `任务 ${item.jobKey}` : '',
+    item.videoKey ? `成片 ${item.videoKey}` : '',
     item.at ? `时间 ${auditTimeText(item.at)}` : ''
   ].filter(Boolean).join(' · ');
 }

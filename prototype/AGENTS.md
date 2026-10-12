@@ -3286,6 +3286,54 @@ US-110b 给同一张页面加了四件事，写侧规则**全部落在** `data/r
   注入历史轨迹做清理断言时，**注入后要先回「生成日志」页**（面板在挂载时刷新 App 的轨迹账），
   否则系统配置里的预览读的是注入前的旧账，会看到「到期 0 条」。
 
+## 视频任务的权限 · 留痕 · 保留期 · 配额 · 签名地址（[第四步 US-223] / FR-311 ~ FR-315）
+
+US-222 管「成片怎么版本化」，这一节管「谁能碰这些成片、动过之后查不查得到、留多久、放不下怎么办、
+地址能不能被转发」。五件事各有一份**零依赖数据模块**（Node 可直跑断言），界面只渲染它们的产物：
+
+| 关注点 | 唯一真源（`src/data/`） | 界面 / 消费点 |
+|---|---|---|
+| 谁能提交 / 下载 / 审计 / 播放 | `videoPermissions.js`（班级归属**委托** `archiveAccess.js` 的 US-211 判据） | 老师端面板 `[data-video-access]`；管理端权限矩阵 `[data-video-permission-row]` |
+| 六条留痕的构造与复核 | `videoTaskAudit.js`（动作键与必填清单在 `auditLog.js`） | `recordAudit` 的调用点全在 `GrowthArchiveData.jsx` 的视频面板 |
+| 两份保留期 + 到期清理预览 | `videoRetention.js`（预览与执行读同一支纯函数） | 管理端「档案管理」的 `VideoCompliancePanel`（`data-video-retention-*` / `data-video-cleanup-*`） |
+| 存储与流量配额 | `videoQuota.js`（用量与留痕同源；`videoQuotaSubmitIssue` 是唯一判据） | 老师端提交按钮的 `disabled` + `[data-video-quota]` |
+| 签名临时地址 | `videoSignedUrl.js`（签名 / 有效期 / 不超过分享有效期） | 老师端 `[data-video-signed-url]`；管理端策略块 |
+
+- **六条留痕的动作键与字段**：提交 / 完成 / 下载 / 更换音乐 / 删除成片五条是新动作
+  （`video.job.submit` / `video.job.done` / `video.output.download` / `video.music.change` /
+  `video.record.delete`），**分享复用图文分享的 `archive.share.generate`**（成片分享与图文分享走同一条
+  令牌账，不另造一套「视频分享」）。`AUDIT_ENTRY_FIELDS` 与 `buildAuditEntry` **两处**都要有
+  `jobKey / videoKey / bytes`（白名单给云端 payload 用、构造是显式列字段的 —— 只改一处字段就不落库）。
+- **分享那条动作有自己的一条必填 `recordId`**（`AUDIT_ACTION_REQUIRED` 里是图文分享口径）：
+  `videoAuditEntryInput` 在 `share` 存在时把成片键写进 `recordId`（延续 US-082 的 `recordId: created.jobKey`），
+  否则管理的合规面板会把这条留痕标成「缺 recordId」。**复用既有动作键的新留痕，先读一眼那条动作的必填清单。**
+- **「完成」只记一条**：写入口在 `GrowthArchiveData.jsx` 的一个 effect 里，判据是
+  `latestAuditEntry(auditLog, video.job.done, {jobKey})` —— 刷新 / 重新进页面时任务**还是** done，
+  但只靠组件内的 ref 去重会跨会话重复记（每个新实例都写一条）。**「只记一次」类留痕要拿日志本身当基线。**
+- **权限判定委托，不抄第二份**：`videoTaskAccess({viewer,management,student,className,action})` 的
+  「本班」那一支直接调 `archiveRecordAccess(...)`（US-211 的唯一真源）；管理员只放行 `audit`
+  （可审计 ≠ 可拿孩子的视频），家长只有 `play` 且必须过 `archiveShareAccessView` 四道。
+  界面矩阵（`videoTaskPermissionRows`）与断言读同一份 —— 「谁能做什么」是读数，不是描述。
+- **配额把用量与留痕绑在一起**：存储 = 成片记录的 `bytes` 之和，流量 = 审计日志里
+  「下载成片」**且未被拒绝**的 `bytes` 之和（本月窗口）—— 体积读不出来记 0、不虚报。
+  `videoQuotaView` 的 `blocked` → `videoQuotaSubmitIssue` 给可读原因，界面禁用提交按钮读的就是它。
+- **保留期两份分开配**：中间产物（任务结束时间起算）与成片（生成时间起算）各自可配到「长期保留（0）」；
+  **锚点读不出来一律不清理**（宁可留着也不误删孩子的成片）；`videoRetentionPreview` 与
+  `applyVideoRetentionCleanup` 是同一支纯函数 —— 「预览说几条、执行就删几条」是结构性的。
+- **签名地址只判定、不签名**：`videoSignedUrlIssue` 的判据顺序是
+  https（复用 `videoJobOutputUrlIssue`）→ 有签名参数 → 有有效期参数 → 没过期 → **有效期 ≤ 分享有效期**。
+  比较分享到期时刻时 `shareTokenExpiresAt()` 返回的是 **ISO 串**，必须先 `Date.parse` 再比
+  （直接 `Number.isFinite` 比大小会静默失效，本故事真踩）。演示队列上永远没有成片地址 →
+  `videoSignedUrlView` 给 `present:false` + 一句实话，**不编一个没有有效期的公开地址**。
+- **验证方式（本故事实测）**：`pnpm run build` 通过（377~404ms）；Node 直跑 **104 项**
+  （`/tmp/assert-us084-data.mjs`：权限五个角色 × 四个动作、六条留痕的构造 / 复核 / 汇总、
+  两份保留期与预览同源、配额用量与超限拦截、签名地址四种不合规分支）；
+  浏览器 **85 项**（`/tmp/assert-us084-browser.mjs`：老师端放行 + 跨班拒绝、提交 / 完成 / 分享 /
+  更换音乐 / 删除各一条留痕且最近一条读数正确、配额超限禁用提交、管理端矩阵与六条汇总、
+  到期清理预览 → 执行 → 回执与留痕、长期保留不清理、390px 不横向溢出）；回归 US-070~083 data 全绿、
+  US-072~079/082/083 browser 全绿（US-072 那 1 项「提交按钮文案」在 HEAD 上就已失败，属 US-214 口径变更）；
+  截图 421~426 留档。
+
 ## 容易踩的坑
 
 - **派生值（`const x = f(state)`）必须排在被它读的 state 之后**（US-108b 真踩）：把
@@ -3330,6 +3378,19 @@ US-110b 给同一张页面加了四件事，写侧规则**全部落在** `data/r
   构建完全正常，直到浏览器渲染到那一行才 `ReferenceError`，React 直接把整棵树卸载成白屏。
   这类错误只有「真的把页面点到那一步」才会暴露 —— UI 故事的最小验证是把改动的界面**渲染出来**
   （截图 + 断言），不要只看构建与 Node 断言。
+  「用了但没 import」的变体同样只在运行时炸（US-223 真踩：`normalizeVideoRetentionPolicy` 只写了调用、
+  没进 import 列表，构建 404ms 通过、点进管理端才 `ReferenceError`）—— 新增一组 import 时，
+  **把新代码里出现的每个标识符对着 import 行数一遍**；写完立刻在浏览器里把那块面板渲染一次。
+- **改了 `localStorage` 镜像 ≠ 界面会变**：模块级内存（`services/videoJobQueue.js` 的队列）与 `App` 的
+  各份 `useState`（本机镜像读进来的）都是**挂载时读一次**，只改镜像再重进页面仍是旧值。
+  验证脚本要注入夹具时只有两条路：**走界面点**（最可靠），或改完镜像 `Page.reload` + 重新登录 +
+  重新走到那个页面（US-223 的 `reloadAndWalk()` / `reloadAdminArchive()` 就是这个形状）。
+  反过来，页面内 `await import('/src/...')` 拿到的是另一个模块实例（US-214），改它的内存状态界面一动不动。
+- **「本班老师」这类归属闸门不止一道入口**：US-211 的 `archiveRecordAccess` 不只管
+  「能不能看档案」，它也是归档动作本身的门 —— 把某个班的任课老师改成别人来验「跨班被拒」，
+  连**归档流程**都会被拦（老师只能归档自己班的记录），于是档案页根本进不去（US-223 的验证脚本真踩）。
+  验这类拒绝时要么挑一个不被它拦住的路径（新加一个「别人的班」并把对象挂过去），要么把这段检查
+  放到脚本最后。个人模式（`className` 为空）按同一份判据算「自己的班」—— 想验拒绝必须构造出非空班级。
   **改完 `main.jsx` 先跑一遍静态自查再进浏览器**（US-012 又踩了一次：`evaluateMemoryPeak` 忘了加进
   import 列表，第一步整页白屏、构建照样过）：不需要装 eslint，拿一段 20 行 Python 把
   「用到的名字」与「import 绑定 + const/let/function 声明（含解构）」比对即可 ——
