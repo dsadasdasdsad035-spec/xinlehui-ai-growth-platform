@@ -75,6 +75,8 @@ import {
   updateArchiveReport
 } from './data/archiveReports';
 import { deleteRemoteArchiveReport, saveRemoteArchiveReport } from './services/archiveReportsApi';
+// 审计日志的动作键（[第四步 US-211]）：报告生成 / 更新也要留痕（操作人 / 时间 / 对象 / 版本）。
+import { AUDIT_ACTIONS, auditEntryMissingFields, auditTraceText } from './data/auditLog';
 import { Button } from './ui';
 
 /** 一节课在时间线上的卡：日期与作品名 · 成品作品图 · 课堂照片 · 五维点评摘要 · 转发状态（US-209）。 */
@@ -193,7 +195,7 @@ function ReportBody({body}){
   </>;
 }
 
-function ArchiveReportPanel({reportKey, reportView, period, type, issue, busy, notice, stale, deleteOpen, historyVersion, onPeriod, onType, onGenerate, onDeleteOpen, onDeleteCancel, onDelete, onHistoryView, onHistoryBack}){
+function ArchiveReportPanel({reportKey, reportView, period, type, issue, busy, notice, stale, deleteOpen, historyVersion, onPeriod, onType, onGenerate, onDeleteOpen, onDeleteCancel, onDelete, onHistoryView, onHistoryBack, auditEntry = null}){
   const historyEntry=reportView&&historyVersion?reportView.history.find(entry=>entry.version===historyVersion)||null:null;
   const body=historyEntry||reportView;
   const typeHint=(ARCHIVE_REPORT_TYPE_OPTIONS.find(option=>option.name===type)||{}).hint||'';
@@ -206,6 +208,16 @@ function ArchiveReportPanel({reportKey, reportView, period, type, issue, busy, n
     </div>
     {issue?<p className="archive-report-issue" data-archive-report-issue="true">{issue}</p>:null}
     {notice?<p className="archive-report-notice" data-archive-report-notice="true">{notice}</p>:null}
+    {auditEntry?<p className="archive-report-audit" data-archive-report-audit={auditEntry.id}
+      data-archive-report-audit-action={auditEntry.action}
+      data-archive-report-audit-actor={auditEntry.actorId}
+      data-archive-report-audit-object={auditEntry.objectName}
+      data-archive-report-audit-version={auditEntry.version}
+      data-archive-report-audit-at={auditEntry.at}
+      data-archive-report-audit-trace={auditTraceText(auditEntry)}
+      data-archive-report-audit-missing={auditEntryMissingFields(auditEntry).join(',')}>
+      已写入审计日志：{auditTraceText(auditEntry)} · 第 {auditEntry.version} 版
+    </p>:null}
     {reportView?<article className="archive-report-card" data-archive-report-card="true" data-archive-report-version={reportView.version} data-archive-report-status={reportView.status} data-archive-report-generated={reportView.generatedAtText} data-archive-report-generated-by={reportView.generatedBy} data-archive-report-preview-version={historyEntry?historyEntry.version:''}>
       <header>
         <div><span data-archive-report-status-label="true">{reportView.statusLabel}</span><h4>{reportView.title}</h4>
@@ -239,7 +251,10 @@ function ArchiveReportPanel({reportKey, reportView, period, type, issue, busy, n
   </section>;
 }
 
-export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,pageParams,recordsSource=null,reloadRecords=null,archiveReports=[],setArchiveReports=()=>{},teacherName='',shareTokens=[]}){
+export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,pageParams,recordsSource=null,reloadRecords=null,archiveReports=[],setArchiveReports=()=>{},teacherName='',shareTokens=[],recordAudit=()=>{},auditActor=null}){
+  // 报告生成 / 更新要留痕（[第四步 US-211] 第 4 条：操作人 / 时间 / 对象 / 版本）——
+  // 留痕入口与报告写入在同一次动作里（`generateReport`），界面只多显示一行回执。
+  const [reportAuditEntry,setReportAuditEntry]=useState(null);
   const [target,setTarget]=useState(ARCHIVE_TARGET_PERSONAL); const [period,setPeriod]=useState(ARCHIVE_PERIOD_FILTER_DEFAULT); const [absenceFilter,setAbsenceFilter]=useState(ARCHIVE_ABSENCE_ALL);
   // 阶段报告（[第四步 US-207a]）的界面 state：两个选择器 + 生成中 / 回执 / 待确认的删除 / 正在回看的历史版本。
   const [reportPeriod,setReportPeriod]=useState(ARCHIVE_PERIOD_DEFAULT); const [reportType,setReportType]=useState(ARCHIVE_REPORT_TYPE_DEFAULT);
@@ -343,6 +358,18 @@ export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,p
     const verb=existingReport?'更新':'生成';
     setArchiveReports(list=>applyArchiveReport(list,next));
     setReportHistoryVersion(0);
+    // 留痕（[第四步 US-211]）：对象是这位学员 / 班级 + 周期与类型，版本是报告的第 N 版。
+    const auditActorValue=auditActor||{actorId:teacherName,actorName:teacherName,actorRole:'teacher',actorRoleLabel:'老师'};
+    const auditEntry=recordAudit({
+      ...auditActorValue,
+      action:AUDIT_ACTIONS.reportGenerate,
+      objectName:next.displayName||view.name,
+      studentName:view.isClass?'':view.name,
+      version:next.version,
+      scope:next.period||reportPeriod,
+      detail:`${next.displayName||view.name} 的${next.period||reportPeriod}${next.type||reportType}已${verb}（第 ${next.version} 版）· 共 ${reportLessonCount} 节课`
+    });
+    if(auditEntry) setReportAuditEntry(auditEntry);
     try{
       await saveRemoteArchiveReport(next);
       setArchiveReports(list=>applyArchiveReport(list,setArchiveReportStatus(next,ARCHIVE_REPORT_STATUSES.synced)));
@@ -374,6 +401,7 @@ export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,p
     onPeriod={pickReportPeriod} onType={pickReportType} onGenerate={generateReport}
     onDeleteOpen={()=>setReportDeleteOpen(true)} onDeleteCancel={()=>setReportDeleteOpen(false)} onDelete={deleteReport}
     onHistoryView={version=>setReportHistoryVersion(version)} onHistoryBack={()=>setReportHistoryVersion(0)}
+    auditEntry={reportAuditEntry}
   />:null;
   return <>
     <div className="page-head"><div><div className="title-line"><h1>成长档案</h1><span className="prd-tag">PRD-12 / F-ARCHIVE-01</span></div><p>把处理后的作品、照片和点评，连成孩子自己的成长轨迹。</p></div></div>

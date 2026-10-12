@@ -312,3 +312,69 @@
   .archive-forward-status-rows{grid-template-columns:1fr}
   .parent-share-open{padding:20px 12px}
 }
+
+/* ---------------------------------------------------------------------------
+   归档权限、审计与保留期（[第四步 US-211] / F-ARCHIVE-PERM-01）
+   - 访问权限读数（归档按钮上方 / 分享面板里）
+   - 管理端「转发与授权审计」面板（四维筛选 + 行）
+   - 归档策略对表（服务端声明 vs 客户端默认）与访问规则矩阵
+   - 系统配置里的「归档保留期与到期清理」（预览影响范围）
+   --------------------------------------------------------------------------- */
+
+.archive-access-field{display:flex;flex-direction:column;gap:4px;padding:10px 12px;border:1px dashed var(--border);border-radius:12px;background:var(--soft)}
+.archive-access-field small{font-size:11px;line-height:1.7;color:var(--muted)}
+.archive-access-field b{font-size:12px;line-height:1.7;color:var(--coral)}
+.archive-access-field[data-archive-access="allowed"] b{display:none}
+.archive-share-access-denied{margin:0;font-size:11px;line-height:1.7;color:var(--coral)}
+.archive-audit-note,.archive-report-audit{margin:0;font-size:11px;line-height:1.7;color:var(--muted)}
+.archive-share-audit-note{display:block;font-size:11px;line-height:1.7;color:var(--muted)}
+
+.archive-audit .panel-head em{font-size:11px;line-height:1.7;color:var(--muted);max-width:520px;text-align:right}
+.archive-audit-filters{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin:8px 0 12px}
+.archive-audit-filters label{display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--muted);font-weight:700}
+.archive-audit-filters select{min-width:130px;min-height:38px;padding:6px 10px;border:1px solid var(--border);border-radius:10px;background:#fff}
+.archive-audit-rows{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px;max-height:420px;overflow:auto}
+.archive-audit-rows li{display:grid;grid-template-columns:auto auto 1fr 1fr auto;gap:10px;align-items:center;padding:9px 11px;border:1px solid var(--border);border-radius:12px;background:#fff;font-size:12px}
+.archive-audit-rows li em{font-style:normal;font-size:11px;font-weight:800;padding:2px 8px;border-radius:999px;background:var(--soft);color:var(--muted);white-space:nowrap}
+.archive-audit-rows li em.is-opened,.archive-audit-rows li em.is-forwarded{background:var(--blue-50);color:var(--blue)}
+.archive-audit-rows li em.is-revoked,.archive-audit-rows li em.is-denied{background:var(--coral-50);color:var(--coral)}
+.archive-audit-rows li em.is-archived{background:var(--green-50);color:var(--green)}
+.archive-audit-rows li b{font-size:12px;color:var(--ink)}
+.archive-audit-rows li span{color:var(--muted);min-width:0;overflow-wrap:anywhere}
+.archive-audit-rows li time{font-size:11px;color:var(--muted);white-space:nowrap}
+.archive-audit-rows li small{grid-column:1/-1;font-size:11px;line-height:1.7;color:var(--muted)}
+.archive-audit-rows li.archive-audit-more{display:block;border-style:dashed;color:var(--muted);font-size:11px}
+.archive-audit-empty{margin:0;font-size:12px;line-height:1.8;color:var(--muted)}
+
+.archive-compliance .panel-head em{font-size:11px;line-height:1.7;color:var(--muted);max-width:520px;text-align:right}
+.archive-compliance-grid{display:grid;grid-template-columns:1.2fr 1fr;gap:14px;margin-top:10px}
+.archive-access-matrix{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}
+.archive-access-matrix li{display:grid;grid-template-columns:auto 1fr;gap:6px 10px;padding:9px 11px;border:1px solid var(--border);border-radius:12px;background:#fff}
+.archive-access-matrix li b{font-size:12px;color:var(--ink)}
+.archive-access-matrix li span{font-size:12px;color:var(--blue)}
+.archive-access-matrix li small{grid-column:1/-1;font-size:11px;line-height:1.7;color:var(--muted)}
+.archive-compliance-server{display:flex;flex-direction:column;gap:8px;padding:11px 13px;border:1px solid var(--border);border-radius:12px;background:var(--soft)}
+.archive-compliance-server b{font-size:12px;color:var(--ink)}
+.archive-compliance-server ul{margin:0;padding-left:16px;display:flex;flex-direction:column;gap:4px}
+.archive-compliance-server code{font-size:11px;color:var(--navy)}
+.archive-compliance-server small{font-size:11px;line-height:1.7;color:var(--muted)}
+
+.archive-retention-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:10px}
+.archive-retention-actions small{font-size:11px;line-height:1.7;color:var(--muted)}
+.archive-cleanup-preview{margin-top:12px;padding:11px 13px;border:1px dashed var(--border);border-radius:12px;background:var(--soft)}
+.archive-cleanup-preview p{margin:0 0 8px;font-size:12px;line-height:1.8;color:var(--ink)}
+.archive-cleanup-preview ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.archive-cleanup-preview li{font-size:11px;line-height:1.7;color:var(--muted);padding:7px 9px;border:1px solid var(--border);border-radius:10px;background:#fff}
+
+.consent-revoke{display:flex;flex-direction:column;gap:8px;margin-top:14px;padding:12px;border:1px dashed var(--border);border-radius:12px;background:var(--soft)}
+.consent-revoke b{font-size:13px;color:var(--ink)}
+.consent-revoke small{font-size:11px;line-height:1.8;color:var(--muted)}
+.consent-revoke-actions{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+
+@media(max-width:800px){
+  .archive-compliance-grid{grid-template-columns:1fr}
+  .archive-audit-rows li{grid-template-columns:auto 1fr;grid-auto-rows:auto}
+  .archive-audit-rows li time{grid-column:2;justify-self:start}
+  .archive-audit-filters select{min-width:0;width:100%}
+  .archive-audit-filters label{flex:1 1 44%}
+}

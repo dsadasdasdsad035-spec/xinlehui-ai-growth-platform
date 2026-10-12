@@ -217,7 +217,8 @@ import {
 // 界面的校验清单与 go() 的拦截都读同一份结果（零依赖纯函数，可直接 Node 断言）。
 import { evaluateIntake } from './data/lessonReadiness';
 // 家长授权状态（US-411）：第一步的「未完成查看授权」提示与后续转发前置校验共用的唯一来源。
-import { consentSummaryOf, findConsent, loadConsents } from './data/consent';
+// （US-211 的撤回动作与「撤回后链接一并失效」也在同一份模块里，见下面那条 import。）
+import { consentSummaryOf } from './data/consent';
 // 第四步「归档状态 + 转发」（US-204）：归档摘要七项字段、未完成状态与具体原因、转发前的授权闸门、
 // 分享内容清单与微信文案的唯一真源。组件只渲染它的产物，浏览器断言读同一份（可直接 Node 断言）。
 import {
@@ -232,7 +233,7 @@ import {
   SHARE_TOKEN_REVOKED_NOTICE, SHARE_TOKEN_REVOKE_CONFIRM_LABEL, SHARE_TOKEN_REVOKE_LABEL, SHARE_TOKEN_REVOKE_NOTE,
   SHARE_TOKEN_VALID_DAY_OPTIONS, SHARE_TOKEN_VALID_DAYS_NOTE,
   appendShareToken, createShareTokenRecord, loadShareTokens, mergeShareTokens,
-  persistShareTokens, replaceShareToken, revokeShareTokenRecord, SHARE_TOKEN_STORAGE_KEY, shareTokenGenerationGate, shareTokenLink,
+  persistShareTokens, replaceShareToken, revokeShareTokenRecord, revokeShareTokensForStudent, SHARE_TOKEN_STORAGE_KEY, shareTokenGenerationGate, shareTokenLink,
   shareTokenStrength, shareTokenUrl, shareTokenValidDaysLabel, shareTokenView
 } from './data/shareTokens';
 import { loadRemoteShareTokens, revokeRemoteShareToken, saveRemoteShareToken } from './services/shareTokensApi';
@@ -243,6 +244,32 @@ import {
   SHARE_FORWARD_ROWS, applyShareOpen, applyShareSend, readShareLinkToken,
   shareForwardResendPlan, shareForwardSendNotice, shareForwardView
 } from './data/shareForward';
+// 归档的访问权限与保留期（[第四步 US-211] / F-ARCHIVE-PERM-01）：老师只能归档与转发**自己班级**的
+// 学员记录（跨班被拒绝）、家长只能看自己孩子、授权撤回后分享链接一并失效 —— 规则在
+// `data/archiveAccess.js`（教师端 / 家长页 / 服务端读同一份口径）；到期清理的保留期与
+// 「先预览影响范围」在 `data/archiveRetention.js`；管理端那一页的转发与授权审计查询在
+// `data/archiveAudit.js`。三份都是零依赖纯函数，可直接 Node 断言。
+import {
+  ARCHIVE_ACCESS_ACTIONS, ARCHIVE_ACCESS_MATRIX, ARCHIVE_ACCESS_SUMMARY, ARCHIVE_ACCESS_SCOPES,
+  archiveAccessDeniedText, archiveAccessReadout, archiveRecordAccess
+} from './data/archiveAccess';
+import {
+  ARCHIVE_RETENTION_DEFAULT_DAYS, ARCHIVE_RETENTION_OPTIONS, ARCHIVE_RETENTION_POLICY_NOTE,
+  ARCHIVE_RETENTION_PREVIEW_LABEL, ARCHIVE_RETENTION_SECTION_DESC, ARCHIVE_RETENTION_SECTION_TITLE,
+  applyArchiveRetentionCleanup, archiveCleanupNotice, archiveCleanupPreview, archiveRetentionDateText,
+  archiveRetentionPolicyPatch, archiveRetentionSummary, archiveRetentionText, loadArchiveRetentionPolicy,
+  normalizeArchiveRetentionPolicy, persistArchiveRetentionPolicy
+} from './data/archiveRetention';
+import {
+  ARCHIVE_AUDIT_DESC, ARCHIVE_AUDIT_FILTER_ALL, ARCHIVE_AUDIT_FILTER_STATE_LABEL,
+  ARCHIVE_AUDIT_FILTER_STUDENT_LABEL, ARCHIVE_AUDIT_FILTER_TEACHER_LABEL, ARCHIVE_AUDIT_FILTER_TIME_LABEL,
+  ARCHIVE_AUDIT_RESET_LABEL, ARCHIVE_AUDIT_STATES, ARCHIVE_AUDIT_TIME_OPTIONS, ARCHIVE_AUDIT_TITLE,
+  archiveAuditEmptyText, archiveAuditFilterOptions, archiveAuditSummary, filterArchiveAuditEntries
+} from './data/archiveAudit';
+import { fetchRemoteArchivePolicy, queryRemoteArchiveAccess, saveRemoteArchiveConsents } from './services/archiveAccessApi';
+// 家长查看授权（[第四步 US-211] 第 3 条）：撤回是终态，且要**连带**把这位学员名下仍可用的
+// 分享链接一起撤掉（`revokeShareTokensForStudent`）—— 撤回动作与链接失效是同一次动作的两份产物。
+import { CONSENT_REVOKE_CANCEL_LABEL, CONSENT_REVOKE_CONFIRM_LABEL, CONSENT_REVOKE_DESC, CONSENT_REVOKE_LABEL, CONSENT_REVOKE_NOTE, CONSENT_REVOKED_BADGE, CONSENT_REVOKE_TITLE, consentRevocationNotice, findConsent, isViewAuthorized, loadConsents, persistConsents, revokeConsent } from './data/consent';
 import ParentSharePage from './ParentSharePage';
 // 分享二维码与分享内容边界（[第四步 US-208b] / F-ARCHIVE-SHARE-01）：二维码的口径（纠错等级 / 静区 /
 // 画布 / 文件名）、微信文案的三项复核（含学员名与课次日期、不含联系方式）与
@@ -408,6 +435,16 @@ function App(){
   const [lessons,setLessons]=useState(loadLessons);
   // 课程库：云端 courses 表为真源，本地只做兜底；课次课题与班级选课都从这里取。
   const [courses,setCourses]=useState(loadCourses);
+  // 家长查看授权（[第四步 US-211]）：授权状态的**唯一一份**在 App 层 —— 老师端第一步的提示、
+  // 第四步转发前的闸门、家长端「授权管理」的撤回、家长分享页的「撤回后链接失效」都读它。
+  // 撤回是终态（`revokeConsent`）+ 连带撤回分享链接（`revokeShareTokensForStudent`），两件事同一次动作完成。
+  const [consents,setConsents]=useState(()=>loadConsents());
+  // 归档数据的保留期（[第四步 US-211] 第 6 条）：默认与平台隐私策略一致（365 天），可配置；
+  // 到期清理先预览影响范围再执行 —— 策略与清理都在 `data/archiveRetention.js` 里（零依赖）。
+  const [archiveRetention,setArchiveRetention]=useState(()=>loadArchiveRetentionPolicy());
+  // 家长分享页的服务端校验结果（[第四步 US-211]）：`null` = 还没拿到结论（照本机口径判定），
+  // `{checked:true, allowed:false, reason}` = 服务端明确拒绝（页面按它拦下内容 —— 前端隐藏不算数）。
+  const [parentShareAccess,setParentShareAccess]=useState(null);
   // 审计日志（[第二步 US-013] 第 5 条）：本机镜像先渲染，云端 audit_logs 表回来就并进去
   // （表还没建 → 写入被拒，日志只在本机镜像里，与装裱模板同一套兜底口径）。
   const [auditLog,setAuditLog]=useState(loadAuditLog);
@@ -472,6 +509,9 @@ function App(){
   useEffect(()=>{persistLessons(lessons)},[lessons]);
   useEffect(()=>{persistCourses(courses)},[courses]);
   useEffect(()=>{persistAuditLog(auditLog)},[auditLog]);
+  // 授权状态与归档保留期都只在本机镜像里落盘（云端没有这两张配置表的口径 —— 与轨迹策略一致）。
+  useEffect(()=>{persistConsents(consents)},[consents]);
+  useEffect(()=>{persistArchiveRetentionPolicy(archiveRetention)},[archiveRetention]);
   // 阶段报告只在**本机镜像**里落盘（云端 archive_reports 表还没建，写入会被拒）；
   // 推云端是生成动作那一条路径自己做的事（`GrowthArchiveData` 的 generateReport），
   // 这里不整表回写 —— 否则每次读到云端旧数据都会把本机的新版本覆盖回去。
@@ -511,7 +551,53 @@ function App(){
     persistShareTokens(result.tokens);
     setShareTokens(current=>mergeShareTokens(result.tokens,current));
     if(result.record) void saveRemoteShareToken(result.record).catch(()=>{});
+    // 家长打开也留痕（[第四步 US-211] 第 4 条）：操作人 = 家长、时间、对象（学员 + 档案记录 + 版本）、
+    // 哪一条链接（`shareToken`）+ 第几次打开。次数与首次打开时间本身写在令牌账上（US-209）。
+    if(result.record){
+      const opened=result.record;
+      recordAudit({
+        action:AUDIT_ACTIONS.shareOpen,
+        actorId:'parent',
+        actorName:`${opened.student||'家长'}家长`,
+        actorRole:'parent',
+        actorRoleLabel:'家长',
+        orgId:DEFAULT_ORG_ID,
+        studentId:opened.studentId,
+        studentName:opened.student,
+        recordId:opened.recordId,
+        lessonDate:opened.lessonDate,
+        version:opened.version,
+        shareToken:opened.token,
+        detail:`第 ${result.record.openCount} 次打开${result.first?'（首次）':''} · 《${opened.title||opened.lessonDate||'成长记录'}》`
+      });
+    }
   },[parentShareToken]);
+  /**
+   * 家长分享页的**服务端强制校验**（[第四步 US-211] 第 2 条）：打开 `/p/<token>` 时问服务端一次
+   * 「这条链接到底能不能看」——家长只能看自己孩子（按监护人手机号匹配的会话）、授权撤回后链接一并失效。
+   * 没有家长会话的访客（拿着链接的家长本人）由服务端按「链接即凭据」放行只读查看，
+   * 但授权撤回这条**服务端也判**（撤回动作会把授权状态推到服务端）。
+   * 只有服务端**给出结论**才写状态（连不上时保持 null：本机口径照常判定，不假装服务端已放行）。
+   */
+  useEffect(()=>{
+    if(!parentShareToken) return undefined;
+    const local=loadShareTokens().find(item=>item.token===parentShareToken)||null;
+    if(!local) return undefined;
+    let active=true;
+    queryRemoteArchiveAccess({
+      student:local.student,
+      className:local.className,
+      token:parentShareToken,
+      action:'share-view',
+      page:'share-link',
+      role:parentSession?'parent':'',
+      parentSession
+    }).then(result=>{
+      if(!active) return;
+      if(result.ok||result.denied) setParentShareAccess({checked:true,allowed:result.allowed===true,reason:result.reason||'',scope:result.scope||'',at:new Date().toISOString()});
+    }).catch(()=>{});
+    return()=>{active=false};
+  },[parentShareToken,parentSession]);
   // 策略落盘（保留期 + 披露开关）：本机镜像是唯一真源（云端没有这张配置表的口径）。
   useEffect(()=>{persistReviewTracePolicy(tracePolicy)},[tracePolicy]);
   useEffect(()=>{let active=true;loadRemoteAuditLog().then(remote=>{if(active&&remote.length)setAuditLog(current=>mergeAuditLog(remote,current))}).catch(()=>{});return()=>{active=false}},[]);
@@ -578,6 +664,13 @@ function App(){
   const traceAuditActor=role==='admin'
     ?{actorId:'platform-admin',actorName:roleMeta.admin.name,actorRole:'platform-admin',actorRoleLabel:'平台超级管理员'}
     :{actorId:roleMeta.teacher.name,actorName:roleMeta.teacher.name,actorRole:'teacher',actorRoleLabel:'老师'};
+  // 归档与转发的审计操作人（[第四步 US-211]）：**家长也会产生留痕**（撤回授权、连带撤回链接），
+  // 所以这一份必须按当前角色分流 —— 家长的动作不能记成老师干的。
+  const archiveAuditActor=role==='admin'
+    ?{actorId:'platform-admin',actorName:roleMeta.admin.name,actorRole:'platform-admin',actorRoleLabel:'平台超级管理员'}
+    :role==='parent'
+      ?{actorId:'parent',actorName:roleMeta.parent.name,actorRole:'parent',actorRoleLabel:'家长'}
+      :{actorId:roleMeta.teacher.name,actorName:roleMeta.teacher.name,actorRole:'teacher',actorRoleLabel:'老师'};
   const auditTraceEntry=(input)=>recordAudit({...input,...traceAuditActor,orgId:DEFAULT_ORG_ID});
   /**
    * 刷新轨迹账：本机镜像（归档时写入）**先渲染**，云端 `review_traces` 表与开发适配器回来后并进去。
@@ -621,15 +714,16 @@ function App(){
   // 家长分享页走独立的只读页面（不进登录、不挂侧边栏）：`/p/<shareToken>` 就是全部上下文。
   // 位置在**所有 hook 之后**（US-202 的白屏坑：提前 return 之前少一个 hook 就会「比上一次多一个 hook」）。
   // 令牌账（`shareTokens`）与归档记录（`archivedRecords` = 云端读取 + 本机镜像去重后那一份）都传进去：
-  // 页面内容（US-210）按令牌上的 `recordId` 在这一份里找那一条记录，正文再走分享白名单。
-  if(parentShareToken) return <ParentSharePage token={parentShareToken} tokens={shareTokens} records={archivedRecords} open={parentShareOpen}/>;
+  // 页面内容（US-210）按令牌上的 `recordId` 在这一份里找那一条记录，正文再走分享白名单；
+  // 访问判定（US-211）再叠三层：服务端结论（权威）> 授权撤回 > 家长会话范围（只能看自己孩子）。
+  if(parentShareToken) return <ParentSharePage token={parentShareToken} tokens={shareTokens} records={archivedRecords} open={parentShareOpen} consents={consents} parentScope={{parentSession,parentStudentNames:parentStudents}} serverAccess={parentShareAccess}/>;
   if(!auth) return <AuthScreen mode={authMode} setMode={setAuthMode} onLogin={login}/>;
   return <div className="app">
     <Sidebar role={role} page={page} nav={navByRole[role]} onNav={navigate} open={mobileNav} close={()=>setMobileNav(false)}/>
     <main className="main">
       <Topbar role={role} onMenu={()=>setMobileNav(true)} onSwitch={(r)=>login(r,'demo')} onGuide={()=>navigate('guide')} onLogout={()=>setAuth(false)}/>
       <div className="content">
-        <PageRouter {...{page,role,navigate,setToast,setModal,apps,setApps,tasks,setTasks,demoState,setDemoState,records:archivedRecords,setRecords,recordsSource,reloadRecords:reloadFeedbackRecords,parentStudent,parentStudents,parentPhone,parentSession,setParentStudent,teacherProfiles,setTeacherProfiles,framingPresets,setFramingPresets,skillLibrary,setSkillLibrary,agentFiles,setAgentFiles,adminName:roleMeta.admin.name,galleryVenues,setGalleryVenues,galleryExhibitions,setGalleryExhibitions,lessons,setLessons,courses,setCourses,auditLog,recordAudit,reviewModels,reviewModelDefaults,setReviewModelDefaults,keywordTemplates,setKeywordTemplates,keywordTemplateRemote,traceLog,setTraceLog,tracePolicy,setTracePolicy,traceSource,refreshReviewTraces,cleanupReviewTraces,auditTraceEntry,adminTraceViewer,teacherTraceViewer,archiveReports,setArchiveReports,shareTokens,setShareTokens,teacherName:roleMeta.teacher.name,pageParams}}/>
+        <PageRouter {...{page,role,navigate,setToast,setModal,apps,setApps,tasks,setTasks,demoState,setDemoState,records:archivedRecords,setRecords,recordsSource,reloadRecords:reloadFeedbackRecords,parentStudent,parentStudents,parentPhone,parentSession,setParentStudent,teacherProfiles,setTeacherProfiles,framingPresets,setFramingPresets,skillLibrary,setSkillLibrary,agentFiles,setAgentFiles,adminName:roleMeta.admin.name,galleryVenues,setGalleryVenues,galleryExhibitions,setGalleryExhibitions,lessons,setLessons,courses,setCourses,auditLog,recordAudit,reviewModels,reviewModelDefaults,setReviewModelDefaults,keywordTemplates,setKeywordTemplates,keywordTemplateRemote,traceLog,setTraceLog,tracePolicy,setTracePolicy,traceSource,refreshReviewTraces,cleanupReviewTraces,auditTraceEntry,auditActor:archiveAuditActor,adminTraceViewer,teacherTraceViewer,archiveReports,setArchiveReports,shareTokens,setShareTokens,teacherName:roleMeta.teacher.name,pageParams,consents,setConsents,archiveRetention,setArchiveRetention}}/>
       </div>
     </main>
     {toast?<div className="toast panda-toast"><img src={pandaWave} alt="熊猫鼓励"/><span><CircleCheck size={18}/>{toast}</span>{toastAction?<button type="button" className="toast-action" data-toast-action={toastAction.label} onClick={()=>{const run=toastAction.onClick;setToastRaw('');setToastAction(null);if(run)run()}}>{toastAction.label}</button>:null}</div>:null}
@@ -745,7 +839,7 @@ function IntakeSlotGroups({listKey,rows,collapsedKeys,onToggle,renderRow,classNa
   </div>;
 }
 
-function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[],setFramingPresets=()=>{},teacherProfiles=[],skillLibrary=[],courses=[],lessons=[],setLessons=()=>{},role='teacher',auditLog=[],recordAudit=()=>{},reviewModels=[],reviewModelDefaults={},setReviewModelDefaults=()=>{},keywordTemplates=[],keywordTemplateRemote=null,tracePolicy=null,shareTokens=[],setShareTokens=()=>{}}){
+function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[],setFramingPresets=()=>{},teacherProfiles=[],skillLibrary=[],courses=[],lessons=[],setLessons=()=>{},role='teacher',auditLog=[],recordAudit=()=>{},reviewModels=[],reviewModelDefaults={},setReviewModelDefaults=()=>{},keywordTemplates=[],keywordTemplateRemote=null,tracePolicy=null,shareTokens=[],setShareTokens=()=>{},consents:consentsProp=null}){
   const management=loadStudentManagement();
   const availableClasses=management.classes||[];
   // 当前登录老师：原型阶段只有一个老师身份（见 roleMeta.teacher），班级数据里存的是老师姓名。
@@ -826,11 +920,17 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
   // 最近一次「另存为我的模板」/「保存图片」写下的审计条目（面板上的回执读它，而不是去猜）。
   const [templateAuditEntry,setTemplateAuditEntry]=useState(null);
   const [artworkAuditEntry,setArtworkAuditEntry]=useState(null);
+  // 最近一次「归档创建 / 更新」写下的审计条目（[第四步 US-211] 第 4 条的面板回执）。
+  const [archiveAuditEntry,setArchiveAuditEntry]=useState(null);
+  // 最近一次「生成家长分享链接」写下的审计条目（同上，回执挂在分享面板里）。
+  const [shareAuditEntry,setShareAuditEntry]=useState(null);
   /** 记一条老师端审计（操作人四件套由这里补齐：身份串 / 姓名 / 角色 / 机构）。 */
   const auditTeacherEntry=(input)=>{
     const entry=recordAudit({...input,actorId:teacherWriteActor.actorId,actorName:teacherWriteActor.actorName,actorRole:teacherWriteActor.role,actorRoleLabel:teacherWriteActor.roleLabel,orgId:DEFAULT_ORG_ID});
     if(entry.action===AUDIT_ACTIONS.templateSave) setTemplateAuditEntry(entry);
     if(entry.action===AUDIT_ACTIONS.artworkSave) setArtworkAuditEntry(entry);
+    if(entry.action===AUDIT_ACTIONS.archiveCreate||entry.action===AUDIT_ACTIONS.archiveUpdate) setArchiveAuditEntry(entry);
+    if(entry.action===AUDIT_ACTIONS.shareGenerate) setShareAuditEntry(entry);
     return entry;
   };
   /**
@@ -1391,7 +1491,10 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
   // 「查看授权」是**转发给家长**的前置条件，不是录入 / 归档的前置条件：这里只提示、不拦截，
   // 也不进入 US-410 的六项前置校验。授权状态只有一份来源（data/consent.js，F-CONSENT-01），
   // 第四步转发前的硬校验（US-208 / FR-222）读的也是它。
-  const [consents]=useState(()=>loadConsents());
+  // 授权状态（[第四步 US-211]）：App 层那一份是唯一真源（家长端撤回后老师端立刻看得到）；
+  // 单独渲染这个组件时（组件级测试 / 无 App 包裹）回落到本机镜像 —— 两条路读的是同一份 localStorage。
+  const [consentsFallback]=useState(()=>loadConsents());
+  const consents=Array.isArray(consentsProp)?consentsProp:consentsFallback;
   const [consentExpanded,setConsentExpanded]=useState(false);
   // 所选学员 = 当前模式的参与学员（个人反馈只有选中的那一位，班级反馈是勾选名单）。
   // 没有记录的学员（临时加入的试听学员）按「未完成授权」算，界面会写明「未登记授权」。
@@ -3070,6 +3173,11 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
   // 同键已有记录 = 这一次是「更新那一条」而不是新建（写入语义与 data-archive-mode 读它）。
   const archivedRecord=records.find(item=>item.recordKey===archiveIdentity.recordKey)||null;
   const archiveIsUpdate=Boolean(archivedRecord);
+  // ---- 归档 / 转发的访问判定（[第四步 US-211] 第 1 条）--------------------------------
+  // 「老师只能归档与转发**自己班级**的学员记录」的唯一真源在 `data/archiveAccess.js`：
+  // 两个消费点（归档按钮 / 生成分享链接）读同一份产物，界面与断言读同一份读数。
+  // 归档看的是**当前选择**（还没落库时以选择为准），转发看的是**已经落库的那条记录**。
+  const archiveAccess=archiveRecordAccess({viewer:teacherFrameViewer,management,student:selectedStudentLabel,className:selectedClassLabel,action:ARCHIVE_ACCESS_ACTIONS.archive});
   // ---- 归档素材的持久化候选（[第四步 US-203]）-----------------------------------------
   // 归档要带给家长的是**持久地址的图**：装裱成品图 + 修正后的课堂照片（旋转已经烘进副本像素）。
   // 候选只从「处理过的成品」里取，原图（originalUrl）连候选都进不来：见 data/archiveMedia.js。
@@ -3081,6 +3189,14 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
   const archiveMediaBusyRef=useRef(false);
   const archiveRecord=async()=>{
     if(archiveMediaBusyRef.current) return;
+    // 访问权限（[第四步 US-211] 第 1 条）：老师只能归档**自己班级**的学员记录，跨班被拒绝 ——
+    // 判据在 `data/archiveAccess.js`（与服务端 `POST /api/archive/share-access` 同一份口径），
+    // 拒绝时记一条审计（谁试图访问哪个班的哪条记录）并原样返回，一个字节都不写。
+    if(!archiveAccess.allowed){
+      auditTeacherEntry({action:AUDIT_ACTIONS.archiveAccessDenied,objectName:archiveAccess.student||selectedStudentLabel,scope:archiveAccess.className||selectedClassLabel,outcome:'denied',detail:archiveAccess.reason});
+      setToast(archiveAccessDeniedText(archiveAccess));
+      return;
+    }
     if(!hasProcessedArtwork||!reviewGenerated){setToast('请先完成线稿提取和智能点评，才能归档给家长。');return;}
     // 归档强校验（US-108b）：按钮已经按它禁用，这里再拦一道（顶栏流程导航也能调归档附近的路径），
     // 提示给出**具体原因**（哪一维还空着 / 轨迹为什么不算成功），不是笼统的「请完善信息」。
@@ -3148,6 +3264,19 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
     // 更新路径同样提交一份新轨迹（正文改过 → 这一版的推理过程值得留档），recordId 就是同一条记录的 id。
     const stored=commitReviewTrace(applied.record.id);
     const traceNote=stored?`；推理轨迹已留档：${reviewTraceSummary(stored)}`:'';
+    // 归档创建 / 更新留痕（[第四步 US-211] 第 4 条）：操作人、时间、对象（学员 + 档案记录 id）、版本 ——
+    // 四项齐全（`AUDIT_ACTION_REQUIRED` 会点名缺项），面板上给一行「已写入审计日志」的回执。
+    auditTeacherEntry({
+      action:applied.mode==='updated'?AUDIT_ACTIONS.archiveUpdate:AUDIT_ACTIONS.archiveCreate,
+      studentId:applied.record.studentId,
+      studentName:applied.record.student,
+      lessonId:applied.record.lessonId,
+      lessonDate:applied.record.lessonDate,
+      recordId:applied.record.id,
+      version:applied.record.version,
+      scope:applied.record.className,
+      detail:`${applied.record.student} · ${applied.record.date||''} · 《${applied.record.title||applied.record.subject||'本次课后反馈'}》 · 第 ${applied.record.version} 版`
+    });
     setRecords(()=>applied.list);
     // 记住这一次的归档 id：之后再保存图片时，写回要**就地更新**这一条（换班/换学员会清掉它）。
     setCurrentRecordId(applied.record.id);
@@ -3257,9 +3386,27 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
   const [shareTokenRevokeConfirm,setShareTokenRevokeConfirm]=useState(false);
   const [shareTokenNotice,setShareTokenNotice]=useState({phase:'idle',message:''});
   const shareTokenPanel=shareTokenView({tokens:shareTokens,recordId:currentArchiveRecord?.id||''});
-  // 生成前的授权闸门：**读转发面板的产物**（`archiveForwardView` = data/consent.js 那一份来源），
-  // 未完成查看授权时 `allowed:false`，原因与「去授权管理」入口原样带出来。
-  const shareTokenGate=shareTokenGenerationGate(archiveForward);
+  // 生成前的两道闸门：① **访问权限**（[第四步 US-211] 第 1 条：老师只能转发自己班级的学员记录，
+  // 跨班被拒绝）② 家长查看授权（`archiveForwardView` = data/consent.js 那一份来源）。
+  // 两道闸门合成同一份产物（`shareTokenGate` 的形状不变），下游（面板 / 重新发送计划）读它。
+  const shareAccess=archiveRecordAccess({
+    viewer:teacherFrameViewer,
+    management,
+    record:currentArchiveRecord,
+    student:(currentArchiveRecord?.student)||selectedStudentLabel,
+    className:(currentArchiveRecord?.className)||selectedClassLabel,
+    action:ARCHIVE_ACCESS_ACTIONS.forward
+  });
+  const shareTokenGateBase=shareTokenGenerationGate(archiveForward);
+  const shareTokenGate=shareAccess.allowed?shareTokenGateBase:{
+    ...shareTokenGateBase,
+    allowed:false,
+    state:'denied',
+    stateLabel:'跨班访问被拒绝',
+    reason:shareAccess.reason,
+    entryLabel:'',
+    note:`生成前校验：${shareAccess.reason}`
+  };
   const shareTokenStrengthView=shareTokenPanel.tokenText?shareTokenStrength(shareTokenPanel.tokenText):null;
   // 面板开合 / 换记录时把撤回确认与回执清掉：上一次的中间态不带过来。
   useEffect(()=>{setShareTokenRevokeConfirm(false);setShareTokenNotice({phase:'idle',message:''})},[currentArchiveRecord?.id,archiveShareOpen]);
@@ -3278,6 +3425,24 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
     validDays:shareTokenValidDays,
     createdBy:currentTeacherName
   },{});
+  /**
+   * 生成分享链接的**唯一**留痕入口（「生成」与「重新发送」里的重新生成共用一份）：
+   * 操作人 / 时间 / 对象（学员 + 档案记录 + 版本）/ 哪一条令牌（`shareToken`）。
+   */
+  const auditShareGenerate=(tokenRecord)=>{
+    if(!tokenRecord) return null;
+    return auditTeacherEntry({
+      action:AUDIT_ACTIONS.shareGenerate,
+      studentId:tokenRecord.studentId,
+      studentName:tokenRecord.student,
+      lessonDate:tokenRecord.lessonDate,
+      recordId:tokenRecord.recordId,
+      version:tokenRecord.version,
+      shareToken:tokenRecord.token,
+      scope:tokenRecord.className,
+      detail:`${tokenRecord.student} · ${tokenRecord.lessonDate||''} · 第 ${tokenRecord.version} 版 · 有效期 ${tokenRecord.validDays} 天`
+    });
+  };
   const generateParentShareLink=()=>{
     if(!shareTokenGate.allowed){setShareTokenNotice({phase:'blocked',message:shareTokenGate.reason});return;}
     if(!currentArchiveRecord){setShareTokenNotice({phase:'failed',message:'先归档再生成分享链接。'});return;}
@@ -3287,10 +3452,13 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
     setShareTokenRevokeConfirm(false);
     setShareTokenNotice({phase:'done',message:SHARE_TOKEN_GENERATED_NOTICE});
     setToast(`${SHARE_TOKEN_GENERATED_NOTICE}${shareTokenLink(created.token)}`);
-    // 推云端：`share_tokens` 表还没建时会被拒 —— 只影响跨设备可见，本机这条照常成立。
+    // 生成分享链接留痕（[第四步 US-211] 第 4 条），推云端：`share_tokens` 表还没建时会被拒 ——
+    // 只影响跨设备可见，本机这条照常成立。
+    auditShareGenerate(created);
     void saveRemoteShareToken(created).catch(()=>{});
   };
-  // 撤回分享：撤回后链接**立即失效**（`shareTokenStatus` 一看到 `revokedAt` 就判 revoked）。
+  // 撤回分享：撤回后链接**立即失效**（`shareTokenStatus` 一看到 `revokedAt` 就判 revoked）；
+  // 撤回动作同样留痕（操作人 / 时间 / 对象 / 令牌）。
   const revokeParentShareLink=()=>{
     const target=shareTokenPanel.active?shareTokenPanel.token:null;
     if(!target) return;
@@ -3300,6 +3468,17 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
     setShareTokenRevokeConfirm(false);
     setShareTokenNotice({phase:'done',message:SHARE_TOKEN_REVOKED_NOTICE});
     setToast(SHARE_TOKEN_REVOKED_NOTICE);
+    auditTeacherEntry({
+      action:AUDIT_ACTIONS.shareRevoke,
+      studentId:revoked.studentId,
+      studentName:revoked.student,
+      lessonDate:revoked.lessonDate,
+      recordId:revoked.recordId,
+      version:revoked.version,
+      shareToken:revoked.token,
+      scope:revoked.className,
+      detail:`撤回 ${revoked.student||''} 的分享链接（第 ${revoked.version} 版）`
+    });
     void revokeRemoteShareToken(revoked).catch(()=>{});
   };
   // 记一次转发（[第四步 US-209]）：复制成功之后才调用 —— **复制失败不记发送**（不谎报「已转发」）。
@@ -3404,6 +3583,8 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
       list=appendShareToken(list,created);
       tokenText=created.token;
       regenerated=true;
+      // 重新生成也是一次「分享生成」—— 同一个留痕入口（操作人 / 对象 / 版本 / 新令牌）。
+      auditShareGenerate(created);
       void saveRemoteShareToken(created).catch(()=>{});
     }
     const usingWechat=shareForwardResend.action==='copy-wechat';
@@ -3457,12 +3638,13 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
   // 「家长分享链接」块：链接 / 有效期 / 撤回三个动作 + 授权闸门。链接形如 `/p/<shareToken>`。
   // 链接可用时再给二维码与「复制链接 / 下载二维码」两个动作（与「复制微信文案」合起来是验收的三个动作）。
   const archiveShareTokenField=(
-    <div className="archive-share-token" data-share-token="true" data-share-token-state={shareTokenPanel.state} data-share-token-gate={shareTokenGate.allowed?'allowed':'blocked'} data-share-token-value={shareTokenPanel.tokenText} data-share-token-link={shareTokenPanel.link} data-share-token-expires-at={shareTokenPanel.token?shareTokenPanel.token.expiresAt:''} data-share-token-revoked-at={shareTokenPanel.token?shareTokenPanel.token.revokedAt:''} data-share-token-valid-days-value={String(shareTokenValidDays)} data-share-token-history={String(shareTokenPanel.historyCount)}>
+    <div className="archive-share-token" data-share-token="true" data-share-token-state={shareTokenPanel.state} data-share-token-gate={shareTokenGate.allowed?'allowed':'blocked'} data-share-token-access={shareAccess.allowed?'allowed':'denied'} data-share-token-access-reason={shareAccess.allowed?'':shareAccess.reason} data-share-token-value={shareTokenPanel.tokenText} data-share-token-link={shareTokenPanel.link} data-share-token-expires-at={shareTokenPanel.token?shareTokenPanel.token.expiresAt:''} data-share-token-revoked-at={shareTokenPanel.token?shareTokenPanel.token.revokedAt:''} data-share-token-valid-days-value={String(shareTokenValidDays)} data-share-token-history={String(shareTokenPanel.historyCount)}>
       <div className="archive-share-token-head">
         <Link2 size={14}/>
         <b>{SHARE_TOKEN_LINK_HEADING}</b>
         <em className={`is-${shareTokenPanel.state}`}>{shareTokenPanel.stateLabel}</em>
       </div>
+      {shareAccess.allowed?null:<p className="archive-share-access-denied" data-share-access-denied="true">{archiveAccessDeniedText(shareAccess)}</p>}
       {shareTokenPanel.tokenText?<div className="archive-share-token-link-row">
         <code data-share-token-link-text="true">{shareTokenPanel.link}</code>
         <small data-share-token-expiry="true">{shareTokenPanel.expiresText}</small>
@@ -3504,6 +3686,34 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
       </div>
     </div>
   );
+  // 归档 / 分享的审计回执（[第四步 US-211] 第 4 条）：四项齐全（操作人 / 学员 / 记录 / 时间）时才给回执，
+  // 缺项由 `auditEntryMissingFields` 点名（面板上标出来，断言直接读它）。
+  const archiveAuditField=archiveAuditEntry?(
+    <p className="archive-audit-note" data-archive-audit={archiveAuditEntry.id}
+      data-archive-audit-action={archiveAuditEntry.action}
+      data-archive-audit-actor={archiveAuditEntry.actorId}
+      data-archive-audit-student={archiveAuditEntry.studentId}
+      data-archive-audit-record={archiveAuditEntry.recordId}
+      data-archive-audit-version={archiveAuditEntry.version}
+      data-archive-audit-at={archiveAuditEntry.at}
+      data-archive-audit-trace={auditTraceText(archiveAuditEntry)}
+      data-archive-audit-missing={auditEntryMissingFields(archiveAuditEntry).join(',')}>
+      已写入审计日志：{archiveAuditEntry.actionLabel} · {auditTraceText(archiveAuditEntry)} · 第 {archiveAuditEntry.version} 版
+    </p>
+  ):null;
+  const shareAuditField=shareAuditEntry?(
+    <small className="archive-share-audit-note" data-share-audit={shareAuditEntry.id}
+      data-share-audit-action={shareAuditEntry.action}
+      data-share-audit-actor={shareAuditEntry.actorId}
+      data-share-audit-student={shareAuditEntry.studentId}
+      data-share-audit-record={shareAuditEntry.recordId}
+      data-share-audit-token={shareAuditEntry.shareToken}
+      data-share-audit-version={shareAuditEntry.version}
+      data-share-audit-at={shareAuditEntry.at}
+      data-share-audit-missing={auditEntryMissingFields(shareAuditEntry).join(',')}>
+      已写入审计日志：{shareAuditEntry.actionLabel} · {auditTraceText(shareAuditEntry)} · {shareAuditEntry.shareToken.slice(0,8)}…
+    </small>
+  ):null;
   // 归档摘要面板：七项字段逐行渲染（`ARCHIVE_SUMMARY_FIELDS` 是顺序真源），缺项标出来。
   const archiveSummaryField=(
     <div className="archive-summary" data-archive-summary="true" data-archive-summary-state={archiveStep.state} data-archive-summary-rows={String(archiveStep.rows.length)} data-archive-summary-missing={archiveStep.missing.join(',')} data-archive-summary-warnings={archiveStep.warnings.join(',')}>
@@ -3559,6 +3769,7 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
         <small data-share-boundary-note="true">{archiveShareBoundary.note}</small>
       </div>:null}
       {archiveShareTokenField}
+      {shareAuditField}
       {archiveForwardStatusField}
       <div className="archive-share-actions">
         {archiveForward.state==='ready'?<Button icon={MessageSquareText} onClick={copyArchiveWechatText} data-share-copy="true">{ARCHIVE_SHARE_COPY_LABEL}</Button>:null}
@@ -5264,6 +5475,15 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
       </ul>
     </div>
   );
+  // 访问权限读数（[第四步 US-211] 第 1 条）：不是自己的班时把「为什么不能归档」写在按钮上方 ——
+  // 按钮同时置灰（但拦截不依赖置灰：`archiveRecord()` 里还有一道，顶栏流程导航也拦得住）。
+  const archiveAccessField=(
+    <div className="archive-access-field" data-archive-access={archiveAccess.allowed?'allowed':'denied'} data-archive-access-role={archiveAccess.role} data-archive-access-scope={archiveAccess.scope} data-archive-access-student={archiveAccess.student} data-archive-access-class={archiveAccess.className} data-archive-access-class-teacher={archiveAccess.classTeacher} data-archive-access-reason={archiveAccess.reason}>
+      {archiveAccess.allowed
+        ?<small data-archive-access-note="true">{archiveAccessReadout(archiveAccess)}</small>
+        :<><b data-archive-access-denied="true">{archiveAccessDeniedText(archiveAccess)}</b><small>换回自己带的班，或让管理员调整这个班的任课老师后再归档。</small></>}
+    </div>
+  );
   return <><PageHeader title="课后反馈" desc="每一个环节都可随时进入，当前进度会同步保留。" prd="课后反馈工作流"/>
     <section className="feedback-flow-v2">
       <FlowStepper steps={steps} step={step} flags={[intakeReadiness.ok,hasProcessedArtwork,reviewGenerated,archived]} onGo={go}/>
@@ -5274,8 +5494,8 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
       {step===2&&mode==='班级反馈'?<ClassFramingWall artworks={batchUploads.artwork} photos={batchUploads.photo} photoGroups={photoGroups} writeBackKeyOf={classArtworkWriteBackKeyOf} onRotate={index=>rotateBatchItem('artwork',index)} onRotatePhotoEntry={uploadId=>rotateUploadEntry('photo',uploadId)}/>:null}
       {step===1?<section className="scene-panel"><div className="scene-heading"><span>第一步</span><h2>创建课后反馈信息</h2><p>先确定服务对象，再同步收集本节课素材。素材只在本次操作中保留。</p></div>{draftRestored?<div className="intake-draft-restored"><Clock3 size={14}/><div><b>已恢复上次的课次信息；素材需重新选择</b><small>{draftRestoreDetail}</small></div>{pendingTitles.length?<em>已保留 {pendingTitles.length} 个作品名，「学员作品上传位」里重新选择素材后自动填回</em>:null}<button type="button" className="text-link" onClick={()=>setDraftRestored(false)}>知道了</button></div>:null}<div className="feedback-mode"><button className={mode==='个人反馈'?'selected':''} onClick={()=>selectMode('个人反馈')}>个人反馈<small>为一位孩子完成反馈</small></button><button className={mode==='班级反馈'?'selected':''} onClick={()=>selectMode('班级反馈')}>班级反馈<small>批量处理全班素材</small></button></div>{availableClasses.length?<div className="intake-scope"><span>班级范围</span><div className="intake-scope-switch"><button type="button" className={showAllClasses?'':'active'} onClick={()=>selectClassScope(false)}>我带的班（{myClasses.length}）</button><button type="button" className={showAllClasses?'active':''} onClick={()=>selectClassScope(true)}>全部班级（{availableClasses.length}）</button></div><small>当前登录老师：{currentTeacherName}</small></div>:null}{visibleClasses.length?<div className="task-form"><label>选择班级<select value={selectedClassId} onChange={event=>selectClass(event.target.value)}>{visibleClasses.map(item=><option key={item.id} value={item.id}>{item.name}{item.teacher?`（${item.teacher}）`:''}</option>)}</select></label><label>选择学员<select value={mode==='班级反馈'?'__class__':selectedStudentName} disabled={mode==='班级反馈'} onChange={event=>{setSelectedStudentName(event.target.value);setArchived(false);setCurrentRecordId('');clearReviewTrace();setWriteBackAttempt({status:'idle',quality:'',message:''})}}>{mode==='班级反馈'?<option value="__class__">本班全部学员（{classStudents.length}人）</option>:<><option value="">请选择学员</option>{classStudents.map(item=><option key={item.name} value={item.name}>{item.name}</option>)}</>}</select></label>{courseOptions.length?<label>选择课程<select value={activeCourseId} onChange={event=>selectCourse(event.target.value)}>{courseOptions.map(item=><option key={item.courseId} value={item.courseId}>{item.name}{item.courseId===classCourseId?' · 本班课程':''}</option>)}</select></label>:<div className="intake-course-empty"><b>课程库暂时没有可选课程</b><p>{classCourseName?`本班课程「${classCourseName}」不在可选课程里，可能已被停用。`:'课程由机构管理员在「课程库」中维护。'}</p>{role==='admin'?<Button variant="secondary" onClick={()=>navigate('courseLibrary')}>去课程库添加课程</Button>:<small>请联系机构管理员在「课程库」中新增或启用课程。</small>}</div>}{lessonScheduleField}{participantField}{consentNoticeField}{mediaIntakeNotice?<p className="intake-media-notice"><ShieldAlert size={14}/><span>{mediaIntakeNotice}</span></p>:null}</div>:<div className="intake-empty"><Users size={26}/><b>{showAllClasses?'机构里还没有任何班级':'还没有属于你的班级'}</b><p>{showAllClasses?'请先在「学员管理」中新建班级，再回到这里创建课后反馈。':'可以切到「全部班级」确认是否存在其他老师名下的班级，或先去「学员管理」新建班级。'}</p><div className="intake-empty-actions">{showAllClasses?null:<button type="button" className="text-link" onClick={()=>selectClassScope(true)}>查看全部班级</button>}<Button onClick={()=>navigate('classes')}>去学员管理添加班级</Button></div></div>}{mode==='个人反馈'&&selectedClass&&!classStudents.length?<p className="intake-hint">该班级还没有学员，请先在「学员管理」里导入名单，再创建课后反馈。</p>:null}{artworkSlotField}{photoSlotField}{mode==='个人反馈'?<div className="sync-upload"><div className={media.artwork?.url?'has-file':''}><Frame/><b>学员作品 <em>必选</em></b><small>{uploadSummary('artwork')}</small><input ref={artworkInput} type="file" accept="image/jpeg,image/png,image/webp" hidden multiple={mode==='班级反馈'} onChange={e=>readFiles('artwork',e.target.files,e.currentTarget)}/><button onClick={()=>artworkInput.current?.click()}>{media.artwork?.url?'已上传 · 重新选择':'上传作品'}</button></div><div className={media.photo?.url?'has-file':''}><Image/><b>学员照片 <em>选填</em></b><small>{uploadSummary('photo')}</small><input ref={photoInput} type="file" accept="image/jpeg,image/png,image/webp" hidden multiple={mode==='班级反馈'} onChange={e=>readFiles('photo',e.target.files,e.currentTarget)}/><button onClick={()=>photoInput.current?.click()}>{media.photo?.url?'已上传 · 重新选择':'上传照片'}</button></div></div>:null}{lostSessionMedia&&!mediaLostDismissed?<div className="intake-media-lost"><ShieldAlert size={14}/><div><b>上次选择的素材已失效</b><small>作品与课堂照片只在当次会话里有效（只使用会话内 object URL，不写入 localStorage / IndexedDB）。页面刷新或重新进入后，请重新选择原始素材。</small></div><button type="button" className="text-link" onClick={()=>setMediaLostDismissed(true)}>知道了</button></div>:null}<div className="upload-privacy-note"><ShieldCheck size={14}/>{mediaRulesText(UPLOAD_SLOTS_PER_STUDENT)}</div>{intakeReadinessPanel}<div className="scene-actions"><Button variant="secondary" onClick={resetDraft}>新建草稿</Button><Button variant="secondary" icon={Save} disabled={!activeCourseId||lessonSaveState.status==='saving'} onClick={requestLessonSave}>{lessonSaveState.status==='saving'?'保存中…':'保存课次'}</Button><Button icon={ArrowRight} disabled={!intakeReadiness.ok} onClick={()=>go(2)}>进入智能装裱</Button></div></section>:null}
       {step===2?<section className="scene-panel studio-task"><div className="scene-heading"><span>第二步</span><h2>智能装裱</h2><p>先旋转完整原图并确认方向；确认后自动裁掉纸外的桌面、地面与背景，只保留作品本身。装裱方案（画框、卡纸、展签、日期与署名）由管理员在「装裱设置」中统一维护，这里直接选用。</p></div><div className="media-process"><article><div className={`mini-frame uploaded-art${media.artwork?.framedUrl&&!artworkEditor.open?' framed-preview':''}${artworkEditor.open?' is-editing':''}`}>{media.artwork?.url?<><img src={artworkEditor.open?(editorPreview||media.artwork.originalUrl):(media.artwork.framedUrl||media.artwork.cleanUrl||media.artwork.orientedUrl||media.artwork.originalUrl)} alt={artworkEditor.open?'编辑中的旋转稿预览（低分辨率画布）':media.artwork.framedUrl?`已按「${activeFrame?.name||'默认装裱'}」完成装裱的作品`:media.artwork.cleanUrl?'已裁掉纸外背景、只保留作品本身':'等待确认方向的完整原图'}/>{media.artwork?.framedUrl&&!artworkEditor.open?<span className="framed-badge">{activeFrame?.name||'默认装裱'}</span>:null}{artworkEditor.open?<span className="framed-badge editing-badge">编辑中</span>:null}<div className="frame-rotate-controls" aria-label="旋转作品"><button type="button" title="向左旋转 90°" aria-label="向左旋转作品" disabled={artworkEditor.open&&editorPreviewPending} onClick={()=>quickRotateArtwork(-1)}><RotateCcw size={18}/></button><button type="button" title="向右旋转 90°" aria-label="向右旋转作品" disabled={artworkEditor.open&&editorPreviewPending} onClick={()=>quickRotateArtwork(1)}><RotateCw size={18}/></button></div></>:'✺'}</div><div><b>学员作品</b><p>{artworkEditor.open?(editorPreviewPending?'正在生成低分辨率预览…':'编辑中：调整旋转后点「完成编辑」，再按新的方向重新裁剪与装裱。'):framingState==='processing'?(media.artwork?.cleanUrl?'正在按当前装裱方案合成装裱图…':'正在裁掉纸外的桌面与地面，只保留作品本身…'):media.artwork?.framedUrl?`已装裱：${activeFrame?.name||'默认装裱'}。作品只做等比缩放与居中，不裁切主体、不重绘、不调色。`:media.artwork?.cleanUrl?'已完成作品裁剪，正在生成装裱图…':'当前仅显示完整原图；可以先点「编辑作品」把方向摆正，再开始裁剪与装裱。'}</p>{mode==='个人反馈'?artworkEditorField:null}{!media.artwork?.cleanUrl?<button type="button" className="confirm-artwork-button" onClick={startArtworkCleanup} disabled={framingState==='rotating'||framingState==='processing'}>{framingState==='processing'?'正在裁剪作品…':'方向正确，开始裁剪与装裱'}</button>:null}<span className="frame-choice-hint">相框样式在下方「相框样式」面板里挑（缩略图用这幅作品实时渲染）→</span></div></article><article><div className="photo-card">{media.photo?.url?<><img src={media.photo.url} alt="已自然优化的课堂照片" style={{transform:`rotate(${media.photo.rotation||0}deg)`}}/><button type="button" className="frame-rotate-button photo-rotate-button" onClick={rotatePersonalPhoto}><RefreshCw size={16}/>旋转照片</button></>:<img src={pandaMascot} alt="课堂照片占位预览"/>}</div><div><b>学员照片</b><p>{media.photo?.name||'未上传课堂照片，可返回上一步补充。'}</p></div></article></div>{batchFramingPanel}{studioDrawerTrigger('frame')}{frameStylePanel}{overlayPanelTrigger}{overlayDrawerOpen?<div className="lesson-overlay-scrim" data-overlay-scrim="true" onClick={()=>setOverlayDrawerOpen(false)}/>:null}{overlayPanel}{studioDrawerTrigger('save')}{saveImagePanel}{studioDrawer?<div className="studio-drawer-scrim" data-studio-drawer-scrim={studioDrawer} onClick={()=>setStudioDrawer('')}/>:null}{framingPerfPanel}{saveImageSheet}<div className="scene-actions"><Button variant="secondary" onClick={()=>go(1)}>返回创建信息</Button><Button icon={ArrowRight} onClick={()=>go(3)}>进入五维点评</Button></div></section>:null}
-      {step===3?<section className="scene-panel review-task-v2"><div className="review-media"><div className="scene-heading"><span>{mode==='班级反馈'?'本班课后素材':'本次课素材'}</span><h2>{mode==='班级反馈'?'周六创意绘画 2 班 · 班级课后反馈':`${selectedStudentLabel}${activeFrame?.plaqueTitle?` · 《${activeFrame.plaqueTitle}》`:''}`}</h2></div><div className={`review-gallery ${mode==='班级反馈'?'class-review-gallery':''}`}>{mode==='班级反馈'?<><ClassMediaMosaic items={classMosaicArtworks} kind="artwork" date={lessonDateDots} writeBackKeyOf={classArtworkWriteBackKeyOf} onRotate={index=>rotateBatchItem('artwork',index)}/><ClassMediaMosaic items={classMosaicPhotos} kind="photo" groups={photoGroups} date={lessonDateDots} onRotateEntry={uploadId=>rotateUploadEntry('photo',uploadId)}/></>:<><div className={`review-art exhibition-art${reviewFramedSrc?' framed-art':''}`} data-review-artwork-source={reviewWrittenBackUrl?'writeback':'framed'} data-review-artwork-fingerprint={artworkUrlFingerprint(reviewFramedSrc)}>{reviewFramedSrc?<div className="framed-art-final"><img src={reviewFramedSrc} alt={`${selectedStudentLabel}的作品 · ${activeFrame?.name||'装裱'}`} data-review-artwork="true"/>{activeFrame?.name?<span className="framed-badge">{activeFrame.name}</span>:null}{reviewWrittenBackUrl?<span className="written-back-badge" data-review-artwork-written-back="true">老师保存的成品图</span>:null}</div>:<><div className="artwork-mat">{media.artwork?.url?<img src={media.artwork.cleanUrl||media.artwork.originalUrl||media.artwork.url} alt={`${selectedStudentLabel}的作品`}/>:'✺'}</div><div className="artwork-plaque"><div><b>{selectedStudentLabel}</b><span>{activeFrame?.plaqueTitle?`《${activeFrame.plaqueTitle}》`:''}</span></div><time>创作于 {plaqueDateText}</time></div></>}</div><div className="review-photo portrait-print"><div className="portrait-mat">{media.photo?.url?<img src={media.photo.url} alt="陈一诺课堂照片"/>:<img src={pandaMascot} alt="课堂照片占位"/>}</div><div className="portrait-caption">{selectedStudentLabel} · {plaqueDateText}</div></div></>}</div></div><ReviewKeywordDock visible selected={keywords} onToggle={toggleKeyword} suggested={aiKeywords} suggesting={keywordSuggesting} dirty={keywordDirty} generated={reviewGenerated} template={keywordTemplateView}/><div className={`coach-review ${mode==='班级反馈'?'class-coach-review':''}`}><div className="scene-heading"><span>第三步</span><h2>{mode==='班级反馈'?'班级课程反馈':'五维点评'}</h2></div><div className="review-subject-field" data-review-subject-field="true" data-review-subject-source={reviewSubject.source} data-review-subject-context={reviewLesson.contextSource} data-review-subject-picked={reviewSubject.picked?'true':'false'} data-review-subject-options={reviewLesson.options.length} data-review-subject-lesson-date={reviewLessonDate}>{reviewLesson.options.length?<label>本次课题<select value={reviewSubjectValue} onChange={event=>{setSubjectPick(event.target.value);setSubjectPicked(true)}} data-review-subject="true">{reviewLesson.options.map(item=><option key={item.value} value={item.value} data-review-subject-option={item.source}>{item.label}</option>)}</select></label>:<b className="review-subject-empty" data-review-subject-empty="true">还没有可选课题</b>}<small data-review-subject-note="true">{reviewSubjectNote}</small></div><p className="evidence">{mode==='班级反馈'?'以下内容基于本节课课程设计、班级素材与老师观察生成，老师可编辑确认后发布给家长。':`下列内容由大模型生成：先读懂作品与课堂素材，再结合「${activeProfileLabel}」的人设、已启用技能与长期记忆，按五个维度分别输出评语。老师可逐条修改后再发布。`}</p>{reviewRecoveryField}{mode==='班级反馈'?<ClassReviewContent subject={reviewSubjectValue}/>:<><div className={`review-source ${reviewGenerated?'ai':'pending'}`}>{reviewGenerated?<><Sparkles size={14}/><span>当前正文由大模型「{activeProfileLabel}」依据人设、技能与长期记忆生成，可直接编辑。</span></>:<><Sparkles size={14}/><span>五个维度等待大模型生成：点击上方「开始生成点评」，评语会逐字写入这里。</span></>}{keywordDirty&&reviewGenerated?<em>观察词已调整，建议重新生成</em>:null}</div>{Object.entries(reviews).map(([name,copy])=><article className={`coach-card${copy?'':' is-empty'}`} key={name}><b>{name}{copy?null:<em className="review-pending">待生成</em>}</b><textarea aria-label={name} value={copy} placeholder={REVIEW_DIMENSION_HINTS[name]||''} onChange={event=>setReviews(current=>({...current,[name]:event.target.value}))}/></article>)}</>}{reviewArchiveGateField}<div className="scene-actions"><Button variant="secondary" onClick={()=>go(2)}>返回智能装裱</Button><Button icon={Archive} onClick={archiveRecord} disabled={!reviewArchiveGate.ok} data-archive-gate={reviewArchiveGate.ok?'ok':'blocked'} data-archive-mode={archiveIsUpdate?'update':'create'} data-archive-version={archivedRecord?String(archivedRecord.version):''} data-archive-media-phase={archiveMediaAttempt.phase} data-archive-block-reason={reviewArchiveGate.ok?'':reviewArchiveGate.reasonText} title={archiveIsUpdate?'本次归档会更新已有的那条档案记录（同一课次 + 同一位学员只留一条）':'本次归档会新建一条档案记录'}>{archived?'保存修改并更新档案':'归档并生成分享'}</Button></div></div></section>:null}
-      {step===4?<section className="share-task scene-panel" data-archive-step="true" data-archive-step-state={archiveStep.state} data-archive-step-label={archiveStep.stateLabel}><img src={pandaObserve} alt="熊猫成长伙伴"/><div><span data-archive-step-headline="true">{archiveStep.state===ARCHIVE_STEP_STATES.archived?`已写入 ${(currentArchiveRecord?.student)||selectedStudentLabel} 的成长档案`:'归档状态'}</span><h2>{archiveStep.headline}</h2><p data-archive-step-note="true">{archiveStep.state===ARCHIVE_STEP_STATES.archived?'作品、课堂照片与五维点评已经写入成长档案。':archiveStep.note}</p>{archiveStep.state===ARCHIVE_STEP_STATES.archived&&archiveStep.hint?<small className="archive-step-hint" data-archive-step-hint="true">{archiveStep.hint}</small>:null}{archiveSummaryField}{archiveMediaSyncField}{archiveForwardChip}{archiveShareOpen?archiveShareField:null}<div className="share-actions scene-actions"><Button variant="secondary" onClick={()=>go(3)} data-archive-return-review="true">返回修改点评</Button><Button icon={MessageSquareText} onClick={toggleArchiveShare} data-archive-share-toggle="true" data-archive-share-open={archiveShareOpen?'true':'false'} aria-expanded={archiveShareOpen}>转发给家长</Button><Button icon={FileText} onClick={()=>navigate('archives',{student:(currentArchiveRecord?.student)||selectedStudentLabel,className:(currentArchiveRecord?.className)||selectedClassLabel})} data-archive-enter-archive="true">进入成长档案</Button></div></div></section>:null}
+      {step===3?<section className="scene-panel review-task-v2"><div className="review-media"><div className="scene-heading"><span>{mode==='班级反馈'?'本班课后素材':'本次课素材'}</span><h2>{mode==='班级反馈'?'周六创意绘画 2 班 · 班级课后反馈':`${selectedStudentLabel}${activeFrame?.plaqueTitle?` · 《${activeFrame.plaqueTitle}》`:''}`}</h2></div><div className={`review-gallery ${mode==='班级反馈'?'class-review-gallery':''}`}>{mode==='班级反馈'?<><ClassMediaMosaic items={classMosaicArtworks} kind="artwork" date={lessonDateDots} writeBackKeyOf={classArtworkWriteBackKeyOf} onRotate={index=>rotateBatchItem('artwork',index)}/><ClassMediaMosaic items={classMosaicPhotos} kind="photo" groups={photoGroups} date={lessonDateDots} onRotateEntry={uploadId=>rotateUploadEntry('photo',uploadId)}/></>:<><div className={`review-art exhibition-art${reviewFramedSrc?' framed-art':''}`} data-review-artwork-source={reviewWrittenBackUrl?'writeback':'framed'} data-review-artwork-fingerprint={artworkUrlFingerprint(reviewFramedSrc)}>{reviewFramedSrc?<div className="framed-art-final"><img src={reviewFramedSrc} alt={`${selectedStudentLabel}的作品 · ${activeFrame?.name||'装裱'}`} data-review-artwork="true"/>{activeFrame?.name?<span className="framed-badge">{activeFrame.name}</span>:null}{reviewWrittenBackUrl?<span className="written-back-badge" data-review-artwork-written-back="true">老师保存的成品图</span>:null}</div>:<><div className="artwork-mat">{media.artwork?.url?<img src={media.artwork.cleanUrl||media.artwork.originalUrl||media.artwork.url} alt={`${selectedStudentLabel}的作品`}/>:'✺'}</div><div className="artwork-plaque"><div><b>{selectedStudentLabel}</b><span>{activeFrame?.plaqueTitle?`《${activeFrame.plaqueTitle}》`:''}</span></div><time>创作于 {plaqueDateText}</time></div></>}</div><div className="review-photo portrait-print"><div className="portrait-mat">{media.photo?.url?<img src={media.photo.url} alt="陈一诺课堂照片"/>:<img src={pandaMascot} alt="课堂照片占位"/>}</div><div className="portrait-caption">{selectedStudentLabel} · {plaqueDateText}</div></div></>}</div></div><ReviewKeywordDock visible selected={keywords} onToggle={toggleKeyword} suggested={aiKeywords} suggesting={keywordSuggesting} dirty={keywordDirty} generated={reviewGenerated} template={keywordTemplateView}/><div className={`coach-review ${mode==='班级反馈'?'class-coach-review':''}`}><div className="scene-heading"><span>第三步</span><h2>{mode==='班级反馈'?'班级课程反馈':'五维点评'}</h2></div><div className="review-subject-field" data-review-subject-field="true" data-review-subject-source={reviewSubject.source} data-review-subject-context={reviewLesson.contextSource} data-review-subject-picked={reviewSubject.picked?'true':'false'} data-review-subject-options={reviewLesson.options.length} data-review-subject-lesson-date={reviewLessonDate}>{reviewLesson.options.length?<label>本次课题<select value={reviewSubjectValue} onChange={event=>{setSubjectPick(event.target.value);setSubjectPicked(true)}} data-review-subject="true">{reviewLesson.options.map(item=><option key={item.value} value={item.value} data-review-subject-option={item.source}>{item.label}</option>)}</select></label>:<b className="review-subject-empty" data-review-subject-empty="true">还没有可选课题</b>}<small data-review-subject-note="true">{reviewSubjectNote}</small></div><p className="evidence">{mode==='班级反馈'?'以下内容基于本节课课程设计、班级素材与老师观察生成，老师可编辑确认后发布给家长。':`下列内容由大模型生成：先读懂作品与课堂素材，再结合「${activeProfileLabel}」的人设、已启用技能与长期记忆，按五个维度分别输出评语。老师可逐条修改后再发布。`}</p>{reviewRecoveryField}{mode==='班级反馈'?<ClassReviewContent subject={reviewSubjectValue}/>:<><div className={`review-source ${reviewGenerated?'ai':'pending'}`}>{reviewGenerated?<><Sparkles size={14}/><span>当前正文由大模型「{activeProfileLabel}」依据人设、技能与长期记忆生成，可直接编辑。</span></>:<><Sparkles size={14}/><span>五个维度等待大模型生成：点击上方「开始生成点评」，评语会逐字写入这里。</span></>}{keywordDirty&&reviewGenerated?<em>观察词已调整，建议重新生成</em>:null}</div>{Object.entries(reviews).map(([name,copy])=><article className={`coach-card${copy?'':' is-empty'}`} key={name}><b>{name}{copy?null:<em className="review-pending">待生成</em>}</b><textarea aria-label={name} value={copy} placeholder={REVIEW_DIMENSION_HINTS[name]||''} onChange={event=>setReviews(current=>({...current,[name]:event.target.value}))}/></article>)}</>}{reviewArchiveGateField}{archiveAccessField}<div className="scene-actions"><Button variant="secondary" onClick={()=>go(2)}>返回智能装裱</Button><Button icon={Archive} onClick={archiveRecord} disabled={!reviewArchiveGate.ok||!archiveAccess.allowed} data-archive-gate={reviewArchiveGate.ok?'ok':'blocked'} data-archive-access={archiveAccess.allowed?'allowed':'denied'} data-archive-access-reason={archiveAccess.allowed?'':archiveAccess.reason} data-archive-mode={archiveIsUpdate?'update':'create'} data-archive-version={archivedRecord?String(archivedRecord.version):''} data-archive-media-phase={archiveMediaAttempt.phase} data-archive-block-reason={reviewArchiveGate.ok?'':reviewArchiveGate.reasonText} title={archiveIsUpdate?'本次归档会更新已有的那条档案记录（同一课次 + 同一位学员只留一条）':'本次归档会新建一条档案记录'}>{archived?'保存修改并更新档案':'归档并生成分享'}</Button></div></div></section>:null}
+      {step===4?<section className="share-task scene-panel" data-archive-step="true" data-archive-step-state={archiveStep.state} data-archive-step-label={archiveStep.stateLabel}><img src={pandaObserve} alt="熊猫成长伙伴"/><div><span data-archive-step-headline="true">{archiveStep.state===ARCHIVE_STEP_STATES.archived?`已写入 ${(currentArchiveRecord?.student)||selectedStudentLabel} 的成长档案`:'归档状态'}</span><h2>{archiveStep.headline}</h2><p data-archive-step-note="true">{archiveStep.state===ARCHIVE_STEP_STATES.archived?'作品、课堂照片与五维点评已经写入成长档案。':archiveStep.note}</p>{archiveStep.state===ARCHIVE_STEP_STATES.archived&&archiveStep.hint?<small className="archive-step-hint" data-archive-step-hint="true">{archiveStep.hint}</small>:null}{archiveSummaryField}{archiveAuditField}{archiveMediaSyncField}{archiveForwardChip}{archiveShareOpen?archiveShareField:null}<div className="share-actions scene-actions"><Button variant="secondary" onClick={()=>go(3)} data-archive-return-review="true">返回修改点评</Button><Button icon={MessageSquareText} onClick={toggleArchiveShare} data-archive-share-toggle="true" data-archive-share-open={archiveShareOpen?'true':'false'} aria-expanded={archiveShareOpen}>转发给家长</Button><Button icon={FileText} onClick={()=>navigate('archives',{student:(currentArchiveRecord?.student)||selectedStudentLabel,className:(currentArchiveRecord?.className)||selectedClassLabel})} data-archive-enter-archive="true">进入成长档案</Button></div></div></section>:null}
     </section></>;
 }
 
@@ -7374,7 +7594,78 @@ function ParentArchiveBound({records=[],parentStudent}){
   return <><PageHeader title={`${child.name}的成长档案`} desc="记录每一次表达、尝试与进步。" prd={PRD.archives} actions={<Button variant="secondary" icon={Download}>下载阶段报告</Button>}/><div className="archive-feature parent"><div><span className="avatar xl">{child.name[0]}</span><div><h2>个人成长档案</h2><p>已归档 {entries.length} 次课程记录</p></div></div><Status value={child.guardianName?'已绑定':'待绑定'}/></div><section className="parent-bound-timeline"><h2>成长时间线</h2>{entries.length?entries.map(entry=><article key={entry.id}><time>{entry.date}</time><div><b>{entry.status==='缺课'?'这节课，先为孩子留下一页。':`《${entry.title}》`}</b><p>{entry.status==='缺课'?entry.reviews?.summary:entry.reviews?.美术能力}</p>{parentEntryMedia(entry).length?<div className="parent-entry-media">{parentEntryMedia(entry).map((media,index)=><figure key={`${entry.id}-media-${index}`} data-parent-media-kind={media.kind} data-parent-media-status={media.status} data-parent-media-placeholder={media.placeholder?'true':'false'}>{media.placeholder?<span className="archive-media-placeholder" data-parent-media-hold="true">{media.placeholderText}</span>:<img src={media.url} alt={media.name||media.kindLabel}/>}<figcaption>{media.kindLabel}</figcaption></figure>)}</div>:null}</div></article>):<p>老师发布作品和点评后，会在这里呈现。</p>}</section></>;
 }
 function ParentInsight({setToast}){const [done,setDone]=useState(false);return <><PageHeader title="作品表达观察" desc="从绘画中理解孩子当下的表达；结论仅供亲子沟通与教育陪伴参考，不作心理诊断。" prd="PRD-5 / F-PARENT-INSIGHT-01"/>{!done?<section className="insight-shell"><div className="insight-copy"><span>温和的看见，而不是给孩子贴标签</span><h2>让一幅画，成为<br/>走近孩子的入口。</h2><p>上传孩子近期独立完成的作品。AI 将结合色彩、构图与符号表达，生成可与孩子展开对话的观察线索和家庭陪伴建议。</p><ul><li><Check/>不评价好坏，只关注表达</li><li><Check/>不作医学或心理诊断</li><li><Check/>每次观察自动归入成长档案</li></ul></div><div className="insight-upload"><img src={pandaObserve} alt="熊猫艺术导师"/><UploadCloud size={28}/><b>上传一幅孩子的作品</b><span>JPG、PNG，建议在自然光下拍摄</span><Button onClick={()=>{setDone(true);setToast('作品观察已生成')}} icon={Sparkles}>生成温和观察</Button></div></section>:<section className="insight-result"><div className="insight-art">✺<small>《太阳花园》· 陈一诺</small></div><div><span className="result-label">作品表达观察</span><h2>一诺正在用明亮的色彩<br/>确认自己的想象力。</h2><p>画面里反复出现的黄色和向上伸展的线条，可能是在表达积极的能量与被看见的愿望。她大胆加入蓝色，不急着追求“像不像”，显示出对自我表达的信心正在生长。</p><div className="parent-tip"><b>今晚可以这样聊</b><span>“这朵花好像很有力量。你觉得它今天想把光送给谁？”</span></div><Button onClick={()=>setToast('已保存到陈一诺的成长档案')} icon={Archive}>保存到成长档案</Button></div></section>}</>}
-function AuthorizationPage({setToast}){return <><PageHeader title="授权管理" desc="管理孩子作品、肖像和课堂视频的使用范围。" prd="PRD-16 / F-CONSENT-01"/><div className="panel consent"><div className="consent-head"><span><ShieldCheck/></span><div><h2>陈一诺 · 监护人授权</h2><p>当前授权有效期至 2027-08-04</p></div><Status value="正常"/></div>{[['用于生成课后反馈','允许处理作品、照片和视频'],['用于个人成长档案','允许长期保存已发布记录'],['用于机构内部教学展示','仅本机构老师可见'],['用于公开案例展示','默认关闭，需单独授权']].map((x,i)=><label className="toggle-row" key={x[0]}><div><b>{x[0]}</b><small>{x[1]}</small></div><input type="checkbox" defaultChecked={i<3}/><span/></label>)}<div className="consent-actions"><Button variant="danger" onClick={()=>setToast('撤回申请已提交，公开分享将立即关闭')}>申请撤回授权</Button><Button variant="secondary" icon={Download}>下载授权记录</Button></div></div></>}
+/**
+ * 授权管理（家长端；[第四步 US-211] 第 3 条）：
+ *  - 授权状态读 `data/consent.js` 那一份唯一来源（老师端第一步的提示、第四步转发前的闸门读同一份）；
+ *  - 「申请撤回授权」是**真动作**：撤回是终态（`revokeConsent`）+ **连带**把这位孩子名下所有仍可用的
+ *    分享链接一起撤掉（`revokeShareTokensForStudent`）—— 验收原文「授权撤回后，已有分享链接一并失效」
+ *    就是这两份产物；同时把授权状态推到服务端（`saveRemoteArchiveConsents`，服务端据此也判失效）；
+ *  - 撤回与每一条链接的失效都留痕（`consent.revoke` / `archive.share.revoke`），管理端可查。
+ */
+function AuthorizationPage({setToast,parentStudent='',consents=null,setConsents=()=>{},shareTokens=[],setShareTokens=()=>{},recordAudit=()=>{},auditActor=null}){
+  const childName=parentStudent||roleMeta.parent.name.replace(/妈妈|爸爸|家长/g,'')||'孩子';
+  const consent=Array.isArray(consents)?findConsent(consents,{name:childName}):null;
+  const authorized=isViewAuthorized(consent);
+  const revoked=Boolean(consent&&consent.status==='revoked');
+  const statusText=revoked?CONSENT_REVOKED_BADGE:(authorized?'已授权':'待家长完成查看授权');
+  const [confirming,setConfirming]=useState(false);
+  const [notice,setNotice]=useState({phase:'idle',message:'',links:0});
+  const [serverNote,setServerNote]=useState('');
+  const activeLinks=shareTokens.filter(item=>item&&item.student===childName&&!item.revokedAt).length;
+  const revoke=()=>{
+    const at=new Date().toISOString();
+    const by=consent?.guardianName||roleMeta.parent.name;
+    // ① 撤回授权（终态）② 连带撤回这位孩子名下仍可用的分享链接（两件事同一次动作）。
+    const consentResult=revokeConsent(Array.isArray(consents)?consents:[],{name:childName},{at,by});
+    // 底账先与本机镜像并一次（另一张标签页刚记下的打开次数 / 发送记录不能被这一次写入写小）。
+    const ledger=mergeShareTokens(shareTokens,loadShareTokens());
+    const tokenResult=revokeShareTokensForStudent(ledger,childName,{at,by});
+    setConsents(consentResult.consents);
+    setShareTokens(tokenResult.tokens);
+    persistConsents(consentResult.consents);
+    persistShareTokens(tokenResult.tokens);
+    setConfirming(false);
+    const message=consentRevocationNotice({studentName:childName,linkCount:tokenResult.revoked.length});
+    setNotice({phase:'done',message,links:tokenResult.revoked.length});
+    setToast(message);
+    // ③ 留痕：授权撤回一条 + 每一条被连带撤回的链接一条（管理端「转发与授权审计」看得到）。
+    const actor=auditActor||{actorId:roleMeta.parent.name,actorName:roleMeta.parent.name,actorRole:'parent',actorRoleLabel:'家长'};
+    recordAudit({...actor,orgId:DEFAULT_ORG_ID,action:AUDIT_ACTIONS.consentRevoke,studentId:consentResult.record?.studentId||'',objectName:childName,detail:`${childName} 的家长撤回查看授权，连带撤回 ${tokenResult.revoked.length} 条分享链接`});
+    tokenResult.revoked.forEach(item=>{
+      recordAudit({...actor,orgId:DEFAULT_ORG_ID,action:AUDIT_ACTIONS.shareRevoke,studentId:item.studentId,studentName:item.student,lessonDate:item.lessonDate,recordId:item.recordId,version:item.version,shareToken:item.token,scope:item.className,detail:`家长撤回授权后，这条分享链接一并失效（第 ${item.version} 版）`});
+      void revokeRemoteShareToken(item).catch(()=>{});
+    });
+    // ④ 推服务端：授权状态落服务端（撤回后服务端也判这条链接失效）。连不上只影响这一条读数，不阻断撤回。
+    void saveRemoteArchiveConsents(consentResult.consents,{role:'teacher',actorId:roleMeta.teacher.name})
+      .then(result=>setServerNote(result.ok?'授权状态已同步到服务端：服务端也会拒绝这条链接。':`${result.message}（本机撤回已生效）`))
+      .catch(()=>setServerNote('授权状态未同步到服务端（本机撤回已生效）。'));
+  };
+  return <>
+    <PageHeader title="授权管理" desc="管理孩子作品、肖像和课堂视频的使用范围；撤回授权会让已发出的分享链接一并失效。" prd="PRD-16 / F-CONSENT-01"/>
+    <div className="panel consent" data-consent-page="true" data-consent-student={childName} data-consent-status={consent?consent.status:'none'} data-consent-status-label={statusText} data-consent-revoked-at={consent?.revokedAt||''} data-consent-active-links={String(activeLinks)} data-consent-invalidated-links={String(notice.links||0)}>
+      <div className="consent-head">
+        <span><ShieldCheck/></span>
+        <div><h2>{childName} · 监护人授权</h2><p>{authorized?`当前授权有效期至 ${consent?.expiresAt||'—'}`:revoked?`已于 ${archiveRetentionDateText(consent?.revokedAt)||'—'} 撤回查看授权`:CONSENT_REVOKE_DESC}</p></div>
+        <Status value={revoked?CONSENT_REVOKED_BADGE:(authorized?'正常':'待授权')}/>
+      </div>
+      {[['用于生成课后反馈','允许处理作品、照片和视频'],['用于个人成长档案','允许长期保存已发布记录'],['用于机构内部教学展示','仅本机构老师可见'],['用于公开案例展示','默认关闭，需单独授权']].map((x,i)=><label className="toggle-row" key={x[0]}><div><b>{x[0]}</b><small>{x[1]}</small></div><input type="checkbox" defaultChecked={authorized&&i<3}/><span/></label>)}
+      <div className="consent-revoke" data-consent-revoke-block="true">
+        <b>{CONSENT_REVOKE_TITLE}</b>
+        <small data-consent-revoke-desc="true">{CONSENT_REVOKE_DESC}</small>
+        <small data-consent-revoke-note="true">{CONSENT_REVOKE_NOTE}</small>
+        {confirming?<div className="consent-revoke-actions">
+          <Button variant="danger" onClick={revoke} data-consent-revoke-confirm="true">{CONSENT_REVOKE_CONFIRM_LABEL}</Button>
+          <Button variant="secondary" onClick={()=>setConfirming(false)} data-consent-revoke-cancel="true">{CONSENT_REVOKE_CANCEL_LABEL}</Button>
+        </div>:<div className="consent-revoke-actions">
+          <Button variant="danger" onClick={()=>setConfirming(true)} disabled={revoked} data-consent-revoke="true">{CONSENT_REVOKE_LABEL}</Button>
+          <Button variant="secondary" icon={Download}>下载授权记录</Button>
+        </div>}
+        {notice.message?<small data-consent-revoke-notice="true">{notice.message}</small>:null}
+        {serverNote?<small data-consent-server-note="true">{serverNote}</small>:null}
+      </div>
+    </div>
+  </>;
+}
 function ProfilePage(){return <><PageHeader title="个人中心" desc="管理账号、安全设置和消息通知。" prd="PRD-5 / F-PROFILE-01"/><div className="settings-stack"><div className="panel profile-card"><span className="avatar xl">陈</span><div><h2>陈一诺妈妈</h2><p>138****2026 · 已绑定 1 名学员</p></div><Button variant="secondary">编辑资料</Button></div><div className="panel settings-list">{[['账号与安全','手机号、登录设备和账号注销'],['消息通知','课后反馈、阶段报告和授权变更'],['隐私设置','数据导出、保存期限和授权记录']].map(x=><button key={x[0]}><div><b>{x[0]}</b><small>{x[1]}</small></div><ArrowRight/></button>)}</div></div></>}
 
 function AdminDashboard({navigate}){return <><PageHeader title="运营总览" desc="监控平台业务、AI 调用质量、成本与风险。" prd="PRD-6 / F-ADMIN-01" actions={<Button icon={Plus} onClick={()=>navigate('apps')}>新增 AI 应用</Button>}/><div className="stats"><Stat label="今日 AI 任务" value="1,284" delta="较昨日 +12.8%" icon={Sparkles}/><Stat label="任务成功率" value="96.7%" delta="目标 ≥95%" icon={CircleCheck} tone="green"/><Stat label="今日预估成本" value="¥ 428.60" delta="预算内 72%" icon={Zap} tone="yellow"/><Stat label="待处理告警" value="3" delta="1 个高优先级" icon={CircleAlert} tone="coral"/></div><div className="admin-grid"><div className="panel health-panel"><div className="panel-head"><h2>模型池健康度</h2><button className="text-link" onClick={()=>navigate('providers')}>管理模型</button></div>{[['文本模型池','99.2%','正常'],['图片模型池','97.8%','正常'],['视频模型池','91.4%','需关注'],['视觉理解 / ASR','98.6%','正常']].map(x=><div className="health-row" key={x[0]}><div><b>{x[0]}</b><span>{x[1]} 成功率</span></div><div className="sparkline"><i/><i/><i/><i/><i/></div><Status value={x[2]}/></div>)}</div><div className="panel alerts"><div className="panel-head"><h2>实时告警</h2><Bell/></div><div className="alert-item high"><CircleAlert/><div><b>视频主模型错误率升高</b><span>已自动切换备用模型 · 8 分钟前</span></div></div><div className="alert-item"><Clock3/><div><b>图片任务队列延迟</b><span>P95 达 4.8 分钟 · 21 分钟前</span></div></div><div className="alert-item"><Zap/><div><b>供应商余额低于阈值</b><span>VisualCloud · 1 小时前</span></div></div></div></div><TaskTable tasks={taskSeed} title="最近生成任务" onView={()=>navigate('logs')}/></>}
@@ -7399,7 +7690,69 @@ function LogsPage({tasks,role='admin',traceLog=[],tracePolicy=null,traceSource=n
   useEffect(()=>{let active=true;setLoading(true);Promise.resolve(refreshReviewTraces()).catch(()=>{}).then(()=>{if(active)setLoading(false)});return()=>{active=false}},[]);
   const refresh=()=>{setLoading(true);Promise.resolve(refreshReviewTraces()).catch(()=>{}).then(()=>setLoading(false))};
   return <><PageHeader title="生成日志" desc="追踪逻辑任务、供应商调用 attempt、降级、用量与成本，并审计每一次点评的完整轨迹。" prd={PRD.logs} actions={<Button variant="secondary" icon={Download}>导出日志</Button>}/><div className="log-summary"><span><b>96.7%</b>成功率</span><span><b>4.2s</b>P95 文本延迟</span><span><b>¥428.60</b>今日成本</span><span><b>18</b>自动降级</span></div><TaskTable tasks={tasks} title="任务与调用明细"/><ReviewTraceLogsPanel role={role} viewer={traceViewer} traces={traceLog} policy={tracePolicy} sourceNote={traceSource?.note||''} loading={loading} onRefresh={refresh} recordAudit={auditTraceEntry} auditLog={auditLog} setToast={setToast}/><div className="panel trace"><div className="panel-head"><h2>调用链路示例 · T-0822</h2><Status value="生成中"/></div>{[['请求校验','通过','0.12s'],['模型池路由','Seedance 2（主）','0.03s'],['供应商调用 attempt-01','超时 · 自动重试','60.0s'],['供应商调用 attempt-02','MotionLite（备用）','运行中']].map((x,i)=><div className="trace-row" key={x[0]}><span className={i<3?'done':'running'}>{i<3?<Check/>:<RefreshCw/>}</span><div><b>{x[0]}</b><small>{x[1]}</small></div><em>{x[2]}</em></div>)}</div></>}
-function ArchiveAdmin({records=[],setRecords=()=>{},setToast=()=>{}}){
+/**
+ * 管理端的「转发与授权审计」（[第四步 US-211] 第 5 条）：按**学员 / 老师 / 时间 / 状态**四个维度筛选
+ * `auditLog` 里的归档与转发动作（归档创建 / 更新、跨班拒绝、分享生成、家长打开、撤回、授权撤回、
+ * 报告生成、到期清理）。查询规则全在 `data/archiveAudit.js`（零依赖纯函数），这里只渲染它的产物：
+ * `data-archive-audit-*` 读数与浏览器断言读同一份。
+ */
+function ArchiveAuditPanel({auditLog=[],records=[],shareTokens=[],recordAudit=()=>{},auditActor=null,setToast=()=>{}}){
+  const [student,setStudent]=useState('');
+  const [teacher,setTeacher]=useState('');
+  const [timeId,setTimeId]=useState(ARCHIVE_AUDIT_TIME_OPTIONS[0].id);
+  const [state,setState]=useState('all');
+  const options=useMemo(()=>archiveAuditFilterOptions(auditLog),[auditLog]);
+  const summary=useMemo(()=>archiveAuditSummary(auditLog),[auditLog]);
+  // 时间维度：预设窗口换算成 `from`（今天往前 N 天），`to` 留空（不限上限）—— 口径与预览一致。
+  const fromDay=useMemo(()=>{
+    const option=ARCHIVE_AUDIT_TIME_OPTIONS.find(item=>item.id===timeId)||ARCHIVE_AUDIT_TIME_OPTIONS[0];
+    if(!option.days) return '';
+    return new Date(Date.now()-option.days*24*60*60*1000).toISOString().slice(0,10);
+  },[timeId]);
+  const filtered=useMemo(()=>filterArchiveAuditEntries(auditLog,{student,teacher,from:fromDay,to:'',state}),[auditLog,student,teacher,fromDay,state]);
+  const resetFilters=()=>{setStudent('');setTeacher('');setTimeId(ARCHIVE_AUDIT_TIME_OPTIONS[0].id);setState('all')};
+  const emptyText=archiveAuditEmptyText({total:filtered.total,hiddenCount:filtered.hiddenCount});
+  return (
+    <section className="panel archive-audit" data-archive-audit-panel="true"
+      data-archive-audit-total={String(summary.total)} data-archive-audit-visible={String(filtered.count)}
+      data-archive-audit-hidden={String(filtered.hiddenCount)} data-archive-audit-denied={String(summary.denied)}
+      data-archive-audit-filter-student={student} data-archive-audit-filter-teacher={teacher}
+      data-archive-audit-filter-time={timeId} data-archive-audit-filter-state={state}
+      data-archive-audit-filter-from={fromDay}>
+      <div className="panel-head"><div><h2>{ARCHIVE_AUDIT_TITLE}</h2><p>{ARCHIVE_AUDIT_DESC}</p></div><em data-archive-audit-summary="true">{summary.text}</em></div>
+      <div className="filters archive-audit-filters">
+        <label>{ARCHIVE_AUDIT_FILTER_STUDENT_LABEL}<select value={student} onChange={event=>setStudent(event.target.value)} data-archive-audit-student-filter="true">
+          <option value="">{ARCHIVE_AUDIT_FILTER_ALL}</option>
+          {options.students.map(name=><option key={name} value={name}>{name}</option>)}
+        </select></label>
+        <label>{ARCHIVE_AUDIT_FILTER_TEACHER_LABEL}<select value={teacher} onChange={event=>setTeacher(event.target.value)} data-archive-audit-teacher-filter="true">
+          <option value="">{ARCHIVE_AUDIT_FILTER_ALL}</option>
+          {options.teachers.map(name=><option key={name} value={name}>{name}</option>)}
+        </select></label>
+        <label>{ARCHIVE_AUDIT_FILTER_TIME_LABEL}<select value={timeId} onChange={event=>setTimeId(event.target.value)} data-archive-audit-time-filter="true">
+          {ARCHIVE_AUDIT_TIME_OPTIONS.map(item=><option key={item.id} value={item.id}>{item.label}</option>)}
+        </select></label>
+        <label>{ARCHIVE_AUDIT_FILTER_STATE_LABEL}<select value={state} onChange={event=>setState(event.target.value)} data-archive-audit-state-filter="true">
+          {ARCHIVE_AUDIT_STATES.map(item=><option key={item.id} value={item.id}>{item.label}</option>)}
+        </select></label>
+        <Button variant="secondary" onClick={resetFilters} data-archive-audit-reset="true">{ARCHIVE_AUDIT_RESET_LABEL}</Button>
+      </div>
+      {filtered.rows.length?<ul className="archive-audit-rows" data-archive-audit-rows="true">
+        {filtered.rows.slice(0,40).map(row=><li key={row.id} data-archive-audit-row={row.id} data-archive-audit-action={row.action} data-archive-audit-state={row.state} data-archive-audit-actor={row.actorName} data-archive-audit-student={row.studentName} data-archive-audit-record={row.recordId} data-archive-audit-token={row.shareToken} data-archive-audit-version={row.version} data-archive-audit-at={row.at} data-archive-audit-outcome={row.outcome}>
+          <em className={`is-${row.state}`}>{row.stateLabel}</em>
+          <b>{row.actionLabel}</b>
+          <span>{row.actorName}{row.actorRoleLabel?`（${row.actorRoleLabel}）`:''}</span>
+          <span>对象：{row.objectText}{row.versionText?` · ${row.versionText}`:''}</span>
+          <time>{row.atText}</time>
+          {row.detail?<small>{row.detail}</small>:null}
+        </li>)}
+        {filtered.rows.length>40?<li className="archive-audit-more">另有 {filtered.rows.length-40} 条同样命中筛选，改窄筛选即可看清。</li>:null}
+      </ul>:<p className="archive-audit-empty" data-archive-audit-empty="true">{emptyText}</p>}
+    </section>
+  );
+}
+
+function ArchiveAdmin({records=[],setRecords=()=>{},setToast=()=>{},auditLog=[],shareTokens=[],recordAudit=()=>{},auditActor=null}){
   // 「素材同步失败」清单（[第四步 US-203] 第 5 条）：待处理的素材（上传没成功 / 对象存储未接入的
   // 本地副本）按记录聚合成一行，管理端可以逐条重试。清单与「算不算待处理」的判据都在 data 层
   // （`pendingArchiveMediaRecords`），这里只负责渲染与调用同一个重试入口（老师端第四步用的是它）。
@@ -7418,6 +7771,7 @@ function ArchiveAdmin({records=[],setRecords=()=>{},setToast=()=>{}}){
   };
   return <>
   <PageHeader title="档案管理" desc="检索、纠错、导出、删除和审计学员成长档案。" prd={PRD.archiveAdmin}/>
+  <ArchiveComplianceNote/>
   <section className="archive-media-admin" data-archive-media-admin="true" data-archive-media-pending={String(pending.length)} data-archive-media-last-result={lastResult}>
     <div className="archive-media-admin-head"><div><b>素材同步失败</b><small>{ARCHIVE_MEDIA_SYNC_HINT}</small></div><em data-archive-media-pending-count="true">{pending.length} 条记录待处理</em></div>
     {pending.length?<ul>{pending.map(item=><li key={item.id} data-archive-media-pending-row={item.id} data-archive-media-pending-status={item.status}>
@@ -7425,7 +7779,9 @@ function ArchiveAdmin({records=[],setRecords=()=>{},setToast=()=>{}}){
       <Button variant="secondary" icon={RefreshCw} disabled={retrying===item.id} onClick={()=>retryMedia(records.find(record=>record.id===item.id)||item)} data-archive-media-admin-retry={item.id}>{retrying===item.id?'同步中…':ARCHIVE_MEDIA_RETRY_LABEL}</Button>
     </li>)}</ul>:<p className="archive-media-admin-empty" data-archive-media-admin-empty="true">当前没有待同步的素材：新归档的图都已同步到对象存储（或已在本地持久副本上待接入对象存储）。</p>}
   </section>
-  <div className="filters"><div className="search-field"><Search/><input placeholder="学员姓名、档案 ID 或班级"/></div><select><option>全部授权状态</option><option>有效</option><option>已撤回</option></select></div><div className="archive-admin-grid">{['陈一诺','林小满','赵禾','周子墨','苏西','陆一白'].map((s,i)=><div className="archive-admin-card" key={s}><span className={`avatar lg a${i}`}>{s[0]}</span><div><b>{s}</b><small>档案 A-2026-00{i+12}</small></div><span>{12+i} 条记录</span><Status value={i===4?'待授权':'正常'}/><button className="icon-btn"><MoreHorizontal/></button></div>)}</div></>;
+  <div className="filters"><div className="search-field"><Search/><input placeholder="学员姓名、档案 ID 或班级"/></div><select><option>全部授权状态</option><option>有效</option><option>已撤回</option></select></div><div className="archive-admin-grid">{['陈一诺','林小满','赵禾','周子墨','苏西','陆一白'].map((s,i)=><div className="archive-admin-card" key={s}><span className={`avatar lg a${i}`}>{s[0]}</span><div><b>{s}</b><small>档案 A-2026-00{i+12}</small></div><span>{12+i} 条记录</span><Status value={i===4?'待授权':'正常'}/><button className="icon-btn"><MoreHorizontal/></button></div>)}</div>
+  <ArchiveAuditPanel auditLog={auditLog} records={records} shareTokens={shareTokens} recordAudit={recordAudit} auditActor={auditActor} setToast={setToast}/>
+  </>;
 }
 function PermissionsPage({setToast}){const perms=[['课后反馈','创建课次','上传素材','审核发布'],['AI 创作','使用生图','使用视频','使用点评'],['成长档案','查看','导出','纠错','删除'],['平台治理','应用管理','供应商密钥','模型启停','生成日志']];return <><PageHeader title="角色与权限" desc="功能权限与机构、校区、班级、学员数据范围同时生效。" prd={PRD.permissions} actions={<Button icon={Plus}>新建权限组</Button>}/><div className="permission-layout"><div className="panel role-list"><h2>角色/权限组</h2>{['平台超级管理员','机构管理员','老师','家长'].map((x,i)=><button className={i===2?'active':''} key={x}><ShieldCheck/><div><b>{x}</b><small>{[2,3,28,86][i]} 位用户</small></div></button>)}</div><div className="panel permission-matrix"><div className="panel-head"><div><h2>老师</h2><p>默认角色 · 仅访问被授权班级和学员</p></div><Button onClick={()=>setToast('权限配置已保存')}>保存更改</Button></div>{perms.map((g,gi)=><div className="permission-group" key={g[0]}><b>{g[0]}</b><div>{g.slice(1).map((p,pi)=><label key={p}><input type="checkbox" defaultChecked={gi<3||pi===0}/><span/>{p}</label>)}</div></div>)}</div></div></>}
 /**
@@ -7465,7 +7821,101 @@ function TraceRetentionSection({policy,setPolicy,traces=[],onCleanup=()=>{},setT
   </div>;
 }
 
-function SettingsPage({setToast,tracePolicy=null,setTracePolicy=()=>{},traceLog=[],cleanupReviewTraces=()=>{}}){return <><PageHeader title="系统配置" desc="管理上传阈值、任务超时、数据保存和通知策略。" prd="PRD-8.3 / F-CONFIG-01"/><div className="settings-stack"><div className="panel config-section"><h2>上传与任务阈值</h2><div className="form-grid"><label>每班学员上限<input defaultValue="60"/></label><label>单任务作品图上限<input defaultValue="30"/></label><label>单任务照片上限<input defaultValue="100"/></label><label>单个视频上限（分钟）<input defaultValue="10"/></label></div></div><div className="panel config-section"><h2>数据保存与隐私</h2><div className="form-grid"><label>原始素材默认保存<select><option>365 天</option><option>180 天</option><option>长期</option></select></label><label>删除冷静期<select><option>7 天</option><option>立即删除</option><option>30 天</option></select></label></div></div><TraceRetentionSection policy={tracePolicy} setPolicy={setTracePolicy} traces={traceLog} onCleanup={cleanupReviewTraces} setToast={setToast}/><div><Button onClick={()=>setToast('系统配置已保存')}>保存配置</Button></div></div></>}
+/**
+ * 归档策略对表（[第四步 US-211]）：服务端在 `GET /api/compliance/archive-policy` 里**声明**自己的口径
+ * （保留期默认 / 访问范围 / 分享链接失效规则 / 真正做判定的接口），客户端拿它对着本机的默认值核一遍。
+ * 与「儿童素材存储策略」同一个做法：声明与执行两件事都要看得见，连不上服务端时如实说「未取到」。
+ */
+function ArchiveComplianceNote(){
+  const [state,setState]=useState({phase:'loading',policy:null,message:''});
+  useEffect(()=>{
+    let active=true;
+    fetchRemoteArchivePolicy().then(result=>{if(!active)return;setState({phase:result.ok?'ready':'failed',policy:result.policy,message:result.message})}).catch(()=>{});
+    return()=>{active=false};
+  },[]);
+  const policy=state.policy||{};
+  const serverDefault=Number(policy.retention&&policy.retention.defaultDays);
+  const consistent=Number.isFinite(serverDefault)&&serverDefault===ARCHIVE_RETENTION_DEFAULT_DAYS;
+  const linksInvalidated=Boolean(policy.shareLink&&policy.shareLink.invalidatedOnConsentRevocation);
+  const enforcedOn=Array.isArray(policy.enforcedOn)?policy.enforcedOn:[];
+  return (
+    <section className="panel archive-compliance" data-archive-compliance="true"
+      data-archive-compliance-phase={state.phase}
+      data-archive-compliance-server-default={Number.isFinite(serverDefault)?String(serverDefault):''}
+      data-archive-compliance-client-default={String(ARCHIVE_RETENTION_DEFAULT_DAYS)}
+      data-archive-compliance-consistent={consistent?'true':'false'}
+      data-archive-compliance-links-invalidated={linksInvalidated?'true':'false'}
+      data-archive-compliance-enforced-on={enforcedOn.join(',')}>
+      <div className="panel-head"><div><h2>归档权限与合规</h2><p>{ARCHIVE_ACCESS_SUMMARY}</p></div><em data-archive-compliance-note="true">{state.phase==='ready'?`服务端声明：保留期默认 ${Number.isFinite(serverDefault)?`${serverDefault} 天`:'—'}${consistent?'（与平台隐私策略一致）':'（与客户端默认 365 天不一致，请核对）'}`:state.phase==='loading'?'正在读取服务端口径…':'服务端声明未取到（开发适配器未启动时属正常）'}</em></div>
+      <div className="archive-compliance-grid">
+        <ul className="archive-access-matrix" data-archive-access-matrix="true">
+          {ARCHIVE_ACCESS_MATRIX.map(row=><li key={row.role} data-archive-access-role={row.role}>
+            <b>{row.label}</b><span>{row.scope}</span><small>{row.note}</small>
+          </li>)}
+        </ul>
+        <div className="archive-compliance-server" data-archive-compliance-server="true">
+          <b>服务端强制校验</b>
+          {enforcedOn.length?<ul>{enforcedOn.map(entry=><li key={entry}><code>{entry}</code></li>)}</ul>:<small>服务端未声明校验点（开发适配器未启动时属正常）。</small>}
+          <small data-archive-compliance-links-note="true">{linksInvalidated?'家长撤回授权后，已有分享链接一并失效：服务端与客户端各判一次。':'服务端未声明「授权撤回后链接失效」规则。'}</small>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/**
+ * 归档数据的保留期与到期清理（[第四步 US-211] 第 6 条）：保留期可配（默认与平台隐私策略一致）、
+ * 到期清理**先预览影响范围**（逐条列出会被清理的档案：哪位学员、哪一天、第几版、几张素材、几条链接），
+ * 确认后才执行；执行会连带把那些档案从本机镜像与云端一起摘掉，并留一条审计。
+ * 预览与执行读同一份纯函数（`data/archiveRetention.js`），所以不会出现「预览说 3 条、执行删 5 条」。
+ */
+function ArchiveRetentionSection({policy,setPolicy,records=[],setRecords=()=>{},tokens=[],recordAudit=()=>{},auditActor=null,setToast=()=>{}}){
+  const [preview,setPreview]=useState(null);
+  const current=normalizeArchiveRetentionPolicy(policy);
+  const change=patch=>{setPolicy(prev=>archiveRetentionPolicyPatch(prev,patch,{updatedBy:roleMeta.admin.name,at:new Date().toISOString()}));setPreview(null)};
+  const runPreview=()=>{
+    const next=archiveCleanupPreview(records,current,new Date().toISOString(),{tokens});
+    setPreview(next);
+    setToast(next.total===0?'预览完成：还没有归档记录':(next.expiredCount?`预览完成：${next.expiredCount} 条到期，${next.keepCount} 条保留`:'预览完成：没有到期档案'));
+    return next;
+  };
+  const runCleanup=()=>{
+    const now=new Date().toISOString();
+    const result=applyArchiveRetentionCleanup(records,current,now,{tokens});
+    setRecords(()=>result.kept);
+    // 执行之后面板上的预览**换成清理后的那一份**（同一支纯函数重算）：到期数翻到 0、
+    // 「执行清理」按钮随之禁用，不会让人以为还能再点一次；刚才清掉了什么由回执 / 审计说明。
+    setPreview(archiveCleanupPreview(result.kept,current,now,{tokens}));
+    const message=archiveCleanupNotice(result.preview);
+    setToast(message);
+    if(result.removed.length){
+      const actor=auditActor||{actorId:roleMeta.admin.name,actorName:roleMeta.admin.name,actorRole:'platform-admin',actorRoleLabel:'平台超级管理员'};
+      const names=result.removed.map(item=>item.student).filter(Boolean);
+      recordAudit({...actor,orgId:DEFAULT_ORG_ID,action:AUDIT_ACTIONS.retentionCleanup,detail:`按「保留 ${result.preview.retentionText}」清理 ${result.removed.length} 条到期档案（截止 ${result.preview.cutoffText||'—'}）：${names.slice(0,3).join('、')||'—'}${names.length>3?' 等':''}`});
+    }
+    return {removed:result.removed.length,preview:result.preview};
+  };
+  return <div className="panel config-section archive-retention" data-archive-retention-section="true" data-archive-retention-value={current.retentionDays} data-archive-retention-text={archiveRetentionText(current.retentionDays)}>
+    <h2>{ARCHIVE_RETENTION_SECTION_TITLE}</h2>
+    <p className="config-note">{ARCHIVE_RETENTION_SECTION_DESC}</p>
+    <div className="form-grid">
+      <label>归档保留期<select data-archive-retention="true" value={current.retentionDays} onChange={event=>change({retentionDays:Number(event.target.value)})}>{ARCHIVE_RETENTION_OPTIONS.map(option=><option key={option.days} value={option.days}>{option.label}</option>)}</select></label>
+    </div>
+    <div className="archive-retention-actions">
+      <Button variant="secondary" onClick={runPreview} data-archive-retention-preview="true">{ARCHIVE_RETENTION_PREVIEW_LABEL}</Button>
+      <Button variant="secondary" disabled={!preview||preview.expiredCount===0} onClick={runCleanup} data-archive-retention-cleanup="true">{`执行清理${preview&&preview.expiredCount?`（${preview.expiredCount} 条）`:''}`}</Button>
+      <small data-archive-retention-summary="true">{archiveRetentionSummary(current)}</small>
+    </div>
+    <small className="trace-policy-note" data-archive-retention-policy-note="true">{ARCHIVE_RETENTION_POLICY_NOTE}</small>
+    {preview?<div className="archive-cleanup-preview" data-archive-cleanup-preview="true" data-archive-cleanup-expired={String(preview.expiredCount)} data-archive-cleanup-keep={String(preview.keepCount)} data-archive-cleanup-total={String(preview.total)} data-archive-cleanup-cutoff={preview.cutoff||''} data-archive-cleanup-media={String(preview.mediaTotal)} data-archive-cleanup-shares={String(preview.shareTotal)}>
+      <p data-archive-cleanup-text="true">{preview.text}</p>
+      {preview.expired.length?<ul data-archive-cleanup-rows="true">{preview.expired.slice(0,10).map(row=><li key={row.id} data-archive-cleanup-row={row.id} data-archive-cleanup-row-student={row.student} data-archive-cleanup-row-version={String(row.version)} data-archive-cleanup-row-media={String(row.mediaCount)} data-archive-cleanup-row-shares={String(row.shareCount)}>{row.text}</li>)}</ul>:null}
+      {preview.expired.length>10?<small>另有 {preview.expired.length-10} 条同样到期，执行清理时一并处理。</small>:null}
+    </div>:null}
+  </div>;
+}
+
+function SettingsPage({setToast,tracePolicy=null,setTracePolicy=()=>{},traceLog=[],cleanupReviewTraces=()=>{},archiveRetention=null,setArchiveRetention=()=>{},records=[],setRecords=()=>{},shareTokens=[],recordAudit=()=>{},auditActor=null}){return <><PageHeader title="系统配置" desc="管理上传阈值、任务超时、数据保存和通知策略。" prd="PRD-8.3 / F-CONFIG-01"/><div className="settings-stack"><div className="panel config-section"><h2>上传与任务阈值</h2><div className="form-grid"><label>每班学员上限<input defaultValue="60"/></label><label>单任务作品图上限<input defaultValue="30"/></label><label>单任务照片上限<input defaultValue="100"/></label><label>单个视频上限（分钟）<input defaultValue="10"/></label></div></div><div className="panel config-section"><h2>数据保存与隐私</h2><div className="form-grid"><label>原始素材默认保存<select><option>365 天</option><option>180 天</option><option>长期</option></select></label><label>删除冷静期<select><option>7 天</option><option>立即删除</option><option>30 天</option></select></label></div><small className="config-note">归档记录的保留期在下面单独配置（默认与这里的 365 天一致）；到期清理先预览影响范围再执行。</small></div><ArchiveRetentionSection policy={archiveRetention} setPolicy={setArchiveRetention} records={records} setRecords={setRecords} tokens={shareTokens} recordAudit={recordAudit} auditActor={auditActor} setToast={setToast}/><TraceRetentionSection policy={tracePolicy} setPolicy={setTracePolicy} traces={traceLog} onCleanup={cleanupReviewTraces} setToast={setToast}/><div><Button onClick={()=>setToast('系统配置已保存')}>保存配置</Button></div></div></>}
 
 function GuidePage({navigate}){const sections=[
  ['公共认证',['登录','注册','表单校验','角色快速体验'],PRD.auth,'从登录页开始'],

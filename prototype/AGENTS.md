@@ -378,6 +378,62 @@ React + Vite 单页原型（`src/main.jsx` 是主入口，另按模块拆出 `sr
 - **页脚那句「不含原图与内部记录」会让「页面不出现原图字样」这类朴素断言误报**：断言要排除页脚
   （`text.replace(foot, '')` 之后再判），否则把一句**如实声明**当成泄漏。
 
+## 归档的权限 · 审计 · 保留期（[第四步 US-211] / F-ARCHIVE-PERM-01）
+
+> 「老师只能归档与转发自己班级的学员记录；家长只能查看自己孩子的记录（服务端强制校验）；
+> 授权撤回后已有分享链接一并失效；归档创建/更新、分享生成、家长打开、撤回、报告生成都要留痕；
+> 管理端可按学员/老师/时间/状态查转发与授权审计；归档保留期可配、到期清理先预览影响范围。」
+> 四份零依赖 data 模块 + 一份服务层 + 服务端一组接口：
+> `data/archiveAccess.js`（访问规则）/ `data/archiveRetention.js`（保留期与清理）/
+> `data/archiveAudit.js`（管理端查询）/ `data/auditLog.js`（动作登记表，9 个归档动作）+
+> `services/archiveAccessApi.js`（服务端通道）+ `server/index.mjs`（`/api/archive/share-access`、
+> `/api/archive/consents`、`/api/compliance/archive-policy`）。
+
+- **访问规则只有一份，教师端 / 家长页 / 服务端读同一套口径**：`archiveRecordAccess({viewer, management,
+  student, className, record, action})` → `{allowed, reason, deniedText, scope, scopeLabel, classTeacher,
+  classFound, …}`（所有分支同形状）。判定顺序：认不出身份 → 拒绝；家长 → 拒绝（只能看分享链接）；
+  管理员 → 全平台；老师 → 这个班的 `class.teacher` 必须命中本人身份串。**没有 `teacher` 字段的旧班级
+  与「名单里没有的班」都按 US-403 口径算自己的班**（否则老数据会让老师一夜之间不能归档），
+  但 `classFound / legacy` 如实报出来。
+- **分享链接的访问判定叠三层**（`archiveShareAccessView`，被拦时 `contentVisible` 结构性为假）：
+  **服务端结论 > 授权撤回 > 家长范围**。授权撤回读的是授权记录本身（`shareTokenConsentIssue`：
+  只有明确 `revoked` 才算 —— `pending` / 没有记录不在这里拦，那是生成前闸门的事）。
+- **授权撤回 = 两件事同一次动作**：`revokeConsent`（终态，幂等，保留第一次的 `revokedAt`）+
+  `revokeShareTokensForStudent`（把这位孩子名下**仍可用**的令牌一起撤掉，已撤过的不动）。
+  授权状态还会推到服务端（`saveRemoteArchiveConsents`），服务端据此也判链接失效 ——
+  「前端隐藏不算数」这条才成立。
+- **审计动作登记表只增不改**：`AUDIT_ACTIONS` 里 9 个归档动作 + `ARCHIVE_AUDIT_ACTIONS` 清单；
+  新增的字段白名单是 `recordId / objectName / version / shareToken`，每条动作的必填清单在
+  `AUDIT_ACTION_REQUIRED`（面板回执读 `auditEntryMissingFields` 标缺项）。
+  **操作人四件套必须按当前角色分流**：`App` 的 `archiveAuditActor` 分 admin / parent / teacher 三种，
+  家长撤回授权绝不能记成老师干的（本轮真踩：沿用 `traceAuditActor` 时家长动作记成了老师）。
+- **保留期的锚点是 `archivedAt`**（不是课次日期）；清理的预览与执行读**同一支纯函数**
+  （`archiveCleanupPreview` / `applyArchiveRetentionCleanup`），所以不会「预览 3 条、执行删 5 条」。
+  预览与执行都会把**素材张数**算进影响范围 —— 数素材时注意：记录上 `media` 是**扁平素材数组**
+  （`normalizeArchiveMediaList` 的产物，每项带 `kind`），不是 `{artwork, photos}` 分组；
+  分组写法只在老夹具里出现过（实现里两种都容忍）。
+
+### 真踩的坑 / 验证要点（US-211）
+
+- **`pnpm run build` 全绿也可能白屏**：新面板里用到一个忘了 import 的纯函数（`archiveRetentionSummary`）
+  时，构建不报错、进页面直接 `ReferenceError` → 整个 `.content` 空掉。验证脚本必须**真的进这个页面**
+  并把「页面异常」打出来（`Runtime.exceptionThrown`），别只看 build。
+- **React 会按 fiber props 抑制禁用按钮上的 click**：`el.disabled=false; el.click()` 与 CDP 真实鼠标事件
+  都进不去（连 `dispatchEvent(new MouseEvent('click'))` 也一样）。要验「拦截在 handler 里、不是只靠置灰」，
+  取 fiber 上的 `onClick` 直接调一次：
+  `const key=Object.keys(el).find(k=>k.startsWith('__reactProps')); el[key].onClick({preventDefault(){},stopPropagation(){}})`。
+- **浏览器脚本里的每个标签页各拦一次云表**：`Network.setBlockedURLs` 是按 session 生效的。只拦主标签时，
+  家长分享页那个新标签会从**云端**读回一批记录，再经 `persistFeedbackRecords` 写进同一份 localStorage ——
+  后面的管理端读数会凭空多出几十条（本轮真踩：读到 33 条 + 归档被当成「更新第 2 版」）。
+- **中途重进流程要处理草稿**：US-409 的草稿会把 `step` 恢复回去，`openFlow` 后页面可能停在第三步；
+  要么清掉 `xinlehui-feedback-draft-v2` 再 `Page.reload`（会话状态在内存里，要重新登录），
+  要么点顶部流程导航的「创建信息」回第一步再「新建草稿」。侧边栏再点一次「课后反馈」**不会**重置组件。
+- **服务端夹具要复位**：`POST /api/archive/share-access` 读的是服务端自己存的授权状态
+  （`server/data/archive-consents.json`，gitignored），上一轮跑脚本推上去的「已撤回」会让下一轮的
+  分享页在**服务端**就被拦下。脚本开头先 `PUT /api/archive/consents` 复位、结尾再还原管理档案。
+- **对象存储 / 素材地址不参与这件事**：访问判定只看身份与授权，不看素材是否能显示；
+  链接能不能打开与图有没有同步是两件事（家长端仍是「图片同步中」占位）。
+
 ## 成长档案页的对象筛选（[第四步 US-205]）
 
 > `GrowthArchiveData.jsx` 只负责渲染；可选项 / 默认选中 / 过滤 / 空态四件事全在

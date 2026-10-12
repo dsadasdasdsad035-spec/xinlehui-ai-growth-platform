@@ -36,6 +36,10 @@ import { archiveMediaView } from './archiveMedia';
 import { ARCHIVE_ABSENCE_FALLBACK_TEXT, isAbsenceRecord } from './archiveResident';
 import { archiveShareLeaks, archiveSharePayload } from './archiveShare';
 import { REVIEW_DIMENSION_NAMES } from './reviewDetailPanel';
+import { findConsent } from './consent';
+// 访问判定（[第四步 US-211]）：授权撤回 → 链接失效；家长只能看自己孩子；服务端判定优先。
+// 规则本身在 `data/archiveAccess.js`（教师端与服务端读同一份口径），这里只把它的产物接进视图。
+import { archiveShareAccessView } from './archiveAccess';
 import { resolveShareToken, SHARE_TOKEN_PARENT_MESSAGES, SHARE_TOKEN_STATUS } from './shareTokens';
 
 const str = value => String(value === null || value === undefined ? '' : value).trim();
@@ -90,17 +94,20 @@ export const PARENT_SHARE_ACTIONS = Object.freeze([]);
 /**
  * 四个状态各自的整份读数**同形状**（`{state, headline, note}` 一次给全）。
  * US-204 的纪律：界面无条件渲染视图的产物，某个状态少给一个字段就会在渲染期炸成白屏。
+ *
+ * `blockedReason`（[第四步 US-211]）是**访问被拦**时的那一句：令牌本身可能仍可用（链接没坏），
+ * 但这次访问被服务端 / 授权撤回 / 家长范围拦下了 —— 页面照样按「打不开」渲染，只是细则换成真正的原因。
  */
-export function parentShareStateView(status, message = '') {
+export function parentShareStateView(status, message = '', blockedReason = '') {
   const state = str(status) || SHARE_TOKEN_STATUS.invalid;
-  const active = state === SHARE_TOKEN_STATUS.active;
+  const active = !str(blockedReason) && state === SHARE_TOKEN_STATUS.active;
   return {
     state: active ? SHARE_TOKEN_STATUS.active : state,
     headline: active ? PARENT_SHARE_ACTIVE_HEADLINE : PARENT_SHARE_BLOCKED_HEADLINE,
     // 「打不开」的细则只有一份（`SHARE_TOKEN_PARENT_MESSAGES`）—— 这里不写第二套温和文案。
     note: active
       ? PARENT_SHARE_READONLY_NOTE
-      : (str(message) || SHARE_TOKEN_PARENT_MESSAGES[state] || SHARE_TOKEN_PARENT_MESSAGES[SHARE_TOKEN_STATUS.invalid])
+      : (str(blockedReason) || str(message) || SHARE_TOKEN_PARENT_MESSAGES[state] || SHARE_TOKEN_PARENT_MESSAGES[SHARE_TOKEN_STATUS.invalid])
   };
 }
 
@@ -193,17 +200,26 @@ export function parentShareMediaView({ payload = null, student = '', lessonDate 
  *  - `payload`：`archiveSharePayload` 的产物（家长页读到的正文只从它来），`leaks`：配套的泄漏复核；
  *  - `open`：打开次数 / 首次打开时间 / 这次是不是首次 / 那一句温和的回执（界面不自己拼）。
  */
-export function parentShareView({ tokens = [], token = '', records = [], open = null, now = null, origin = '' } = {}) {
+export function parentShareView({ tokens = [], token = '', records = [], open = null, now = null, origin = '', consents = null, parentScope = null, serverAccess = null } = {}) {
   const resolved = resolveShareToken(tokens, token, now);
   const tokenRecord = resolved.record;
-  const stateView = parentShareStateView(resolved.status, resolved.message);
-  // 内容**只在令牌可用时**才去取：撤回 / 过期后连记录都不查，分享数据里就只剩令牌字段。
-  const record = resolved.active ? findSharedRecord(records, tokenRecord) : null;
-  const payload = archiveSharePayload({ record, token: resolved.active ? resolved.token : '', origin });
+  // 访问判定（[第四步 US-211]）：令牌可用之后还要过「服务端判定 → 授权撤回 → 家长范围」三关，
+  // 任何一关拦下都不展示内容（`contentVisible` 结构性为假）。
+  const consent = Array.isArray(consents)
+    ? findConsent(consents, { name: str(tokenRecord && tokenRecord.student), studentId: str(tokenRecord && tokenRecord.studentId) })
+    : null;
+  const access = archiveShareAccessView({ tokenRecord, active: resolved.active, consent, parentScope, serverAccess });
+  // 被拦下时（服务端 / 授权撤回 / 家长范围）按「打不开」渲染，细则换成真正的原因；
+  // 令牌本身不可用时维持原来的四种状态文案。
+  const stateView = parentShareStateView(resolved.status, resolved.message, access.allowed ? '' : access.reason);
+  // 内容**只在令牌可用且访问放行时**才去取：撤回 / 过期 / 被拦下之后连记录都不查，分享数据里就只剩令牌字段。
+  const contentVisible = resolved.active && access.allowed;
+  const record = contentVisible ? findSharedRecord(records, tokenRecord) : null;
+  const payload = archiveSharePayload({ record, token: contentVisible ? resolved.token : '', origin });
   const leaks = archiveShareLeaks({ payload, record });
-  // 课次信息只在令牌可用时给：不可用时连学员名 / 日期都不取（牌子上写着「打不开」，就不该再露出这个孩子）。
+  // 课次信息只在内容可见时给：不可用时连学员名 / 日期都不取（牌子上写着「打不开」，就不该再露出这个孩子）。
   // 可用但没有本机记录时仍能看到令牌上的学员与课次（那是老师转发时写过的那份），内容区给同步占位。
-  const visible = resolved.active;
+  const visible = contentVisible;
   const student = visible ? (payload.student || str(tokenRecord && tokenRecord.student)) : '';
   const lessonDate = visible ? (payload.lessonDate || str(tokenRecord && tokenRecord.lessonDate)) : '';
   const lessonDateText = parentShareDateText(lessonDate);
@@ -217,13 +233,19 @@ export function parentShareView({ tokens = [], token = '', records = [], open = 
   const archivedText = record ? str(record.archivedAt) : '';
   const openCount = tokenRecord ? Number(tokenRecord.openCount) || 0 : 0;
   return {
-    // 状态（四种同形状；`contentVisible` 只在可用时为真）
+    // 状态（四种同形状；`contentVisible` 只在令牌可用**且访问放行**时为真）
     state: stateView.state,
     status: resolved.status,
     statusLabel: resolved.statusLabel,
     found: resolved.found,
     active: resolved.active,
-    contentVisible: resolved.active,
+    contentVisible,
+    // 访问判定（US-211）：被拦下时给出 `blockedBy` 与那一句原因（界面只渲染，不自己判断）
+    access,
+    accessAllowed: access.allowed,
+    accessBlockedBy: access.blockedBy,
+    accessBlockedLabel: access.blockedByLabel,
+    accessReason: access.reason,
     headline: stateView.headline,
     note: stateView.note,
     // 机构视觉与标记
@@ -232,7 +254,7 @@ export function parentShareView({ tokens = [], token = '', records = [], open = 
     badge: PARENT_SHARE_BADGE,
     sectionTitles: PARENT_SHARE_SECTION_TITLES,
     // 课次信息（不可用时全为空串 —— 「打不开」的页面上不出现孩子的任何信息）
-    token: resolved.active ? resolved.token : '',
+    token: contentVisible ? resolved.token : '',
     student,
     studentLine: student ? `${student} 的成长档案` : '',
     className,
@@ -242,7 +264,7 @@ export function parentShareView({ tokens = [], token = '', records = [], open = 
     lessonLine: [lessonDateText, className].filter(Boolean).join(' · '),
     archivedText,
     recordFound: Boolean(record),
-    recordMissingNote: resolved.active && !record ? PARENT_SHARE_RECORD_MISSING_TEXT : '',
+    recordMissingNote: contentVisible && !record ? PARENT_SHARE_RECORD_MISSING_TEXT : '',
     // 内容
     artwork: media.artwork,
     photos: media.photos,

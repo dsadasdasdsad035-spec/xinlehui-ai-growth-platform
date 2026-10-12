@@ -58,7 +58,10 @@ export function normalizeConsent(raw) {
     status,
     viewAuthorized: status === CONSENT_STATUS.AUTHORIZED,
     authorizedAt: cleanText(source.authorizedAt),
-    expiresAt: cleanText(source.expiresAt)
+    expiresAt: cleanText(source.expiresAt),
+    // 撤回留痕（[第四步 US-211]）：撤回后才有的两个字段（同一份记录上，撤回是终态）。
+    revokedAt: status === CONSENT_STATUS.REVOKED ? cleanText(source.revokedAt) : '',
+    revokedBy: status === CONSENT_STATUS.REVOKED ? cleanText(source.revokedBy) : ''
   };
 }
 
@@ -159,4 +162,59 @@ export function consentSummaryOf(participants, consents) {
     items,
     message
   };
+}
+
+// ---------------------------------------------------------------------------
+// 授权撤回（[第四步 US-211] / F-ARCHIVE-PERM-01）
+// ---------------------------------------------------------------------------
+//
+// 验收原文：「转发受家长授权状态约束；授权撤回后，已有分享链接一并失效」。
+// 撤回是**终态**（`revokedAt` 一写就不会被 `viewAuthorized` 顶回已授权，见 `normalizeConsent`），
+// 落一条撤回来的记录；「已有的分享链接一并失效」由 `data/shareTokens.js` 的
+// `revokeShareTokensForStudent` 把这位学员名下所有**仍可用**的令牌一起撤掉 ——
+// 两件事在同一次动作里做完（`AuthorizationPage` 的撤回按钮读的也是这两份产物）。
+
+/** 撤回按钮的文案（界面不各写一份）。 */
+export const CONSENT_REVOKE_LABEL = '申请撤回授权';
+export const CONSENT_REVOKE_CONFIRM_LABEL = '确认撤回授权';
+export const CONSENT_REVOKE_CANCEL_LABEL = '再想想';
+export const CONSENT_REVOKE_TITLE = '撤回查看授权';
+export const CONSENT_REVOKE_DESC = '撤回后：老师无法再把新的成长记录转发给你；已经发出去的分享链接会「一并失效」（家长再打开会看到「该分享已撤回」）。';
+export const CONSENT_REVOKE_NOTE = '撤回是终态：要重新开通需要监护人再次确认（授权记录里会留下撤回时间与操作人）。';
+export const CONSENT_REVOKED_BADGE = '已撤回授权';
+
+/** 撤回后的回执（0 条链接时也要说清「没有链接需要失效」）。 */
+export function consentRevocationNotice({ studentName = '', linkCount = 0 } = {}) {
+  const name = cleanText(studentName) || '这位学员';
+  const count = Math.trunc(Number(linkCount)) || 0;
+  const linkText = count ? `已连带撤回 ${count} 条分享链接（家长再打开会看到「该分享已撤回」）。` : '当前没有可用的分享链接需要失效。';
+  return `${name}的家长查看授权已撤回：${linkText}`;
+}
+
+/**
+ * 撤回一位学员的查看授权（写入侧，幂等）：已经撤过的保持**第一次**的撤回时间（不改写历史）。
+ * 返回 `{consents, record, changed, studentName}` —— `record` 是撤回来的那份授权记录
+ * （界面用它渲染「已撤回授权」与撤回时间），`changed: false` 时不写盘。
+ */
+export function revokeConsent(consents, student, { at = '', by = '' } = {}) {
+  const list = (Array.isArray(consents) ? consents : []).map(normalizeConsent);
+  const name = cleanText(student && typeof student === 'object' ? (student.name ?? student.studentName) : student);
+  const studentId = cleanText(student && typeof student === 'object' ? student.studentId : '');
+  let changed = false;
+  let record = null;
+  const next = list.map(item => {
+    const matched = (name && item.studentName === name) || (studentId && item.studentId === studentId);
+    if (!matched) return item;
+    if (item.status === CONSENT_STATUS.REVOKED) { record = item; return item; }
+    changed = true;
+    record = { ...item, status: CONSENT_STATUS.REVOKED, viewAuthorized: false, revokedAt: cleanText(at) || new Date().toISOString(), revokedBy: cleanText(by) };
+    return record;
+  });
+  // 名单里还没有这位学员的授权记录（临时加入的学员）：撤回动作也要留下一条（fail-safe 口径）。
+  if (!record && name) {
+    changed = true;
+    record = normalizeConsent({ studentId, studentName: name, status: CONSENT_STATUS.REVOKED, revokedAt: cleanText(at) || new Date().toISOString(), revokedBy: cleanText(by) });
+    next.push(record);
+  }
+  return { consents: next, record, changed, studentName: name || record?.studentName || '' };
 }

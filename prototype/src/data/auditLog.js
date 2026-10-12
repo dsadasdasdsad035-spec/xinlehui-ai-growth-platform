@@ -38,7 +38,18 @@ export const AUDIT_ACTIONS = {
   keywordDiscard: 'keyword.candidates.discard',
   // [第三步 US-112] 第 6 条：复制 / 导出点评轨迹必须留痕（操作人、时间、轨迹 id、导出范围）。
   traceCopy: 'trace.copy',
-  traceExport: 'trace.export'
+  traceExport: 'trace.export',
+  // [第四步 US-211] 归档与转发的六个动作：归档创建 / 更新、分享生成、家长打开、撤回、报告生成
+  // 都要留痕（操作人、时间、对象、版本）；另加跨班访问被拒与到期清理两条合规事件。
+  archiveCreate: 'archive.record.create',
+  archiveUpdate: 'archive.record.update',
+  archiveAccessDenied: 'archive.access.denied',
+  shareGenerate: 'archive.share.generate',
+  shareOpen: 'archive.share.open',
+  shareRevoke: 'archive.share.revoke',
+  consentRevoke: 'consent.revoke',
+  reportGenerate: 'archive.report.generate',
+  retentionCleanup: 'archive.retention.cleanup'
 };
 
 export const AUDIT_ACTION_LABELS = {
@@ -49,8 +60,33 @@ export const AUDIT_ACTION_LABELS = {
   'keyword.candidates.adopt': 'AI 采纳观察词（写入草稿）',
   'keyword.candidates.discard': 'AI 丢弃观察词候选',
   'trace.copy': '复制点评轨迹',
-  'trace.export': '导出点评轨迹'
+  'trace.export': '导出点评轨迹',
+  'archive.record.create': '归档创建',
+  'archive.record.update': '归档更新',
+  'archive.access.denied': '跨班访问被拒绝',
+  'archive.share.generate': '生成家长分享链接',
+  'archive.share.open': '家长打开分享',
+  'archive.share.revoke': '撤回分享',
+  'consent.revoke': '家长撤回查看授权',
+  'archive.report.generate': '生成阶段报告',
+  'archive.retention.cleanup': '归档到期清理'
 };
+
+/**
+ * 归档与转发的九个动作（[第四步 US-211]）。
+ * 管理端的「转发与授权审计」面板按它筛选 —— 面板、断言、服务端留痕读的都是这一份。
+ */
+export const ARCHIVE_AUDIT_ACTIONS = [
+  'archive.record.create',
+  'archive.record.update',
+  'archive.access.denied',
+  'archive.share.generate',
+  'archive.share.open',
+  'archive.share.revoke',
+  'consent.revoke',
+  'archive.report.generate',
+  'archive.retention.cleanup'
+];
 
 /** 复制 / 导出轨迹的两个动作（合规面板与断言按它们筛选，导出范围写在 `scope` 里）。 */
 export const TRACE_AUDIT_ACTIONS = ['trace.copy', 'trace.export'];
@@ -78,7 +114,22 @@ export const AUDIT_ACTION_REQUIRED = {
   'keyword.candidates.discard': ['actorId', 'at', 'templateId'],
   // 复制 / 导出轨迹：操作人 / 时间 / 轨迹 id 必填；导出范围写在 `scope`（可为空 = 整条轨迹）。
   'trace.copy': ['actorId', 'at', 'traceId'],
-  'trace.export': ['actorId', 'at', 'traceId']
+  'trace.export': ['actorId', 'at', 'traceId'],
+  // 归档创建 / 更新：操作人 / 时间 / 对象（学员 + 档案记录 id）/ 版本（第 N 版）—— 验收点名的四项。
+  'archive.record.create': ['actorId', 'at', 'studentId', 'recordId', 'version'],
+  'archive.record.update': ['actorId', 'at', 'studentId', 'recordId', 'version'],
+  // 跨班访问被拒：对象是被访问的学员（写 `objectName`，因为拒绝的时候未必有学员 id）。
+  'archive.access.denied': ['actorId', 'at', 'objectName'],
+  // 分享三个动作：对象（学员 + 档案记录）/ 版本 / 令牌（哪一条链接）。
+  'archive.share.generate': ['actorId', 'at', 'studentId', 'recordId', 'version', 'shareToken'],
+  'archive.share.open': ['actorId', 'at', 'studentId', 'recordId', 'version', 'shareToken'],
+  'archive.share.revoke': ['actorId', 'at', 'studentId', 'recordId', 'shareToken'],
+  // 家长撤回授权：对象是那位学员（撤的是这个孩子的查看授权）。
+  'consent.revoke': ['actorId', 'at', 'objectName'],
+  // 阶段报告：对象是学员或班级（`objectName`）+ 版本（第 N 版）。
+  'archive.report.generate': ['actorId', 'at', 'objectName', 'version'],
+  // 到期清理：操作人 / 时间必填，清掉了哪些写在 `detail`（条数 + 截止日）。
+  'archive.retention.cleanup': ['actorId', 'at', 'detail']
 };
 
 /** PRD 点名的四项溯源字段（面板上给它们一个明确位置，验证脚本点名核对）。 */
@@ -102,6 +153,12 @@ export const AUDIT_ENTRY_FIELDS = [
   'traceId',
   'templateId',
   'templateName',
+  // 归档与转发（[第四步 US-211]）：对象是「哪一条档案记录」（`recordId`）+ 版本（`version`）
+  // + 「哪一条分享链接」（`shareToken`）；报告 / 授权这类没有学员 id 的对象写 `objectName`。
+  'recordId',
+  'objectName',
+  'version',
+  'shareToken',
   'scope',
   'outcome',
   'detail',
@@ -149,6 +206,11 @@ export function buildAuditEntry(input = {}) {
     traceId: str(source.traceId),
     templateId: str(source.templateId),
     templateName: str(source.templateName),
+    // 归档 / 转发（US-211）的对象与版本：档案记录 id、可读对象名、第 N 版、分享令牌。
+    recordId: str(source.recordId),
+    objectName: str(source.objectName),
+    version: str(source.version),
+    shareToken: str(source.shareToken),
     scope: str(source.scope),
     outcome: str(source.outcome) === 'denied' ? 'denied' : 'ok',
     detail: str(source.detail).slice(0, 240),
@@ -242,9 +304,16 @@ export function auditEntryText(entry) {
   const actor = item.actorName || item.actorId || '未知操作人';
   const target = item.studentName
     ? `${item.studentName}${item.templateName ? ` · ${item.templateName}` : ''}`
-    : (item.templateName || item.templateId || item.traceId || '');
+    : (item.objectName || item.templateName || item.templateId || item.recordId || item.traceId || '');
   const outcome = item.outcome === 'denied' ? '（被拒绝）' : '';
   return [item.actionLabel, actor, target, auditTimeText(item.at)].filter(Boolean).join(' · ') + outcome;
+}
+
+/** 版本读数：「第 3 版」（没有版本写空串，界面不编一个）。 */
+export function auditVersionText(entry) {
+  const item = normalizeAuditEntry(entry);
+  const version = Math.trunc(Number(item && item.version));
+  return Number.isFinite(version) && version > 0 ? `第 ${version} 版` : '';
 }
 
 /** 四项溯源的可读一行：操作人 / 学员 / 模板 / 时间（缺的项跳过）。 */

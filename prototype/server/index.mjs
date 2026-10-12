@@ -34,6 +34,10 @@ const reviewTraces = new Map();
 const reviewTraceLimit = 500;
 const managementFile = path.join(dirname, 'data', 'student-management.json');
 const feedbackRecordsFile = path.join(dirname, 'data', 'feedback-records.json');
+// 家长查看授权（[第四步 US-211]）：授权状态不是儿童素材，与学员档案同一类数据，可以落服务端本地磁盘
+// （`management.json` 的口径）。撤回之后服务端就知道「这条分享链接要一并失效」。
+const consentsFile = path.join(dirname, 'data', 'archive-consents.json');
+const consentStatuses = ['authorized', 'pending', 'revoked'];
 // 儿童素材的存储落点（[第二步 US-013] / FR-46）：开发适配器只声明「内存」这一个落点。
 // 任何把素材写到本机磁盘的实现都不允许（学员/班级档案是另一类数据，见 managementFile）。
 const childMediaStorageSink = 'memory-development-only';
@@ -57,6 +61,40 @@ const childMediaStoragePolicy = {
     objectStorageConfigured: false,
     note: '归档素材走同一条鉴权通道；本地地址是 http、进程重启即清空 —— 客户端据此降级为本地持久副本。'
   }
+};
+
+// 归档的访问与保留策略（[第四步 US-211] / F-ARCHIVE-PERM-01）：服务端**声明**自己的口径，
+// 客户端（`services/archiveAccessApi.js`）拿它对表（默认保留期是否与平台隐私策略一致、
+// 分享链接失效规则是否被声明），管理端面板把它显示出来。
+// `enforcedOn` 点名的就是真正会做判定的接口 —— 声明与执行两件事必须对得上。
+const archivePolicy = {
+  retention: {
+    defaultDays: 365,
+    options: [180, 365, 730],
+    longTermOption: true,
+    anchor: 'archivedAt',
+    note: '归档数据默认保留 365 天（与平台隐私策略一致）；到期清理需先预览影响范围，接口执行清理的是管理端（`data/archiveRetention.js`）。'
+  },
+  access: {
+    teacherScope: 'own-classes-only',
+    parentScope: 'guardian-phone-match',
+    anonymousScope: 'share-link-token',
+    scopeOf: {
+      'platform-admin': 'all',
+      'org-admin': 'all',
+      teacher: 'own-classes',
+      parent: 'own-children',
+      anonymous: 'share-link-only'
+    },
+    note: '老师只能归档与转发自己班级的学员记录；家长只能查看自己孩子（按监护人手机号匹配）；认不出身份时只有「持有分享链接的只读查看」这一条路径，其余一律拒绝。'
+  },
+  shareLink: {
+    invalidatedOnConsentRevocation: true,
+    note: '家长撤回查看授权后，已有分享链接一并失效（服务端按授权状态判定；家长再打开会看到「该分享已撤回」）。'
+  },
+  enforcedOn: ['/api/parent/feedback-records', '/api/archive/share-access'],
+  consentsEndpoint: '/api/archive/consents',
+  note: '家长只能查看自己孩子（按监护人手机号匹配）的记录，服务端强制校验，不依赖前端隐藏。'
 };
 const managementSeed = {
   students: [
@@ -211,6 +249,123 @@ function parentStudentNames(request, response) {
   return session.studentNames;
 }
 
+// ---------------------------------------------------------------------------
+// 归档访问与授权（[第四步 US-211]）
+// ---------------------------------------------------------------------------
+
+/** 授权记录（读写都过这一道：字段白名单 + 状态收敛，脏数据不抛错）。 */
+function sanitizeConsent(raw) {
+  const source = raw && typeof raw === 'object' ? raw : {};
+  const declared = String(source.status || '').trim();
+  const status = consentStatuses.includes(declared) ? declared : 'pending';
+  return {
+    studentId: String(source.studentId || '').slice(0, 120),
+    studentName: String(source.studentName || source.name || '').slice(0, 80),
+    guardianName: String(source.guardianName || '').slice(0, 80),
+    status,
+    viewAuthorized: status === 'authorized',
+    authorizedAt: String(source.authorizedAt || '').slice(0, 40),
+    expiresAt: String(source.expiresAt || '').slice(0, 40),
+    revokedAt: status === 'revoked' ? String(source.revokedAt || '').slice(0, 40) : '',
+    revokedBy: String(source.revokedBy || '').slice(0, 80)
+  };
+}
+
+/** 授权记录落服务端本地盘（与学员档案同一类数据；儿童素材仍然只驻留内存）。 */
+function loadConsents() {
+  try {
+    const saved = JSON.parse(fs.readFileSync(consentsFile, 'utf8'));
+    if (Array.isArray(saved)) return saved.map(sanitizeConsent).filter(item => item.studentName);
+  } catch { /* First use and malformed local data both return an empty list. */ }
+  return [];
+}
+
+function saveConsents(value) {
+  const list = (Array.isArray(value) ? value : []).map(sanitizeConsent).filter(item => item.studentName).slice(0, 500);
+  fs.mkdirSync(path.dirname(consentsFile), { recursive: true });
+  fs.writeFileSync(consentsFile, JSON.stringify(list, null, 2), 'utf8');
+  return list;
+}
+
+/** 这位学员的授权状态（写过的才算；没有记录的学员返回空串 —— 不冒充已授权，也不冒充已撤回）。 */
+function consentStatusOf(student) {
+  const name = String(student || '').trim();
+  if (!name) return '';
+  const found = loadConsents().find(item => item.studentName === name);
+  return found ? found.status : '';
+}
+
+/** 班级的任课老师是不是这位老师（身份串命中姓名 / 前缀即算；空 teacher 视为本人）。 */
+function classOwnedBy(className, actorId) {
+  const name = String(className || '').trim();
+  const classes = loadManagement().classes || [];
+  const found = name ? classes.find(item => String(item.name || '').trim() === name) : null;
+  if (!found) return true;                       // 记录上的班级不在名单里：按旧数据口径放行（与客户端一致）
+  const teacher = String(found.teacher || '').trim();
+  if (!teacher) return true;                     // 没有任课老师字段的旧班级算老师自己的班（US-403 口径）
+  const actor = String(actorId || '').trim();
+  if (!actor) return false;
+  return teacher === actor || teacher.startsWith(actor);
+}
+
+/** 服务端的一句话：家长只能看自己孩子（与客户端 `ARCHIVE_ACCESS_PARENT_SCOPE_REASON` 同一句）。 */
+const PARENT_SCOPE_REASON = '家长只能查看自己孩子的记录：这条分享不属于你绑定的孩子。';
+const CROSS_CLASS_REASON = '跨班访问被拒绝：老师只能归档与转发自己班级的学员记录。';
+const ANONYMOUS_REASON = '无法确认操作人身份：归档与转发需要登录角色（老师 / 平台管理员）。';
+
+/**
+ * **服务端强制校验**（`POST /api/archive/share-access` 的判定核心）：不看界面有没有入口，只看身份与存储。
+ * 判定顺序：身份 → 授权状态（撤回则链接失效）→ 家长范围（会话里的孩子名）→ 老师班级归属。
+ * 返回 `{allowed, reason, scope, consentStatus}`。
+ */
+function archiveAccessDecision(request, { student = '', className = '', action = '', page = '', token = '' } = {}) {
+  const role = String(request.headers['x-actor-role'] || '').trim();
+  const actorId = decodeHeaderValue(request.headers['x-actor-id']);
+  const name = String(student || '').trim();
+  const consentStatus = consentStatusOf(name);
+  // ① 认不出身份：分享链接的**访客**（没有登录身份）由链接本身作为凭据放行**只读查看** ——
+  //    这条路径仍然受授权状态约束（撤回 → 链接失效）；归档 / 转发等写动作一律拒绝
+  //    （`action` 必须是只读的 `share-view`，光带 `page` 不够）。
+  if (!role) {
+    const readOnly = !action || action === 'share-view';
+    if (page === 'share-link' && readOnly && String(token || '').trim()) {
+      if (consentStatus === 'revoked') {
+        return { allowed: false, reason: '家长已撤回查看授权：这条分享链接已一并失效。', scope: 'link', consentStatus };
+      }
+      return { allowed: true, reason: '', scope: 'link', consentStatus };
+    }
+    return { allowed: false, reason: ANONYMOUS_REASON, scope: 'unknown', consentStatus };
+  }
+  // ② 家长：撤回授权后链接一并失效；范围按会话里的孩子名（监护人手机号匹配）判。
+  if (role === 'parent') {
+    const token = String(request.headers.authorization || '').replace(/^Bearer\s+/i, '');
+    const session = parentSessions.get(token);
+    if (!token || !session || session.expiresAt < Date.now()) {
+      return { allowed: false, reason: '家长会话无效或已过期：请重新登录后查看孩子的成长档案。', scope: 'parent', consentStatus };
+    }
+    if (consentStatus === 'revoked') {
+      return { allowed: false, reason: '家长已撤回查看授权：这条分享链接已一并失效。', scope: 'parent', consentStatus };
+    }
+    if (!name || !session.studentNames.includes(name)) {
+      return { allowed: false, reason: PARENT_SCOPE_REASON, scope: 'parent', consentStatus };
+    }
+    return { allowed: true, reason: '', scope: 'parent', consentStatus };
+  }
+  // ③ 老师：只能是自己班级的学员；转发动作还要求授权没有撤回。
+  if (role === 'teacher') {
+    if (!classOwnedBy(className, actorId)) return { allowed: false, reason: CROSS_CLASS_REASON, scope: 'own-classes', consentStatus, classTeacher: String((loadManagement().classes || []).find(item => String(item.name || '').trim() === String(className || '').trim())?.teacher || '') };
+    if (action === 'forward' && consentStatus === 'revoked') {
+      return { allowed: false, reason: '家长已撤回查看授权：不能再转发这条成长记录，已有分享链接也一并失效。', scope: 'own-classes', consentStatus };
+    }
+    return { allowed: true, reason: '', scope: 'own-classes', consentStatus };
+  }
+  // ④ 管理员：合规审计要能看到全平台。
+  if (role === 'admin' || role === 'platform-admin' || role === 'org-admin') {
+    return { allowed: true, reason: '', scope: 'all', consentStatus };
+  }
+  return { allowed: false, reason: ANONYMOUS_REASON, scope: 'unknown', consentStatus };
+}
+
 function loadManagement() {
   try {
     const saved = JSON.parse(fs.readFileSync(managementFile, 'utf8'));
@@ -237,7 +392,6 @@ function loadFeedbackRecords() {
   } catch { /* The first save creates the local development store. */ }
   return [];
 }
-
 function saveFeedbackRecords(records) {
   if (!Array.isArray(records)) throw Object.assign(new Error('Invalid feedback records.'), { status: 400 });
   const safe = records.slice(0, 3000).map(record => ({
@@ -403,7 +557,53 @@ http.createServer(async (request, response) => {
     if (request.method === 'GET' && url.pathname === '/api/parent/feedback-records') {
       const names = parentStudentNames(request, response);
       if (!names) return;
-      return send(response, 200, { records: loadFeedbackRecords().filter(record => names.includes(record.student)) });
+      const records = loadFeedbackRecords();
+      // 指名要某一位孩子的记录（[第四步 US-211]）：服务端按会话里的孩子名判范围 ——
+      // 要别人孩子的记录一律 403，**不看前端有没有隐藏入口**。
+      const wanted = String(url.searchParams.get('student') || '').trim();
+      if (wanted) {
+        if (!names.includes(wanted)) return sendError(response, 403, PARENT_SCOPE_REASON);
+        return send(response, 200, { records: records.filter(record => record.student === wanted), student: wanted });
+      }
+      return send(response, 200, { records: records.filter(record => names.includes(record.student)) });
+    }
+    // 归档策略声明（[第四步 US-211]）：保留期默认 / 访问规则 / 分享链接失效规则 + 真正做判定的接口清单。
+    if (request.method === 'GET' && url.pathname === '/api/compliance/archive-policy') return send(response, 200, archivePolicy);
+    // 家长查看授权（读写都要老师身份；授权状态落服务端本地盘，见 consentsFile）。
+    if (request.method === 'GET' && url.pathname === '/api/archive/consents') {
+      if (!requireTeacher(request, response)) return;
+      return send(response, 200, { consents: loadConsents() });
+    }
+    if (request.method === 'PUT' && url.pathname === '/api/archive/consents') {
+      if (!requireTeacher(request, response)) return;
+      const { consents } = await readJson(request);
+      return send(response, 200, { consents: saveConsents(consents) });
+    }
+    // **服务端强制校验**（[第四步 US-211]）：一次归档访问（打开分享链接 / 转发）到底放不放行。
+    // 判定不依赖前端：老师只能访问自己班级、家长只能看自己孩子（按监护人手机号匹配的会话）、
+    // 授权撤回后分享链接一并失效。403 = 拒绝，并给出与客户端同一句的可读原因。
+    if (request.method === 'POST' && url.pathname === '/api/archive/share-access') {
+      const body = await readJson(request);
+      const decision = archiveAccessDecision(request, {
+        student: body.student,
+        className: body.className,
+        action: String(body.action || ''),
+        page: String(body.page || ''),
+        token: String(body.token || '')
+      });
+      const payload = {
+        allowed: decision.allowed,
+        reason: decision.reason,
+        scope: decision.scope,
+        consentStatus: decision.consentStatus,
+        student: String(body.student || '').trim(),
+        token: String(body.token || '').trim(),
+        action: String(body.action || '').trim(),
+        page: String(body.page || '').trim(),
+        at: new Date().toISOString()
+      };
+      if (!decision.allowed) return send(response, 403, { error: decision.reason, ...payload });
+      return send(response, 200, payload);
     }
     // 点评轨迹（[第三步 US-112]）：查询与提交都先过 `requireTraceAudience` ——
     // 家长会话在这里被**直接拒绝**（403），不看界面有没有入口。

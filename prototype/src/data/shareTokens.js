@@ -345,6 +345,52 @@ export function revokeShareTokenRecord(record, options = {}) {
   return { ...item, revokedAt: toIso(opts.at || new Date()), revokedBy: text(opts.by) };
 }
 
+/** 这位学员名下的令牌（按学员名匹配；空名返回空列表 —— 不猜是哪位孩子）。 */
+export function shareTokensOfStudent(tokens, student) {
+  const wanted = text(student);
+  const list = Array.isArray(tokens) ? tokens : [];
+  if (!wanted) return [];
+  return list.map(normalizeShareTokenRecord).filter(item => item && item.student === wanted);
+}
+
+/**
+ * 撤回一位学员名下**所有仍可用**的令牌（[第四步 US-211] 第 3 条：家长撤回授权后，
+ * 已有分享链接**一并失效**）。返回 `{tokens, revoked}` —— `revoked` 是被这一次撤掉的令牌记录
+ * （已经撤过的不动、也不重复留痕：撤回必须保持第一次的时间）。
+ *
+ * 这是「授权撤回」那条路径的写入侧；家长端读到 `revokedAt` 就判 `revoked`（`shareTokenStatus`），
+ * 因此链接立即失效，不需要再等任何一处同步。
+ */
+export function revokeShareTokensForStudent(tokens, student, options = {}) {
+  const wanted = text(student);
+  const list = (Array.isArray(tokens) ? tokens : []).map(normalizeShareTokenRecord).filter(Boolean);
+  if (!wanted) return { tokens: list, revoked: [] };
+  const revoked = [];
+  const next = list.map(item => {
+    if (item.student !== wanted || item.revokedAt) return item;
+    const updated = revokeShareTokenRecord(item, options);
+    if (updated) revoked.push(updated);
+    return updated;
+  });
+  return { tokens: next, revoked };
+}
+
+/**
+ * 许可证口径的「这条链接现在还能不能用」——**读侧**的一道（[第四步 US-211]）：
+ * 授权撤回后即使令牌记录还没被重写（在另一台设备上撤的），家长页也要立刻打不开。
+ * 只有**明确**撤回的授权才算（`pending` / 没有记录一律不在这里拦 —— 那由生成前的授权闸门负责，
+ * 已经在用的链接不因为「记录缺失」被误伤）。`isViewAuthorized` 那一条 fail-safe 方向不同，别混用。
+ */
+export function shareTokenConsentIssue(record, consent) {
+  if (!consent || typeof consent !== 'object') return '';
+  const student = text(record && record.student);
+  const consentName = text(consent.studentName);
+  if (!student || (consentName && consentName !== student)) return '';
+  return consent.status === 'revoked'
+    ? SHARE_TOKEN_PARENT_MESSAGES[SHARE_TOKEN_STATUS.revoked]
+    : '';
+}
+
 /** 同一条档案记录下的令牌（按生成时间倒序；时间读不出来按入参顺序）。 */
 export function shareTokensOfRecord(tokens, recordId) {
   const wanted = text(recordId);
