@@ -34,7 +34,6 @@ import {
   seedPosterTemplates
 } from './posterTemplates';
 import {
-  POSTER_SINGLE_SHARE_PENDING_TEXT,
   posterSingleLogoFallbackNote,
   posterSingleSpecPatch
 } from './posterSingle';
@@ -56,6 +55,9 @@ import { archiveRecordMediaView } from './archiveMedia';
 import { formatLessonDateDots, normalizeLessonDate } from './lessons';
 import { shareTokenUrl, shareTokenView } from './shareTokens';
 import { sanitizeArtworkExportSegment } from './artworkExport';
+// 海报二维码与分享令牌联动（[海报 US-313]）：plan 的 `share` 段（含「只画一个二维码」读数）
+// 与其它四类版式共用 `data/posterShareQr.js` 这一支装配点。
+import { posterShareQrShareView } from './posterShareQr';
 
 const isPlainObject = (value) => !!value && typeof value === 'object' && !Array.isArray(value);
 const str = (value) => String(value === null || value === undefined ? '' : value).trim();
@@ -347,6 +349,19 @@ export function buildPosterPeriodPlan({
     : { state: 'none', stateLabel: '', active: false, tokenText: '', link: '' };
   const shareUrl = share.active && share.tokenText ? shareTokenUrl(share.tokenText, { origin }) : '';
   const sharePending = !shareUrl;
+  // plan 的 `share` 段（[海报 US-313]）：与单作品海报同一支装配 —— 链接 / 有效期读数 /
+  // 二维码位那句按状态分档的占位文案 / 「只画一个二维码」读数。
+  const shareView = posterShareQrShareView({
+    state: share.state,
+    stateLabel: share.stateLabel,
+    active: share.active,
+    tokenText: share.tokenText,
+    link: shareUrl,
+    path: share.link,
+    expiresText: share.expiresText,
+    daysLeft: share.daysLeft,
+    spec: baseSpec
+  });
 
   const logoUrl = posterImageUrl(logo);
   const logoFallback = !logoUrl ? str(orgName) : '';
@@ -361,7 +376,8 @@ export function buildPosterPeriodPlan({
     artworkMissing,
     sharePending,
     logoFallback,
-    imagePlaceholderText: POSTER_PERIOD_INSUFFICIENT_TEXT
+    imagePlaceholderText: POSTER_PERIOD_INSUFFICIENT_TEXT,
+    sharePendingText: shareView.placeholderText
   });
   const collageSlot = posterPeriodCollageSlot(baseSpec);
   // `dateCaptions` 默认开（模板参数就是开）：只有显式关掉时才把那一格的 `cellCaption.visible` 拨成 false
@@ -393,7 +409,8 @@ export function buildPosterPeriodPlan({
   if (studentName && summary.reason) notes.push(summary.reason);
   if (studentName && artworkMissing) notes.push(POSTER_PERIOD_ARTWORK_MISSING_REASON);
   if (studentName && trimNote) notes.push(`${trimNote}（按课次均匀精选；每格最多 ${limit} 幅）。`);
-  if (studentName && sharePending) notes.push(`没有有效的分享链接：二维码位显示「${POSTER_SINGLE_SHARE_PENDING_TEXT}」而不是空白方块。`);
+  if (studentName && sharePending) notes.push(`没有有效的分享链接：二维码位显示「${shareView.placeholderText}」而不是空白方块。`);
+  if (studentName && shareView.qr.note) notes.push(shareView.qr.note);
   if (studentName && fallbackReason) notes.push(fallbackReason);
 
   return {
@@ -425,15 +442,7 @@ export function buildPosterPeriodPlan({
     counts: summary.counts,
     dateCaptions: Boolean(dateCaptions),
     shareRecordId: shareRecord ? str(shareRecord.id) : '',
-    share: {
-      state: share.state,
-      stateLabel: share.stateLabel,
-      active: Boolean(share.active),
-      tokenText: str(share.tokenText),
-      link: shareUrl,
-      pending: sharePending,
-      placeholderText: sharePending ? POSTER_SINGLE_SHARE_PENDING_TEXT : ''
-    },
+    share: shareView,
     logo: { url: logoUrl, fallbackText: logoFallback },
     notes,
     exportGate: posterPeriodExportGate({

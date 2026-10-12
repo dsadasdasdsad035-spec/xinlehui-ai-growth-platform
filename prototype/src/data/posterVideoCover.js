@@ -32,10 +32,12 @@ import {
 } from './posterTemplates';
 import {
   POSTER_SINGLE_ARTWORK_MISSING_TEXT,
-  POSTER_SINGLE_SHARE_PENDING_TEXT,
   posterSingleLogoFallbackNote,
   posterSingleSpecPatch
 } from './posterSingle';
+// 海报二维码与分享令牌联动（[海报 US-313]）：plan 的 `share` 段（含状态文案与「只画一个二维码」读数）
+// 与其它四类版式共用 `data/posterShareQr.js` 这一支装配点。
+import { posterShareQrShareView } from './posterShareQr';
 import {
   ARCHIVE_PERIOD_DEFAULT,
   ARCHIVE_PERIODS,
@@ -48,7 +50,7 @@ import { formatLessonDateDots, normalizeLessonDate } from './lessons';
 import { shareTokenUrl } from './shareTokens';
 import { VIDEO_JOB_DEMO_DONE_NOTE, normalizeVideoJobType, videoJobKey, videoJobStatusLabel, videoJobTypeLabel } from './videoJobs';
 import { findVideoRecord, videoRecordKey } from './videoRecords';
-import { activeVideoShareToken, videoOutputView } from './videoShare';
+import { activeVideoShareToken, videoOutputView, videoSharePanelView } from './videoShare';
 import { VIDEO_PERSONAL_RENDER } from './videoPersonal';
 import { sanitizeArtworkExportSegment } from './artworkExport';
 
@@ -386,9 +388,22 @@ export function buildPosterVideoCoverPlan({
   const artworkMissing = !artwork;
 
   // 成片的分享链接：有效令牌走 `activeVideoShareToken`（撤回 / 过期都不算数），否则二维码位换文字占位。
+  // 状态与有效期读数取 `videoSharePanelView`（成片分享那一支的唯一实现：撤回 / 过期也分得出来，
+  // 不是只有「有 / 没有」两种）—— [海报 US-313] 起二维码位那句占位也跟着状态走。
   const shareToken = name ? activeVideoShareToken(tokens, key, now) : null;
+  const sharePanel = name ? videoSharePanelView({ tokens, jobKey: key, now }) : null;
   const shareUrl = shareToken ? shareTokenUrl(shareToken.token, { origin }) : '';
   const sharePending = !shareUrl;
+  const shareView = posterShareQrShareView({
+    state: sharePanel ? sharePanel.state : 'none',
+    stateLabel: sharePanel ? sharePanel.stateLabel : '',
+    active: Boolean(shareToken),
+    tokenText: shareToken ? str(shareToken.token) : '',
+    link: shareUrl,
+    path: sharePanel ? sharePanel.link : '',
+    expiresText: sharePanel ? sharePanel.expiresText : '',
+    spec: baseSpec
+  });
 
   const logoUrl = posterImageUrl(logo);
   const logoFallback = !logoUrl ? str(orgName) : '';
@@ -399,6 +414,7 @@ export function buildPosterVideoCoverPlan({
   const patched = posterSingleSpecPatch(baseSpec, {
     artworkMissing,
     sharePending,
+    sharePendingText: shareView.placeholderText,
     logoFallback,
     // 画面上那句占位短句（与单作品海报同一句）；位置与尺寸一字不动，换的只是那一句。
     imagePlaceholderText: POSTER_VIDEO_COVER_ARTWORK_MISSING_TEXT
@@ -429,7 +445,8 @@ export function buildPosterVideoCoverPlan({
   if (!name) notes.push(POSTER_VIDEO_COVER_OBJECT_MISSING_TEXT);
   if (name && artworkMissing) notes.push(POSTER_VIDEO_COVER_ARTWORK_MISSING_REASON);
   if (name && !durationView.ready) notes.push(durationView.note);
-  if (name && sharePending) notes.push(`没有有效的成片分享链接：二维码位显示「${POSTER_SINGLE_SHARE_PENDING_TEXT}」而不是空白方块。`);
+  if (name && sharePending) notes.push(`没有有效的成片分享链接：二维码位显示「${shareView.placeholderText}」而不是空白方块。`);
+  if (name && shareView.qr.note) notes.push(shareView.qr.note);
   if (name && fallbackReason) notes.push(fallbackReason);
   if (name && overlays.issue) notes.push(overlays.issue);
 
@@ -487,14 +504,7 @@ export function buildPosterVideoCoverPlan({
       pendingText: durationView.ready ? '' : POSTER_VIDEO_COVER_DURATION_PLACEHOLDER,
       pendingReason: durationView.ready ? '' : POSTER_VIDEO_COVER_PENDING_REASON
     },
-    share: {
-      state: shareToken ? str(shareToken.state || 'active') : 'none',
-      active: Boolean(shareToken),
-      tokenText: shareToken ? str(shareToken.token) : '',
-      link: shareUrl,
-      pending: sharePending,
-      placeholderText: sharePending ? POSTER_SINGLE_SHARE_PENDING_TEXT : ''
-    },
+    share: shareView,
     logo: { url: logoUrl, fallbackText: logoFallback },
     // 「能不能出预览」与「能不能导出」是两件事：视频还没成片时**预览照出**（角标就是占位），
     // 导出被拦下 —— 验收要的正是「看得见占位、但下载不了」。

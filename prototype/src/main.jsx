@@ -240,7 +240,7 @@ import {
   SHARE_TOKEN_VALID_DAY_OPTIONS, SHARE_TOKEN_VALID_DAYS_NOTE,
   appendShareToken, createShareTokenRecord, loadShareTokens, mergeShareTokens,
   persistShareTokens, replaceShareToken, revokeShareTokenRecord, revokeShareTokensForStudent, SHARE_TOKEN_STORAGE_KEY, shareTokenGenerationGate, shareTokenLink,
-  shareTokenStrength, shareTokenUrl, shareTokenValidDaysLabel, shareTokenView
+  shareTokenRecordInput, shareTokenStrength, shareTokenUrl, shareTokenValidDaysLabel, shareTokenView
 } from './data/shareTokens';
 import { loadRemoteShareTokens, revokeRemoteShareToken, saveRemoteShareToken } from './services/shareTokensApi';
 // 记一次转发的编排（并本机镜像 → 记发送 → 推云端）：[第四步 US-209] 与 [海报 US-311b] 的海报弹窗
@@ -298,7 +298,7 @@ import { buildShareQrDownload, downloadShareQr, renderShareQr } from './services
 // 内容规则（课次日期与作品名 / 美术能力金句 ≤30 字逐字 / 作品缺失拦导出 / 无分享显示占位）
 // 全在 data 层（零依赖纯函数，可直接 Node 断言）；渲染与下载在 services/posterSingle.js。
 import {
-  POSTER_SINGLE_ARTWORK_MISSING_TEXT, POSTER_SINGLE_SHARE_PENDING_TEXT,
+  POSTER_SINGLE_ARTWORK_MISSING_TEXT,
   buildPosterSinglePlan, posterSingleExportGate
 } from './data/posterSingle';
 import {
@@ -3597,20 +3597,13 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
   // 它画的是「那一条记录」的那张图，换了上下文再留着就是一张对不上的图）。
   useEffect(()=>{setShareTokenRevokeConfirm(false);setShareTokenNotice({phase:'idle',message:''});setArchivePosterOpen(false)},[currentArchiveRecord?.id,archiveShareOpen]);
   // 生成分享链接：**先过授权闸门**（未授权时不生成、不留任何数据，只给原因与处理入口）。
-  // 令牌的字段构造只有这一份（「生成」与「重新发送」共用 —— 两处各拼一遍迟早会漏字段）。
-  const buildParentShareToken=()=>createShareTokenRecord({
-    recordId:currentArchiveRecord.id,
-    recordKey:currentArchiveRecord.recordKey,
-    orgId:DEFAULT_ORG_ID,
-    student:currentArchiveRecord.student,
-    studentId:currentArchiveRecord.studentId,
-    className:currentArchiveRecord.className,
-    lessonDate:currentArchiveRecord.lessonDate,
-    title:currentArchiveRecord.title,
-    version:currentArchiveRecord.version,
+  // 令牌的字段构造只有一份：`shareTokenRecordInput()`（[海报 US-313] 起海报弹窗的「先生成分享链接」
+  // 也调它 —— 两处各拼一遍迟早会漏字段，漏了 `version` 就会把「第 N 版」记成第 1 版）。
+  const buildParentShareToken=()=>createShareTokenRecord(shareTokenRecordInput(currentArchiveRecord,{
     validDays:shareTokenValidDays,
-    createdBy:currentTeacherName
-  },{});
+    createdBy:currentTeacherName,
+    orgId:DEFAULT_ORG_ID
+  }),{});
   /**
    * 生成分享链接的**唯一**留痕入口（「生成」与「重新发送」里的重新生成共用一份）：
    * 操作人 / 时间 / 对象（学员 + 档案记录 + 版本）/ 哪一条令牌（`shareToken`）。
@@ -3913,7 +3906,7 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
             <li data-poster-single-line="student">学员：{posterSinglePlan.studentName||'—'} · {posterSinglePlan.dateDots||'日期待补'}</li>
             <li data-poster-single-line="artwork">作品：{posterSinglePlan.artworkTitle?`《${posterSinglePlan.artworkTitle}》`:`（${POSTER_SINGLE_ARTWORK_MISSING_TEXT}）`}</li>
             <li data-poster-single-line="quote">金句：{posterSinglePlan.quote.text||posterSinglePlan.quote.reason}</li>
-            <li data-poster-single-line="share">分享：{posterSinglePlan.share.pending?POSTER_SINGLE_SHARE_PENDING_TEXT:`链接可用 · ${posterSinglePlan.share.link}`}</li>
+            <li data-poster-single-line="share">分享：{posterSinglePlan.share.pending?posterSinglePlan.share.placeholderText:`链接可用 · ${posterSinglePlan.share.link}`}</li>
           </ul>
           {posterSinglePlan.notes.length?<ul className="poster-single-notes">
             {posterSinglePlan.notes.map(note=><li key={note} data-poster-single-note="true">{note}</li>)}
@@ -4049,7 +4042,7 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
             <li data-poster-period-line="student">学员：{posterPeriodPlan.studentName} · {posterPeriodPlan.periodLabel}</li>
             <li data-poster-period-line="collage">拼贴：{posterPeriodPlan.collage.count} / {posterPeriodPlan.collage.total} 幅 · {posterPeriodPlan.collage.grid.label} 网格（{posterPeriodPlan.collage.grid.columns} 列 × {posterPeriodPlan.collage.grid.rows} 行）</li>
             <li data-poster-period-line="summary">阶段总结：{posterPeriodPlan.summary.text.split('\n')[0]}</li>
-            <li data-poster-period-line="share">分享：{posterPeriodPlan.share.pending?POSTER_SINGLE_SHARE_PENDING_TEXT:`链接可用 · ${posterPeriodPlan.share.link}`}</li>
+            <li data-poster-period-line="share">分享：{posterPeriodPlan.share.pending?posterPeriodPlan.share.placeholderText:`链接可用 · ${posterPeriodPlan.share.link}`}</li>
           </ul>
           {posterPeriodPlan.notes.length?<ul className="poster-period-notes">
             {posterPeriodPlan.notes.map(note=><li key={note} data-poster-period-note="true">{note}</li>)}
@@ -4095,6 +4088,7 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
       teacherName={currentTeacherName}
       orgName={DEFAULT_ORG_NAME}
       logo={posterSingleLogo}
+      consents={consents}
       navigate={navigate}
       setShareTokens={setShareTokens}
       recordAudit={auditTeacherEntry}

@@ -42,6 +42,8 @@ import { buildPosterClassPlan } from './posterClass';
 import { buildPosterVideoCoverPlan } from './posterVideoCover';
 import { buildPosterReportLongPlan } from './posterReportLong';
 import { videoJobKey } from './videoJobs';
+// 重绘键里的分享段（[海报 US-313]）：链接 + 状态都算数（「可用 → 已撤回」也要重画，别停在旧图上）。
+import { posterShareQrPlanKey } from './posterShareQr';
 
 const isPlainObject = (value) => !!value && typeof value === 'object' && !Array.isArray(value);
 const str = (value) => String(value === null || value === undefined ? '' : value).trim();
@@ -431,7 +433,7 @@ export function posterDialogPlanKey(plan = null) {
       str(value.quote && value.quote.text), str(value.artwork && value.artwork.url),
       value.artwork && value.artwork.missing ? 'missing-art' : 'has-art',
       str(value.logo && value.logo.url) || str(value.logo && value.logo.fallbackText),
-      value.share && value.share.active ? str(value.share.link) : 'no-share'
+      posterShareQrPlanKey(value.share)
     ].join('|');
   }
   if (kind === 'period') {
@@ -442,7 +444,7 @@ export function posterDialogPlanKey(plan = null) {
       collage.total, collage.count, str(collage.grid && collage.grid.label),
       str(value.summary && value.summary.text),
       str(value.logo && value.logo.url) || str(value.logo && value.logo.fallbackText),
-      value.share && value.share.active ? str(value.share.link) : 'no-share'
+      posterShareQrPlanKey(value.share)
     ].join('|');
   }
   if (kind === 'class') {
@@ -453,7 +455,7 @@ export function posterDialogPlanKey(plan = null) {
       (batch.cells || []).map((cell) => `${cell.student}:${cell.hasArtwork ? 'art' : 'none'}:${str(cell.url).slice(-24)}:${cell.caption || ''}`).join(','),
       batch.index, str(wall.grid && wall.grid.label), wall.nameCaptions ? 'captions' : 'no-captions',
       str(value.data && value.data.logo) || str(value.logo && value.logo.url),
-      value.share && value.share.active ? str(value.share.link) : 'no-share'
+      posterShareQrPlanKey(value.share)
     ].join('|');
   }
   if (kind === 'video-cover') {
@@ -461,7 +463,7 @@ export function posterDialogPlanKey(plan = null) {
       str(value.objectName), str(value.artwork && value.artwork.url), str(value.artwork && value.artwork.dateDots),
       str(value.cover && value.cover.durationBadgeText),
       str(value.logo && value.logo.url) || str(value.logo && value.logo.fallbackText),
-      value.share && value.share.active ? str(value.share.link) : 'no-share'
+      posterShareQrPlanKey(value.share)
     ].join('|');
   }
   if (kind === 'report-long') {
@@ -470,7 +472,7 @@ export function posterDialogPlanKey(plan = null) {
       str(value.studentName), page ? page.height : 0,
       (value.rows || []).map((row) => `${row.recordKey || row.index}:${str(row.artworkUrl).slice(-24)}:${str(row.quote && row.quote.text)}`).join(','),
       str(value.cover && value.cover.url),
-      value.share && value.share.active ? str(value.share.link) : 'no-share'
+      posterShareQrPlanKey(value.share)
     ].join('|');
   }
   return shared.join('|');

@@ -17,7 +17,7 @@
 // 因此这里不写任何「成长档案专属」的逻辑（档案页给的是 target / name / students / 周期筛选）。
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, Download, Loader2, MessageSquareText, Plus, Share2, X } from 'lucide-react';
+import { Archive, Download, Loader2, MessageSquareText, Plus, QrCode, Share2, X } from 'lucide-react';
 import { Button } from './ui';
 import { nowMs } from './services/archivePerformance';
 import {
@@ -78,6 +78,13 @@ import {
   posterWechatCheckRows
 } from './data/posterForward';
 import { AUDIT_ACTIONS, auditEntryMissingFields, auditTraceText } from './data/auditLog';
+// 海报二维码与分享令牌联动（[海报 US-313]）：二维码内容 = 分享令牌链接（`/p/<shareToken>`），
+// 没有可用分享时二维码位换成一句按状态分档的占位文案，并且**就地**给「先生成分享链接」的动作。
+// 状态文案 / 「只画一个二维码」的收敛在 `data/posterShareQr.js`；生成动作的闸门与编排在
+// `services/posterShareGenerate.js`（与第四步的「生成家长分享链接」同一支：授权判据与令牌字段只有一份）。
+import { POSTER_SHARE_QR_HEADING, POSTER_SHARE_QR_SINGLE_RULE, posterShareQrFacts } from './data/posterShareQr';
+import { SHARE_TOKEN_DEFAULT_VALID_DAYS, SHARE_TOKEN_VALID_DAYS_NOTE } from './data/shareTokens';
+import { generatePosterShareToken, posterShareQrGeneratePlan, pushPosterShareTokenRemote } from './services/posterShareGenerate';
 import { copyReviewDetailText } from './services/reviewDetailExport';
 import { recordShareForwardSend } from './services/shareForwardSend';
 import {
@@ -156,6 +163,7 @@ export default function PosterDialog({
   orgId = '',
   orgName = '',
   logo = '',
+  consents = null,
   navigate = null,
   setShareTokens = null,
   recordAudit = null,
@@ -181,6 +189,9 @@ export default function PosterDialog({
   const pressUrlsRef = useRef([]);
   // 微信文案与转发状态（[海报 US-311b]）：复制回执 + 最近两条留痕的回执（导出 / 转发各一条）。
   const [forwardCopy, setForwardCopy] = useState({ phase: 'idle', message: '' });
+  // 海报二维码（[海报 US-313]）：生成动作被拦下 / 失败时的那一句话（成功不留回执 —— 面板上
+  // 「二维码指向 …」与预览里的码本身就是回执；换模板 / 换周期时随之清空，见下面的 planKey effect）。
+  const [shareQrNotice, setShareQrNotice] = useState('');
   const [posterAudit, setPosterAudit] = useState({ export: null, forward: null });
   // 模板库这一份**归弹窗自己管**（[海报 US-310b]）：另存 / 重命名 / 删除都会改它，
   // 改完就用本机镜像重读一次（`savePosterTemplate` 先写镜像、再推云端）—— 于是「退出重进」看到的
@@ -431,6 +442,52 @@ export default function PosterDialog({
     scope: `${POSTER_DIALOG_ENTRY_LABELS[entry] || ''} · ${period}`,
     ...extra
   });
+  // ---- 海报二维码（[海报 US-313]）-----------------------------------------------------------
+  // 这一块只做三件事：读 `data/posterShareQr.js` 的产物（状态 / 链接 / 有效期 / 二维码数量）、
+  // 调 `services/posterShareGenerate.js` 的生成动作、把结果写回令牌账（App 层）。
+  // 「生成几张、什么状态写什么文案、多余的二维码位怎么收敛」都不在这里判断。
+  const shareQr = useMemo(() => posterShareQrFacts(selectedPlan), [selectedPlan]);
+  const shareQrRequest = useMemo(() => posterShareQrGeneratePlan({
+    plan: selectedPlan,
+    records,
+    consents,
+    students: subject && Array.isArray(subject.roster) ? subject.roster : [],
+    jobs: videoJobList
+  }), [selectedPlan, records, consents, subject, videoJobList]);
+  const generateShare = () => {
+    if (!selectedPlan || !shareQrRequest.allowed) {
+      setShareQrNotice(shareQrRequest.reason || '这张海报暂时不能生成分享链接。');
+      return;
+    }
+    const result = generatePosterShareToken({
+      plan: selectedPlan,
+      records,
+      consents,
+      students: subject && Array.isArray(subject.roster) ? subject.roster : [],
+      jobs: videoJobList,
+      tokens,
+      validDays: SHARE_TOKEN_DEFAULT_VALID_DAYS,
+      by: teacherName,
+      orgId: orgId || DEFAULT_ORG_ID
+    });
+    if (!result.ok) {
+      setShareQrNotice(result.reason || '生成没有成功：请稍后重试。');
+      return;
+    }
+    setShareQrNotice('');
+    if (typeof setShareTokens === 'function') setShareTokens(result.tokens);
+    // 留痕（操作人 / 时间 / 对象 / 版本 / 哪一条令牌）：条目与第四步「生成家长分享链接」同一套动作。
+    writePosterAudit(posterAuditInput({
+      action: result.audit.action,
+      studentId: result.audit.studentId,
+      lessonDate: result.audit.lessonDate,
+      jobKey: result.audit.jobKey,
+      version: result.audit.version,
+      shareToken: result.audit.shareToken,
+      detail: result.audit.detail
+    }));
+    void pushPosterShareTokenRemote(result.created);
+  };
   const releasePressImages = () => {
     pressUrlsRef.current.forEach((url) => releasePosterExportUrl(url));
     pressUrlsRef.current = [];
@@ -443,6 +500,7 @@ export default function PosterDialog({
     setExportFiles([]);
     setExportState({ phase: 'idle', busy: false, notice: '', filename: '', bytes: 0, width: 0, height: 0, pages: 0, shared: '' });
     setForwardCopy({ phase: 'idle', message: '' });
+    setShareQrNotice('');
   }, [planKey]);
   useEffect(() => () => releasePressImages(), []);
 
@@ -999,6 +1057,62 @@ export default function PosterDialog({
       ) : null}
     </section>
   );
+  // 海报二维码（[海报 US-313]）：二维码内容 = 分享令牌链接（`/p/<shareToken>`）；没有可用分享时
+  // 二维码位显示「分享链接待生成」（撤回 / 过期各有一句），并**就地**提供「先生成分享链接」动作。
+  // 一个二维码位（AC4）与有效期提示（AC3）都是数据层的读数，这一块只渲染。
+  const shareQrPanel = empty.on ? null : (
+    <section
+      className="poster-dialog-qr"
+      data-poster-share-qr="true"
+      data-poster-share-qr-state={shareQr.state}
+      data-poster-share-qr-label={shareQr.stateLabel}
+      data-poster-share-qr-active={shareQr.active ? 'true' : 'false'}
+      data-poster-share-qr-target={shareQr.targetKind}
+      data-poster-share-qr-record={shareQr.recordId}
+      data-poster-share-qr-job={shareQr.jobKey}
+      data-poster-share-qr-token={shareQr.tokenText}
+      data-poster-share-qr-link={shareQr.link}
+      data-poster-share-qr-path={shareQr.path}
+      data-poster-share-qr-expires={shareQr.expiresText}
+      data-poster-share-qr-days-left={String(shareQr.daysLeft)}
+      data-poster-share-qr-count={String(shareQr.qrVisibleCount)}
+      data-poster-share-qr-extra={String(shareQr.qrExtra)}
+      data-poster-share-qr-kept={shareQr.qrKeptId}
+      data-poster-share-qr-can-generate={shareQrRequest.allowed ? 'true' : 'false'}
+      data-poster-share-qr-generate-blocked={shareQrRequest.allowed ? '' : shareQrRequest.reason}
+      data-poster-share-qr-generate-entry={shareQrRequest.entryLabel || ''}
+    >
+      <header className="poster-dialog-qr-head">
+        <QrCode size={14} />
+        <b>{POSTER_SHARE_QR_HEADING}</b>
+        <em className={`is-${shareQr.state}`} data-poster-share-qr-state-note="true">{`二维码状态：${shareQr.stateLabel || (shareQr.active ? '链接可用' : '待生成')}`}</em>
+      </header>
+      <p className="poster-dialog-qr-note" data-poster-share-qr-note="true">{shareQr.stateNote}</p>
+      {shareQr.active ? (
+        <>
+          <p className="poster-dialog-qr-link" data-poster-share-qr-link-line="true">{`二维码指向：${shareQr.link}`}</p>
+          <p className="poster-dialog-qr-link" data-poster-share-qr-path-line="true">{`家长扫的是：${shareQr.path || shareQr.link}`}</p>
+          <p className="poster-dialog-qr-expiry" data-poster-share-qr-expiry-line="true">{shareQr.expiresText || SHARE_TOKEN_VALID_DAYS_NOTE}</p>
+        </>
+      ) : (
+        <div className="poster-dialog-qr-actions">
+          <button
+            type="button"
+            className="primary poster-dialog-qr-generate"
+            data-poster-share-qr-generate="true"
+            onClick={generateShare}
+          >{shareQr.generateLabel}
+          </button>
+          <small data-poster-share-qr-generate-note="true">{shareQrRequest.allowed
+            ? '生成后二维码会立刻画到这张海报上；撤回或过期后这个码会同步失效。'
+            : shareQrRequest.reason}
+          </small>
+        </div>
+      )}
+      <small className="poster-dialog-qr-rule" data-poster-share-qr-rule="true">{`${POSTER_SHARE_QR_SINGLE_RULE}${shareQr.qrExtra ? `（这套模板多了 ${shareQr.qrExtra} 个二维码位，只画第一个）` : ''}`}</small>
+      {shareQrNotice ? <p className="poster-dialog-qr-notice" data-poster-share-qr-notice="true">{shareQrNotice}</p> : null}
+    </section>
+  );
   // 微信文案与转发状态（[海报 US-311b]）：与「导出图片」并排的两件事 —— 一个发给谁（文案），一个存成文件。
   // 面板上的每个字都来自 `posterForwardView()`（文案本体 / 三项复核 / 状态三态与说明句）。
   const forwardPanel = empty.on ? null : (
@@ -1238,6 +1352,7 @@ export default function PosterDialog({
               </div>
               {/* 「发给家长」的两件事贴着预览：先是微信文案与转发状态（这一张要发什么、发过没有），
                   再是导出图片（存成什么文件）—— 顺序就是老师发给家长的动作顺序。 */}
+              {shareQrPanel}
               {forwardPanel}
               {exportPanel}
             </div>

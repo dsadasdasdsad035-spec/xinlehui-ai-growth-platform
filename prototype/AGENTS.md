@@ -4255,6 +4255,55 @@ services / 界面只渲染产物」）：
   回管理端点删除**被拦**（影响范围点名次数与学员）→ 改为停用 → 变更历史可查看 → 390px 单列 ≥44px →
   console 0 error）。截图 516~524。
 
+## 海报二维码与分享令牌联动（[海报 US-313]）
+
+> 「海报上的码扫了要真能看到东西；分享撤回了，码也不该还能打开」这一条的全部判断在
+> `src/data/posterShareQr.js`（零依赖纯函数 + 常量，可 `node` 直跑断言）；生成动作的编排在
+> `src/services/posterShareGenerate.js`；界面多出来的只有弹窗里那一块面板（`PosterDialog.jsx` 的
+> `[data-poster-share-qr]`）。四条纪律：
+
+- **二维码内容 = 分享令牌链接**（`shareTokenUrl(token, { origin })` = `<origin>/p/<token>`）：plan 的
+  `spec.slots[].type === 'qrcode'` 里写的是**模板变量** `{分享链接}`，真正被编码的那串由渲染层
+  `applyPosterVariables(slot.value, posterVariableContext(plan.data))` 代入 —— 判据要读**代入之后**的值
+  （直接比 `slot.value` 会看到 `{分享链接}` 这四个字，是假红）。
+- **二维码位那句占位按状态分档**（撤回 / 过期不再谎报「待生成」）：文案表 `POSTER_SHARE_QR_STATE_TEXTS`
+  （`none: 分享链接待生成` / `revoked: 分享已撤回` / `expired: 分享已过期`），`posterSingle.js` 的
+  `POSTER_SINGLE_SHARE_PENDING_TEXT` 现在是它的 `none` 档（**单一真源**，别再写第二遍了）。
+  `posterSingleSpecPatch(spec, { sharePendingText })` 是唯一入口 —— 五类版式都过它，report-long 走自己
+  的块合成（`content.sharePendingText`）。**`posterShareQrPlaceholderText()` 不能用 `||` 兜底**：
+  `active` 那一档的文案就是空串（可用时写占位就是错的）。
+- **海报内只出现一个二维码**（AC4）：`posterShareQrGuard(spec)` 只保留 slots 里**第一个可见**的 `qrcode`，
+  其余置 `visible: false`（不删除字段 —— 渲染层因此结构上画不出第二个码）；它由 `posterSingleSpecPatch`
+  内部调用，所以单作品 / 阶段 / 班级 / 成片封面四支自动都有，长图本来就只有一个码（块合成）。
+  `posterShareQrSpecFacts(spec)` 给读数（`visibleCount / keptId / hiddenIds`），面板与断言读同一份。
+- **plan 的 `share` 段只有一个装配点**：`posterShareQrShareView({ state, stateLabel, active, tokenText, link,
+  path, expiresText, daysLeft, spec })` —— 五类版式都调它，字段因此不会各写一套。`link` 是**完整地址**、
+  `path` 是 `/p/<令牌>`、`expiresText` 直接取令牌账的读数（`shareTokenView` / `videoSharePanelView`），
+  本模块**不另算一份日期**。
+- **有效期变化时二维码不变**：二维码 payload 只依赖 `token` 本身 —— 改 `validDays` / `expiresAt` 只动
+  面板上的有效期读数（`posterShareQrFacts().expiresText`），链接与码值一字不变（断言 F 里逐条比过）。
+- **生成动作只有一份编排**（`services/posterShareGenerate.js`）：
+  `posterShareQrGeneratePlan()` 判「要生成哪一种令牌 + 闸门过不过」→ `generatePosterShareToken()` 生成并
+  返回**新的令牌数组** + 一条待写的留痕输入。图文走 `shareTokenRecordInput(record, …)`（`data/shareTokens.js`
+  里新增的**唯一入参拼装点**，第四步的 `buildParentShareToken` 也改成调它）、成片走
+  `videoShareTokenInput()`（`kind: 'video'` + `jobKey`，不混进图文令牌账）。闸门永远是
+  `shareTokenGenerationGate` ← `archiveForwardView` ← `data/consent.js`（成片那一支走 `videoShareGateView`，
+  它内部逐位学员走同一支判据）—— 弹窗**不自己判授权**，也不自己造令牌。
+- 弹窗新增 props：`consents`（生成闸门要它，两处入口都传；`GrowthArchiveData.jsx` 与 `main.jsx`）。
+  令牌账的写入仍归调用方（`setShareTokens(result.tokens)`），本机镜像由 App 层的 effect 落盘 —— 与
+  `services/shareForwardSend.js` 同一条口径。
+- **重绘键带上分享状态**：`posterShareQrPlanKey(share)` 代替原来的 `active ? link : 'no-share'` ——
+  「可用 → 已撤回 / 已过期」这种状态变化也要重画（否则预览停在旧图上，码还在墙上）。
+- 验收口径：`/tmp/assert-us105.mjs`（Node，**213 项**：文案真源 / 状态归一 / 只画一个二维码 /
+  五类版式的 share 段与占位分档 / 生成三条路径（闸门拦下 · 生成 · 已有链接不再生成）/ 有效期变化 /
+  面板读数与重绘键 / 12 组垃圾输入不抛错 / 分层纪律与源码接线）
+  + `/tmp/assert-us105-browser.mjs`（CDP，**111 项**：真机链路到第四步 → 弹窗里二维码面板读数 →
+  页面内用真实 data 模块重算 plan + **渲染层**的 `renderPosterDialog` 读「画了什么」（含二维码方框内的
+  深色像素数）→ 点「先生成分享链接」真出码 → **扫那条链接**打开家长页看到内容 → 另一张标签页把令牌改成
+  过期（App 监听 storage 当场同步）→ 面板与预览一起失效、扫码看到「已过期」→ 面板里重新生成 → 撤回 →
+  再扫码看到「该分享已撤回」→ 模板里塞第二个可见二维码位只画一个 → 390px ≥44px → console 干净）。
+  截图 525~534。
+
 ## 容易踩的坑
 
 - **「出现过这个名字」不等于「消费它」：结构性判据别用子串**（US-103 真踩一条老断言）：
@@ -4287,6 +4336,14 @@ services / 界面只渲染产物」）：
   posterTemplate*` 的**使用**集合（先剥注释、再去掉 import 语句与引号字符串）逐个查「imported ∪ declared」
   （`importedNames()` / `declaredNames()` / `usedPosterIdentifiers()`，见 `/tmp/assert-us104.mjs` 的 G6/G7）。
   这类白屏只有**浏览器回归**会第一时间抓到 —— 改完页面先跑一遍进页面的那条 CDP 脚本。
+- **分享令牌账的基线不一定是空的：判据要用「增量」**（US-313 真踩）：App 挂载时会
+  `loadRemoteShareTokens()` 把云端 `share_tokens` 表并回来（`main.jsx` 第 623 行），而这张表里可能留着
+  **别的跑批写进去的令牌**（浏览器回归脚本与人工试用都往同一张表推）。于是「生成前账是空的」这种断言
+  时红时绿；改成「生成后**增量 1** 且新那条的 `recordId` 就是这条记录」—— 判据更强也更稳。
+- **分享撤回后，「撤回」按钮会消失**（US-313 写的脚本踩到）：第四步分享面板的撤回动作对的是
+  `shareTokenPanel.active ? token : null` —— 令牌**已过期**时面板给的是「重新生成分享链接」而不是撤回。
+  所以要验「撤回后二维码失效」，先用面板里的**重新生成**拿到一条新的可用令牌，再撤回它；
+  老的那条（过期）仍然各自推算状态（断言里两条链接各扫一次：一条「已过期」、一条「该分享已撤回」）。
 - **「值比框长」不是布局溢出**（US-312b 真踩一条自己写的断言）：390px 逐块量横向溢出时，
   `input` 的 `scrollWidth > clientWidth` 是**文本滚动的正常现象**（长文案、长文件名都会这样），
   它不是「块溢出了」。逐块判据要把 `INPUT / SELECT / TEXTAREA` 排掉，页面级的
@@ -4535,6 +4592,21 @@ service 模块也能在 Node 里测：`cloud.database` 是**可写属性**，导
 - 想证明「异步生成没有阻塞输入」时，可以在页面里装一个 **MutationObserver 记录中间态**
   （`window.__intakeTrace`：每次 DOM 变化时记下 pending/ready 数量、已上传计数、待生成图片的 naturalWidth），
   断言「条目与输入已可用、缩略图还没好」这个中间态真实出现过，比固定 sleep 可靠得多。
+
+### 验证「二维码里装的是什么」（US-313 起，装配侧）
+
+海报 / 装裱的图不落地就没法解码（仓库里只有**编码器**，没有解码实现），所以「码扫出来的到底是什么」
+用三段判据拼出来，缺一段都不算：
+
+1. **装配**：plan 的 `qrcode` 占位区 `value`（模板变量）经 **渲染层同一支**
+   `applyPosterVariables(slot.value, posterVariableContext(plan.data))` 代入 —— 这一串就是喂给编码器的 payload，
+   断言它**逐字符等于**那条分享链接（`shareTokenUrl(token, { origin })`）。
+2. **绘制**：把 plan 交给 `services/posterDialog.js` 的 `renderPosterDialog()`（预览用的那一支），
+   从 `rendered.plan.slots` 读「真的画出来了没有」：`type:'qrcode' && drawn===true`、`modules > 0`、
+   `reason:'hidden'`（被唯一二维码收敛掉的）；再在 `rendered.canvas` 上按 `slot.box` 取 `getImageData`，
+   数深色像素（真画了码才有几百个以上的墨点 —— 空白方框或占位文字都不会是这个量级）。
+3. **打开**：用第 1 步得到的那条 URL 新开一个标签页看家长页（扫码的等价判据）——
+   「可用 → 有内容」「撤回 → 该分享已撤回」「过期 → 已过期」三态各断言一次。
 
 ### 证明 canvas 渲染「逐像素一致」（重构 / 兼容类改动）
 

@@ -318,6 +318,29 @@ export function normalizeShareTokenRecord(raw) {
 }
 
 /**
+ * 「按一条归档记录生成图文分享令牌」的**唯一入参拼装点**（[海报 US-313] 收敛）：
+ * 第四步的「生成家长分享链接」与海报弹窗里的「先生成分享链接」都走这里 ——
+ * 两处各拼一遍必然漏字段（漏了 `version` 就会把「第 N 版」记成第 1 版）。
+ * 记录读不出一律给空串（`createShareTokenRecord` 的归一化会兜住），**不抛错**。
+ */
+export function shareTokenRecordInput(record, { validDays = null, createdBy = '', orgId = '' } = {}) {
+  const source = record && typeof record === 'object' ? record : {};
+  return {
+    recordId: text(source.id),
+    recordKey: text(source.recordKey),
+    orgId: text(orgId),
+    student: text(source.student),
+    studentId: text(source.studentId),
+    className: text(source.className),
+    lessonDate: text(source.lessonDate || source.date),
+    title: text(source.title),
+    version: Math.max(1, Math.trunc(Number(source.version)) || 1),
+    validDays,
+    createdBy: text(createdBy)
+  };
+}
+
+/**
  * 生成一条令牌记录（写入侧）。
  *
  * `input` = 这次分享指向哪一条档案（`recordId` / 学员 / 课次日期 / 版本 …）；

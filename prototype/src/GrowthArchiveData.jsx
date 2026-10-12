@@ -285,7 +285,6 @@ import {
   releasePosterClassUrl,
   renderPosterClass
 } from './services/posterClass';
-import { POSTER_SINGLE_SHARE_PENDING_TEXT } from './data/posterSingle';
 // 成长报告长图海报（[海报 US-307] / FR-317、FR-326）：竖向分段、高度按内容自适应、单边上限保护与
 // 「先降 DPI、再分段出多张」的降级顺序、预计高度与预计文件大小全在 `data/posterReportLong.js`
 // （零依赖纯函数，可 node 直跑断言），渲染与下载在 `services/posterReportLong.js`
@@ -1467,7 +1466,7 @@ function ClassPosterPanel({className,roster=[],records=[],tokens=[],teacherName=
             <li data-poster-class-line="class">班级：{plan.className} · 第 {plan.batch.index} / {plan.batch.total} 批（{plan.batch.from}-{plan.batch.to} 位）</li>
             <li data-poster-class-line="period">周期：{plan.periodLabel}</li>
             <li data-poster-class-line="wall">作品墙：{plan.wall.grid.label} 网格（{plan.wall.grid.columns} 列 × {plan.wall.grid.rows} 行）· 本批 {plan.batch.size} 格（作品 {plan.batch.artworks} · {POSTER_CLASS_NO_ARTWORK_TEXT} {plan.batch.placeholders}）</li>
-            <li data-poster-class-line="share">分享：{plan.share.pending?POSTER_SINGLE_SHARE_PENDING_TEXT:`链接可用 · ${plan.share.link}`}</li>
+            <li data-poster-class-line="share">分享：{plan.share.pending?plan.share.placeholderText:`链接可用 · ${plan.share.link}`}</li>
           </ul>
           <ol className="poster-class-order-list" data-poster-class-order-list="true" data-poster-class-order-total={String(plan.students.total)}>
             {plan.students.ordered.map((studentName,index)=><li key={studentName||`unnamed-${index}`} data-poster-class-order-row={String(index)} data-poster-class-order-name={studentName}>
@@ -1627,7 +1626,7 @@ function VideoCoverPosterPanel({isClass=false,objectName='',period='',jobKey='',
             <li data-poster-video-cover-line="overlays">叠加件：{plan.cover.overlays.rows.map(row=>`${row.label}${row.present?'（有）':'（缺）'}`).join(' · ')}</li>
             <li data-poster-video-cover-line="duration">时长角标：{plan.cover.durationBadgeText}（{plan.duration.ready?`取成片记录的第 ${plan.video.version} 版 · ${plan.duration.durationText}`:'占位 —— 视频还没成片'}）</li>
             <li data-poster-video-cover-line="ratio">画布 {plan.ratio.canvasLabel} · 与成长视频 {plan.ratio.videoLabel} 同比例（{plan.ratio.ratioLabel}）· 主视觉 {plan.ratio.fit} 等比缩放</li>
-            <li data-poster-video-cover-line="share">分享：{plan.share.pending?POSTER_SINGLE_SHARE_PENDING_TEXT:`链接可用 · ${plan.share.link}`}</li>
+            <li data-poster-video-cover-line="share">分享：{plan.share.pending?plan.share.placeholderText:`链接可用 · ${plan.share.link}`}</li>
           </ul>
           {plan.notes.length?<ul className="poster-video-cover-notes">
             {plan.notes.map(note=><li key={note} data-poster-video-cover-note="true">{note}</li>)}
@@ -1780,7 +1779,7 @@ function ReportLongPosterPanel({student='',records=[],lessons=[],tokens=[],teach
             <li data-poster-report-line="student">学员：{plan.studentName} · {plan.periodLabel}</li>
             <li data-poster-report-line="content">内容：{plan.rows.length} 节课次 · {plan.works.count} 幅成品作品 · 点评摘要 {plan.quotes.truncated?`${plan.quotes.truncated} 条按字数截断`:'全部在 40 字内'}</li>
             <li data-poster-report-line="size">整张长图 {plan.layout.width}×{plan.layout.height}（上限 {plan.layout.maxEdge}px）· {plan.degrade.modeLabel}{pages.length>1?` · ${pages.length} 张`:''}</li>
-            <li data-poster-report-line="share">分享：{plan.share.pending?POSTER_SINGLE_SHARE_PENDING_TEXT:`链接可用 · ${plan.share.link}`}</li>
+            <li data-poster-report-line="share">分享：{plan.share.pending?plan.share.placeholderText:`链接可用 · ${plan.share.link}`}</li>
             <li data-poster-report-line="file">文件名：{page?page.filename:''}</li>
           </ul>
           {plan.notes.length?<ul className="poster-report-long-notes">
@@ -2739,6 +2738,7 @@ export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,p
           teacherName={teacherName}
           orgName={DEFAULT_ORG_NAME}
           logo={archivePosterLogo}
+          consents={consents}
           navigate={navigate}
           setShareTokens={setShareTokens}
           recordAudit={recordAudit}

@@ -37,6 +37,10 @@ import { REVIEW_DIMENSION_NAMES } from './reviewDetailPanel';
 import { shareTokenUrl, shareTokenView } from './shareTokens';
 import { artworkExportDateText, sanitizeArtworkExportSegment } from './artworkExport';
 import { videoSubtitleFromReview } from './videoTimeline';
+// 海报二维码与分享令牌联动（[海报 US-313]）：状态文案（「分享链接待生成 / 已撤回 / 已过期」）与
+// 「只画一个二维码」的收敛都在 `data/posterShareQr.js` —— 五类版式共用同一支，
+// 别在任何一版里另写一套占位文案。
+import { POSTER_SHARE_QR_STATE_TEXTS, posterShareQrGuard, posterShareQrShareView } from './posterShareQr';
 
 const isPlainObject = (value) => !!value && typeof value === 'object' && !Array.isArray(value);
 const str = (value) => String(value === null || value === undefined ? '' : value).trim();
@@ -68,7 +72,9 @@ export const POSTER_SINGLE_QUOTE_MISSING_REASON = `这节课还没有老师确�
 
 /** 两个占位文案（验收原文点名；界面提示、渲染占位与断言读同一份）。 */
 export const POSTER_SINGLE_ARTWORK_MISSING_TEXT = '作品尚未同步完成';
-export const POSTER_SINGLE_SHARE_PENDING_TEXT = '分享链接待生成';
+// 「还没有分享」那一句就是 `data/posterShareQr.js` 状态表里的 `none`（[海报 US-313] 起按状态分档：
+// 撤回 / 过期有各自的话，只有「还没生成」才是这一句）。这里 re-export，老调用方一字不改。
+export const POSTER_SINGLE_SHARE_PENDING_TEXT = POSTER_SHARE_QR_STATE_TEXTS.none;
 
 /** 还没有归档记录时的可读原因（空态，不是「渲染一张空白海报」）。 */
 export const POSTER_SINGLE_RECORD_MISSING_TEXT = '还没有可分享的归档记录：先完成课后反馈的归档，再来生成单作品海报。';
@@ -234,6 +240,12 @@ function posterSinglePlaceholderSlot(slot, text, { sizeRatio = 0.02, align = 'ce
  *
  * 阶段海报（[海报 US-304]）复用同一支：它的拼贴位缺件时文案是「本阶段数据不足」，
  * 因此 `imagePlaceholderText` 可换（缺省仍是「作品尚未同步完成」，单作品那条路径一字不变）。
+ *
+ * [海报 US-313] 两件事加在这里（五类版式因此自动都有）：
+ *  · `sharePendingText` 可换 —— 二维码位那句占位**按分享状态分档**（"分享链接待生成 / 分享已撤回 /
+ *    分享已过期"，文案表在 `data/posterShareQr.js`），撤回 / 过期不再谎报「待生成」；
+ *  · **只画一个二维码**（AC4）：模板里第二个可见的 `qrcode` 位在这里被置为 `visible:false`
+ *    （`posterShareQrGuard()`），渲染层结构上画不出第二个码。
  */
 export function posterSingleSpecPatch(spec, {
   artworkMissing = false,
@@ -241,12 +253,15 @@ export function posterSingleSpecPatch(spec, {
   logoFallback = '',
   // 图位缺件的**文案**可换（[海报 US-304] 的阶段拼贴位缺件时写「本阶段数据不足」而不是
   // 「作品尚未同步完成」）：位置、尺寸、字号一律不动，换的只是那一句。
-  imagePlaceholderText = POSTER_SINGLE_ARTWORK_MISSING_TEXT
+  imagePlaceholderText = POSTER_SINGLE_ARTWORK_MISSING_TEXT,
+  // 二维码位缺件的**文案**可换（[海报 US-313] 的按状态分档；缺省仍是验收原文「分享链接待生成」）。
+  sharePendingText = POSTER_SINGLE_SHARE_PENDING_TEXT
 } = {}) {
-  const normalized = normalizePosterSpec(spec);
+  const normalized = posterShareQrGuard(normalizePosterSpec(spec)).spec;
   const artworkSlot = posterSingleArtworkSlot(normalized);
   const logoText = str(logoFallback);
   const imageText = str(imagePlaceholderText) || POSTER_SINGLE_ARTWORK_MISSING_TEXT;
+  const shareText = str(sharePendingText) || POSTER_SINGLE_SHARE_PENDING_TEXT;
   const slots = normalized.slots.map((slot) => {
     if (artworkMissing && slot.type === 'image' && artworkSlot && slot.id === artworkSlot.id) {
       return posterSinglePlaceholderSlot(slot, imageText, {
@@ -255,7 +270,7 @@ export function posterSingleSpecPatch(spec, {
       });
     }
     if (sharePending && slot.type === 'qrcode') {
-      return posterSinglePlaceholderSlot(slot, POSTER_SINGLE_SHARE_PENDING_TEXT, {
+      return posterSinglePlaceholderSlot(slot, shareText, {
         sizeRatio: POSTER_SINGLE_PLACEHOLDER_SIZE.qrcode
       });
     }
@@ -334,12 +349,25 @@ export function buildPosterSinglePlan({
   const artworkUrl = str(media.artwork && media.artwork.url);
   const artworkMissing = !artworkUrl;
 
-  // 有效分享：`shareTokenView` 是分享状态（含撤回 / 过期）的唯一真源。
+  // 有效分享：`shareTokenView` 是分享状态（含撤回 / 过期）的唯一真源；plan 的 `share` 段
+  // （链接 / 有效期读数 / 二维码位那句按状态分档的占位文案 / 「只画一个二维码」读数）由
+  // `data/posterShareQr.js` 的唯一装配点产出（[海报 US-313]），五类版式同一份字段。
   const share = source
     ? shareTokenView({ tokens, recordId: source.id, now })
     : { state: 'none', stateLabel: '', active: false, tokenText: '', link: '' };
   const shareUrl = share.active && share.tokenText ? shareTokenUrl(share.tokenText, { origin }) : '';
   const sharePending = !shareUrl;
+  const shareView = posterShareQrShareView({
+    state: share.state,
+    stateLabel: share.stateLabel,
+    active: share.active,
+    tokenText: share.tokenText,
+    link: shareUrl,
+    path: share.link,
+    expiresText: share.expiresText,
+    daysLeft: share.daysLeft,
+    spec: baseSpec
+  });
 
   const quote = posterSingleQuote(source && source.reviews);
   const logoUrl = posterImageUrl(logo);
@@ -348,7 +376,12 @@ export function buildPosterSinglePlan({
     ? ''
     : (str(logo) ? '机构标识地址不是图片地址：Logo 位改用机构名代替。' : posterSingleLogoFallbackNote(logoFallback));
 
-  const patchedSpec = posterSingleSpecPatch(baseSpec, { artworkMissing, sharePending, logoFallback });
+  const patchedSpec = posterSingleSpecPatch(baseSpec, {
+    artworkMissing,
+    sharePending,
+    logoFallback,
+    sharePendingText: shareView.placeholderText
+  });
   const data = {
     studentName,
     artworkTitle,
@@ -365,7 +398,8 @@ export function buildPosterSinglePlan({
   const notes = [];
   if (!source) notes.push(POSTER_SINGLE_RECORD_MISSING_TEXT);
   if (source && artworkMissing) notes.push(`作品缺失：作品位显示「${POSTER_SINGLE_ARTWORK_MISSING_TEXT}」，导出被拦下。`);
-  if (source && sharePending) notes.push(`没有有效的分享链接：二维码位显示「${POSTER_SINGLE_SHARE_PENDING_TEXT}」而不是空白方块。`);
+  if (source && sharePending) notes.push(`没有有效的分享链接：二维码位显示「${shareView.placeholderText}」而不是空白方块。`);
+  if (source && shareView.qr.note) notes.push(shareView.qr.note);
   if (source && !artworkTitle) notes.push(POSTER_SINGLE_TITLE_MISSING_NOTE);
   if (source && quote.reason) notes.push(quote.reason);
   if (source && fallbackReason) notes.push(fallbackReason);
@@ -401,15 +435,7 @@ export function buildPosterSinglePlan({
       placeholderText: artworkMissing ? POSTER_SINGLE_ARTWORK_MISSING_TEXT : '',
       status: str(media.artwork && media.artwork.status)
     },
-    share: {
-      state: share.state,
-      stateLabel: share.stateLabel,
-      active: Boolean(share.active),
-      tokenText: str(share.tokenText),
-      link: shareUrl,
-      pending: sharePending,
-      placeholderText: sharePending ? POSTER_SINGLE_SHARE_PENDING_TEXT : ''
-    },
+    share: shareView,
     logo: { url: logoUrl, fallbackText: logoFallback },
     layout: posterSingleLayout(baseSpec),
     notes,

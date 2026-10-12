@@ -34,10 +34,12 @@ import {
   seedPosterTemplates
 } from './posterTemplates';
 import {
-  POSTER_SINGLE_SHARE_PENDING_TEXT,
   posterSingleLogoFallbackNote,
   posterSingleSpecPatch
 } from './posterSingle';
+// 海报二维码与分享令牌联动（[海报 US-313]）：plan 的 `share` 段（含「只画一个二维码」读数）
+// 与其它四类版式共用 `data/posterShareQr.js` 这一支装配点。
+import { posterShareQrShareView } from './posterShareQr';
 import {
   ARCHIVE_PERIODS,
   ARCHIVE_PERIOD_DEFAULT,
@@ -422,6 +424,19 @@ function posterClassContext({
     ? shareTokenView({ tokens, recordId: shareRecord.id, now })
     : { state: 'none', stateLabel: '', active: false, tokenText: '', link: '' };
   const shareUrl = share.active && share.tokenText ? shareTokenUrl(share.tokenText, { origin }) : '';
+  // plan 的 `share` 段（[海报 US-313]）：与单作品 / 阶段海报同一支装配（链接 / 有效期读数 /
+  // 二维码位那句按状态分档的占位文案 / 「只画一个二维码」读数）。
+  const shareView = posterShareQrShareView({
+    state: share.state,
+    stateLabel: share.stateLabel,
+    active: share.active,
+    tokenText: share.tokenText,
+    link: shareUrl,
+    path: share.link,
+    expiresText: share.expiresText,
+    daysLeft: share.daysLeft,
+    spec: baseSpec
+  });
 
   const logoUrl = posterImageUrl(logo);
   const logoFallback = !logoUrl ? str(orgName) : '';
@@ -448,15 +463,9 @@ function posterClassContext({
     latestDate,
     teacherName: str(teacherName),
     orgName: str(orgName),
-    share: {
-      state: share.state,
-      stateLabel: share.stateLabel,
-      active: Boolean(share.active),
-      tokenText: str(share.tokenText),
-      link: shareUrl,
-      pending: !shareUrl,
-      recordId: shareRecord ? str(shareRecord.id) : ''
-    },
+    // plan 的 `share` 段 = 唯一装配点（`data/posterShareQr.js`）+ 班级版式自己的记录 id
+    // （`posterForwardNames` 读的就是 `share.recordId`：这一张对应哪条记录）。
+    share: { ...shareView, recordId: shareRecord ? str(shareRecord.id) : '' },
     logo: { url: logoUrl, fallbackText: logoFallback },
     nameCaptions: nameCaptions !== false
   };
@@ -479,6 +488,7 @@ function composeClassPoster(context, batchIndex) {
   // 把它换成一句文案反而会把 30 个格子塌成一个。
   const patched = posterSingleSpecPatch(context.baseSpec, {
     sharePending: context.share.pending,
+    sharePendingText: context.share.placeholderText,
     logoFallback: context.logo.fallbackText
   });
   const spec = posterClassWallPatch(patched, { grid, nameCaptions: context.nameCaptions });
@@ -516,8 +526,9 @@ function composeClassPoster(context, batchIndex) {
   if (context.className && placeholders) notes.push(posterClassPlaceholderNote(placeholders));
   if (context.className && !context.latestDate) notes.push('这一期还没有可读的课次日期：海报上的日期位留空，不填今天。');
   if (context.className && context.share.pending) {
-    notes.push(`没有有效的分享链接：二维码位显示「${POSTER_SINGLE_SHARE_PENDING_TEXT}」而不是空白方块。`);
+    notes.push(`没有有效的分享链接：二维码位显示「${context.share.placeholderText}」而不是空白方块。`);
   }
+  if (context.className && context.share.qr && context.share.qr.note) notes.push(context.share.qr.note);
   if (context.className && !context.logo.url) {
     const reason = str(context.logo.fallbackText)
       ? posterSingleLogoFallbackNote(context.logo.fallbackText)

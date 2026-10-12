@@ -41,6 +41,9 @@ import {
   seedPosterTemplates
 } from './posterTemplates';
 import { POSTER_SINGLE_SHARE_PENDING_TEXT } from './posterSingle';
+// 海报二维码与分享令牌联动（[海报 US-313]）：plan 的 `share` 段（含「只画一个二维码」读数）
+// 与其它四类版式共用 `data/posterShareQr.js` 这一支装配点。
+import { posterShareQrShareView } from './posterShareQr';
 import {
   POSTER_PERIOD_INSUFFICIENT_TEXT,
   posterPeriodLabel,
@@ -151,7 +154,10 @@ export const POSTER_REPORT_STUDENT_MISSING_TEXT = '还没有可生成长图的�
 export const POSTER_REPORT_PERIOD_EMPTY_TEXT = '这个周期里还没有归档记录：换一个周期，或先完成一次课后反馈的归档。';
 export const POSTER_REPORT_EMPTY_TITLE = '暂时没有可生成的长图';
 export const POSTER_REPORT_ARTWORK_MISSING_REASON = `这个周期里还没有可收录的成品作品图：作品与点评摘要一段写「${POSTER_REPORT_WORKS_MISSING_TEXT}」，其余各段照常出图。`;
-export const POSTER_REPORT_SHARE_PENDING_REASON = `没有有效的分享链接：二维码位显示「${POSTER_SINGLE_SHARE_PENDING_TEXT}」而不是空白方块。`;
+export function posterReportSharePendingReason(text = POSTER_SINGLE_SHARE_PENDING_TEXT) {
+  return `没有有效的分享链接：二维码位显示「${text || POSTER_SINGLE_SHARE_PENDING_TEXT}」而不是空白方块。`;
+}
+export const POSTER_REPORT_SHARE_PENDING_REASON = posterReportSharePendingReason();
 export const POSTER_REPORT_LESSON_TRIM_REASON = (total, shown) => `这个周期共有 ${int(total)} 节课，长图按课次顺序列出前 ${int(shown)} 节（超长图的课次行上限 ${POSTER_REPORT_MAX_LESSONS} 节）。`;
 export const POSTER_REPORT_QUOTE_TRUNCATED_REASON = (count) => `${int(count)} 条点评摘要超过了 ${POSTER_REPORT_QUOTE_MAX_CHARS} 字的摘录上限，按停顿处逐字截断（不改写、不补话）。`;
 export const POSTER_REPORT_QUOTE_MISSING_REASON = '有课次还没有老师确认后的点评原文：那一行只写课次与作品名，不编一句摘要。';
@@ -563,7 +569,8 @@ function buildReportBlocks(content) {
     slots: content.sharePending
       ? [textSlot({
         id: 'qrPending',
-        text: POSTER_SINGLE_SHARE_PENDING_TEXT,
+        // 占位那句**按状态分档**（[海报 US-313]）：撤回 / 过期不再谎报「待生成」。
+        text: content.sharePendingText || POSTER_SINGLE_SHARE_PENDING_TEXT,
         metric: L.text.qrCaption,
         dy: qrBlockHeight / 2 - qrCaption.linePx / 2,
         align: 'center',
@@ -718,6 +725,19 @@ export function buildPosterReportLongPlan({
     : { state: 'none', stateLabel: '', active: false, tokenText: '', link: '' };
   const shareUrl = share.active && share.tokenText ? shareTokenUrl(share.tokenText, { origin }) : '';
   const sharePending = !shareUrl;
+  // plan 的 `share` 段（[海报 US-313]）：与其它四类版式同一支装配（链接 / 有效期读数 /
+  // 二维码块那句按状态分档的占位文案 / 「只画一个二维码」读数 —— 长图的码由块合成，本来就只有一个）。
+  const shareView = posterShareQrShareView({
+    state: share.state,
+    stateLabel: share.stateLabel,
+    active: share.active,
+    tokenText: share.tokenText,
+    link: shareUrl,
+    path: share.link,
+    expiresText: share.expiresText,
+    daysLeft: share.daysLeft,
+    spec: baseSpec
+  });
 
   const quoteTruncated = rows.filter((row) => row.quote.truncated).length;
   const quoteMissing = rows.filter((row) => !row.quote.text).length;
@@ -727,7 +747,8 @@ export function buildPosterReportLongPlan({
     timeline: rows.map((row) => posterReportTimelineLine(row)).filter(Boolean),
     works: artworks,
     summaryLines: summary.lines.filter(Boolean),
-    sharePending
+    sharePending,
+    sharePendingText: shareView.placeholderText
   };
   const blocks = buildReportBlocks(content);
   // **有内容才出图**：没有学员 / 这个周期一条记录都没有 → `pages: []`（结构上就渲染不出一张空白海报），
@@ -835,7 +856,8 @@ export function buildPosterReportLongPlan({
   if (studentName && summary.reason) notes.push(summary.reason);
   if (studentName && quoteTruncated) notes.push(POSTER_REPORT_QUOTE_TRUNCATED_REASON(quoteTruncated));
   if (studentName && quoteMissing) notes.push(POSTER_REPORT_QUOTE_MISSING_REASON);
-  if (studentName && sharePending) notes.push(POSTER_REPORT_SHARE_PENDING_REASON);
+  if (studentName && sharePending) notes.push(posterReportSharePendingReason(shareView.placeholderText));
+  if (studentName && shareView.qr.note) notes.push(shareView.qr.note);
 
   return {
     hasStudent: Boolean(studentName),
@@ -875,15 +897,7 @@ export function buildPosterReportLongPlan({
     counts: summary.counts,
     quotes: { truncated: quoteTruncated, missing: quoteMissing, maxChars: POSTER_REPORT_QUOTE_MAX_CHARS },
     shareRecordId: shareRecord ? str(shareRecord.id) : '',
-    share: {
-      state: share.state,
-      stateLabel: share.stateLabel,
-      active: Boolean(share.active),
-      tokenText: str(share.tokenText),
-      link: shareUrl,
-      pending: sharePending,
-      placeholderText: sharePending ? POSTER_SINGLE_SHARE_PENDING_TEXT : ''
-    },
+    share: shareView,
     logo: { url: logoUrl, fallbackText: logoUrl ? '' : str(orgName) },
     layout: {
       width: POSTER_REPORT_WIDTH,
