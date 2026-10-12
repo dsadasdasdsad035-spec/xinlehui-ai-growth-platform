@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, Download, FileText, Frame, MessageSquareText, Plus, RefreshCw, Sparkles, Trash2 } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Archive, Download, FileText, Frame, Gauge, MessageSquareText, Plus, RefreshCw, Sparkles, Trash2 } from 'lucide-react';
 // 档案页的「常驻视图」（[第四步 US-206]）：
 //  - 对象 / 周期 / 缺课筛选的**可选项、默认选中、过滤、空态**在 `data/archiveTargets.js` 与
 //    `data/archiveResident.js` 两份零依赖模块里，组件只渲染它们的产物（一个名字都不写死）；
@@ -37,6 +37,18 @@ import {
   archiveResidentView
 } from './data/archiveResident';
 import { ARCHIVE_SHARE_LINK_NOTE } from './data/archiveSummary';
+// 移动端与性能（[第四步 US-212]）：分页窗口 / 首屏预算 / 滚动帧率 / 缩略图四项规则在
+// `data/archivePerformance.js`（零依赖纯函数），浏览器侧的执行（缩略图、首屏计时、滚动采帧）
+// 在 `services/archivePerformance.js`。这一页只渲染它们的产物，不自己写阈值。
+import {
+  ARCHIVE_LAZY_ROOT_MARGIN,
+  ARCHIVE_PERF_HINT,
+  ARCHIVE_THUMB_MAX_EDGE,
+  archivePerformanceChecks,
+  archiveTimelineWindow,
+  archiveWindowEntries
+} from './data/archivePerformance';
+import { archiveThumbnailQueue, createArchiveScrollProbe, nextFrame, nowMs } from './services/archivePerformance';
 import {
   ARCHIVE_REPORT_DELETE_CANCEL_LABEL,
   ARCHIVE_REPORT_DELETE_CONFIRM_LABEL,
@@ -79,18 +91,72 @@ import { deleteRemoteArchiveReport, saveRemoteArchiveReport } from './services/a
 import { AUDIT_ACTIONS, auditEntryMissingFields, auditTraceText } from './data/auditLog';
 import { Button } from './ui';
 
+/**
+ * 缩略图就绪前的 1×1 占位（列表里的图先挂它，占位样式在 CSS 里 —— `.archive-thumb[data-archive-thumb-state] img`）。
+ * 不是为了好看：`<img>` 不能先挂原图，否则浏览器的懒加载会在它自己那段距离内把原图整张解码掉。
+ */
+const ARCHIVE_THUMB_PLACEHOLDER = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+
+/**
+ * 时间线上的图（[第四步 US-212] 第 3 条）：**懒加载 + 缩略图**。
+ *
+ *  - `loading="lazy"` + `decoding="async"` 先行：没进视口的图不参与解码，滚动不为它买单；
+ *  - 卡片进视口（外扩 `ARCHIVE_LAZY_ROOT_MARGIN`）后才向共用的队列要一张长边 ≤320px 的缩略图，
+ *    生成好就换上（`data-archive-thumb-state` 如实报 `lazy → pending → ready` 的轨迹）；
+ *  - 跨域 https 素材做不了画布缩略图（会把画布标脏）→ 回退原图懒加载，读数记成 `direct`。
+ *
+ * DOM 与老口径保持一致：`data-archive-lesson-artwork-img` / `data-archive-lesson-photo`
+ * 仍然挂在那个 `<img>` 上（外层 `span` 用 `display:contents` 不占布局），老断言不用改。
+ */
+function LazyArchiveImage({src,alt,attrs={},onThumb=null,thumbKey=''}){
+  const imageRef=useRef(null);
+  const [thumbUrl,setThumbUrl]=useState('');
+  const [state,setState]=useState('lazy');
+  useEffect(()=>{
+    // 观察的是 `<img>` 自己：外层 `span.archive-thumb` 是 `display:contents`（不占布局），
+    // 没有盒子也就不会被 IntersectionObserver 判定为「进入视口」（本轮真踩）。
+    const node=imageRef.current;
+    if(!node||!src) return undefined;
+    let cancelled=false;
+    const request=()=>{
+      if(cancelled||!src) return;
+      setState(current=>current==='ready'?'ready':'pending');
+      if(onThumb) onThumb(thumbKey,'pending');
+      archiveThumbnailQueue.request(src,result=>{
+        if(cancelled) return;
+        if(result&&result.ok&&result.url){setThumbUrl(result.url);setState('ready');if(onThumb)onThumb(thumbKey,'ready');}
+        else{setState('direct');if(onThumb)onThumb(thumbKey,'direct');}
+      });
+    };
+    // 没有 IntersectionObserver（老浏览器 / 测试环境）就直接生成，功能不因此消失。
+    if(typeof IntersectionObserver!=='function'){request();return ()=>{cancelled=true;};}
+    const observer=new IntersectionObserver(entries=>{
+      if(entries.some(item=>item.isIntersecting)){observer.disconnect();request();}
+    },{rootMargin:ARCHIVE_LAZY_ROOT_MARGIN});
+    observer.observe(node);
+    return ()=>{cancelled=true;observer.disconnect();};
+  },[src,thumbKey,onThumb]);
+  // `src` 的两段式：缩略图还没就绪时先挂一张 1×1 占位图 —— 不能先挂原图，
+  // 否则浏览器的懒加载会在「这段距离内」把原图整张解码掉（480px 的图就白生成缩略图了）。
+  // 缩略图这条路走不通（外链 https 做不了画布缩略图）才退回原图懒加载。
+  const displaySrc = state === 'direct' ? src : (thumbUrl || ARCHIVE_THUMB_PLACEHOLDER);
+  return <span className="archive-thumb" data-archive-thumb-state={state} data-archive-thumb-max={ARCHIVE_THUMB_MAX_EDGE}>
+    <img ref={imageRef} src={displaySrc} alt={alt} loading="lazy" decoding="async" {...attrs}/>
+  </span>;
+}
+
 /** 一节课在时间线上的卡：日期与作品名 · 成品作品图 · 课堂照片 · 五维点评摘要 · 转发状态（US-209）。 */
-function ResidentLesson({entry}){
+function ResidentLesson({entry,onThumb=null}){
   return <article className="archive-lesson" data-archive-lesson="true" data-archive-lesson-id={entry.id} data-archive-lesson-date={entry.date} data-archive-lesson-status={entry.status} data-archive-lesson-plaque={entry.dateDots} data-archive-lesson-dimensions={entry.dimensionCount} data-archive-lesson-photos={entry.photoCount} data-archive-lesson-forward={entry.forward.state} data-archive-lesson-forward-label={entry.forward.stateLabel} data-archive-lesson-forward-opens={String(entry.forward.openCount)} data-archive-lesson-forward-text={entry.forward.line}>
     <div className="history-art" data-archive-lesson-artwork={entry.artwork.url?'ok':'empty'} data-archive-media-status={entry.artwork.status||''}>
-      {entry.artwork.url?<img src={entry.artwork.url} alt={`${entry.title?entry.title+' ':''}成品作品图`} data-archive-lesson-artwork-img="true"/>:entry.artwork.placeholder?<span className="archive-media-placeholder" data-archive-media-hold="true">{entry.artwork.placeholderText}</span>:<Frame/>}
+      {entry.artwork.url?<LazyArchiveImage src={entry.artwork.url} alt={`${entry.title?entry.title+' ':''}成品作品图`} onThumb={onThumb} thumbKey={`${entry.id||entry.recordKey}-artwork`} attrs={{'data-archive-lesson-artwork-img':'true'}}/>:entry.artwork.placeholder?<span className="archive-media-placeholder" data-archive-media-hold="true">{entry.artwork.placeholderText}</span>:<Frame/>}
     </div>
     <div className="history-copy">
       <span>{entry.date}{entry.title?` · 《${entry.title}》`:''}</span>
       {entry.dimensions.length?<dl className="history-dimensions">{entry.dimensions.map(row=><div key={row.name}><dt>{row.name}</dt><dd>{row.text}</dd></div>)}</dl>:<p data-archive-lesson-review="empty">老师已记录这节课里值得被看见的创作尝试。</p>}
       <div className="history-photos">
         {entry.photos.length?entry.photos.map((photo,index)=>(photo.url
-          ?<img key={`${entry.id}-photo-${index}`} src={photo.url} alt={`${entry.title||entry.date}课堂照片 ${index+1}`} data-archive-lesson-photo="true"/>
+          ?<LazyArchiveImage key={`${entry.id}-photo-${index}`} src={photo.url} alt={`${entry.title||entry.date}课堂照片 ${index+1}`} onThumb={onThumb} thumbKey={`${entry.id||entry.recordKey}-photo-${index}`} attrs={{'data-archive-lesson-photo':'true'}}/>
           :<span className="archive-media-placeholder" data-archive-media-hold="true" key={`${entry.id}-photo-${index}`}>{photo.placeholderText}</span>)):<small>这节课没有课堂照片</small>}
       </div>
       <small>已保存：成品作品图 · 课堂照片 · 完整点评{entry.archivedAtText?` · 归档于 ${entry.archivedAtText}`:''} · {entry.versionLabel}</small>
@@ -293,6 +359,65 @@ export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,p
   const showStatePanel=phase===ARCHIVE_RESIDENT_STATES.loading||phase===ARCHIVE_RESIDENT_STATES.error||showEmptyPanel;
   const pickerOptions=archiveTargetOptions(targetLists,target);
   const pickerValue=view.isClass?className:student;
+  // ---- 移动端与性能（[第四步 US-212]）---------------------------------------------------------
+  // 首屏：数据就绪（时间线真的有内容可渲染）→ 提交后的第一帧；滚动：真实滚动期间按 rAF 采帧。
+  // 规则（预算 / 分页窗口 / 四项结论）全在 `data/archivePerformance.js`，这里只提供原始测量值。
+  const [timelinePage,setTimelinePage]=useState(1);
+  const [firstPaint,setFirstPaint]=useState(null);
+  const [scrollStats,setScrollStats]=useState(null);
+  const [thumbStates,setThumbStates]=useState({});
+  const perfProbeRef=useRef({mountAt:nowMs(),dataAt:0,paintAt:0});
+  // 换对象 / 换筛选 → 分页窗口回到第一页（否则会停在「第 3 页」这种与筛选对不上的位置）。
+  useEffect(()=>{setTimelinePage(1)},[target,student,className,period,absenceFilter]);
+  // 分页窗口（超过 20 条只把当前窗口放进 DOM）与这一次真正渲染的条目。
+  const timelineWindow=useMemo(()=>archiveTimelineWindow({count:view.entries.length,page:timelinePage}),[view.entries.length,timelinePage]);
+  const visibleEntries=useMemo(()=>archiveWindowEntries(view.entries,timelineWindow),[view.entries,timelineWindow]);
+  // 这一次渲染的图张数（缩略图读数的分母）：没进视口、还没被请求的图记成「懒加载」。
+  const expectedImages=useMemo(()=>visibleEntries.reduce((total,entry)=>total+(entry.artwork.url?1:0)+entry.photos.filter(photo=>photo.url).length,0),[visibleEntries]);
+  const thumbCounts=useMemo(()=>{
+    const values=Object.values(thumbStates);
+    const ready=values.filter(value=>value==='ready').length;
+    const pending=values.filter(value=>value==='pending').length;
+    const failed=values.filter(value=>value==='direct').length;
+    return {ready,pending,failed,lazy:Math.max(0,expectedImages-ready-pending-failed)};
+  },[thumbStates,expectedImages]);
+  // 缩略图状态回填（`useCallback` 是为了让卡片的 IntersectionObserver 不因每次渲染换回调而重建）。
+  const noteThumb=useCallback((key,state)=>setThumbStates(current=>current[key]===state?current:{...current,[key]:state}),[]);
+  // 数据就绪时刻：时间线第一次真的有内容可渲染的那一刻（首屏计时的起点）。
+  useEffect(()=>{
+    if(showTimeline&&view.count>0&&!perfProbeRef.current.dataAt) perfProbeRef.current.dataAt=nowMs();
+  },[showTimeline,view.count]);
+  // 首屏渲染完成：提交后的第一帧（≈ 浏览器画出这一帧的时刻），整页只记第一次。
+  useEffect(()=>{
+    const probe=perfProbeRef.current;
+    if(!showTimeline||!view.count||!probe.dataAt||probe.paintAt) return undefined;
+    let cancelled=false;
+    nextFrame().then(stamp=>{
+      if(cancelled||perfProbeRef.current.paintAt) return;
+      perfProbeRef.current.paintAt=stamp;
+      const reading={ms:Math.max(0,stamp-perfProbeRef.current.dataAt),count:view.count,sinceMountMs:Math.max(0,stamp-perfProbeRef.current.mountAt)};
+      setFirstPaint(reading);
+      if(typeof window!=='undefined') window.__xinlehuiArchivePerf={...perfProbeRef.current,firstPaint:reading};
+    });
+    return ()=>{cancelled=true;};
+  },[showTimeline,view.count]);
+  // 滚动帧率：滚动期间按 rAF 采帧，滚动停下 400ms 收束一次（不足 30fps 时读数如实报未达标）。
+  useEffect(()=>{
+    const probe=createArchiveScrollProbe({onSample:stats=>{
+      setScrollStats(stats);
+      if(typeof window!=='undefined') window.__xinlehuiArchivePerf={...(window.__xinlehuiArchivePerf||{}),scroll:stats};
+    }});
+    const handler=()=>probe.scroll();
+    if(typeof window!=='undefined') window.addEventListener('scroll',handler,{passive:true});
+    return ()=>{if(typeof window!=='undefined')window.removeEventListener('scroll',handler);probe.cancel();};
+  },[]);
+  // 四项性能读数（首屏 / 分页 / 滚动帧率 / 缩略图）—— 结论只在 data 层算，界面只渲染。
+  const perfChecks=archivePerformanceChecks({
+    firstPaint:firstPaint?{ms:firstPaint.ms,count:firstPaint.count}:null,
+    paging:{count:view.count,mode:timelineWindow.mode,pageSize:timelineWindow.pageSize,visible:timelineWindow.visible},
+    scrollFps:scrollStats?{fps:scrollStats.fps,frames:scrollStats.frames}:null,
+    thumbnails:{ready:thumbCounts.ready,pending:thumbCounts.pending,lazy:thumbCounts.lazy,failed:thumbCounts.failed,total:expectedImages}
+  });
   // 切换筛选只改筛选条件：周期 / 缺课筛选 / 已选对象都**不重置**，时间线与概况当场跟着换（US-206 第 3 条）。
   const switchTarget=next=>{if(next!==target)setTarget(next)};
   const pickTarget=value=>{if(view.isClass)setClassName(value);else setStudent(value)};
@@ -427,9 +552,20 @@ export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,p
           <div className="archive-overview-grid">{view.overview.map(field=><div key={field.id} data-archive-overview-field={field.id} data-archive-overview-ok={field.ok?'true':'false'}><span>{field.label}</span><b>{field.value}</b><small>{field.detail}</small></div>)}</div>
         </section>
         {reportPanel}
-        <section className="archive-lesson-history" data-archive-timeline="true" data-archive-timeline-count={view.count}>
-          <div className="archive-section-head"><span>课次时间线 · 按日期升序</span><h3>{ARCHIVE_TIMELINE_TITLE}</h3><p>{ARCHIVE_TIMELINE_DESC}</p></div>
-          <div className="history-list">{view.entries.map(entry=>entry.isAbsence?<ResidentAbsence key={entry.id||entry.recordKey} entry={entry}/>:<ResidentLesson key={entry.id||entry.recordKey} entry={entry}/>)}</div>
+        <section className="archive-lesson-history" data-archive-timeline="true" data-archive-timeline-count={view.count} data-archive-rendered-count={timelineWindow.visible} data-archive-timeline-mode={timelineWindow.mode}>
+          <div className="archive-section-head"><span>课次时间线 · 按日期升序</span><h3>{ARCHIVE_TIMELINE_TITLE}</h3><p>{ARCHIVE_TIMELINE_DESC}</p><p className="archive-timeline-window-note" data-archive-window-note="true">{timelineWindow.hint}</p></div>
+          <div className="history-list">{visibleEntries.map(entry=>entry.isAbsence?<ResidentAbsence key={entry.id||entry.recordKey} entry={entry}/>:<ResidentLesson key={entry.id||entry.recordKey} entry={entry} onThumb={noteThumb}/>)}</div>
+          {timelineWindow.paged?<nav className="archive-page-controls" data-archive-page-controls="true" data-archive-page={String(timelineWindow.page)} data-archive-page-count={String(timelineWindow.pageCount)} data-archive-page-visible={String(timelineWindow.visible)} data-archive-page-hidden={String(timelineWindow.hidden)} aria-label="时间线分页">
+            {timelineWindow.hasPrev?<button type="button" data-archive-page-prev="true" onClick={()=>setTimelinePage(page=>Math.max(1,page-1))}>{timelineWindow.prevLabel}</button>:null}
+            <span data-archive-page-label="true">{timelineWindow.rangeLabel}</span>
+            {timelineWindow.hasMore?<button type="button" className="primary" data-archive-page-more="true" onClick={()=>setTimelinePage(page=>Math.min(timelineWindow.pageCount,page+1))}>{timelineWindow.moreLabel}</button>:null}
+          </nav>:null}
+        </section>
+        <section className="archive-perf-panel" data-archive-perf="true" data-archive-perf-measured={String(perfChecks.measured)} data-archive-perf-total={String(perfChecks.total)} data-archive-perf-all-ok={perfChecks.allOk?'true':'false'} data-archive-perf-summary-text={perfChecks.summary}>
+          <div className="archive-perf-head"><Gauge size={15}/><b>档案性能</b><em data-archive-perf-summary="true">{perfChecks.summary}</em><small>{ARCHIVE_PERF_HINT}</small></div>
+          <ul className="archive-perf-list">{perfChecks.rows.map(row=><li key={row.id} data-archive-perf-row={row.id} data-archive-perf-state={row.ok===null?'pending':row.ok?'ok':'over'} data-archive-perf-value={row.value} data-archive-perf-budget={row.budget} data-archive-perf-text={row.text}>
+            <b>{row.label}</b><span data-archive-perf-row-value="true">{row.value||'待测'}{row.budget?` / ${row.budget}`:''}</span><em>{row.text}</em>
+          </li>)}</ul>
         </section>
         <div className="report-footer"><span>家长看到的与这里同一份内容：只含成品素材与老师确认后的点评。</span><div><button onClick={downloadAssets} data-archive-download="true"><Download size={17}/>下载成品</button><button className="primary" onClick={()=>setToast(ARCHIVE_SHARE_LINK_NOTE)}><MessageSquareText size={17}/>一键转发家长</button></div></div>
       </>:null}

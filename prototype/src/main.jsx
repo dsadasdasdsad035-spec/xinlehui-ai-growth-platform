@@ -41,8 +41,8 @@ import { createParentSession, loadParentFeedbackRecords, loadRemoteFeedbackRecor
 // 归档素材的持久化与降级（[第四步 US-203]）：一条记录除了正文，还要带着**持久地址的图**给家长看。
 // 状态机（已同步 / 图片同步中 / 仅本地留存 / 缺失）、https 闸门、原图结构守卫、家长端占位判据
 // 全在 data 层；上传 / 本地持久副本 / 重试的编排在 services 层。
-import { ARCHIVE_MEDIA_PHOTO_LIMIT, ARCHIVE_MEDIA_PLACEHOLDER_TEXT, ARCHIVE_MEDIA_RETRY_LABEL, ARCHIVE_MEDIA_SYNC_HINT, archiveMediaKindLabel, archiveMediaRecordView, archiveMediaSyncSummary, archiveMediaView, pendingArchiveMediaRecords } from './data/archiveMedia';
-import { archiveMediaResultText, prepareArchiveMedia, retryArchiveMediaRecord } from './services/archiveMediaApi';
+import { ARCHIVE_MEDIA_PHOTO_LIMIT, ARCHIVE_MEDIA_PLACEHOLDER_TEXT, ARCHIVE_MEDIA_RETRY_LABEL, ARCHIVE_MEDIA_SYNC_HINT, archiveLocalFirstArchiveNote, archiveMediaKindLabel, archiveMediaRecordView, archiveMediaSyncSummary, archiveMediaView, archiveSyncView, pendingArchiveMediaRecords } from './data/archiveMedia';
+import { archiveMediaResultText, prepareLocalArchiveMedia, retryArchiveMediaRecord, startArchiveMediaBackgroundSync } from './services/archiveMediaApi';
 import { REVIEW_TRACE_TASKS, loadReviewTraces, makeReviewTraceId, mergeReviewTraces, persistReviewTrace, persistReviewTraces, reviewTraceSummary } from './data/reviewTrace';
 // 两次生成的对比（US-107b）：`parentTraceId` 关联的上一次 vs 本次的模型 / 耗时 / 推理，
 // 以及「已收束轨迹只驻留内存」的小账本，全在 data 层纯函数里（界面只渲染它的产物）。
@@ -3187,6 +3187,21 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
   // 同步中的状态（按钮防重复点击 + 第四步面板的读数）。
   const [archiveMediaAttempt,setArchiveMediaAttempt]=useState({phase:'idle',message:'',summary:null});
   const archiveMediaBusyRef=useRef(false);
+  // 弱网下的「本地优先归档」（[第四步 US-212] 第 5 条）：归档只等本地持久副本，素材上传放到后台，
+  // 这里只记后台队列的进度与它属于哪一条记录（换记录/换学员后不会把上一条的进度显示过来）。
+  const [archiveSyncState,setArchiveSyncState]=useState({phase:'idle',recordId:'',done:0,total:0,pending:0});
+  const archiveSyncRef=useRef(null);
+  useEffect(()=>()=>{if(archiveSyncRef.current&&archiveSyncRef.current.cancel)archiveSyncRef.current.cancel()},[]);
+  const startArchiveSync=next=>{
+    if(archiveSyncRef.current&&archiveSyncRef.current.cancel) archiveSyncRef.current.cancel();
+    const job=startArchiveMediaBackgroundSync(next,{
+      onPhase:progress=>setArchiveSyncState({...progress,recordId:next.id||''}),
+      // 每传完一条就地更新那一条记录：第四步面板与成长档案读的都是同一份（`setRecords` 的既有写法）。
+      onUpdate:updated=>setRecords(list=>list.map(item=>item.id===updated.id?updated:item))
+    });
+    archiveSyncRef.current=job;
+    return job;
+  };
   const archiveRecord=async()=>{
     if(archiveMediaBusyRef.current) return;
     // 访问权限（[第四步 US-211] 第 1 条）：老师只能归档**自己班级**的学员记录，跨班被拒绝 ——
@@ -3219,23 +3234,20 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
     const archivePhotoMediaCandidates=archivePhotoMediaParts
       .filter(item=>item&&item.url)
       .map(item=>({name:item.title||item.name||'课堂照片',url:item.url,rotation:item.rotation||0}));
-    // 素材持久化（[第四步 US-203]）：先试对象存储（https + storageKey），没接入就降级为本地持久副本，
-    // 上传失败标「图片同步中」——**这条通道永不抛错**，所以归档在任何情况下都照常完成。
+    // 素材持久化的**本地优先**这一步（[第四步 US-212] 第 5 条）：只做本地持久副本 + 素材记录，
+    // 一个网络请求都不发 —— 弱网下归档先在本机成功；上传交给下面的后台队列继续。
     archiveMediaBusyRef.current=true;
     setArchiveMediaAttempt(current=>({...current,phase:'syncing',message:''}));
     let prepared;
     try{
-      prepared=await prepareArchiveMedia({
+      prepared=await prepareLocalArchiveMedia({
         framedArtwork:{url:archiveArtworkMediaUrl,name:archiveArtworkMediaName},
         photos:archivePhotoMediaCandidates,
-        photoLimit:ARCHIVE_MEDIA_PHOTO_LIMIT,
-        keyScope:{studentId:archiveStudentId,lessonId:currentLessonId,lessonDate:reviewLessonDateDots,classId:selectedClass?.id||''}
+        photoLimit:ARCHIVE_MEDIA_PHOTO_LIMIT
       });
     }finally{
       archiveMediaBusyRef.current=false;
     }
-    const mediaNote=archiveMediaResultText(prepared.summary);
-    setArchiveMediaAttempt({phase:'done',message:mediaNote,summary:prepared.summary});
     const record=createFeedbackRecord({
       media,subject:reviewSubjectValue,reviews,mode,
       student:selectedStudentLabel,
@@ -3281,6 +3293,11 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
     // 记住这一次的归档 id：之后再保存图片时，写回要**就地更新**这一条（换班/换学员会清掉它）。
     setCurrentRecordId(applied.record.id);
     setArchived(true);
+    // 归档已经在**本机**完成（记录 + 本地持久副本都落库了）：素材上传现在放到后台逐条继续，
+    // 弱网不会把归档卡在「上传完成」上；面板的同步状态从「后台上传中」自己走到「已全部同步」。
+    startArchiveSync(applied.record);
+    const mediaNote=archiveLocalFirstArchiveNote(applied.record.media.length);
+    setArchiveMediaAttempt({phase:'done',message:mediaNote,summary:prepared.summary});
     if(applied.mode==='updated'){
       // 更新同样走到第四步（与首次归档同一条完成路径：面板上还有「进入成长档案」）；
       // 区别只在提示 —— 版本号 + 「查看档案」入口（FR-202 的第 4 项）。
@@ -3298,12 +3315,23 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
   // 正文与 `version` 一个字不动 —— 「图片同步中」不是老师改稿。
   const currentArchiveRecord=currentRecordId?records.find(item=>item.id===currentRecordId)||null:null;
   const archiveMediaPanel=archiveMediaRecordView(currentArchiveRecord||{});
+  // 同步状态（[第四步 US-212] 第 5 条）：本地优先归档后，素材停在「图片同步中」，后台队列逐条上传；
+  // 这一行如实显示现在到哪一步了（等待后台上传 / 后台上传中 2/3 / 部分未同步 / 已全部同步）。
+  // 队列进度只认**当前这一条记录**的（换学员/换班后不把上一条的进度显示过来）。
+  const archiveSyncPanel=archiveSyncView({
+    media:archiveMediaPanel.media,
+    sync:archiveSyncState.recordId&&archiveSyncState.recordId===(currentArchiveRecord?.id||'')?archiveSyncState:null
+  });
   const [archiveMediaRetryState,setArchiveMediaRetryState]=useState({phase:'idle',message:''});
   const retryArchiveMediaSync=async()=>{
     if(!currentArchiveRecord||archiveMediaRetryState.phase==='retrying') return;
     setArchiveMediaRetryState({phase:'retrying',message:''});
+    // 手动重试也让同步状态那一行如实走到「后台上传中」（重试 = 再传一次待同步的素材）。
+    const retryTotal=(currentArchiveRecord.media||[]).length;
+    setArchiveSyncState({phase:'syncing',recordId:currentArchiveRecord.id,done:retryTotal,total:retryTotal,pending:0});
     const result=await retryArchiveMediaRecord(currentArchiveRecord);
     setRecords(list=>list.map(item=>item.id===result.record.id?result.record:item));
+    setArchiveSyncState({phase:'synced',recordId:result.record.id,done:result.media.length,total:result.media.length,pending:0});
     const message=archiveMediaResultText(result.summary);
     setArchiveMediaRetryState({phase:'done',message});
     setToast(message);
@@ -3318,6 +3346,8 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
         <em className={`is-${archiveMediaPanel.status}`}>{archiveMediaPanel.statusLabel}</em>
       </div>
       <p className="archive-media-line" data-archive-media-line="true">{archiveMediaPanel.text}</p>
+      <p className="archive-media-sync-line" data-archive-sync-line="true" data-archive-sync-phase={archiveSyncPanel.phase} data-archive-sync-phase-label={archiveSyncPanel.phaseLabel} data-archive-sync-text={archiveSyncPanel.text} data-archive-sync-pending={String(archiveSyncPanel.pending)} data-archive-sync-total={String(archiveSyncPanel.total)} data-archive-sync-done={String(archiveSyncPanel.done)} data-archive-sync-local-first={archiveSyncPanel.localFirst?'true':'false'}>{archiveSyncPanel.text}</p>
+      {archiveSyncPanel.localFirst?<small className="archive-media-local-first" data-archive-sync-note="true">{archiveSyncPanel.detail}</small>:null}
       {archiveMediaPanel.entries.length?<ul className="archive-media-list">
         {archiveMediaPanel.entries.map((entry,index)=><li key={`${entry.kind}-${entry.storageKey||index}`} data-archive-media-entry={entry.kind} data-archive-media-entry-status={entry.status} data-archive-media-placeholder={entry.placeholder?'true':'false'}>
           {entry.placeholder?<span className="archive-media-placeholder" data-archive-media-hold="true">{entry.placeholderText}</span>:<img src={entry.url} alt={entry.name}/>}

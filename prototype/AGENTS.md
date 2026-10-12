@@ -580,6 +580,51 @@ React + Vite 单页原型（`src/main.jsx` 是主入口，另按模块拆出 `sr
   `buildArchiveReportSnapshot` + 三个 view 函数），而不是等于脚本里手抄的期望值；
   期望值只在「纯夹具、无流程归档」的用例里硬编码（例如 2 节课 + 1 节缺课的覆盖度 = 100/100/50/50/50）。
 
+## 档案的移动端与性能：本地优先归档 + 分页窗口 + 缩略图（[第四步 US-212]）
+
+| 关注点 | 位置 | 说明 |
+|---|---|---|
+| 规则（预算 / 分页窗口 / 四项结论 / 44px） | `src/data/archivePerformance.js`（零依赖，Node 可直跑） | 首屏 1000ms（50 条以内）、`ARCHIVE_TIMELINE_PAGE_SIZE`（20）、`ARCHIVE_SCROLL_MIN_FPS`（30）、`ARCHIVE_THUMB_MAX_EDGE`（320，与录入页共用 `THUMBNAIL_MAX_EDGE`）、`ARCHIVE_TAP_MIN`（= `TAP_TARGET_MIN`） |
+| 同步状态机（明示同步状态） | `src/data/archiveMedia.js` 的 `archiveSyncView()` / `ARCHIVE_SYNC_PHASES` | `none / local / syncing / partial / synced` 五态，文案含「已先在本机归档」与「重试同步」的出路 |
+| 浏览器侧执行 | `src/services/archivePerformance.js` + `src/services/archiveMediaApi.js` | 缩略图队列（串行 + `requestIdleCallback`）、滚动 rAF 采帧、首屏计时；`prepareLocalArchiveMedia` / `startArchiveMediaBackgroundSync` |
+| 界面读数 | `main.jsx` 第四步 `archiveMediaSyncField`（`data-archive-sync-*`）、`GrowthArchiveData.jsx`（`data-archive-perf-row` / `data-archive-page-*` / `data-archive-thumb-state`） | 结论只在 data 层算，界面只渲染 |
+
+- **弱网下归档必须「本地优先」**：归档只等 `prepareLocalArchiveMedia`（本地持久副本 + 素材记录，**一个网络
+  请求都不发**），记录与副本先落库、`go(4)` 立刻完成；上传交给 `startArchiveMediaBackgroundSync` 在后台逐条
+  继续（每完成一条 `setRecords` 就地更新那一条）。**别把上传 await 到归档前面** —— 弱网下那会让老师以为归档坏了
+  （US-203 的 `prepareArchiveMedia` 仍保留给「一次性同步完」的调用方，归档动作已不再用它）。
+  后台队列的 `remaining` 要按「还差哪几条没成功」算（`archiveMediaCanSync` 过滤后的条数），
+  否则上传失败也会收在 `synced`（本轮真踩：断言当场抓到「失败却报全部同步」）。
+- **两段式的图片 `src` 是「提供缩略图」的必要条件**：`<img>` 不能先挂原图 —— 浏览器的图片懒加载会在
+  它自己那段距离（实测远大于 `rootMargin`）内把原图**整张解码**掉，缩略图就白生成了。正确做法：
+  未就绪时挂 1×1 占位（`ARCHIVE_THUMB_PLACEHOLDER`），缩略图就绪后换成小图，外链 https（画布会被标脏、
+  `toDataURL` 抛错）才退回原图懒加载（读数记 `direct`）。
+- **`display:contents` 的包装元素不能被 IntersectionObserver 观察**：它没有盒子，永远不报 `isIntersecting`
+  （本轮真踩：所有卡片停在 `lazy`、缩略图一张都没生成，而 `pnpm run build` 全绿）。观察对象要是 `<img>`
+  自己；包装 `span` 只为布局中性（`display:contents`）与挂读数。
+- **回调要 `useCallback`**，否则卡片的 `IntersectionObserver` 会随每次渲染重建（60 张图 = 60 个 observer 反复建销）。
+- **超过 20 条只渲染窗口内的卡**：`archiveTimelineWindow({count,page})` 给 `{mode:'full'|'paged', visible, hidden,
+  moreLabel, prevLabel}`，界面渲染 `archiveWindowEntries(view.entries, window)`；「加载更多」是往后长（时间线按日期
+  升序，「回到最开始」用 `prevLabel`），**不要**改成跳页。`data-archive-timeline-count` 仍是筛选后的总条数
+  （老断言读它），DOM 里的卡数是新的 `data-archive-rendered-count`。
+- **首屏计时 = 数据就绪 → 提交后第一帧**（`dataAt` 在 `showTimeline && view.count > 0` 那一刻落，`paintAt` 在
+  `nextFrame()` 里落，只记一次）；整块读数挂在 `data-archive-perf` / `data-archive-perf-row="<id>"`，
+  `ok === null` 是「还没测到」（不要当达标）。滚动帧率用**真实滚动**（`window` 的 scroll 事件 + rAF 采帧，
+  停下 400ms 收束），样本 < 4 帧不给结论。
+- **验证夹具必须在 App 挂载之前进 localStorage**：`records` 是 `useState(loadFeedbackRecords)` 只在首屏读一次，
+  挂载后再写会被 App 的 persist 效果原样盖掉（本轮真踩：时间线只剩 4 条 demo 记录，看着像分页坏了）。
+  脚本的正确姿势：写入夹具 → `Page.reload()` → 重新登录 → 走流程。
+- **挂住上传请求**是验「本地优先」的正解：CDP `Fetch.enable` + `Fetch.requestPaused` 里先**不回**（`hold`），
+  归档照常在 <3 秒内完成（旧实现要等每张 8 秒超时）；再切成 `fail` 收在 `partial`，最后替身成
+  `{storage:'private-object-storage', url:'https://…', storageKey}`（POST 与 OPTIONS 都要自己 fulfill，
+  记得带 CORS 头）点「重试同步」→ `synced`。
+- **验证方式（本故事实测）**：`pnpm run build`；Node 直跑 data + services **132 项**（分页窗口 / 四项结论 /
+  同步五态 / 本地优先准备不发请求 / 后台队列的成功・失败・非持久落点・取消 / 无 DOM 降级）；
+  浏览器 **80 项**（弱网挂起下 3 秒内归档 + 状态如实 + 恢复后重试到 synced；390px 第四步可点区域 ≥44×44、
+  摘要单列、主操作栏贴底；51 条记录首屏 1ms、DOM 只放 20 张卡、懒加载出 320px 缩略图、加载更多到 40 张、
+  真实滚动 119fps、390px 档案页控件 ≥44px、console 0 异常）；回归 US-059 46、US-060 79、US-061 98、
+  US-063 62、US-064 73、US-069 86、US-070 147 全绿；截图 354~359 留档。
+
 ## 老师端「课后反馈」第一步（班级 / 学员 / 课程 / 课次推荐）
 
 > **课次表单全站只有一份实现 = `TeacherFlowV2`（`main.jsx`）。** 旧的 `CreateFlow` 五步向导

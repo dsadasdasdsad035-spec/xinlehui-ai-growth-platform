@@ -289,6 +289,83 @@ export async function prepareArchiveMedia({ framedArtwork = null, photos = [], p
 }
 
 /**
+ * **本地优先**的素材准备（[第四步 US-212] 第 5 条）：只做本地持久副本 + 素材记录，**一个网络请求都不发**。
+ *
+ * 弱网下归档要能「先本地成功」：上传是几十秒到几分钟的事，把它挡在归档前面会让老师以为归档坏了。
+ * 于是归档这一刻只等本地副本（解码 + 重编码，毫秒级），素材先标成 `pending`（「图片同步中」），
+ * 上传交给 `startArchiveMediaBackgroundSync` 在后台逐条继续。返回值与 `prepareArchiveMedia` 同形状，
+ * 调用方（`createFeedbackRecord` 的 `archiveMedia`）不用改。
+ */
+export async function prepareLocalArchiveMedia({ framedArtwork = null, photos = [], photoLimit = 0 } = {}) {
+  const prepared = archiveMediaCandidates({ framedArtwork, photos, limit: photoLimit });
+  const media = [];
+  for (let index = 0; index < prepared.candidates.length; index += 1) {
+    const candidate = prepared.candidates[index];
+    // eslint-disable-next-line no-await-in-loop -- 串行是有意的：逐张做本地副本，量小且互不依赖网络
+    const local = await buildArchiveMediaCopy(candidate.url, { rotation: candidate.rotation || 0 });
+    const url = local.ok ? local.url : str(candidate.url);
+    media.push(createArchiveMediaEntry({
+      kind: candidate.kind,
+      name: candidate.name,
+      url,
+      // 还没试过上传 = `pending`（「图片同步中」），不是「对象存储未接入」——后者要等真的试过才知道。
+      status: url ? 'pending' : 'missing',
+      storage: url ? ARCHIVE_MEDIA_LOCAL_STORAGE.id : '',
+      storageKey: '',
+      attempts: 0,
+      lastError: local.ok ? '' : local.reason,
+      updatedAt: new Date().toISOString()
+    }));
+  }
+  return { candidates: prepared.candidates, ignoredPhotos: prepared.ignoredPhotos, media, summary: archiveMediaSyncSummary(media) };
+}
+
+/**
+ * **后台上传**（[第四步 US-212] 第 5 条）：把记录里还没同步的素材逐条上传，**每完成一条回调一次**，
+ * 调用方据此就地更新记录（第四步面板的同步状态跟着从「后台上传中」走到「已全部同步」）。
+ *
+ * 返回 `{cancel, promise}`：`cancel()` 只是**不再继续传后面的**（已经归档的记录一个字都不会回滚）；
+ * `promise` 永远不 reject（逐条同步本身永不抛错），完成后给出最后那一份记录。
+ * 与手动重试（`retryArchiveMediaRecord`）共用同一条单条同步实现 —— 上传口径只有一份。
+ */
+export function startArchiveMediaBackgroundSync(record, { onUpdate, onPhase, uploader = archiveMediaUploader, timeoutMs = ARCHIVE_MEDIA_UPLOAD_TIMEOUT_MS } = {}) {
+  const source = record && typeof record === 'object' ? record : {};
+  const keyScope = { studentId: str(source.studentId), lessonId: str(source.lessonId), lessonDate: str(source.date), classId: str(source.classId) };
+  let cancelled = false;
+  const publish = progress => { if (typeof onPhase === 'function') { try { onPhase(progress); } catch { /* 回调失败不影响上传 */ } } };
+  const promise = (async () => {
+    const list = normalizeArchiveMediaList(source.media);
+    const pending = list.map((item, index) => ({ item, index })).filter(({ item }) => archiveMediaCanSync(item));
+    if (!pending.length) {
+      publish({ phase: 'synced', done: list.length, total: list.length, pending: 0 });
+      return source;
+    }
+    let current = source;
+    const next = list.slice();
+    // `remaining` 永远数「还差哪几条没成功」—— 上传失败 / 降级为本地留存的那条会留在里面，
+    // 所以收束时的阶段是 `partial` 而不是谎报 `synced`（状态机与面板读数读的是同一件事）。
+    let remaining = pending.length;
+    publish({ phase: 'syncing', done: list.length - remaining, total: list.length, pending: remaining });
+    for (const { item, index } of pending) {
+      if (cancelled) break;
+      // eslint-disable-next-line no-await-in-loop -- 串行是有意的：逐条上传、逐条更新记录
+      const result = await syncArchiveMediaEntry(item, { uploader, timeoutMs, index, keyScope });
+      next[index] = result.entry;
+      current = applyArchiveMediaSync(current, next);
+      remaining = next.filter(entry => archiveMediaCanSync(entry)).length;
+      publish({ phase: 'syncing', done: list.length - remaining, total: list.length, pending: remaining });
+      if (typeof onUpdate === 'function') { try { onUpdate(current); } catch { /* 同上 */ } }
+    }
+    if (!cancelled) {
+      const left = next.filter(entry => archiveMediaCanSync(entry)).length;
+      publish({ phase: left ? 'partial' : 'synced', done: list.length - left, total: list.length, pending: left });
+    }
+    return current;
+  })();
+  return { cancel() { cancelled = true; }, promise };
+}
+
+/**
  * 重试一条记录里还没同步成功的素材（第四步面板 / 管理端清单共用同一个入口）。
  *
  * 入参是记录本身：每条素材的 `url` 就是本机持久副本，重试时拿它当上传源。

@@ -337,6 +337,98 @@ export function archiveMediaSyncSummary(media) {
 }
 
 /**
+ * 弱网下的**本地优先归档**（[第四步 US-212] 第 5 条）：归档先在本机完成，上传放到后台。
+ *
+ * 归档这一刻只做「本地持久副本 + 素材记录」（`services/archiveMediaApi.js` 的
+ * `prepareLocalArchiveMedia`，**一个网络请求都不发**），记录与副本一起落库；上传由后台队列
+ * （`startArchiveMediaBackgroundSync`）逐条继续，每完成一条就地更新记录。于是弱网下
+ * **归档照样先成功**，只是素材停在「图片同步中」，状态在第四步面板上如实显示。
+ *
+ * 五个阶段（`archiveSyncView().phase`）：
+ *  - `none`      这条记录没有需要同步的素材；
+ *  - `local`     已先在本机归档，素材**还没试过**上传（等待后台队列）；
+ *  - `syncing`   后台正在上传（带 `done / total` 进度）；
+ *  - `partial`   试过了但还有素材没传成功（可重试 —— 不谎报已同步）；
+ *  - `synced`    所有素材都有 https 持久地址。
+ */
+export const ARCHIVE_SYNC_PHASES = {
+  none: 'none',
+  local: 'local',
+  syncing: 'syncing',
+  partial: 'partial',
+  synced: 'synced'
+};
+
+export const ARCHIVE_SYNC_PHASE_LABELS = {
+  [ARCHIVE_SYNC_PHASES.none]: '暂无素材',
+  [ARCHIVE_SYNC_PHASES.local]: '等待后台上传',
+  [ARCHIVE_SYNC_PHASES.syncing]: '后台上传中',
+  [ARCHIVE_SYNC_PHASES.partial]: '部分未同步',
+  [ARCHIVE_SYNC_PHASES.synced]: '已全部同步'
+};
+
+/** 本地优先那句口径（面板副标题 / 回执共用一份文案）。 */
+export const ARCHIVE_SYNC_LOCAL_FIRST_NOTE = '弱网下归档先在本机完成：素材随记录留下本地持久副本，上传在后台继续，归档与「进入成长档案」不用等上传。';
+
+/** 归档回执里那句「素材先留本机、后台上传中」（归档成功那一刻的 toast / 面板读数共用）。 */
+export function archiveLocalFirstArchiveNote(count) {
+  const total = Math.max(0, Math.trunc(Number(count) || 0));
+  if (!total) return '本次没有需要同步的素材。';
+  return `已先在本机归档：${total} 张素材随记录留下本地持久副本，后台上传中（传完会自动刷成「已全部同步」）。`;
+}
+
+/**
+ * 同步状态视图（第四步面板那一行「明示同步状态」）。
+ *
+ * 入参：`media`（记录里的素材清单）+ 可选的 `sync`（后台队列的进度：`{phase, done, total}`）。
+ * 返回 `{phase, phaseLabel, text, detail, localFirst, total, done, pending, synced, canRetry}`。
+ * 判定只读 `archiveMediaCanSync`（https 之外都算待同步）与各条的 `attempts`，不另写一套。
+ */
+export function archiveSyncView({ media = [], sync = null } = {}) {
+  const list = normalizeArchiveMediaList(media);
+  const queue = sync && typeof sync === 'object' ? sync : {};
+  const total = list.length;
+  const pendingList = list.filter(item => archiveMediaCanSync(item));
+  const pending = pendingList.length;
+  const synced = list.filter(item => item.status === 'synced').length;
+  const done = Math.max(0, total - pending);
+  const queuePhase = str(queue.phase);
+  const attempted = pendingList.some(item => item.attempts > 0) || queuePhase === 'partial';
+  let phase = ARCHIVE_SYNC_PHASES.none;
+  if (total) {
+    if (queuePhase === 'syncing') phase = ARCHIVE_SYNC_PHASES.syncing;
+    else if (!pending) phase = ARCHIVE_SYNC_PHASES.synced;
+    else if (attempted) phase = ARCHIVE_SYNC_PHASES.partial;
+    else phase = ARCHIVE_SYNC_PHASES.local;
+  }
+  const reason = pendingList.find(item => item.lastError)?.lastError || '';
+  const progress = Math.max(0, Math.trunc(Number(queue.done) || done));
+  const texts = {
+    [ARCHIVE_SYNC_PHASES.none]: '这条记录还没有需要同步的素材。',
+    [ARCHIVE_SYNC_PHASES.local]: `已先在本机归档：${total} 张素材随记录留下本地持久副本，正在等待后台上传（弱网也不影响归档完成）。`,
+    [ARCHIVE_SYNC_PHASES.syncing]: `已先在本机归档：素材后台上传中（${progress}/${total} 张已完成），归档不用等上传。`,
+    // 逐张的原因在上一条素材读数里（同一条素材清单），这里只说清「还差几张、怎么再试」。
+    [ARCHIVE_SYNC_PHASES.partial]: `已先在本机归档：${pending} 张素材还没有同步成功，记录与本地副本都在 —— 点「重试同步」可以再试一次。`,
+    [ARCHIVE_SYNC_PHASES.synced]: `素材已全部同步到对象存储（${synced} 张）：家长端可以直接看到这些图。`
+  };
+  return {
+    phase,
+    phaseLabel: ARCHIVE_SYNC_PHASE_LABELS[phase],
+    text: texts[phase],
+    // 最近一次失败的可读原因（界面逐张显示，断言也读它）—— 不塞进上面那句状态文案里。
+    reason,
+    detail: ARCHIVE_SYNC_LOCAL_FIRST_NOTE,
+    // 本地优先是**结构上**成立的：归档只等本地持久副本，不等上传（这个字段给断言与界面标记用）。
+    localFirst: total > 0,
+    total,
+    done: phase === ARCHIVE_SYNC_PHASES.synced ? total : done,
+    pending,
+    synced,
+    canRetry: pending > 0
+  };
+}
+
+/**
  * 一条记录在界面上要读的那一份（第四步面板 / 管理端清单 / 家长端都读它，避免各处自己算状态）。
  */
 export function archiveMediaRecordView(record) {
