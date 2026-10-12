@@ -202,19 +202,55 @@ React + Vite 单页原型（`src/main.jsx` 是主入口，另按模块拆出 `sr
 - **「未选择」不是「全部」**：`filterArchiveRecords` 在选中值为空时返回**空列表**（界面给空态）。
   串档的历史成因就是把「未选择对象」当成通配；个人按 `record.student`、班级按 `record.className`，日期升序。
 - **切换对象只过滤、不重置**：`switchTarget` 只 `setTarget`，学员 / 班级切换只改选中值 ——
-  **周期（`period`）与已生成的预览（`generated`）都不重置**，预览当场跟着换（US-205 第 4 条）。
-  只有换「生成内容（`format`）」才把 `generated` 置回 false（那是另一种选择）。
-- **没有匹配记录时**渲染 `.archive-empty`（`data-archive-empty`）而不是空报告，并**不渲染**「生成」按钮
-  （`data-archive-generate` 只在 `archive.count>0` 时出现）；入口是 `data-archive-empty-action` →
-  `navigate('create')`。空态文案在 `archiveEmptyView`（沿用缺课文案的温柔语气）。
+  **周期（`period`）与缺课筛选（`absenceFilter`）都不重置**，时间线当场跟着换（US-205 第 4 条）。
+- **没有匹配记录时**渲染空态面板（US-206 起统一走 `data-archive-state-panel="empty"`，见下一节），
+  入口仍是 `archiveEmptyView` 的「去创建课后反馈」→ `navigate('create')`（沿用缺课文案的温柔语气）。
 - **路由参数**：`navigate(page, params)` 支持第二段（`pageParams` 随 `PageRouter` 摊给所有页面；不带参数的
   `navigate` 一律清空）。第四步「进入成长档案」与更新回执的「查看档案」都传 `{student, className}`，
   档案页因此在**进入时就默认选中刚归档的那位学员 / 那个班级**。新加页面级参数时记得同时接进 `App` 的
   `pageParams`（hook 必须放在登录页提前 `return` **之前**，US-202 的老坑）。
-- 验证口径：档案页读数挂在 `data-archive-filter` / `data-archive-filter-name` / `data-archive-record-count` /
-  `data-archive-preview-count` 上，浏览器断言用**页面内 `archiveTargets.js`** 独立重算并与 DOM 逐值比对
-  （`assert-us062-browser.mjs`，47 项）。真机入口只有会话内的两条（第四步「进入成长档案」/ 更新回执
-  「查看档案」）—— 想直接在档案页上做断言，必须在同一条会话里先归档一次。
+- 验证口径：档案页读数挂在 `data-archive-filter` / `data-archive-filter-name` / `data-archive-record-count`
+  （= 对象筛选后的**总条数**，与周期无关 —— 老断言读它）上，浏览器断言用**页面内 `archiveTargets.js` /
+  `archiveResident.js`** 独立重算并与 DOM 逐值比对（`assert-us062-browser.mjs`）。真机入口只有会话内的两条
+  （第四步「进入成长档案」/ 更新回执「查看档案」）—— 想直接在档案页上做断言，必须在同一条会话里先归档一次。
+
+## 成长档案的常驻视图（[第四步 US-206] / FR-206）
+
+> 「进档案页先做一道生成选择题」被收掉了：**没有生成步骤**。概况 + 时间线在组件 body 里无条件算出来，
+> 四态（加载 / 就绪 / 空 / 错误）由数据源状态决定。规则在 `src/data/archiveResident.js`
+> （零依赖纯函数，可 `node` 直跑断言），组件只渲染它的产物。
+
+- **默认档是「全部」不是「本学期」**：`ARCHIVE_PERIOD_FILTERS = ['全部','半学期','一学期','一年度']`
+  （`ARCHIVE_PERIODS` 仍是三个真实周期，US-207 报告还要用）。理由：默认窗口非空会把上一年度的记录
+  悄悄藏掉，与「进页面立即看到内容」冲突；`filterArchiveRecordsByPeriod(records, period, today)` 的
+  窗口是「最近 N 天的**下界**」（半学期 90 / 一学期 180 / 一年度 365），**没有上界**（补录的未来课次不藏），
+  **没有日期的记录留在窗口里**（读不出日期就不敢说它过期）。`today` 可注入 —— 断言与界面读同一份。
+- **概况四项 = `ARCHIVE_OVERVIEW_FIELDS` 的产物**：`archiveResidentSummary(entries)` 数
+  「已归档课次 / 作品（有成品图的那几节）/ 课堂照片（真的看得见的张数，占位不算）/ 最近归档时间」，
+  读的是**当前筛选后**的那批课次（换筛选，概况跟着变）。四项都带 `data-archive-overview-field`。
+- **一节课一张卡 = `archiveLessonEntry(record)`**：成品作品图（`media` 里的 `artwork` 持久地址优先 →
+  `artworkUrl` → `framedArtwork.imageUrl`，走 `data/archiveMedia.js` 的 `archiveRecordMediaView`）、
+  课堂照片列表（media photo 条目 → `photoUrl`）、五维摘要（**只列写了正文的维度**，不补空维度、
+  不编示例文案）、缺课记录（保留那页温柔的话）。读数挂在卡片的
+  `data-archive-lesson` / `-id` / `-date` / `-status` / `-dimensions` / `-photos` 上。
+- **四态同形状**：`archiveResidentStateView({phase, view})` 对四种状态返回**同一组字段**
+  （`title/desc/hint/action/retry/reset/create`）。少给一个字段就会在渲染期炸成白屏（US-204 的纪律）。
+  三种动作各有 flag：`retry`（重新读取）/ `reset`（还原筛选）/ `create`（去创建课后反馈）。
+- **两套「空」要分开**：一条记录都没有 → `archiveEmptyView`（US-205 的老文案 + 去创建）；
+  **被筛选筛空** → `ARCHIVE_FILTERED_EMPTY_TITLE` + 点名是哪个筛选挡住了 + 「查看全部记录」还原动作。
+  被筛掉的条数由视图如实报出（`hiddenByPeriod` / `hiddenByAbsence`，挂在 `data-archive-hidden-by-*` 上）。
+- **数据源状态在 `main.jsx`**：`recordsSource = {phase:'loading'|'ready'|'failed'}` + `reloadRecords`
+  经 `PageRouter` 的 props 传给档案页（`recordsRemoteReady` 由 `phase==='ready'` 派生，语义与原来一致）。
+  读失败时**不静默**：错误态面板 + 「重新加载」，并且**本机镜像的记录照常展示**（`data-archive-local-note`
+  明示来源 —— FR-142 的口径：明示，不静默降级）。加载态只有一个面板，不渲染时间线。
+- **验证口径**：`assert-us063.mjs`（data 层 87 项）+ `assert-us063-browser.mjs`（浏览器 62 项，含
+  用 CDP `Network.setBlockedURLs` **真造一次读失败** → 错误态 → 解开网络 + 4 秒延迟点「重新加载」→
+  加载态 → 就绪）。踩过的坑：**根节点属性不能与筛选控件的选择器同名** —— 档案页根节点原来挂了
+  `data-archive-period`，与下拉的 `data-archive-period="true"` 撞名，`document.querySelector`
+  取到的是 `<section>`，脚本里的 `setValue` 把 select 的 value setter 用到 section 上 →
+  `TypeError: Illegal invocation`（现改名 `data-archive-period-value`）。
+  同理 `data-archive-lesson-dimensions` 这类读数要挂在**卡片根节点**上，别挂内层元素，否则断言读不到。
+
 
 ## 老师端「课后反馈」第一步（班级 / 学员 / 课程 / 课次推荐）
 

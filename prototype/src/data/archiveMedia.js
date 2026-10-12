@@ -266,6 +266,55 @@ export function archiveMediaAttemptText(entry) {
   return media.lastError ? `${tried} · 最近一次：${media.lastError}` : tried;
 }
 
+/**
+ * 一条归档记录在**给家长看的清单**（成长档案时间线 / 家长分享页）上要读的图（[第四步 US-206]）。
+ *
+ * 与 `StudentArchiveData` 的卡片口径一致（那里是历史实现，语义逐条相同）：
+ *  - `artwork`（装裱成品图）：`media` 里的 `artwork` 条目优先（持久地址），读不到退回 `artworkUrl`，
+ *    再退回老师保存过的成品图 `framedArtwork.imageUrl`；
+ *  - `photos`（课堂照片列表）：`media` 里的 `photo` 条目（可多张，US-203 起最多 4 张），
+ *    没有 media 记录时退回 `photoUrl` 这一张。
+ * 取不到图时按 `surface` 给占位（家长端只认 https），界面只渲染这里给出的 `url / placeholder`，
+ * 自己不判断地址前缀 —— 「破图还是占位」是**结构性**的判据。
+ */
+export function archiveRecordMediaView(record, { surface = 'teacher' } = {}) {
+  const source = record && typeof record === 'object' ? record : {};
+  const media = normalizeArchiveMediaList(source.media);
+  // 家长 / 云端口径下**只有 https 持久地址能显示**（老师本机的 data: 副本家长取不到）——
+  // 没有 media 记录、只有旧字段（artworkUrl / photoUrl）的老记录也走同一条闸门。
+  const cloudSide = surface === 'parent' || surface === 'cloud';
+  const renderable = url => (cloudSide ? isPersistentMediaUrl(url) : Boolean(url));
+  const thumb = (kind, fallback) => {
+    const fallbackUrl = str(fallback);
+    const entry = media.find(item => item.kind === kind) || null;
+    if (!entry) {
+      const usable = renderable(fallbackUrl) ? fallbackUrl : '';
+      return { url: usable, placeholder: Boolean(fallbackUrl) && !usable, placeholderText: Boolean(fallbackUrl) && !usable ? ARCHIVE_MEDIA_PLACEHOLDER_TEXT : '', status: '' };
+    }
+    const view = archiveMediaView(entry, { surface });
+    const usable = view.url || (renderable(fallbackUrl) ? fallbackUrl : '');
+    const placeholder = !usable && (view.placeholder || Boolean(fallbackUrl));
+    return { url: usable, placeholder, placeholderText: placeholder ? (view.placeholderText || ARCHIVE_MEDIA_PLACEHOLDER_TEXT) : '', status: view.status };
+  };
+  const framedUrl = source.framedArtwork && typeof source.framedArtwork === 'object' ? str(source.framedArtwork.imageUrl) : '';
+  const photos = media.filter(item => item.kind === 'photo').map(item => {
+    const view = archiveMediaView(item, { surface });
+    return { url: view.url, placeholder: view.placeholder, placeholderText: view.placeholderText, status: view.status, name: view.name };
+  });
+  const photoFallback = str(source.photoUrl);
+  const fallbackPhotos = photoFallback
+    ? [{ url: renderable(photoFallback) ? photoFallback : '', placeholder: !renderable(photoFallback), placeholderText: renderable(photoFallback) ? '' : ARCHIVE_MEDIA_PLACEHOLDER_TEXT, status: '', name: '' }]
+    : [];
+  const list = photos.length ? photos : fallbackPhotos;
+  return {
+    artwork: thumb('artwork', str(source.artworkUrl) || framedUrl),
+    photos: list,
+    // 「照片数」只数**真的看得到的那几张**（占位不算一张照片），与档案概况读同一个数。
+    photoCount: list.filter(item => item.url).length,
+    photoTotal: list.length
+  };
+}
+
 const STATUS_ORDER = ['pending', 'local', 'missing', 'synced'];
 
 /** 一个记录 / 一份素材清单的汇总（状态取「最需要处理」的那一个，与界面文案同源）。 */

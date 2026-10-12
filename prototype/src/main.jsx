@@ -336,7 +336,28 @@ function App(){
   const [toastAction,setToastAction]=useState(null);
   const setToast=(text,action=null)=>{setToastRaw(text);setToastAction(action||null)};
   const [modal,setModal]=useState(null), [apps,setApps]=useState(aiAppsSeed), [tasks,setTasks]=useState(taskSeed), [records,setRecords]=useState(loadFeedbackRecords);
-  const [recordsRemoteReady,setRecordsRemoteReady]=useState(false);
+  // 档案数据源的读取状态（[第四步 US-206]）：成长档案页的「加载态 / 错误态（可重试）」读它。
+  // `recordSource.phase` 三档：`loading`（还在读）/ `ready`（读回来了）/ `failed`（读失败 → 界面给「重新加载」）。
+  // `records` 这个 state 始终是本机镜像（读失败也不会被清空），所以档案页在错误态里仍能把本机镜像的
+  // 记录展示出来并明示来源（不静默降级 —— 与 FR-142 同一口径）；`ready` 之前不往云端写回
+  // （沿用原来的口径：读失败过就不再拿本机镜像去覆盖云表）。
+  const [recordsSource,setRecordsSource]=useState({phase:'loading',at:'',error:''});
+  const recordsRemoteReady=recordsSource.phase==='ready';
+  // 读云端记录：首屏与档案页错误态的「重新加载」共用同一段（函数体只调 setState，捕获首次实例是安全的）。
+  const loadRecordsFromCloud=()=>{
+    let active=true;
+    setRecordsSource(current=>({...current,phase:'loading',error:''}));
+    loadRemoteFeedbackRecords().then(remote=>{
+      if(!active)return;
+      setRecords(current=>mergeFeedbackRecords(current,remote));
+      setRecordsSource({phase:'ready',at:new Date().toISOString(),error:''});
+    }).catch(error=>{
+      if(!active)return;
+      setRecordsSource({phase:'failed',at:new Date().toISOString(),error:String((error&&error.message)||error||'读取失败')});
+    });
+    return()=>{active=false};
+  };
+  const reloadFeedbackRecords=()=>{loadRecordsFromCloud()};
   // 老师人设（含技能库与大模型记忆）和装裱预设都以云端表为准，本地只做兜底。
   const [teacherProfiles,setTeacherProfiles]=useState(loadTeacherProfiles);
   const [framingPresets,setFramingPresets]=useState(loadFramingPresets);
@@ -378,7 +399,9 @@ function App(){
   const [traceSource,setTraceSource]=useState({note:'本机镜像',loading:false,at:''});
   const [demoState,setDemoState]=useState('normal');
   useEffect(()=>{ if(toast){const t=setTimeout(()=>{setToastRaw('');setToastAction(null)},toastAction?6500:2600); return()=>clearTimeout(t)}},[toast,toastAction]);
-  useEffect(()=>{let active=true;loadRemoteFeedbackRecords().then(remote=>{if(!active)return;setRecords(current=>mergeFeedbackRecords(current,remote));setRecordsRemoteReady(true);}).catch(()=>{});return()=>{active=false}},[]);
+  // 首屏读一次云端档案（[第四步 US-206] 起把读取状态记进 `recordsSource`，档案页据此显示
+  // 加载态 / 错误态；失败时不再像以前那样静默丢掉 —— 状态是外部可观察的）。
+  useEffect(loadRecordsFromCloud,[]);
   useEffect(()=>{persistFeedbackRecords(records);if(recordsRemoteReady)void saveRemoteFeedbackRecords(records).catch(()=>{});},[records,recordsRemoteReady]);
   // 渲染归档列表前的最后一道去重兜底（[第四步 US-202] / FR-207）：`records` 这个 state 可能同时被
   // 「本机镜像读盘 / 云端合并 / 新记录入列 / 就地更新」写入，任何一个写侧漏了去重都会让同一个
@@ -512,7 +535,7 @@ function App(){
     <main className="main">
       <Topbar role={role} onMenu={()=>setMobileNav(true)} onSwitch={(r)=>login(r,'demo')} onGuide={()=>navigate('guide')} onLogout={()=>setAuth(false)}/>
       <div className="content">
-        <PageRouter {...{page,role,navigate,setToast,setModal,apps,setApps,tasks,setTasks,demoState,setDemoState,records:archivedRecords,setRecords,parentStudent,parentStudents,parentPhone,parentSession,setParentStudent,teacherProfiles,setTeacherProfiles,framingPresets,setFramingPresets,skillLibrary,setSkillLibrary,agentFiles,setAgentFiles,adminName:roleMeta.admin.name,galleryVenues,setGalleryVenues,galleryExhibitions,setGalleryExhibitions,lessons,setLessons,courses,setCourses,auditLog,recordAudit,reviewModels,reviewModelDefaults,setReviewModelDefaults,keywordTemplates,setKeywordTemplates,keywordTemplateRemote,traceLog,setTraceLog,tracePolicy,setTracePolicy,traceSource,refreshReviewTraces,cleanupReviewTraces,auditTraceEntry,adminTraceViewer,teacherTraceViewer,pageParams}}/>
+        <PageRouter {...{page,role,navigate,setToast,setModal,apps,setApps,tasks,setTasks,demoState,setDemoState,records:archivedRecords,setRecords,recordsSource,reloadRecords:reloadFeedbackRecords,parentStudent,parentStudents,parentPhone,parentSession,setParentStudent,teacherProfiles,setTeacherProfiles,framingPresets,setFramingPresets,skillLibrary,setSkillLibrary,agentFiles,setAgentFiles,adminName:roleMeta.admin.name,galleryVenues,setGalleryVenues,galleryExhibitions,setGalleryExhibitions,lessons,setLessons,courses,setCourses,auditLog,recordAudit,reviewModels,reviewModelDefaults,setReviewModelDefaults,keywordTemplates,setKeywordTemplates,keywordTemplateRemote,traceLog,setTraceLog,tracePolicy,setTracePolicy,traceSource,refreshReviewTraces,cleanupReviewTraces,auditTraceEntry,adminTraceViewer,teacherTraceViewer,pageParams}}/>
       </div>
     </main>
     {toast?<div className="toast panda-toast"><img src={pandaWave} alt="熊猫鼓励"/><span><CircleCheck size={18}/>{toast}</span>{toastAction?<button type="button" className="toast-action" data-toast-action={toastAction.label} onClick={()=>{const run=toastAction.onClick;setToastRaw('');setToastAction(null);if(run)run()}}>{toastAction.label}</button>:null}</div>:null}
