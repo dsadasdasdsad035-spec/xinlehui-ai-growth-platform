@@ -1117,6 +1117,31 @@
 .poster-dialog[data-poster-dialog-selected-kind="report-long"] .poster-dialog-preview-figure{display:block;overflow:auto}
 .poster-dialog[data-poster-dialog-selected-kind="report-long"] .poster-dialog-preview-figure img{width:100%;max-height:none}
 .poster-dialog-hold{display:flex;align-items:center;justify-content:center;gap:6px;min-height:320px;font-size:11px;color:#8a7d5e;padding:20px;text-align:center}
+/* 文案与作品微调（[海报 US-310a]）：贴着预览放 —— 老师改完一眼就能看到图变了（没有「应用」按钮）。 */
+.poster-dialog-tuning{display:flex;flex-direction:column;gap:8px;border:1px solid #e6e1d2;border-radius:12px;background:#fffdf6;padding:10px;min-width:0}
+.poster-dialog-tuning-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.poster-dialog-tuning-head b{font-size:12px;color:#3f3b33}
+.poster-dialog-tuning-head small{font-size:10px;color:#8b8064;flex:1 1 220px;min-width:0}
+.poster-dialog-tuning-head .text-link{font-size:10px;color:#9a6a1f;background:none;border:0;padding:0;cursor:pointer;text-decoration:underline;min-height:32px}
+.poster-dialog-tuning-head .text-link:disabled{color:#b9b0a0;cursor:not-allowed;text-decoration:none}
+.poster-dialog-tuning-text{display:grid;grid-template-columns:64px minmax(0,1fr);gap:4px 8px;align-items:center;min-width:0}
+.poster-dialog-tuning-text>label{font-size:11px;color:#544d40}
+.poster-dialog-tuning-text>small{grid-column:2;font-size:10px;color:#8b8064;word-break:break-word}
+.poster-dialog-tuning-input{width:100%;min-width:0;font-size:11px;padding:6px 8px;border:1px solid #d9d7e0;border-radius:8px;background:#fff;color:#3f3b33;min-height:32px;font-family:inherit;resize:vertical}
+.poster-dialog-tuning-input:disabled{background:#f4f1e9;color:#a79b7d}
+.poster-dialog-tuning-row{display:flex;flex-direction:column;gap:4px;min-width:0}
+.poster-dialog-tuning-row>small{font-size:10px;color:#8b8064;word-break:break-word}
+.poster-dialog-tuning-row-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.poster-dialog-tuning-row-head label{font-size:11px;color:#544d40}
+.poster-dialog-tuning-row-head small{font-size:10px;color:#8b8064}
+.poster-dialog-tuning-row-head .text-link{font-size:10px;color:#9a6a1f;background:none;border:0;padding:0;cursor:pointer;text-decoration:underline;margin-left:auto;min-height:32px}
+.poster-dialog-tuning-row-head .text-link:disabled{color:#b9b0a0;cursor:not-allowed;text-decoration:none}
+.poster-dialog-tuning-check{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:#544d40;min-height:32px}
+.poster-dialog-tuning-artworks{display:flex;flex-direction:column;gap:4px;max-height:190px;overflow-y:auto;padding-right:2px;min-width:0}
+.poster-dialog-tuning-artwork{display:flex;align-items:center;gap:6px;font-size:11px;color:#544d40;border:1px solid #eee9dd;border-radius:8px;padding:4px 8px;min-height:32px;min-width:0}
+.poster-dialog-tuning-artwork>span{min-width:0;word-break:break-word}
+.poster-dialog-tuning-artwork input{flex:0 0 auto;width:16px;height:16px}
+.poster-dialog-tuning-notes{margin:0;padding-left:14px;display:flex;flex-direction:column;gap:2px;font-size:10px;color:#8a7d5e}
 .poster-dialog-meta{display:flex;flex-direction:column;gap:6px;font-size:11px;color:#544d40;min-width:0}
 .poster-dialog-meta ul{margin:0;padding-left:14px;display:flex;flex-direction:column;gap:3px;word-break:break-word}
 .poster-dialog-notes{color:#8a7d5e;font-size:10px}
@@ -1136,4 +1161,17 @@
   .poster-dialog-controls select{min-height:44px}
   .poster-dialog-perf{margin-left:0}
   .poster-dialog-empty button{min-height:44px}
+  /* 微调面板在手机上是「底部抽屉里也能单手改」的那一块：控件一律 ≥44px 高。 */
+  .poster-dialog-tuning{padding:8px}
+  .poster-dialog-tuning-text{grid-template-columns:minmax(0,1fr);gap:4px}
+  .poster-dialog-tuning-text>small{grid-column:1}
+  .poster-dialog-tuning-input{min-height:44px}
+  .poster-dialog-tuning-check{min-height:44px}
+  .poster-dialog-tuning-artwork{min-height:44px;padding:6px 8px}
+  .poster-dialog-tuning-artwork input{width:22px;height:22px}
+  .poster-dialog-tuning-artworks{max-height:240px}
+  /* 文字入口（恢复默认文案 / 全选）在手机上是 44×44 的可点区域：只有高度不够 —— 宽度也要够，
+     否则「全选」这种两个字的按钮会变成一个 20×44 的细条（实测断言抓到的）。 */
+  .poster-dialog-tuning-head .text-link{min-height:44px;min-width:44px;display:inline-flex;align-items:center;justify-content:center;padding:0 6px}
+  .poster-dialog-tuning-row-head .text-link{min-height:44px;min-width:44px;display:inline-flex;align-items:center;justify-content:center;padding:0 6px}
 }

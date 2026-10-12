@@ -407,7 +407,9 @@ export function posterDialogPlanKey(plan = null) {
   const value = isPlainObject(plan) ? plan : null;
   if (!value) return '';
   const kind = str(value.kind);
-  const shared = [kind, str(value.templateKey), str(value.periodLabel)];
+  // `tuning.key` 是「文案与作品微调」的覆盖值（[海报 US-310a]）：它进**公共段**，
+  // 于是「打字 → 预览立刻重绘」对五类版式都成立，不需要在组件里再挂一个 effect。
+  const shared = [kind, str(value.templateKey), str(value.periodLabel), str(value.tuning && value.tuning.key)];
   if (kind === 'single') {
     return [...shared,
       str(value.studentName), str(value.artworkTitle), str(value.dateDots),

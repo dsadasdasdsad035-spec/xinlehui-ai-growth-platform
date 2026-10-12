@@ -3983,8 +3983,55 @@ services / 界面只渲染产物」）：
   （导出 PNG、拼贴网格读数）还在用，且两条都走同一个 `renderPoster`（不构成第二套实现）。US-311a
   把导出搬进弹窗之后再考虑收敛它们。
 
+### 海报的「文案与作品微调」（[海报 US-310a] / FR-335 ~ FR-339）
+
+弹窗里贴着预览的那一块（`PosterDialog.jsx` 的 `[data-poster-tuning]`），规则全在零依赖的
+`src/data/posterTuning.js`（可 `node` 直跑断言），渲染仍然走同一个 `renderPoster`。
+
+- **可编辑项只有五项**：`POSTER_TUNING_FIELDS = title / quote / date / qrcode / artworks`
+  （标题 / 金句·寄语 / 日期 / 是否显示二维码 / 收录哪些作品）。**不可编辑项是结构保证，不是界面约定**：
+  `applyPosterTuning()` 只读这五个键，其它键一律进 `tuning.locked`（坐标 / 尺寸 / 字体 / 配色那一族，
+  `POSTER_TUNING_LOCKED_KEYS`）或 `tuning.ignored`（陌生人键），**一个字节都不落进 spec**。
+  断言口径：往入参里塞 `{x, font, color, spec}` → 逐槽 diff 只找到 `title.template` 一处变化，
+  且「只改标题」与「改标题 + 塞版式键」两张图**逐字节相同**。
+- **唯一会写进 spec 的字段是 `template` 与 `visible`**（`POSTER_TUNING_WRITTEN_FIELDS`）：
+  标题换的是文字位的 `template`（内容），二维码开关换的是二维码位的 `visible`（显隐）——
+  坐标 / 字体 / 配色 / 尺寸一个都不动。写进 `data` 的那几项（`quote` / `date` / 素材清单）属「画什么」。
+- **一项可改的前提是这套版式里有承载它的位**（`posterTuningTargets()`，界面照它禁用并写原因）：
+  标题位 = `id === 'title'` 的文字位（八套都有）；金句位 = `id === 'quote'`（只有单作品两套有，
+  长图给的是 FR-326 的原因「内容全部来自归档数据」）；日期位 = 模板串里用到 `{日期}` 的文字位
+  （单作品两套 + 暖金名片那套班级版）；二维码位 = `type === 'qrcode'` 或 `qr` / `qrPending` 占位位；
+  **收录作品只在阶段 / 班级海报上可选**（`POSTER_TUNING_ARTWORK_KINDS`，PRD 原文的括注）。
+- **收录清单的 id 是位置**（阶段 `work-1..N` = 拼贴每一幅、班级 `student-1..N` = 名单每一位），
+  `signature` 交给界面：换模板 / 换周期 / 换对象后清单变了，界面清掉老勾选（数据层也会忽略越界 id）。
+  「全选」与「留空」都等于**不覆盖**（重绘键里不出现那一段，勾掉再勾回来不会留一个假的覆盖值）；
+  勾到一幅不剩时回落全收 + 界面把「取消最后一幅」的勾选框禁掉（`POSTER_TUNING_ARTWORKS_MIN_NOTE`）。
+- **幂等**：`applyPosterTuning()` 把未收窄的那一份清单记在 `plan.tuning.artworkBaseEntries` 上，
+  再打一次同一份微调时从它出发 —— 否则第二遍会把「已经收窄的清单」再收窄一次（本轮先踩后修）。
+- **「改完即生效」不用第二个 effect**：`posterDialogPlanKey()` 的**公共段**里加了
+  `str(value.tuning && value.tuning.key)`，所以「打字 → 重绘键变 → 预览 effect 重画」对五类版式都成立；
+  界面里没有「应用」按钮（断言直接查面板与按钮文案）。**缩略图仍画模板本身**（不打微调）：
+  老师打字时不必把 8 张 0.25× 小图重画一遍 —— 微调只作用于这一张要发的海报（预览 + 将来的导出）。
+- 面板上的读数都带 `data-poster-tuning-*`：`kind / active / key / applied`（改了哪几项）、
+  `available`（这套版式能改哪几项）、`locked` / `ignored`、逐项的
+  `data-poster-tuning-field(-available/-value/-default/-note)`、收录清单的 `-artworks-total/-selected`
+  与每一项的 `-artwork-checked`（脚本不自己数勾选框）。
+- 手机端（≤800px）：面板单栏、输入框与勾选行 44px、两个文字入口（恢复默认文案 / 全选）**44×44**
+  —— 只给 `min-height` 会让「全选」变成一个 20×44 的细条（本轮被断言抓到）。
+- 验收口径：`/tmp/assert-us099.mjs`（Node，**90 项**：五项真源 / 五类版式的承载位 / 归一与重绘键 /
+  结构守卫逐槽 diff / 落笔效果（含长图逐页）/ 不变量 / 分层纪律与源码接线）+ 
+  `/tmp/assert-us099-browser.mjs`（CDP，**64 项**：真机链路到第四步 → 生成分享（二维码位要有真码）→
+  弹窗里逐项改标题 / 金句 / 日期 / 二维码，每次都「预览字节变化 + 与独立重算逐字节相同」→
+  「恢复默认文案」回到最初那一张（逐字节）→ 档案入口的阶段海报 3 幅收 2 幅（网格与素材同步）→
+  二维码那一格的暗像素从「有」到「0」→ 390px 无溢出且控件 ≥44px → console 干净）。截图 484~490。
+
 ## 容易踩的坑
 
+- **`attachToPage()` 返回后页面可能还没导航提交**（US-099 连踩两次）：CDP 的 `Target.createTarget`
+  建完标签页就返回，此时文档还是 `about:blank` —— 脚本第一句 `localStorage.clear()` 会抛
+  `SecurityError: Failed to read the 'localStorage' property from 'Window': Access is denied`（表现得像
+  「产品坏了」，实际是竞态）。做法：attach 之后先
+  `waitForCondition('location.origin===<app origin> && document.readyState!=="loading"')` 再碰页面状态。
 - **「每次渲染后量一次」的测量签名里不能有时间戳**（US-224 真踩）：`useEffect(()=>{measure()})`
   （无依赖数组）+ 签名内含 `new Date().toISOString()` 时，每次测量都「有新值」→ `setState` →
   渲染 → 再测量 → **Maximum update depth exceeded** 的死循环（页面直接卡死，`Runtime.evaluate` 超时）。

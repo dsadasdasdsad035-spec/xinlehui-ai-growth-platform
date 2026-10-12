@@ -23,6 +23,23 @@ import { nowMs } from './services/archivePerformance';
 import { loadPosterTemplates } from './data/posterTemplates';
 import { listVideoJobs } from './services/videoJobQueue';
 import {
+  POSTER_TUNING_ARTWORKS_MIN_NOTE,
+  POSTER_TUNING_FIELD_ARTWORKS,
+  POSTER_TUNING_FIELD_DATE,
+  POSTER_TUNING_FIELD_HINTS,
+  POSTER_TUNING_FIELD_LABELS,
+  POSTER_TUNING_FIELD_QRCODE,
+  POSTER_TUNING_FIELD_QUOTE,
+  POSTER_TUNING_FIELD_TITLE,
+  POSTER_TUNING_LOCKED_NOTE,
+  POSTER_TUNING_QUOTE_MAX_CHARS,
+  POSTER_TUNING_RESET_LABEL,
+  POSTER_TUNING_TITLE_MAX_CHARS,
+  applyPosterTuning,
+  posterTuningDefaults,
+  posterTuningTargets
+} from './data/posterTuning';
+import {
   POSTER_DIALOG_ARCHIVE_ONLY_NOTE,
   POSTER_DIALOG_ASSET_NOTE,
   POSTER_DIALOG_ENTRY_ARCHIVE,
@@ -81,8 +98,12 @@ export default function PosterDialog({
   const [preview, setPreview] = useState({ key: '', url: '', phase: 'idle', kind: '', templateId: '', width: 0, height: 0, warnings: [] });
   const [thumbs, setThumbs] = useState({});
   const [perf, setPerf] = useState({ firstPreviewMs: null, switchMs: null });
+  // 「文案与作品微调」（[海报 US-310a] / FR-335 ~ FR-339）：老师填的五个字段。
+  // 空值 = 不改这一项（留空 = 用原值），因此初始态是「原样」，一个字段都不覆盖。
+  const [tuning, setTuning] = useState({ title: '', quote: '', date: '', qrcode: true, artworks: [] });
   const thumbsRef = useRef({});
   const perfRef = useRef({ openAt: nowMs(), requestAt: nowMs(), request: 'open', firstDone: false });
+  const tuningSignatureRef = useRef('');
 
   const templateList = useMemo(() => (Array.isArray(templates) ? templates : loadPosterTemplates()), [templates]);
   const videoJobList = useMemo(() => (Array.isArray(jobs) ? jobs : listVideoJobs()), [jobs]);
@@ -128,7 +149,22 @@ export default function PosterDialog({
       })
       : null
   })), [rows, subject, period, records, lessons, tokens, videoRecordList, videoJobList, teacherName, orgName, logo, shareOrigin, empty.on]);
-  const selectedPlan = (plans.find((item) => item.row.id === selectedId) || {}).plan || null;
+  // 微调只作用于**这一张要发的海报**（预览 + 导出）：`applyPosterTuning()` 一次给出「哪些项改了、
+  // 哪些项这套版式承载不了」。缩略图仍然画模板本身 —— 老师打字时不必把 8 张 0.25× 小图重画一遍
+  // （缩略图回答的是「这套模板长什么样」，右侧 1:1 预览回答的是「我这一张现在长什么样」）。
+  const tunedPlans = useMemo(() => plans.map((item) => ({
+    row: item.row,
+    base: item.plan,
+    plan: item.plan ? applyPosterTuning(item.plan, tuning) : null
+  })), [plans, tuning]);
+  const selectedEntry = tunedPlans.find((item) => item.row.id === selectedId) || null;
+  const selectedPlan = (selectedEntry && selectedEntry.plan) || null;
+  const selectedBase = (selectedEntry && selectedEntry.base) || null;
+  // 微调面板读的是**没打补丁**的那一份 plan：可编辑项 / 默认值 / 收录清单都是「改之前」的事实，
+  // 界面因此不可能把自己刚打上的补丁当成模板的默认值（那会让「恢复默认」还原成一个假的默认）。
+  const tuningTargets = useMemo(() => posterTuningTargets(selectedBase), [selectedBase]);
+  const tuningDefaults = useMemo(() => posterTuningDefaults(selectedBase), [selectedBase]);
+  const tuningView = selectedPlan && selectedPlan.tuning ? selectedPlan.tuning : null;
   const planKey = posterDialogPlanKey(selectedPlan);
   const plansKey = useMemo(() => plans.map((item) => `${item.row.id}:${posterDialogPlanKey(item.plan)}`).join('~'), [plans]);
 
@@ -221,6 +257,15 @@ export default function PosterDialog({
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
 
+  // 换模板 / 换周期 / 换对象后「收录哪些作品」的清单会变：老选择不再适用，清掉它
+  // （留着会把图收空或收错 —— 数据层虽然也有兜底，但界面自己先说清楚更省事）。
+  const artworkSignature = tuningTargets.artworks.signature;
+  useEffect(() => {
+    if (tuningSignatureRef.current === artworkSignature) return;
+    tuningSignatureRef.current = artworkSignature;
+    setTuning((current) => (current.artworks.length ? { ...current, artworks: [] } : current));
+  }, [artworkSignature]);
+
   const pickTemplate = (row) => {
     if (!row.applicable || row.id === selectedId) return;
     perfRef.current = { ...perfRef.current, requestAt: nowMs(), request: 'switch' };
@@ -231,8 +276,197 @@ export default function PosterDialog({
     perfRef.current = { ...perfRef.current, request: 'idle' };
     setPeriod(value);
   };
+  // 微调的三个写入点：改一个字段 / 勾掉（或勾回）一幅作品 / 全部恢复默认。
+  // **没有「应用」按钮**：改完直接进 state → 重绘键变 → 预览重画（FR-337）。
+  const setTuningField = (field, value) => {
+    setTuning((current) => ({ ...current, [field]: value }));
+  };
+  const toggleArtwork = (id) => {
+    setTuning((current) => {
+      const all = tuningTargets.artworks.items.map((item) => item.id);
+      const picked = current.artworks.length ? current.artworks.filter((value) => all.includes(value)) : all;
+      const next = picked.includes(id) ? picked.filter((value) => value !== id) : [...picked, id];
+      // 勾到一幅不剩：原样保留（至少留一幅，最后一个勾选框在界面上也是禁用的）。
+      if (!next.length) return current;
+      // 又勾回全选 = 不再覆盖（与数据层的 「全选 = 没改」 同一条口径，重绘键因此稳定）。
+      if (next.length === all.length) return (current.artworks.length ? { ...current, artworks: [] } : current);
+      return { ...current, artworks: next };
+    });
+  };
+  const resetTuning = () => setTuning({ title: '', quote: '', date: '', qrcode: true, artworks: [] });
 
   const perfChecks = posterDialogPerfChecks(perf);
+  // 微调面板的渲染读数（只算一次：界面不自己数勾选框，也不自己判「改了什么」）。
+  const tuningApplied = tuningView ? tuningView.applied : [];
+  const tuningActive = tuningApplied.length > 0;
+  const artworkItems = tuningTargets.artworks.items;
+  const artworkIds = artworkItems.map((item) => item.id);
+  const artworkPicked = tuning.artworks.length
+    ? tuning.artworks.filter((id) => artworkIds.includes(id))
+    : artworkIds;
+  const artworkCanUncheck = artworkPicked.length > 1;
+  const tuningPanel = empty.on ? null : (
+    <section
+      className="poster-dialog-tuning"
+      data-poster-tuning="true"
+      data-poster-tuning-kind={tuningTargets.kind}
+      data-poster-tuning-active={tuningActive ? 'true' : 'false'}
+      data-poster-tuning-key={tuningView ? tuningView.key : ''}
+      data-poster-tuning-applied={tuningApplied.join(',')}
+      data-poster-tuning-available={tuningView ? tuningView.available.join(',') : ''}
+      data-poster-tuning-locked={tuningView ? tuningView.locked.join(',') : ''}
+      data-poster-tuning-ignored={tuningView ? tuningView.ignored.join(',') : ''}
+    >
+      <header className="poster-dialog-tuning-head">
+        <b>文案与作品微调</b>
+        <small data-poster-tuning-locked-note="true">{POSTER_TUNING_LOCKED_NOTE}</small>
+        <button
+          type="button"
+          className="text-link"
+          data-poster-tuning-reset="true"
+          disabled={!tuningActive}
+          onClick={resetTuning}
+        >{POSTER_TUNING_RESET_LABEL}
+        </button>
+      </header>
+      <div className="poster-dialog-tuning-text">
+        <label htmlFor="poster-tuning-title">{POSTER_TUNING_FIELD_LABELS[POSTER_TUNING_FIELD_TITLE]}</label>
+        <input
+          id="poster-tuning-title"
+          type="text"
+          className="poster-dialog-tuning-input"
+          data-poster-tuning-field={POSTER_TUNING_FIELD_TITLE}
+          data-poster-tuning-field-available={tuningTargets.title.available ? 'true' : 'false'}
+          data-poster-tuning-field-value={tuning.title}
+          data-poster-tuning-field-default={tuningDefaults.title}
+          placeholder={tuningTargets.title.available ? (tuningDefaults.title || '用这一套版式的默认标题') : ''}
+          disabled={!tuningTargets.title.available}
+          value={tuning.title}
+          onChange={(event) => setTuningField(POSTER_TUNING_FIELD_TITLE, event.target.value)}
+        />
+        <small data-poster-tuning-field-note={POSTER_TUNING_FIELD_TITLE}>
+          {tuningTargets.title.available
+            ? `${POSTER_TUNING_FIELD_HINTS[POSTER_TUNING_FIELD_TITLE]}（${tuning.title.length}/${POSTER_TUNING_TITLE_MAX_CHARS}）`
+            : tuningTargets.title.reason}
+        </small>
+      </div>
+      <div className="poster-dialog-tuning-text">
+        <label htmlFor="poster-tuning-quote">{POSTER_TUNING_FIELD_LABELS[POSTER_TUNING_FIELD_QUOTE]}</label>
+        <textarea
+          id="poster-tuning-quote"
+          rows={2}
+          className="poster-dialog-tuning-input"
+          data-poster-tuning-field={POSTER_TUNING_FIELD_QUOTE}
+          data-poster-tuning-field-available={tuningTargets.quote.available ? 'true' : 'false'}
+          data-poster-tuning-field-value={tuning.quote}
+          data-poster-tuning-field-default={tuningDefaults.quote}
+          placeholder={tuningTargets.quote.available ? (tuningDefaults.quote || '留空 = 用点评「美术能力」首句') : ''}
+          disabled={!tuningTargets.quote.available}
+          value={tuning.quote}
+          onChange={(event) => setTuningField(POSTER_TUNING_FIELD_QUOTE, event.target.value)}
+        />
+        <small data-poster-tuning-field-note={POSTER_TUNING_FIELD_QUOTE}>
+          {tuningTargets.quote.available
+            ? `${POSTER_TUNING_FIELD_HINTS[POSTER_TUNING_FIELD_QUOTE]}（${tuning.quote.length}/${POSTER_TUNING_QUOTE_MAX_CHARS}）`
+            : tuningTargets.quote.reason}
+        </small>
+      </div>
+      <div className="poster-dialog-tuning-text">
+        <label htmlFor="poster-tuning-date">{POSTER_TUNING_FIELD_LABELS[POSTER_TUNING_FIELD_DATE]}</label>
+        <input
+          id="poster-tuning-date"
+          type="text"
+          className="poster-dialog-tuning-input"
+          data-poster-tuning-field={POSTER_TUNING_FIELD_DATE}
+          data-poster-tuning-field-available={tuningTargets.date.available ? 'true' : 'false'}
+          data-poster-tuning-field-value={tuning.date}
+          data-poster-tuning-field-default={tuningDefaults.date}
+          placeholder={tuningTargets.date.available ? (tuningDefaults.date || '留空 = 用课次日期') : ''}
+          disabled={!tuningTargets.date.available}
+          value={tuning.date}
+          onChange={(event) => setTuningField(POSTER_TUNING_FIELD_DATE, event.target.value)}
+        />
+        <small data-poster-tuning-field-note={POSTER_TUNING_FIELD_DATE}>
+          {tuningTargets.date.available ? POSTER_TUNING_FIELD_HINTS[POSTER_TUNING_FIELD_DATE] : tuningTargets.date.reason}
+        </small>
+      </div>
+      <div className="poster-dialog-tuning-row" data-poster-tuning-field-row={POSTER_TUNING_FIELD_QRCODE}>
+        <label className="poster-dialog-tuning-check">
+          <input
+            type="checkbox"
+            data-poster-tuning-field={POSTER_TUNING_FIELD_QRCODE}
+            data-poster-tuning-field-available={tuningTargets.qrcode.available ? 'true' : 'false'}
+            data-poster-tuning-field-value={tuning.qrcode === false ? 'off' : 'on'}
+            checked={tuning.qrcode !== false}
+            disabled={!tuningTargets.qrcode.available}
+            onChange={(event) => setTuningField(POSTER_TUNING_FIELD_QRCODE, event.target.checked)}
+          />
+          <span>{POSTER_TUNING_FIELD_LABELS[POSTER_TUNING_FIELD_QRCODE]}</span>
+        </label>
+        <small data-poster-tuning-field-note={POSTER_TUNING_FIELD_QRCODE}>
+          {tuningTargets.qrcode.available ? POSTER_TUNING_FIELD_HINTS[POSTER_TUNING_FIELD_QRCODE] : tuningTargets.qrcode.reason}
+        </small>
+      </div>
+      <div className="poster-dialog-tuning-row" data-poster-tuning-field-row={POSTER_TUNING_FIELD_ARTWORKS}>
+        <div className="poster-dialog-tuning-row-head">
+          <label>{POSTER_TUNING_FIELD_LABELS[POSTER_TUNING_FIELD_ARTWORKS]}</label>
+          <small data-poster-tuning-artworks-count="true">
+            {tuningTargets.artworks.available ? `已勾选 ${artworkPicked.length} / ${artworkItems.length}` : '不可选'}
+          </small>
+          {/* 「全选」只在可选时出现；「为什么不可选」由下面那一行读数说一次（不重复两遍）。 */}
+          {tuningTargets.artworks.available ? (
+            <button
+              type="button"
+              className="text-link"
+              data-poster-tuning-artworks-all="true"
+              disabled={!artworkItems.length || !tuning.artworks.length}
+              onClick={() => setTuningField(POSTER_TUNING_FIELD_ARTWORKS, [])}
+            >全选
+            </button>
+          ) : null}
+        </div>
+        <div
+          className="poster-dialog-tuning-artworks"
+          data-poster-tuning-artworks-list="true"
+          data-poster-tuning-artworks-total={String(artworkItems.length)}
+          data-poster-tuning-artworks-selected={String(artworkPicked.length)}
+          data-poster-tuning-artworks-available={tuningTargets.artworks.available ? 'true' : 'false'}
+        >
+          {artworkItems.map((item) => {
+            const checked = artworkPicked.includes(item.id);
+            return (
+              <label
+                key={item.id}
+                className="poster-dialog-tuning-artwork"
+                data-poster-tuning-artwork={item.id}
+                data-poster-tuning-artwork-checked={checked ? 'true' : 'false'}
+                data-poster-tuning-artwork-has-artwork={item.hasArtwork ? 'true' : 'false'}
+              >
+                <input
+                  type="checkbox"
+                  data-poster-tuning-artwork-input={item.id}
+                  checked={checked}
+                  disabled={!artworkCanUncheck && checked}
+                  onChange={() => toggleArtwork(item.id)}
+                />
+                <span>{item.label}</span>
+              </label>
+            );
+          })}
+        </div>
+        <small data-poster-tuning-artworks-note="true">
+          {tuningTargets.artworks.available
+            ? (artworkCanUncheck ? POSTER_TUNING_FIELD_HINTS[POSTER_TUNING_FIELD_ARTWORKS] : POSTER_TUNING_ARTWORKS_MIN_NOTE)
+            : tuningTargets.artworks.reason}
+        </small>
+      </div>
+      {tuningView && tuningView.notes.length ? (
+        <ul className="poster-dialog-tuning-notes" data-poster-tuning-notes="true">
+          {tuningView.notes.map((note) => <li key={note} data-poster-tuning-note="true">{note}</li>)}
+        </ul>
+      ) : null}
+    </section>
+  );
   const blockedReason = (rows.find((row) => !row.applicable) || {}).reason || '';
   const state = empty.on
     ? 'empty'
@@ -358,6 +592,9 @@ export default function PosterDialog({
               })}
             </div>
             <div className="poster-dialog-preview" data-poster-dialog-preview-box="true" data-poster-dialog-preview-canvas={canvasLine}>
+              {/* 微调面板放在预览**上面**：一打开弹窗就看得见「能改哪几项」，改完往下一眼就是这张图
+                  （弹窗本身可滚动，不必先滚过一张最高 780px 的预览图才找到输入框）。 */}
+              {tuningPanel}
               <figure className="poster-dialog-preview-figure" data-poster-dialog-preview-figure="true">
                 {preview.url
                   ? <img src={preview.url} alt={`${selectedRow ? selectedRow.name : '海报'}预览（${subject.name} · ${period}）`} data-poster-dialog-image="true" data-poster-dialog-image-size={`${preview.width}x${preview.height}`} data-poster-dialog-image-template={preview.templateId} />
@@ -369,6 +606,7 @@ export default function PosterDialog({
                   <li data-poster-dialog-line="template">{`模板：${selectedRow ? selectedRow.name : '—'}（${selectedRow ? selectedRow.kindLabel : '—'}）${selectedRow && selectedRow.isDefault ? ' · 默认模板' : ''}`}</li>
                   <li data-poster-dialog-line="source" data-poster-dialog-line-source={recordView.source}>{`数据来源：${recordLine}`}</li>
                   <li data-poster-dialog-line="canvas">{`画布：${canvasLine || '—'} · 预览 1:1（${preview.phase === 'ready' ? `${preview.width}×${preview.height}` : '待出图'}）`}</li>
+                  <li data-poster-dialog-line="tuning" data-poster-dialog-line-tuning={tuningActive ? 'on' : 'off'}>{`微调：${tuningActive ? `${tuningApplied.length} 项已改（${tuningApplied.join(' / ')}）` : '未修改（标题 / 金句 / 日期 / 二维码 / 收录作品）'}`}</li>
                   <li data-poster-dialog-line="assets">{POSTER_DIALOG_ASSET_NOTE}</li>
                 </ul>
                 {preview.warnings.length ? <p className="poster-dialog-warning" data-poster-dialog-warning="true">{preview.warnings.join('；')}</p> : null}
