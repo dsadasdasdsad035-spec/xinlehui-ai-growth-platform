@@ -239,6 +239,57 @@ React + Vite 单页原型（`src/main.jsx` 是主入口，另按模块拆出 `sr
   于是「重新生成」这条路径必须**用同一个日期 + 同一个学员**再走一遍流程，否则落到另一条记录上、
   面板显示的是「还没有生成分享链接」（看着像令牌丢了）。
 
+## 分享二维码 · 微信文案复核 · 分享内容边界（[第四步 US-208b] / F-ARCHIVE-SHARE-01）
+
+> 链接（US-208a）之后的三件事，判据都在 `src/data/archiveShare.js`（零依赖纯函数 + 常量，可 `node` 直跑）；
+> 画布那一半在 `src/services/shareQr.js`。**编码与绘制复用装裱水印那一支**，不要另写第二个二维码实现。
+
+- **二维码 = 装裱水印那条路径的三段复用**：编码 `services/qrCode.js` 的 `qrMatrix()` →
+  绘制 `services/framing.js` 新导出的 `paintQrMatrixToCanvas()`（内部就是 `planOverlayQr` + `paintOverlayQr`，
+  白底 / 静区 / 模块取整同一套口径）→ 下载 `services/artworkExport.js` 的 `downloadArtworkExport()`。
+  于是「面板上的分享二维码」与「印在孩子作品上的二维码」不可能有两种画法；改了画笔两边一起变。
+- **静区是硬要求，靠比例算而不是手动留白**：`shareQrBoxRatio(modules) = modules / (modules + 2 × 4)`，
+  方框 + 四周 4 模块静区**正好铺满**画布（多留白浪费像素、少留白识别器读不稳）。
+  验证时按绘制计划的 `box` 反推静区宽度（`moduleSize × 4`）与 `plan.quiet` 对齐。
+- **`ready: false` 就不画**：`shareQrPayload({token, origin})` 没令牌时 `url` 为空 →
+  `renderShareQr()` 返回 `null` → 界面连二维码块都不渲染（**撤回 / 过期后不给扫不开的码**）。
+  这与 US-003c「编不出来就不画」是同一条纪律。
+- **二维码里编码的是完整地址**（`shareTokenUrl(token, {origin})`，与「复制链接」同一个值）；
+  面板上同时给出 `/p/<token>` 与完整地址两个读数 —— 家长扫的是前者所在的站点，老师复制的是后者。
+- **微信文案本体仍由 `data/archiveSummary.js` 的 `archiveWechatCopyText()` 生成**（只有一份），
+  `data/archiveShare.js` 只配一个**复核口径**：`archiveWechatTextChecks({text, student, lessonDate})` →
+  `{hasStudent, hasLessonDate, contactIssues, ok, note}`。禁项清单 `ARCHIVE_SHARE_WECHAT_FORBIDDEN`
+  覆盖手机号 / 座机 / 邮箱 / 微信 QQ / 链接五类（**链接也算**：分享靠二维码与「复制链接」两个显式动作）。
+  `assert-us061-browser` 的老断言 `!/(1\d{10}|https?:\/\/|@)/` 与此同一口径，所以**不要往文案里加链接**。
+- **分享内容 = 白名单现拼，绝不 `...record`**：`archiveSharePayload()` 只取
+  `record.media`（归档素材：成品图 + 修正后的课堂照片，US-203 已保证原图不上传）、
+  `reviews` 里**五维白名单维度**的正文、学员 / 课次 / 作品名 / 令牌。
+  `archiveShareLeaks({payload, record})` 是复核口径：递归找禁字段（`/original|trace|prompt|reasoning|memory|agentfile|skill|system/i`）
+  + **值级复核**「记录上的 `reviewTraceId` 不许出现在分享数据的 JSON 里」+ 归档记录里的原图字段。
+  写入侧靠白名单（结构上放不进来），泄漏函数是给断言与界面读数用的 —— 与 `archivePayloadOriginalIssue` 同一条纪律。
+- **边界面板的三种状态返回同一组字段**（`{ok, state, rows, excluded, leaks, payload, payloadChars, note}`），
+  行也同形状（`{id, label, value, detail, ok, blocking}`）—— US-204 的白屏坑就是这么来的，
+  断言里专门有一条「三种状态 Object.keys 相同」。
+- **`data-share-qr-*` 读数一律挂二维码块根节点**，动作按钮的读数是 `data-share-copy-link` /
+  `data-share-download-qr` / `data-share-copy`（三个动作的读数名不同，别混）—— 断言里读全局
+  `document.querySelector('[data-share-copy-link]')` 时要注意**块不存在时读数为 null**，
+  写脚本别把 `null` 当 `false` 比（本轮真踩：`[false,false]` vs `[null,null]`）。
+
+#### 真踩的坑（US-208b）
+
+- **`useMemo` 里的 canvas 渲染位置要与依赖同层**：二维码只在「链接可用」时渲染，键是
+  `shareQrToken = shareTokenPanel.active ? tokenText : ''`（撤回 / 过期后键变空 → 块消失）。
+  把 `renderShareQr` 写在 render 里而不 memo，会在每次 state 变化时重编 + 重编码一次 PNG（640×640）。
+- **分享数据里的素材地址来自 `record.media`，不是写回副本**：`record.framedArtwork.imageUrl`
+  是老师本机的展示副本（常为 `data:` URL），`record.artworkUrl` 是归档前的地址 ——
+  两者都不进分享数据，分享只认归档素材记录（`media[].url` + `status` + `storageKey`）。
+  验证脚本因此断言「分享里的每个素材地址都出现在 `record.media` 的地址集合里」，
+  而不是笼统地禁 `data:`（未接入对象存储时本地持久副本本身就是 data URL，是正常降级）。
+- **长按保存不另做一套**：iOS / 微信内置浏览器不执行 blob 下载（US-008a 的判据在
+  `artworkExportSaveStrategy`），但二维码**本来就在面板上显示着**（`<img src=dataUrl>`，640px），
+  所以点下载只给一句「长按图片保存」的如实回执，**不复用第二步的 `saveImageSheet`**
+  （那张 sheet 只在 `step===2` 渲染，且有 `step!==2` 就关掉的 effect —— 在第四步设它不会显示）。
+
 ## 成长档案页的对象筛选（[第四步 US-205]）
 
 > `GrowthArchiveData.jsx` 只负责渲染；可选项 / 默认选中 / 过滤 / 空态四件事全在

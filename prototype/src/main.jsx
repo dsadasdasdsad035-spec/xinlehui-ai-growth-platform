@@ -236,6 +236,17 @@ import {
   shareTokenStrength, shareTokenValidDaysLabel, shareTokenView
 } from './data/shareTokens';
 import { loadRemoteShareTokens, revokeRemoteShareToken, saveRemoteShareToken } from './services/shareTokensApi';
+// 分享二维码与分享内容边界（[第四步 US-208b] / F-ARCHIVE-SHARE-01）：二维码的口径（纠错等级 / 静区 /
+// 画布 / 文件名）、微信文案的三项复核（含学员名与课次日期、不含联系方式）与
+// 「只分享成品素材与老师确认后的点评」的白名单 / 泄漏复核全在 data 层（零依赖、可直接 Node 断言）；
+// 编码复用装裱水印的二维码编码器、绘制复用同一支画笔、下载复用「保存图片」那条路径。
+import {
+  ARCHIVE_SHARE_COPY_LINK_DONE, ARCHIVE_SHARE_COPY_LINK_FAILED, ARCHIVE_SHARE_COPY_LINK_LABEL,
+  ARCHIVE_SHARE_DOWNLOAD_QR_LABEL, ARCHIVE_SHARE_QR_BLOCKED_NOTE, ARCHIVE_SHARE_QR_INVALID_NOTE,
+  ARCHIVE_SHARE_QR_LONG_PRESS_NOTE, archiveShareBoundaryView, archiveWechatTextChecks,
+  shareQrCaption, shareQrDownloadText, shareQrRulesText
+} from './data/archiveShare';
+import { buildShareQrDownload, downloadShareQr, renderShareQr } from './services/shareQr';
 // 录入页移动端与性能（US-413）：缩略图长边上限 / 44px 可点区域 / 20 人以上按出席折叠分组 / 录入用时。
 // 规则与文案是零依赖纯函数（可直接 Node 断言），浏览器侧的执行在 services/mediaIntake。
 import {
@@ -3238,7 +3249,54 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
     setToast(SHARE_TOKEN_REVOKED_NOTICE);
     void revokeRemoteShareToken(revoked).catch(()=>{});
   };
+  // ---- 分享二维码与「三个动作」（[第四步 US-208b] / F-ARCHIVE-SHARE-01）-------------------
+  // 二维码只在**链接可用**时出图（撤回 / 过期后不给扫不开的码）；口径（纠错等级 / 静区 / 画布 /
+  // 文件名）在 `data/archiveShare.js`，编码与绘制复用装裱水印那条路径（services/shareQr.js）。
+  const [shareQrNotice,setShareQrNotice]=useState({phase:'idle',message:''});
+  const [shareLinkNotice,setShareLinkNotice]=useState({phase:'idle',message:''});
+  const shareQrOrigin=typeof window==='undefined'?'':(window.location?.origin||'');
+  const shareQrToken=shareTokenPanel.active?shareTokenPanel.tokenText:'';
+  const shareQrStudent=(currentArchiveRecord?.student)||selectedStudentLabel;
+  const shareQrLessonDate=(currentArchiveRecord?.lessonDate)||reviewLessonDateDots;
+  const shareQrView=useMemo(()=>{
+    if(!shareQrToken||!shareQrOrigin) return null;
+    try{ return renderShareQr({token:shareQrToken,origin:shareQrOrigin}); }catch{ return null; }
+  },[shareQrToken,shareQrOrigin]);
+  // 微信文案的三项复核（含学员名与课次日期、不含联系方式）与分享内容边界（只分享成品素材与
+  // 老师确认后的点评）都读 data 层的产物 —— 界面不自己判断「文案干净不干净」「什么能分享」。
+  const wechatTextChecks=archiveWechatTextChecks({text:archiveForward.wechatText,student:shareQrStudent,lessonDate:shareQrLessonDate});
+  const archiveShareBoundary=archiveShareBoundaryView({
+    record:currentArchiveRecord,
+    review:archiveStep.review,
+    token:shareQrToken,
+    origin:shareQrOrigin
+  });
+  // 换记录 / 换开合 / 换令牌时清掉两个回执（上一次的中间态不带过来，与令牌回执同一条纪律）。
+  useEffect(()=>{setShareQrNotice({phase:'idle',message:''});setShareLinkNotice({phase:'idle',message:''})},[currentArchiveRecord?.id,archiveShareOpen,shareQrToken]);
+  // 动作一：复制链接（完整地址 —— 就是二维码里编码的那一条，两处同源）。
+  const copyShareLink=async()=>{
+    if(!shareQrView){setShareLinkNotice({phase:'failed',message:ARCHIVE_SHARE_QR_BLOCKED_NOTE});return;}
+    const ok=await copyReviewDetailText(shareQrView.url);
+    setShareLinkNotice({phase:ok?'done':'failed',message:ok?ARCHIVE_SHARE_COPY_LINK_DONE:ARCHIVE_SHARE_COPY_LINK_FAILED});
+  };
+  // 动作二：下载二维码。桌面 / Android 走 `<a download>`（与「保存图片」同一条路径）；
+  // iOS Safari 与微信内置浏览器不执行 blob 下载 —— 面板上的二维码图片本身就能长按保存，
+  // 所以这里只如实说清该怎么做，不谎报「已下载」。
+  const downloadShareQrImage=async()=>{
+    if(!shareQrToken){setShareQrNotice({phase:'failed',message:ARCHIVE_SHARE_QR_BLOCKED_NOTE});return;}
+    const result=await buildShareQrDownload({token:shareQrToken,origin:shareQrOrigin,student:shareQrStudent,lessonDate:shareQrLessonDate});
+    if(!result){setShareQrNotice({phase:'failed',message:'二维码生成失败：先确认分享链接可用，再重新下载。'});return;}
+    const strategy=artworkExportStrategy(typeof navigator==='undefined'?'':navigator.userAgent);
+    if(strategy.mode==='download'){
+      const savedName=downloadShareQr(result);
+      setShareQrNotice({phase:'done',message:shareQrDownloadText(savedName,result.bytes)});
+      setToast(`二维码已保存：${savedName}`);
+    }else{
+      setShareQrNotice({phase:'preview',message:ARCHIVE_SHARE_QR_LONG_PRESS_NOTE});
+    }
+  };
   // 「家长分享链接」块：链接 / 有效期 / 撤回三个动作 + 授权闸门。链接形如 `/p/<shareToken>`。
+  // 链接可用时再给二维码与「复制链接 / 下载二维码」两个动作（与「复制微信文案」合起来是验收的三个动作）。
   const archiveShareTokenField=(
     <div className="archive-share-token" data-share-token="true" data-share-token-state={shareTokenPanel.state} data-share-token-gate={shareTokenGate.allowed?'allowed':'blocked'} data-share-token-value={shareTokenPanel.tokenText} data-share-token-link={shareTokenPanel.link} data-share-token-expires-at={shareTokenPanel.token?shareTokenPanel.token.expiresAt:''} data-share-token-revoked-at={shareTokenPanel.token?shareTokenPanel.token.revokedAt:''} data-share-token-valid-days-value={String(shareTokenValidDays)} data-share-token-history={String(shareTokenPanel.historyCount)}>
       <div className="archive-share-token-head">
@@ -3253,6 +3311,16 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
         {shareTokenPanel.revokedText?<small data-share-token-revoked-text="true">撤回于 {shareTokenPanel.revokedText}</small>:null}
       </div>:null}
       {shareTokenPanel.state==='revoked'?<p className="archive-share-token-note" data-share-token-revoked-note="true">{SHARE_TOKEN_REVOKE_NOTE}</p>:null}
+      {shareQrView?<div className="archive-share-qr" data-share-qr="true" data-share-qr-url={shareQrView.url} data-share-qr-modules={String(shareQrView.modules)} data-share-qr-version={String(shareQrView.version)} data-share-qr-ecc={shareQrView.ecc} data-share-qr-size={String(shareQrView.width)} data-share-qr-quiet={String(Math.round(shareQrView.quiet))} data-share-qr-link={shareTokenPanel.link}>
+        <img src={shareQrView.dataUrl} alt={`家长分享二维码：${shareQrView.url}`} width="168" height="168" data-share-qr-image="true"/>
+        <div className="archive-share-qr-side">
+          <b>扫码直接打开分享页</b>
+          <small data-share-qr-caption="true">{shareQrCaption(shareQrStudent)}</small>
+          <code data-share-qr-url-text="true">{shareQrView.url}</code>
+          <small data-share-qr-invalid-note="true">{ARCHIVE_SHARE_QR_INVALID_NOTE}</small>
+          <small data-share-qr-rules="true">{shareQrRulesText()}</small>
+        </div>
+      </div>:null}
       {shareTokenPanel.canGenerate?<div className="archive-share-token-validity">
         <label>
           <span>分享有效期</span>
@@ -3265,11 +3333,15 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
       {shareTokenGate.allowed?null:<p className="archive-share-token-block" data-share-token-reason="true">{shareTokenGate.note}</p>}
       <div className="archive-share-token-actions">
         {shareTokenPanel.canGenerate?<Button icon={Link2} disabled={!shareTokenGate.allowed} onClick={generateParentShareLink} data-share-token-generate="true">{shareTokenPanel.actionLabel}</Button>:null}
+        {shareTokenPanel.active?<Button variant="secondary" icon={Link2} onClick={copyShareLink} data-share-copy-link="true">{ARCHIVE_SHARE_COPY_LINK_LABEL}</Button>:null}
+        {shareTokenPanel.active?<Button variant="secondary" icon={Download} onClick={downloadShareQrImage} data-share-download-qr="true">{ARCHIVE_SHARE_DOWNLOAD_QR_LABEL}</Button>:null}
         {shareTokenPanel.active?(shareTokenRevokeConfirm
           ?<><Button onClick={revokeParentShareLink} data-share-token-revoke-confirm="true">{SHARE_TOKEN_REVOKE_CONFIRM_LABEL}</Button><Button variant="secondary" onClick={()=>setShareTokenRevokeConfirm(false)} data-share-token-revoke-cancel="true">再想想</Button></>
           :<Button variant="secondary" icon={X} onClick={()=>setShareTokenRevokeConfirm(true)} data-share-token-revoke="true">{SHARE_TOKEN_REVOKE_LABEL}</Button>):null}
         {shareTokenGate.allowed?null:<Button variant="secondary" icon={ShieldCheck} onClick={()=>navigate('authorization')} data-share-token-consent-entry="true">{shareTokenGate.entryLabel||'去授权管理'}</Button>}
         {shareTokenNotice.message?<small data-share-token-note="true">{shareTokenNotice.message}</small>:null}
+        {shareLinkNotice.message?<small data-share-link-copy-note="true">{shareLinkNotice.message}</small>:null}
+        {shareQrNotice.message?<small data-share-qr-note="true">{shareQrNotice.message}</small>:null}
       </div>
     </div>
   );
@@ -3308,10 +3380,30 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
       </ul>:null}
       <small className="archive-share-privacy">{ARCHIVE_SHARE_PRIVACY_NOTE}</small>
       <small className="archive-share-link">{ARCHIVE_SHARE_LINK_NOTE}</small>
+      {currentArchiveRecord?<div className="archive-share-boundary" data-share-boundary="true" data-share-boundary-ok={archiveShareBoundary.ok?'true':'false'} data-share-boundary-state={archiveShareBoundary.state} data-share-boundary-leaks={archiveShareBoundary.leaks.paths.join(',')} data-share-boundary-chars={String(archiveShareBoundary.payloadChars)} data-share-boundary-payload-review={archiveShareBoundary.payload.reviewConfirmed?'true':'false'} data-share-boundary-payload-media={String(archiveShareBoundary.payload.media.artwork.length+archiveShareBoundary.payload.media.photos.length)}>
+        <div className="archive-share-boundary-head">
+          {archiveShareBoundary.ok?<ShieldCheck size={14}/>:<ShieldAlert size={14}/>}
+          <b>分享内容边界</b>
+          <em className={`is-${archiveShareBoundary.state}`}>{archiveShareBoundary.ok?'已校验':'待处理'}</em>
+        </div>
+        <ul className="archive-share-boundary-list">
+          {archiveShareBoundary.rows.map(row=><li key={row.id} data-share-boundary-row={row.id} data-share-boundary-row-state={row.ok?'ok':'warn'}>
+            <b>{row.label}</b>
+            <span>{row.value}</span>
+            {row.detail?<small>{row.detail}</small>:null}
+          </li>)}
+          {archiveShareBoundary.excluded.map(row=><li key={row.id} className="excluded" data-share-boundary-excluded={row.id}>
+            <b>不分享 · {row.label}</b>
+            <span>{row.note}</span>
+          </li>)}
+        </ul>
+        <small data-share-boundary-note="true">{archiveShareBoundary.note}</small>
+      </div>:null}
       {archiveShareTokenField}
       <div className="archive-share-actions">
         {archiveForward.state==='ready'?<Button icon={MessageSquareText} onClick={copyArchiveWechatText} data-share-copy="true">{ARCHIVE_SHARE_COPY_LABEL}</Button>:null}
         {archiveForward.entryLabel?<Button variant="secondary" icon={ShieldCheck} onClick={()=>navigate('authorization')} data-share-consent-entry="true">{archiveForward.entryLabel}</Button>:null}
+        {archiveForward.state==='ready'?<small className={`archive-share-wechat-check is-${wechatTextChecks.ok?'ok':'warn'}`} data-share-wechat-check={wechatTextChecks.ok?'ok':'warn'} data-share-wechat-has-student={wechatTextChecks.hasStudent?'true':'false'} data-share-wechat-has-lesson-date={wechatTextChecks.hasLessonDate?'true':'false'} data-share-wechat-contacts={String(wechatTextChecks.contactIssues.length)}>{wechatTextChecks.note}</small>:null}
         {archiveShareCopy.message?<small data-share-copy-note="true">{archiveShareCopy.message}</small>:null}
       </div>
     </div>

@@ -90,6 +90,28 @@
 .archive-share-token-actions small{font-size:9px;color:#7a6a45}
 @media(max-width:800px){.archive-share-token-actions .btn,.archive-share-token-actions button{min-height:44px}}
 @media(max-width:800px){.archive-summary-list,.archive-share-content{grid-template-columns:1fr}}
+/* [第四步 US-208b] 分享二维码 + 微信文案复核 + 分享内容边界（读数来自 data 层，样式不参与判断）。 */
+.archive-share-qr{display:flex;gap:12px;align-items:flex-start;margin-top:12px;padding:11px;border:1px solid #efe5cf;border-radius:12px;background:#fffdf6}
+.archive-share-qr img{display:block;width:168px;height:168px;border:1px solid #e4d4a8;border-radius:8px;background:#fff;flex:0 0 auto}
+.archive-share-qr-side{display:flex;flex-direction:column;gap:5px;min-width:0}
+.archive-share-qr-side b{font-size:11px;color:#3d3527}
+.archive-share-qr-side small{font-size:9px;line-height:1.6;color:#8d8168;word-break:break-word}
+.archive-share-qr-side code{font-size:9px;line-height:1.55;color:#3d3527;background:#f7f2e2;border-radius:6px;padding:4px 6px;word-break:break-all}
+.archive-share-wechat-check{font-size:9px;line-height:1.6;color:#2f7a45}
+.archive-share-wechat-check.is-warn{color:#8a6414}
+.archive-share-boundary{margin-top:12px;padding:11px;border:1px solid #efe5cf;border-radius:12px;background:#fffdf6;text-align:left}
+.archive-share-boundary-head{display:flex;align-items:center;gap:7px}
+.archive-share-boundary-head b{font-size:12px;color:#4a3f2c}
+.archive-share-boundary-head em{margin-left:auto;font-size:10px;font-style:normal;font-weight:800;padding:3px 8px;border-radius:999px;background:#fff3d6;color:#8a6414}
+.archive-share-boundary-head em.is-ok{background:#e6f5ea;color:#2f7a45}
+.archive-share-boundary-list{display:flex;flex-direction:column;gap:6px;margin:10px 0 0;padding:0;list-style:none}
+.archive-share-boundary-list li{min-width:0;padding:8px 10px;border:1px solid #efe5cf;border-radius:10px;background:#fff}
+.archive-share-boundary-list li.excluded{border-style:dashed;background:#fbf8ef}
+.archive-share-boundary-list b{display:block;font-size:9px;font-weight:800;letter-spacing:.04em;color:#9a7200}
+.archive-share-boundary-list span{display:block;margin-top:3px;font-size:11px;line-height:1.55;color:#3d3527;word-break:break-word}
+.archive-share-boundary-list small{display:block;margin-top:3px;font-size:9px;color:#8a7c64}
+.archive-share-boundary>small{display:block;margin-top:9px;font-size:9px;line-height:1.6;color:#8d8168}
+@media(max-width:800px){.archive-share-qr{flex-direction:column}.archive-share-qr img{width:150px;height:150px}}
 
 /* [第四步 US-206] 成长档案改为常驻视图：档案概况四项 + 时间线卡片（成品图 / 课堂照片 / 五维摘要）
    + 加载 / 空 / 错误三态面板。样式不参与判断（哪个状态渲染哪块由 data 层的产物决定）。 */

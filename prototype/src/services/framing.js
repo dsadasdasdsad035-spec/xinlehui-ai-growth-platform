@@ -726,6 +726,31 @@ function paintOverlayQr(ctx, plan, matrix) {
 }
 
 /**
+ * 把一份二维码矩阵画到**任意画布**上（[第四步 US-208b] 的家长分享二维码）。
+ *
+ * **复用装裱水印那支画笔**（`planOverlayQr` + `paintOverlayQr`）：白底静区、模块取整、
+ * 说明文字全是同一套口径，所以「界面上的分享二维码」与「印在孩子作品上的二维码」
+ * 不可能有两种画法（改了画笔两边一起变，这正是复用而不是抄一遍的意义）。
+ *
+ * `boxRatio` 是二维码方框（不含静区）占画布短边的比例：`data/archiveShare.js` 的
+ * `shareQrBoxRatio()` 让它与静区正好铺满画布（静区不足的二维码识别器会读不稳）。
+ * 返回绘制计划（含 `box` / `plate` / `quiet`）—— 调用方据此断言「画的是哪一个矩阵、画在哪里」。
+ */
+export function paintQrMatrixToCanvas(ctx, { matrix, canvasWidth, canvasHeight, boxRatio, caption = '' } = {}) {
+  if (!ctx || !matrix) return null;
+  const plan = planOverlayQr({
+    element: { visible: true, position: 'custom', offsetX: 0, offsetY: 0, sizeRatio: boxRatio, caption },
+    canvasWidth,
+    canvasHeight,
+    context: {},
+    moduleCount: matrix.size
+  });
+  if (!plan) return null;
+  paintOverlayQr(ctx, plan, matrix);
+  return plan;
+}
+
+/**
  * 二维码要编码的内容：**目标键 → 后台配置的 URL**（FR-23，老师端不可自由填 URL）。
  * 白名单收敛在 `normalizeFrameSpecV2` 已经做过一次，这里是第二次（数据从哪来都收得住）。
  */
