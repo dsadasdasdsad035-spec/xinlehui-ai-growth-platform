@@ -625,6 +625,55 @@ React + Vite 单页原型（`src/main.jsx` 是主入口，另按模块拆出 `sr
   真实滚动 119fps、390px 档案页控件 ≥44px、console 0 异常）；回归 US-059 46、US-060 79、US-061 98、
   US-063 62、US-064 73、US-069 86、US-070 147 全绿；截图 354~359 留档。
 
+## 视频任务（`video_jobs`）的本机 mock 队列与状态机（[第四步 US-213a] / FR-256 ~ FR-261）
+
+「渲染服务还没接进来，但前端不能空等」的落地：任务模型、状态机、幂等键、演示推进与全部文案收在
+**零依赖数据层**，落地与定时推演在服务层，界面只渲染视图产物。
+
+| 关注点 | 位置 | 说明 |
+|---|---|---|
+| 规则（状态机 / 字段 / 幂等键 / 演示推进 / 文案） | `src/data/videoJobs.js`（零依赖，Node 可直跑） | `VIDEO_JOB_STATUSES`、`VIDEO_JOB_TRANSITIONS`、`VIDEO_JOB_REQUIRED_FIELDS`、`videoJobKey()`、`videoJobAdvance()`、`videoJobView()`、`videoJobQueueView()` |
+| 落地 + 推演 + 订阅 | `src/services/videoJobQueue.js` | 内存一份 `jobs` + 本机镜像 `xinlehui-video-jobs-v1`；`submit / cancel / retry / advance / resume / subscribe`；400ms 定时器只在有进行中任务时起 |
+| 界面 | `GrowthArchiveData.jsx` 的 `VideoJobsPanel` / `VideoJobCard`（`data-video-jobs-*` / `data-video-job-*`） | 类型跟着「查看对象」走（个人档案 = 个人成长视频 / 班级档案 = 班级视频集锦）；面板与**每一张任务卡片**都标注「演示数据 · 视频服务未接入」 |
+
+- **状态机只有一份表**：`VIDEO_JOB_TRANSITIONS` = `queued → rendering → done | failed | canceled`，
+  再加 `failed / canceled → queued`（重试）。判据一律 `videoJobTransitionIssue(from,to)`，
+  界面给不给按钮读 `videoJobActions()`（`allowed` + `issue` 同形状），服务层改状态前也过它 ——
+  不许在组件里写 `if (status === 'queued')`。
+- **幂等键由业务字段派生、行 id 不是**：`videoJobKey({type,studentId,classId,period})` =
+  `video|type|studentId|-|period`（个人任务 `classId` 留空、班级任务 `studentId` 留空，由 `objectFields` 统一清）。
+  同一 jobKey 再提交**不产生第二条任务**：`dedupeVideoJobs` 在读盘 / 写入两处兜底，服务层命中已有任务
+  只返回 `{created:false}`（进行中 / 已完成原样返回，失败 / 已取消沿用它重排队、attempts 不清零）。
+- **任务必填十项 + 类型相关的对象字段**：`videoJobMissingFields()` 里 `studentId / classId` 要**按类型判**
+  （个人任务 `classId` 合法为空，反之亦然）—— 写成「两个都不能为空」会让个人任务永远报缺 `classId`（本轮真踩）。
+- **演示队列结构上带不了成片**：`normalizeVideoJob` 把 `outputUrl / durationSec / bytes` 一律清成 `''/0/0`，
+  `videoJobOutputIssue()` 是这条口径的判据。进度可以走到 100（`done`），但卡片必须写清「未产出成片」——
+  「已完成」不等于「有视频」（US-213b 的契约层要在这个基础上抛「视频服务暂不可用」）。
+- **进度按真实经过时间推，不按定时器攒数**：`videoJobAdvance(job,{now})` 用 `startedAt` + 模拟耗时
+  （个人 8 秒 / 班级 14 秒）算百分比，因此刷新 / 关页面那段真实时间也算数；定时器只是让读数动起来，
+  **没有进行中的任务就停表**（`startVideoJobQueue` 幂等、`resumeVideoJobQueue` 进页面接上）。
+  硬超时仍是个人 5 分钟 / 班级 15 分钟（演示推进远快于它，但判据（`VIDEO_JOB_TIMEOUT_MS`）是真的）。
+- **并发默认 2**：`advanceVideoJobQueue` 每次先按 `createdAt` 提升排队任务（提升那一刻 `attempts+1`、
+  记 `startedAt`），再算进度，最后重排队列位次；取消会让排队的下一条**立刻补位**（取消后要顺手推一次）。
+- **验证方式（本故事实测）**：`pnpm run build`；Node 直跑 37 项（`/tmp/assert-us072-data.mjs`，用内存 localStorage
+  替身验镜像写入与读回）；浏览器 **83 项**（`/tmp/assert-us072-browser.mjs`：真实流程走到档案页 → 面板空态 →
+  真点提交 → 进度自己动 → 幂等不重复 → 100% 但无成片 → 演示失败 45% 处 failed + 重试 attempts=2 →
+  班级三个周期连提 = 2 渲染 + 1 排队（队列第 1 位）→ 390px ≥44px → **整页重载 + 重新登录 + 再走一遍流程**
+  后任务仍在且继续跑完，`startedAt` 逐条不变、进度不倒退、没有重复）；回归 US-063 62、US-064 73、US-071 80 全绿；
+  截图 360~363 留档。
+
+### 验「刷新后继续推进」时的两个坑（本故事真踩）
+
+- **别把「重进页面后任务都收在终态」当成一次断言**：第二次走流程只要几秒（实测 6.9 秒），
+  而班级演示耗时 14 秒 —— 断言「都 done」会因为「时间还没到」而假红。正确判据是三条不依赖时序的：
+  ① 任务**没有被重启**（镜像里的 `startedAt` 与刷新前逐字符相同）；② 进度不倒退；
+  ③ 等它收在终态（`waitForCondition` + 60 秒超时）——第 ③ 条才是「刷新后继续跑完」。
+- **`data-video-*` 读数要挂在卡片根节点上**：只挂内层 `<p>` 时，`card.getAttribute('data-video-job-demo')`
+  读到 `null`（本轮假红一次）。`.video-jobs-controls` 里的 `select` 在窄屏要显式给 `min-height:44px` ——
+  全局样式下它只有 18px（面板自己的 `label` 有 44px，不代表里面的控件有）。
+- **CDP 脚本里带变量的选择器别用单引号**：`'[data-video-job-key="…${STUDENT}…"]'` 不会插值，
+  报错是「找不到可点击元素」（本轮假红一次）；用模板字符串。
+
 ## 老师端「课后反馈」第一步（班级 / 学员 / 课程 / 课次推荐）
 
 > **课次表单全站只有一份实现 = `TeacherFlowV2`（`main.jsx`）。** 旧的 `CreateFlow` 五步向导

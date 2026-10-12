@@ -432,3 +432,58 @@
   .report-footer>div>button{width:100%;min-height:44px;justify-content:center}
   .report-footer .primary{width:100%}
 }
+
+/* ---- 视频任务（演示队列）（[第四步 US-213a]）----------------------------------------
+   状态机 / 进度 / 幂等键 / 「演示数据 · 视频服务未接入」都在 src/data/videoJobs.js，
+   这里只负责布局；改口径不要动 CSS。 */
+.video-jobs{display:flex;flex-direction:column;gap:10px;margin:18px 0;border:1px solid #eadfbd;border-radius:16px;background:#fffdf7;padding:18px;min-width:0}
+.video-jobs-demo{align-self:flex-start;margin:0;font-size:10px;font-weight:800;letter-spacing:.02em;color:#8a4b00;background:#fff2c8;border:1px solid #f0d79a;border-radius:999px;padding:4px 12px}
+.video-jobs-note{margin:0;font-size:10px;line-height:1.65;color:#857a64}
+.video-jobs-controls{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;align-items:end;min-width:0}
+.video-jobs-controls label{display:flex;flex-direction:column;gap:5px;font-size:10px;font-weight:700;color:#7a6a45;min-width:0}
+.video-jobs-controls input[readonly]{border:1px dashed #e6d9b8;background:#fffaf0;color:#5f5745}
+.video-jobs-controls label.video-jobs-simulate{flex-direction:row;align-items:center;gap:7px;font-size:10px;line-height:1.6;color:#7a6a45}
+.video-jobs-controls label.video-jobs-simulate input{width:16px;height:16px;min-height:0}
+.video-jobs-controls button{min-height:40px;justify-content:center}
+.video-jobs-issue,.video-jobs-notice{margin:0;font-size:10px;line-height:1.65;border-radius:10px;padding:8px 10px}
+.video-jobs-issue{color:#9a5a29;background:#fdf1e4;border:1px solid #f0d7bd}
+.video-jobs-notice{color:#2f6b3a;background:#f2f9ef;border:1px solid #cfe1b4}
+.video-jobs-summary{margin:0;font-size:10px;line-height:1.65;color:#857a64}
+.video-jobs-empty{margin:0;font-size:11px;line-height:1.75;color:#857a64;border:1px dashed #e6d9b8;border-radius:12px;padding:12px;background:#fffaf0}
+.video-jobs-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px;min-width:0}
+.video-job-card{display:flex;flex-direction:column;gap:8px;border:1px solid #ece1c6;border-radius:12px;background:#fff;padding:12px;min-width:0}
+.video-job-card header{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;min-width:0}
+.video-job-card header span{display:block;font-size:9px;font-weight:800;color:#9a7200}
+.video-job-card header b{display:block;font-size:12px;color:#292720;word-break:break-word}
+.video-job-status{flex:none;font-style:normal;font-size:10px;font-weight:800;border-radius:999px;padding:3px 10px;background:#f1ece0;color:#5f5745}
+.video-job-status.is-queued{background:#f4f1e8;color:#6b6250}
+.video-job-status.is-rendering{background:#fff2c8;color:#8a4b00}
+.video-job-status.is-done{background:#e9f4e4;color:#2f6b3a}
+.video-job-status.is-failed{background:#fdeceb;color:#9a2f22}
+.video-job-status.is-canceled{background:#efefef;color:#6b6250}
+.video-job-demo{align-self:flex-start;margin:0;font-size:9px;font-weight:800;color:#8a4b00;background:#fff8e3;border:1px dashed #f0d79a;border-radius:999px;padding:3px 9px}
+.video-job-progress{display:flex;align-items:center;gap:8px;min-width:0}
+.video-job-bar{flex:1;height:8px;border-radius:999px;background:#f1ece0;overflow:hidden;min-width:0}
+.video-job-bar i{display:block;height:100%;background:linear-gradient(90deg,#f4c95d,#e0a11c);border-radius:999px}
+.video-job-progress b{font-size:10px;font-weight:800;color:#8a4b00;min-width:34px;text-align:right}
+.video-job-rows{display:flex;flex-direction:column;gap:4px;margin:0;padding:0;list-style:none}
+.video-job-rows li{display:flex;gap:6px;font-size:10px;line-height:1.6;color:#5f5745;min-width:0}
+.video-job-rows li span{flex:none;color:#9a7200;font-weight:700}
+.video-job-rows li b{font-weight:600;word-break:break-word}
+.video-job-spec{display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:6px;margin:0;min-width:0}
+.video-job-spec>div{border:1px solid #f1e8d3;border-radius:9px;background:#fffdf7;padding:5px 7px;min-width:0}
+.video-job-spec dt{font-size:9px;color:#9a7200;font-weight:700}
+.video-job-spec dd{margin:2px 0 0;font-size:10px;font-weight:700;color:#292720;word-break:break-word}
+.video-job-output{margin:0;font-size:10px;line-height:1.65;color:#8a4b00;background:#fff8e3;border:1px dashed #f0d79a;border-radius:10px;padding:7px 9px}
+.video-job-actions{display:flex;gap:8px;flex-wrap:wrap}
+.video-job-actions button{min-height:34px}
+@media(max-width:430px){
+  .video-jobs{padding:14px}
+  .video-jobs-controls{grid-template-columns:minmax(0,1fr)}
+  .video-jobs-controls label{min-height:44px;justify-content:center}
+  .video-jobs-controls label.video-jobs-simulate{min-height:44px}
+  .video-jobs-controls select,.video-jobs-controls input{min-height:44px}
+  .video-jobs-controls button,.video-job-actions button{width:100%;min-height:44px;justify-content:center}
+  .video-jobs-list{grid-template-columns:minmax(0,1fr)}
+  .video-job-spec{grid-template-columns:repeat(2,minmax(0,1fr))}
+}

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, Download, FileText, Frame, Gauge, MessageSquareText, Plus, RefreshCw, Sparkles, Trash2 } from 'lucide-react';
+import { Archive, Clapperboard, Download, FileText, Frame, Gauge, Loader2, MessageSquareText, Plus, RefreshCw, Sparkles, Trash2, XCircle } from 'lucide-react';
 // 档案页的「常驻视图」（[第四步 US-206]）：
 //  - 对象 / 周期 / 缺课筛选的**可选项、默认选中、过滤、空态**在 `data/archiveTargets.js` 与
 //    `data/archiveResident.js` 两份零依赖模块里，组件只渲染它们的产物（一个名字都不写死）；
@@ -89,6 +89,25 @@ import {
 import { deleteRemoteArchiveReport, saveRemoteArchiveReport } from './services/archiveReportsApi';
 // 审计日志的动作键（[第四步 US-211]）：报告生成 / 更新也要留痕（操作人 / 时间 / 对象 / 版本）。
 import { AUDIT_ACTIONS, auditEntryMissingFields, auditTraceText } from './data/auditLog';
+// 视频任务（[第四步 US-213a]）：任务模型 / 状态机 / jobKey 幂等 / 演示推进 / 文案全在
+// `data/videoJobs.js`（零依赖纯函数），落地与定时推演在 `services/videoJobQueue.js`。
+// 这一页只渲染视图产物 —— 图表、按钮与「演示数据 · 视频服务未接入」那句话都从数据层来。
+import {
+  VIDEO_JOB_DEMO_LABEL,
+  VIDEO_JOB_STATUSES,
+  VIDEO_JOB_TYPES,
+  videoJobKey,
+  videoJobQueueView,
+  videoJobSubmitIssue
+} from './data/videoJobs';
+import {
+  cancelVideoJob,
+  listVideoJobs,
+  resumeVideoJobQueue,
+  retryVideoJob,
+  submitVideoJob,
+  subscribeVideoJobs
+} from './services/videoJobQueue';
 import { Button } from './ui';
 
 /**
@@ -317,6 +336,89 @@ function ArchiveReportPanel({reportKey, reportView, period, type, issue, busy, n
   </section>;
 }
 
+/**
+ * 一条视频任务卡（[第四步 US-213a] 第 5 条）：卡片上必须**明确标注**「演示数据 · 视频服务未接入」。
+ * 卡片渲染的每一行都取自 `data/videoJobs.js` 的 `videoJobView` 产物（状态 / 进度 / 次数 /
+ * 失败原因 / 队列位次 / 演示标注），组件不自己拼字符串、也不自己判断该给哪个按钮。
+ */
+function VideoJobCard({job,onCancel,onRetry}){
+  const cancelAction=job.actions.find(action=>action.id==='cancel');
+  const retryAction=job.actions.find(action=>action.id==='retry');
+  return <article className="video-job-card" data-video-job-card="true" data-video-job-key={job.jobKey} data-video-job-type={job.type} data-video-job-object={job.objectName} data-video-job-status={job.status} data-video-job-progress={job.progress} data-video-job-attempts={job.attempts} data-video-job-queue={job.queueLabel} data-video-job-error={job.errorText} data-video-job-demo={job.demoLabel} data-video-job-output-url={job.output.url}>
+    <header>
+      <div>
+        <span data-video-job-type-label="true">{job.typeLabel}</span>
+        <b data-video-job-object-label="true">{job.objectName} · {job.period}</b>
+      </div>
+      <em className={`video-job-status is-${job.status}`} data-video-job-status-label="true">{job.statusLabel}</em>
+    </header>
+    <p className="video-job-demo" data-video-job-demo={job.demoLabel}>{job.demoLabel}</p>
+    <div className="video-job-progress" data-video-job-progress-row="true">
+      <div className="video-job-bar" role="progressbar" aria-label={`${job.objectName} 视频任务进度`} aria-valuenow={job.progress} aria-valuemin="0" aria-valuemax="100"><i style={{width:job.progressLabel}} data-video-job-bar="true"/></div>
+      <b data-video-job-progress-label="true">{job.progressLabel}</b>
+    </div>
+    <ul className="video-job-rows">
+      <li><span>状态说明</span><b data-video-job-status-note="true">{job.statusNote}</b></li>
+      <li><span>尝试次数</span><b data-video-job-attempts-label="true">{job.attemptsLabel}{job.queueLabel?` · ${job.queueLabel}`:''}</b></li>
+      {job.errorText?<li data-video-job-error-row="true"><span>失败原因{job.errorCode?`（${job.errorCode}）`:''}</span><b>{job.errorText}</b></li>:null}
+    </ul>
+    <dl className="video-job-spec" data-video-job-spec="true">{job.specRows.map(row=><div key={row.id} data-video-job-spec-row={row.id}><dt>{row.label}</dt><dd>{row.value}</dd></div>)}</dl>
+    {job.outputNote?<p className="video-job-output" data-video-job-output="true">{job.outputNote}</p>:null}
+    <div className="video-job-actions">
+      {cancelAction&&cancelAction.allowed?<Button variant="secondary" icon={XCircle} data-video-job-action="cancel" onClick={()=>onCancel(job.jobKey)}>{cancelAction.label}</Button>:null}
+      {retryAction&&retryAction.allowed?<Button variant="secondary" icon={RefreshCw} data-video-job-action="retry" onClick={()=>onRetry(job.jobKey)}>{retryAction.label}</Button>:null}
+    </div>
+  </article>;
+}
+
+/**
+ * 视频任务（演示队列）面板（[第四步 US-213a]）。
+ *
+ * 这一块是「渲染服务还没接进来，但前端不能空等」的落地：
+ *  - 提交 / 取消 / 重试三个动作全部转给 `services/videoJobQueue.js`（判据在 data 层），
+ *    被拒时把 `issue` 原样显示，不自己编文案；
+ *  - 进面板先 `resumeVideoJobQueue()`：刷新 / 重新进入后按真实经过时间接上正在跑的任务，
+ *    有进行中的任务才自动起表（没有就停着，不在后台空转）；
+ *  - **类型跟着「查看对象」走**（个人档案 = 个人成长视频、班级档案 = 班级视频集锦），
+ *    不给「选了班级却提交个人视频」这种错配留入口；
+ *  - 「演示失败」开关是队列自身的演示能力（走到 45% 时失败），用来验证失败态与重试，
+ *    不是产品规则 —— 真实的渲染失败由服务端返回。
+ */
+function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkCount,photoCount,teacherName,setToast}){
+  const [jobs,setJobs]=useState(()=>listVideoJobs());
+  const [notice,setNotice]=useState('');
+  const [simulateFail,setSimulateFail]=useState(false);
+  const type=isClass?VIDEO_JOB_TYPES[1].id:VIDEO_JOB_TYPES[0].id;
+  const typeLabel=isClass?VIDEO_JOB_TYPES[1].label:VIDEO_JOB_TYPES[0].label;
+  // 订阅队列（提交 / 推进 / 取消都从这里回到界面）；进面板接上正在跑的任务。
+  useEffect(()=>subscribeVideoJobs(rows=>setJobs(rows)),[]);
+  useEffect(()=>{setJobs(resumeVideoJobQueue().jobs)},[]);
+  const view=videoJobQueueView(jobs);
+  const submitIssue=videoJobSubmitIssue({type,studentId:isClass?'':objectName,classId:isClass?objectName:'',period});
+  const jobKey=videoJobKey({type,studentId:isClass?'':objectName,classId:isClass?objectName:'',period});
+  const report=result=>{setJobs(listVideoJobs());setNotice(result.ok?result.notice:result.issue);setToast(result.ok?result.notice:result.issue)};
+  const submit=()=>report(submitVideoJob({type,studentId:isClass?'':objectName,classId:isClass?objectName:'',period,objectName,lessonCount,artworkCount,photoCount,createdBy:teacherName,simulate:simulateFail?'fail':'success'}));
+  const cancel=key=>report(cancelVideoJob(key));
+  const retry=key=>report(retryVideoJob(key));
+  return <section className="video-jobs" data-video-jobs-panel="true" data-video-jobs-count={view.total} data-video-jobs-active={view.active} data-video-jobs-empty={view.empty?'true':'false'} data-video-jobs-demo={VIDEO_JOB_DEMO_LABEL} data-video-jobs-source={view.sourceLabel}>
+    <div className="archive-section-head"><span>成长记录（视频）· {view.sourceLabel}</span><h3>视频任务队列（演示）</h3><p>按「对象 + 周期」提交一条渲染任务，状态机与进度在这里可见。渲染服务还没接进来，队列跑在本机。</p></div>
+    <p className="video-jobs-demo" data-video-demo-label={VIDEO_JOB_DEMO_LABEL}>{VIDEO_JOB_DEMO_LABEL}</p>
+    <p className="video-jobs-note" data-video-demo-note="true">{view.demoNote}</p>
+    <div className="video-jobs-controls">
+      <label>任务类型<input value={typeLabel} readOnly data-video-submit-type={type} aria-label="任务类型"/><small>跟着上面的「查看对象」走</small></label>
+      <label>生成周期<select value={period} onChange={event=>onPeriod(event.target.value)} data-video-submit-period="true" aria-label="生成周期">{ARCHIVE_PERIODS.map(name=><option key={name} value={name}>{name}</option>)}</select></label>
+      <label className="video-jobs-simulate"><input type="checkbox" checked={simulateFail} onChange={event=>setSimulateFail(event.target.checked)} data-video-simulate-fail="true"/>演示失败（走到 45% 时失败，用于验证失败态与重试）</label>
+      <Button icon={Clapperboard} data-video-submit="true" data-video-submit-key={jobKey} disabled={Boolean(submitIssue)} onClick={submit}>提交演示任务</Button>
+    </div>
+    {submitIssue?<p className="video-jobs-issue" data-video-submit-issue="true">{submitIssue}</p>:null}
+    {notice?<p className="video-jobs-notice" data-video-notice="true">{notice}</p>:null}
+    <p className="video-jobs-summary" data-video-jobs-summary="true">{view.summary}</p>
+    {view.empty
+      ? <p className="video-jobs-empty" data-video-jobs-empty-text="true">{view.emptyText}</p>
+      : <div className="video-jobs-list">{view.jobs.map(job=><VideoJobCard key={job.jobKey} job={job} onCancel={cancel} onRetry={retry}/>)}</div>}
+  </section>;
+}
+
 export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,pageParams,recordsSource=null,reloadRecords=null,archiveReports=[],setArchiveReports=()=>{},teacherName='',shareTokens=[],recordAudit=()=>{},auditActor=null}){
   // 报告生成 / 更新要留痕（[第四步 US-211] 第 4 条：操作人 / 时间 / 对象 / 版本）——
   // 留痕入口与报告写入在同一次动作里（`generateReport`），界面只多显示一行回执。
@@ -324,6 +426,9 @@ export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,p
   const [target,setTarget]=useState(ARCHIVE_TARGET_PERSONAL); const [period,setPeriod]=useState(ARCHIVE_PERIOD_FILTER_DEFAULT); const [absenceFilter,setAbsenceFilter]=useState(ARCHIVE_ABSENCE_ALL);
   // 阶段报告（[第四步 US-207a]）的界面 state：两个选择器 + 生成中 / 回执 / 待确认的删除 / 正在回看的历史版本。
   const [reportPeriod,setReportPeriod]=useState(ARCHIVE_PERIOD_DEFAULT); const [reportType,setReportType]=useState(ARCHIVE_REPORT_TYPE_DEFAULT);
+  // 视频任务的周期（[第四步 US-213a]）与上面那个「周期筛选」**分开**：筛选是「看什么」，
+  // 任务是「生成什么」—— 共用一份 state 会让「只是筛一下」变成「悄悄改了要生成的东西」。
+  const [videoPeriod,setVideoPeriod]=useState(ARCHIVE_PERIOD_DEFAULT);
   const [reportBusy,setReportBusy]=useState(false); const [reportNotice,setReportNotice]=useState('');
   const [reportDeleteOpen,setReportDeleteOpen]=useState(false); const [reportHistoryVersion,setReportHistoryVersion]=useState(0);
   // 可选项来自学员管理名单（与「学员管理」页同一份本地兜底），并上记录里出现过的名字 ——
@@ -561,6 +666,7 @@ export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,p
             {timelineWindow.hasMore?<button type="button" className="primary" data-archive-page-more="true" onClick={()=>setTimelinePage(page=>Math.min(timelineWindow.pageCount,page+1))}>{timelineWindow.moreLabel}</button>:null}
           </nav>:null}
         </section>
+        <VideoJobsPanel isClass={view.isClass} objectName={view.name} period={videoPeriod} onPeriod={setVideoPeriod} lessonCount={view.summary.lessons} artworkCount={view.summary.artworks} photoCount={view.summary.photos} teacherName={teacherName} setToast={setToast}/>
         <section className="archive-perf-panel" data-archive-perf="true" data-archive-perf-measured={String(perfChecks.measured)} data-archive-perf-total={String(perfChecks.total)} data-archive-perf-all-ok={perfChecks.allOk?'true':'false'} data-archive-perf-summary-text={perfChecks.summary}>
           <div className="archive-perf-head"><Gauge size={15}/><b>档案性能</b><em data-archive-perf-summary="true">{perfChecks.summary}</em><small>{ARCHIVE_PERF_HINT}</small></div>
           <ul className="archive-perf-list">{perfChecks.rows.map(row=><li key={row.id} data-archive-perf-row={row.id} data-archive-perf-state={row.ok===null?'pending':row.ok?'ok':'over'} data-archive-perf-value={row.value} data-archive-perf-budget={row.budget} data-archive-perf-text={row.text}>
