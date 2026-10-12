@@ -895,21 +895,23 @@ const periodOakSpec = builtinPosterSpec({
   ]
 });
 
-/** 「墨色留白 · 单作品」的版式：暖白纯色底 + 墨黑细框，标题居中如展签（与暖金版构成一对）。 */
+/** 「墨色留白 · 单作品」的版式：暖白纯色底 + 墨黑细框，标题居中如展签（与暖金版构成一对）。
+ *  作品区同样占上部约 55%（`h: 0.735` × 短边 1080 = 画布高度的 55.1%）—— 两套单作品模板的差别
+ *  在配色与标题对齐，不在作品区大小（[海报 US-303] 的 `posterSingleLayout().ok` 逐套检查它）。 */
 const singleInkSpec = builtinPosterSpec({
   kind: 'single',
   canvas: { ...POSTER_CANVAS_PRESETS.single },
   background: { type: 'solid', stops: [BRAND_PAPER] },
   frame: { enabled: true, color: BRAND_INK, widthRatio: 0.005, cornerRadiusRatio: 0.008 },
   // 一条居中的短金线：给居中的标题一个「落款位」的呼吸感。
-  decor: { hairline: { color: BRAND_GOLD, widthRatio: 0.0018, x: 0.42, y: 0.7, w: 0.16 } },
+  decor: { hairline: { color: BRAND_GOLD, widthRatio: 0.0018, x: 0.42, y: 0.878, w: 0.16 } },
   slots: [
-    { ...DEFAULT_POSTER_IMAGE_SLOT, x: 0.14, y: 0.125, w: 0.72, h: 0.52, radiusRatio: 0.008, paddingRatio: 0.014, shadow: false },
+    { ...DEFAULT_POSTER_IMAGE_SLOT, x: 0.14, y: 0.125, w: 0.72, h: 0.735, radiusRatio: 0.008, paddingRatio: 0.014, shadow: false },
     {
       id: 'title',
       type: 'text',
       x: 0.14,
-      y: 0.71,
+      y: 0.905,
       w: 0.72,
       align: 'center',
       font: 'serif',
@@ -923,7 +925,7 @@ const singleInkSpec = builtinPosterSpec({
       id: 'student',
       type: 'text',
       x: 0.14,
-      y: 0.772,
+      y: 0.968,
       w: 0.72,
       align: 'center',
       font: 'sans-serif',
@@ -936,7 +938,7 @@ const singleInkSpec = builtinPosterSpec({
       id: 'quote',
       type: 'text',
       x: 0.2,
-      y: 0.825,
+      y: 1.02,
       w: 0.6,
       align: 'center',
       font: 'serif',
@@ -946,7 +948,7 @@ const singleInkSpec = builtinPosterSpec({
       lineHeight: 1.7,
       template: '{点评金句}'
     },
-    builtinQrSlot({ x: 0.4425, y: 0.955, sizeRatio: 0.115, captionColor: MUTED_BROWN }),
+    builtinQrSlot({ x: 0.4425, y: 1.115, sizeRatio: 0.115, captionColor: MUTED_BROWN }),
     builtinLogoSlot({ x: 0.14, y: 0.058, maxWRatio: 0.13, opacity: 0.85 })
   ]
 });

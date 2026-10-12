@@ -895,3 +895,30 @@
 .video-jobs-permission[data-video-access-state="denied"]{border-color:#f0d7bd;background:#fdf1e4}
 .video-jobs-quota[data-video-quota-exceeded="true"]{border-color:#f0c9c9;background:#fdf0f0}
 .video-compliance .compliance-matrix li em.denied{color:#b4483a}
+
+/* 单作品海报（[海报 US-303]）：第四步「归档转发」里的实时预览 + 导出 PNG。
+   预览图是 `renderPoster` 的真图（1080×1440，与导出同一个函数、只差 scale），
+   作品缺失时的占位与「分享链接待生成」都在图里（由 data/posterSingle.js 打补丁），不是界面叠字。 */
+.poster-single{display:flex;flex-direction:column;gap:8px;margin-top:12px;padding:12px;border:1px solid #e6dcc4;border-radius:12px;background:#fffdf7;text-align:left;min-width:0}
+.poster-single-head{display:flex;align-items:center;gap:7px}
+.poster-single-head b{font-size:12px;color:#4a3f2c}
+.poster-single-head em{margin-left:auto;font-size:10px;font-style:normal;font-weight:800;padding:3px 8px;border-radius:999px;background:#f2ecd8;color:#7a6a45}
+.poster-single-head em.is-ready{background:#e6f5ea;color:#2f7a45}
+.poster-single-head em.is-blocked,.poster-single-head em.is-failed{background:#f7e3e0;color:#a5452f}
+.poster-single-head small{font-size:10px;color:#8b8064}
+.poster-single-body{display:grid;grid-template-columns:minmax(0,236px) minmax(0,1fr);gap:12px;align-items:start}
+.poster-single-preview{margin:0;border:1px solid #eadfbd;border-radius:10px;overflow:hidden;background:#f6f1e4;min-height:150px;display:grid;place-items:center}
+.poster-single-preview img{display:block;width:100%;height:auto}
+.poster-single-hold{font-size:11px;color:#8b8064;padding:20px;text-align:center}
+.poster-single-meta{display:flex;flex-direction:column;gap:6px;font-size:11px;color:#5c5343;min-width:0}
+.poster-single-meta ul{margin:0;padding-left:14px;display:flex;flex-direction:column;gap:3px;word-break:break-word}
+.poster-single-notes{color:#8a7d5e;font-size:10px}
+.poster-single-warning{color:#a5452f;font-size:10px;margin:0}
+.poster-single-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.poster-single-actions small{font-size:10px;color:#7c7259}
+.poster-single-empty{font-size:11px;color:#8a7d5e;margin:0}
+@media(max-width:800px){
+  .poster-single{padding:10px}
+  .poster-single-body{grid-template-columns:minmax(0,1fr)}
+  .poster-single-actions button{width:100%;min-height:44px;justify-content:center}
+}

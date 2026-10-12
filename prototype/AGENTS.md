@@ -3671,6 +3671,46 @@ US-222 管「成片怎么版本化」，这一节管「谁能碰这些成片、�
   **已知边界**：那条「写入云端」的分支在当前环境下无法真机验证（表未建），只能靠云端替身断言；云表建好后
   跑一次 `/tmp/assert-us091-browser.mjs` 应变成 `source=cloud`。
 
+## 单作品海报的数据装配与占位规则（[海报 US-303] / FR-310、FR-313、FR-318、FR-323）
+
+一张海报 = **一份模板 spec**（`data/posterTemplates.js`）+ **一份数据**（这一节课 / 这一位学员的真实内容）。
+US-303 补的是后半截，两个模块：
+
+- `src/data/posterSingle.js`（data 层、零依赖纯函数、可 `node` 直跑断言）= 「数据从哪儿来、缺了怎么办」：
+  - **内容只取归档数据**：成品图走 `archiveRecordMediaView(record, {surface:'teacher'})` —— 与成长档案 /
+    家长分享页**同一支**「哪张图能显示」的判据，不在这里另判一次。
+  - **日期与作品名取课次数据**：课次按 `resolveArchiveLesson()`（自然键 = 班级 + 日期 + 课时序号，与归档按钮
+    同一支）**再补一路 `record.lessonId` 直查** —— 第二条让「老师事后改过课次日期」如实反映到海报上
+    （US-038 口径）。都读不出来时**留空**，不用 `new Date()` 顶上。
+  - **金句**：五维点评「美术能力」首句、≤30 字、逐字 —— 首句摘取与「停顿处截断」**复用视频字幕那一支**
+    （`videoSubtitleFromReview(value,{maxChars})`），海报只换上限（30 对 24）与提示语；合规判据
+    `posterSingleQuoteIssue(quote, 原文)` 三层（连续片段 / ≤30 字 / 没有原文必须为空）。
+  - **缺件不编，而且结构上编不出来**：`posterSingleSpecPatch()` **换掉那一格的类型**（image → text、
+    qrcode → text、logo → text），位置尺寸一字不动 —— 因为渲染层没有「空盒子」这个概念（图片解码失败
+    只是不画，版式上留一块真空白）。于是「显示占位而不是空白方块」是结构保证，不是渲染时判断。
+  - **导出门**（`posterSingleExportGate`）：作品缺失 → `allowed:false` + 原因就是验收原文
+    「作品尚未同步完成」；**无有效分享不拦导出**（验收只要求作品缺失才拦）。有效分享的唯一真源是
+    `shareTokenView({tokens, recordId})`（撤回 / 过期都不算有效）。
+  - 版式读数 `posterSingleLayout(spec)`：`share` = 作品位高度 ÷ 画布高度，`ok` 判 50%–60%（「作品区占上部
+    约 55%」的机器判据）。**两套内置单作品模板都按 55% 对齐**（US-303 顺手把「墨色留白」的 `h` 从 0.52
+    改成 0.735、整条信息带下移）。
+- `src/services/posterSingle.js` = 渲染与下载：`renderPosterSingle(plan,{scale})`（预览 1× = 1080×1440）
+  与 `exportPosterSinglePng(plan)`（导出 2× = 2160×2880，先过导出门、再 `<a download>`）——
+  预览与导出是**同一个 `renderPoster` 的两种分辨率**，不存在两套代码。
+- 界面（课后反馈**第四步**）：`.poster-single` 块（`main.jsx` 的 `posterSingleField`）在归档后显示真实数据的
+  1:1 预览 + 「导出 PNG」；预览随「重绘键」（学员 / 作品 / 金句 / 成品图 / 链接 / 两种占位）重跑，
+  生成分享链接后同一块预览立刻重画（二维码从「分享链接待生成」变成真码）。
+  **机构 Logo** 取装裱 v2 水印里配置的那张（`frameSpecRenderView(effectiveFrameSpec).overlays.watermark.logo.url`）；
+  没配置时 Logo 位用机构名代替（不画假图，计划里如实写一句说明）。
+- 素材与链接的判据都**不在界面里重复**：`data-poster-single-*` 上的读数全部来自 `buildPosterSinglePlan()`
+  的产物（断言读同一份）。
+- 验证口径：`/tmp/assert-us092.mjs`（Node，**106 项**：版式 55% / 金句首句与逐字 / 日期与作品名取课次 /
+  作品缺失占位与拦截 / 无分享占位（含撤回 · 过期 · 别人的令牌）/ 机构名兜底 / 文件名规则 / 分层纪律）+
+  `/tmp/assert-us092-browser.mjs`（CDP，**48 项**：空态 → 归档 → 真实数据预览 → **像素级**证明占位不是
+  白底空方块 → 生成分享链接后码板出现 → 真下载 PNG（IHDR 2160×2880）、Python+OpenCV **解码二维码 =
+  页面上的分享链接**、白底卡片占画布高度 54.9%、390px 44px）+ `/tmp/assert-us092-regression.mjs`
+  （8 套内置模板自检 8/8 + 两套单作品版式渲染留档）。
+
 ## 容易踩的坑
 
 - **「每次渲染后量一次」的测量签名里不能有时间戳**（US-224 真踩）：`useEffect(()=>{measure()})`
