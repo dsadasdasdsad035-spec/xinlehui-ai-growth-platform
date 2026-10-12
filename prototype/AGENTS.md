@@ -1130,6 +1130,60 @@ US-220a 解决「曲目怎么管」、US-220b 解决「曲目从哪来」，这�
   与 US-080/081 的扫描口径一致），否则会误报 1 个过矮控件；③ 面板读的是「当前 jobKey 那条任务」的记录 ——
   想验「另一首曲子当记录」要么换生成周期（新 jobKey），要么直接改成片记录里的字段，不能只重选曲目。
 
+## 成片的版本、更新与删除（[第四步 US-222] / FR-301 ~ FR-304）
+
+US-213a 管「任务怎么跑」、US-219 管「成片怎么看 / 怎么分享」，这一节管「改了作品之后视频该不该重做、
+谁来决定、旧版还在不在」。判据与文案全在 `src/data/videoRecords.js`（零依赖，Node 可直跑），
+云端行映射在 `src/services/videoRecordsApi.js`，界面是 `GrowthArchiveData.jsx` 的 `VideoRecordPanel`。
+
+| 关注点 | 位置 |
+|---|---|
+| 键 / 字段 / 更新对账 / 版本历史 / 删除 / 级联（零依赖纯函数） | `src/data/videoRecords.js` |
+| 云端行读写（snake_case ↔ camelCase、白名单 payload、按 `video_key` upsert） | `src/services/videoRecordsApi.js` |
+| 摘掉渲染任务记录（删除成片 / 级联时调用） | `services/videoJobQueue.js` 的 `discardVideoJob`（不是状态机的边） |
+| 界面（videoKey / 版本 / 更新提示 / 历史回看 / 两步确认删除） | `GrowthArchiveData.jsx` 的 `VideoRecordPanel`（`data-video-record-*`） |
+| 级联清理入口 | `main.jsx` 的 `ArchiveRetentionSection`（到期清理那一条路径） |
+
+- **`videoKey` 与 `jobKey` 同构**：`videoRecordKey()` 直接委托 `videoJobKey()` —— 同一条成片与它的
+  渲染任务永远共用同一个业务键（对象 + 周期 + 类型）。id 由 `videoKey` 派生（FNV-1a，与阶段报告同一套），
+  云端按 `video_key` 幂等 upsert：重新生成是**就地改那一行**，不会多出孤儿行。
+- **`sources` 是「这一版覆盖了哪些归档记录」的冻结指纹**（`videoRecordSources`）：生成那一刻每条记
+  录的 `recordKey/id/updatedAt` 都进来。更新对账（`videoRecordUpdateView`）与级联删除
+  （`videoRecordsCascadeRemoved`）都只读它 —— **两边读同一支取法**，口径不可能漂移。
+- **「不自动重出」是结构性的**：`videoRecordUpdateView` 是**只读**函数，成片记录不因归档变化被改写；
+  界面上也没有任何监听 `records` 去写记录的 effect。验收原文那句
+  「有 N 幅作品已更新，建议重新生成」由 `videoRecordUpdatedHint(n)` 唯一产出（界面不许自己拼）。
+  新归档 / 被移除各有各自的话（`VIDEO_RECORD_ADDED_HINT` / `VIDEO_RECORD_REMOVED_HINT`）。
+- **版本只在「重新生成」时自增**：`updateVideoRecordVersion` 把被替换的那一版整份进 `history`
+  （上限 6，与阶段报告同口径），`videoKey / id` 不变；再次点提交（幂等命中）**不改写记录** ——
+  想要新版本必须点「重新生成」（它先 `discardVideoJob` 摘掉上一轮任务记录，再用同一个 jobKey 重排）。
+- **成片三件套的判定复用 US-219**（`data/videoShare.js` 的 `videoOutputView`）：历史版本的
+  「可下载」也走它 —— 渲染服务未接入时按钮禁用并给同一句「不会伪造一个 mp4」的提示，
+  历史版本里同样**不编时长与体积**。
+- **删除只动成片**：`removeVideoRecord` 只摘那一条（含历史版本），渲染任务记录由
+  `discardVideoJob(videoKey)` 一起清掉（它接受任意状态：先取消语义再摘除，
+  **不是**状态机新边 —— `VIDEO_JOB_TRANSITIONS` 一条没动）；归档记录在另一份账里，一个字节都不碰。
+- **级联删除必须走同一个入口**：任何新的「删归档记录」路径都要调
+  `videoRecordsCascadeRemoved(videoRecords, removedRecords)`（返回 `{kept, removed}`），
+  再对 `removed` 逐条 `setVideoRecords` + `discardVideoJob` + `deleteRemoteVideoRecord`。
+  目前唯一入口是管理端「到期清理」（`ArchiveRetentionSection`），回执用 `videoRecordCascadeNotice`。
+- **合并方向本机优先**（`mergeVideoRecords`）：云端 `video_records` 表还没建立时写入会被 PostgREST 拒掉，
+  本机镜像就是唯一副本；云端只补本机没有的 `videoKey`（否则刚重新生成的第 2 版会被云端第 1 版拉回去）。
+  与 `archive_reports` / `music_tracks` 同一套兜底口径：`App` 只 `persistVideoRecords`，推云在写入动作里做。
+- **验证方式（本故事实测）**：`pnpm run build` 通过（415~416ms）；Node 直跑 **29 项**
+  （`/tmp/assert-us083-data.mjs`：四项必填 / videoKey 同构 / 更新对账四种分支 / 版本自增与历史上限 /
+  三件套判据 / 删除 / 级联身份对账 / `discardVideoJob` / 静态口径）；浏览器 **62 项**
+  （`/tmp/assert-us083-browser.mjs`：提交落第一版并逐项读出镜像、**再归档同一课 → 版本不变 + 验收原文提示**、
+  重新生成 → 第 2 版 + 历史回看 + 回到最新版、删除 → 记录与任务记录一起清掉而时间线不变、
+  管理员到期清理 → 级联删除 1 条成片）；回归 US-072/073/074/075/076/077/078/079/082 data 全绿、
+  US-075/076/077/078/079/082 browser 全绿（US-072 browser 那 1 项「提交按钮文案」在 HEAD 上就已失败，
+  属 US-214 的口径变更，与本故事无关）；截图 417~420 留档。
+- **验证脚本的坑（本故事真踩）**：① 想验「同一条记录被更新」，**第二轮回第一步不能再重选班级 /
+  学员** —— `selectClass` 会清掉 `currentLessonId`，再归档会按退化键新建一条记录而不是更新同一条
+  （表现是 `updatedCount=0`、提示变成「新作品已归档」）。走草稿恢复路径即可（`walkToArchive({fresh:false})`
+  不再点下拉）。② 删除后的回执要渲染在 `view.present` 分支**外面** —— 记录一被摘掉，界面立刻回到空态，
+  分支里的 `notice` 永远不会出现（假红一次）。
+
 ## 老师端「课后反馈」第一步（班级 / 学员 / 课程 / 课次推荐）
 
 > **课次表单全站只有一份实现 = `TeacherFlowV2`（`main.jsx`）。** 旧的 `CreateFlow` 五步向导

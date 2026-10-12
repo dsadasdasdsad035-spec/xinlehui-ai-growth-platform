@@ -112,10 +112,12 @@ import {
   videoJobErrorText,
   videoJobKey,
   videoJobQueueView,
+  videoJobSpecSnapshot,
   videoJobSubmitIssue
 } from './data/videoJobs';
 import {
   cancelVideoJob,
+  discardVideoJob,
   listVideoJobs,
   recordVideoJobMusicDisposition,
   resumeVideoJobQueue,
@@ -222,6 +224,32 @@ import {
   shareTokenLink
 } from './data/shareTokens';
 import { revokeRemoteShareToken, saveRemoteShareToken } from './services/shareTokensApi';
+// 成片版本 · 更新提示 · 历史版本 · 删除与级联（[第四步 US-222] / FR-301 ~ FR-304）：落库字段
+// （videoKey / version / generatedAt / specSnapshot）、「有 N 幅作品已更新，建议重新生成」那句提示、
+// 版本自增与历史快照、删除只动成片、以及归档记录删除时的级联判据全在 `data/videoRecords.js`
+// （零依赖纯函数）。这一页只渲染它的产物 —— 组件不自己数「更新了几幅」、也不自己拼版本读数。
+// 写入走同一个动作：提交任务落第一版、点「重新生成」才 `version` 自增；更新提示本身是**只读**计算。
+import {
+  VIDEO_RECORD_DELETE_CANCEL_LABEL,
+  VIDEO_RECORD_DELETE_CONFIRM_LABEL,
+  VIDEO_RECORD_DELETE_DONE,
+  VIDEO_RECORD_DELETE_LABEL,
+  VIDEO_RECORD_DELETE_NOTE,
+  VIDEO_RECORD_LOCAL_NOTE,
+  VIDEO_RECORD_REGENERATE_DONE,
+  VIDEO_RECORD_REGENERATE_LABEL,
+  VIDEO_RECORD_SECTION_DESC,
+  VIDEO_RECORD_SECTION_TITLE,
+  applyVideoRecord,
+  createVideoRecord,
+  findVideoRecord,
+  removeVideoRecord,
+  updateVideoRecordVersion,
+  videoRecordRegenerateIssue,
+  videoRecordSources,
+  videoRecordView
+} from './data/videoRecords';
+import { deleteRemoteVideoRecord, saveRemoteVideoRecord } from './services/videoRecordsApi';
 // 成片分享的授权闸门读的是第四步那一份归档摘要产物（`archiveStepView` → `archiveForwardView`
 // → `data/consent.js`），与图文分享**同一道校验**，这里不另写一套。
 import { archiveStepView } from './data/archiveSummary';
@@ -569,6 +597,96 @@ function VideoPreviewPanel({preview,share,notice,shareNotice,revokeOpen,onDownlo
       </div>
       {shareNotice?<p className="video-jobs-notice" data-video-preview-share-notice="true">{shareNotice}</p>:null}
     </div>
+  </section>;
+}
+
+/**
+ * 成片版本 · 更新提示 · 历史版本 · 删除（[第四步 US-222] / FR-301 ~ FR-304）。
+ *
+ * 这一块回答「我改了作品之后，视频该不该重做」——每一行都有出处，判据与文案全部来自
+ * `data/videoRecords.js`（组件只渲染产物，不自己数「更新了几幅」、也不自己拼版本读数）：
+ *  - **落库字段**（验收第 1 条）：videoKey（对象 + 周期 + 类型）/ 版本 / 生成时间 / specSnapshot
+ *    逐项显示；`data-video-record-key` 就是那个业务键；
+ *  - **不自动重出**（验收第 2 条）：归档作品更新后这里只显示 `update.hint`（验收原文那句
+ *    「有 N 幅作品已更新，建议重新生成」）—— 记录本身一个字节都不动，重新生成只能由老师点；
+ *  - **重新生成**（验收第 3 条）：`version` 自增，上一版整份进「历史版本」；
+ *    「查看这一版」回看历史快照，「回到最新版本」回来；某一版有成片地址才可下载
+ *    （渲染服务未接入时按钮禁用并给同一句「不会伪造 mp4」的提示）；
+ *  - **删除**（验收第 4 条）：两步确认后只摘掉成片与它的渲染任务记录，归档记录一个字节都不动
+ *    （回执里写着这一句；级联删除归档记录那一侧在系统配置的到期清理里，走同一个数据层）。
+ */
+function VideoRecordPanel({view,notice,deleteOpen,onRegenerate,onRegenerateIssue,onDeleteOpen,onDeleteCancel,onDelete,onHistoryView,onHistoryBack}){
+  const update=view.update;
+  const viewing=view.viewing;
+  return <section className="video-record" data-video-record="true"
+    data-video-record-present={view.present?'true':'false'}
+    data-video-record-key={view.videoKey} data-video-record-version={String(view.version||'')}
+    data-video-record-version-label={view.versionLabel} data-video-record-generated-at={view.generatedAt}
+    data-video-record-generated-by={view.generatedBy} data-video-record-object={view.objectName}
+    data-video-record-period={view.period} data-video-record-source-count={String(view.sourceCount)}
+    data-video-record-stale={update.stale?'true':'false'} data-video-record-updated-count={String(update.updatedCount)}
+    data-video-record-added-count={String(update.addedCount)} data-video-record-removed-count={String(update.removedCount)}
+    data-video-record-history-count={String(view.historyRows.length)}
+    data-video-record-viewing-version={String(viewing.active?viewing.version:'')}
+    data-video-record-output-ready={view.output.ready?'true':'false'}>
+    <div className="archive-section-head"><span>成片按 videoKey 唯一落库 · 不自动重出</span><h4>{VIDEO_RECORD_SECTION_TITLE}</h4><p>{VIDEO_RECORD_SECTION_DESC}</p></div>
+    {/* 回执挂在分支外面：删除成片之后记录回到空态，但「归档记录一条都没有动」这句必须还在（否则老师看不见删了什么）。 */}
+    {notice?<p className="video-record-notice" data-video-record-notice="true">{notice}</p>:null}
+    {!view.present
+      ? <p className="video-record-empty" data-video-record-empty="true">{view.emptyText}<small data-video-record-empty-hint="true">{view.emptyActionHint}</small></p>
+      : <>
+        <article className="video-record-card" data-video-record-card="true">
+          <header>
+            <div><b data-video-record-object-label="true">{view.objectName} · {view.period}</b><small>{view.typeLabel}</small></div>
+            <em data-video-record-version-badge="true">{view.versionLabel}</em>
+          </header>
+          <dl className="video-record-rows" data-video-record-rows="true">
+            <div data-video-record-row="videoKey" data-video-record-row-value={view.videoKey}><dt>业务键 videoKey</dt><dd data-video-record-key-label="true">{view.videoKey}</dd></div>
+            {view.rows.map(row=><div key={row.id} data-video-record-row={row.id} data-video-record-row-value={row.value}><dt>{row.label}</dt><dd data-video-record-row-text="true">{row.value}</dd></div>)}
+            <div data-video-record-row="sources" data-video-record-row-value={String(view.sourceCount)}><dt>覆盖归档记录</dt><dd data-video-record-sources-label="true">{view.sourceNote}</dd></div>
+          </dl>
+          <dl className="video-record-spec" data-video-record-spec="true">{view.specRows.map(row=><div key={row.id} data-video-record-spec-row={row.id}><dt>{row.label}</dt><dd>{row.value}</dd></div>)}</dl>
+          {view.outputNote?<p className="video-record-output-note" data-video-record-output-note="true">{view.outputNote}</p>:null}
+        </article>
+        <div className={`video-record-update is-${update.stale?'stale':'sync'}`} data-video-record-update="true" data-video-record-update-state={update.stale?'stale':'sync'}>
+          <b data-video-record-hint="true">{update.hint}</b>
+          <small data-video-record-update-detail="true">{update.detail}</small>
+        </div>
+        <div className="video-record-actions">
+          <Button data-video-record-regenerate="true" onClick={onRegenerate}>{VIDEO_RECORD_REGENERATE_LABEL}</Button>
+          <small data-video-record-regenerate-issue="true">{onRegenerateIssue}</small>
+          {deleteOpen
+            ? <span className="video-record-delete-confirm">
+              <Button variant="danger" data-video-record-delete-confirm="true" onClick={onDelete}>{VIDEO_RECORD_DELETE_CONFIRM_LABEL}</Button>
+              <button type="button" className="text-link" data-video-record-delete-cancel="true" onClick={onDeleteCancel}>{VIDEO_RECORD_DELETE_CANCEL_LABEL}</button>
+            </span>
+            : <Button variant="secondary" icon={Trash2} data-video-record-delete="true" onClick={onDeleteOpen}>{VIDEO_RECORD_DELETE_LABEL}</Button>}
+        </div>
+        {deleteOpen?<p className="video-record-delete-note" data-video-record-delete-note="true">{VIDEO_RECORD_DELETE_NOTE}</p>:null}
+        {viewing.active?<div className="video-record-viewing" data-video-record-viewing="true" data-video-record-viewing-version-label={viewing.versionLabel}>
+          <header>
+            <div><b data-video-record-viewing-title="true">正在回看 {viewing.versionLabel}</b><small data-video-record-viewing-meta="true">{viewing.generatedAtText} · {viewing.generatedByText}</small></div>
+            <Button variant="secondary" data-video-record-history-back="true" onClick={onHistoryBack}>{view.historyBackLabel}</Button>
+          </header>
+          <ul className="video-record-viewing-rows" data-video-record-viewing-rows="true">{viewing.rows.map(row=><li key={row.id} data-video-record-viewing-row={row.id} data-video-record-viewing-row-value={row.value}><span>{row.label}</span><b>{row.value}</b></li>)}</ul>
+          <dl className="video-record-spec" data-video-record-viewing-spec="true">{viewing.specRows.map(row=><div key={row.id} data-video-record-viewing-spec-row={row.id}><dt>{row.label}</dt><dd>{row.value}</dd></div>)}</dl>
+          <div className="video-record-viewing-actions">
+            <Button variant="secondary" icon={Download} disabled={!viewing.download.enabled} data-video-record-viewing-download="true" onClick={()=>{if(!viewing.download.enabled)return;}}>{viewing.download.label}</Button>
+            {viewing.download.unavailableText?<small data-video-record-download-note="true">{viewing.download.unavailableText}</small>:null}
+          </div>
+        </div>:null}
+        <div className="video-record-history" data-video-record-history="true">
+          <b>{view.historyTitle}（{view.historyRows.length}）</b>
+          {view.hasHistory
+            ? <ul data-video-record-history-rows="true">{view.historyRows.map(entry=><li key={entry.version} data-video-record-history-entry={entry.version} data-video-record-history-entry-date={entry.generatedAtText}>
+              <span data-video-record-history-annotation="true">{entry.annotation}</span>
+              <button type="button" className="text-link" data-video-record-history-view={entry.version} onClick={()=>onHistoryView(entry.version)}>{view.historyViewLabel}</button>
+            </li>)}</ul>
+            : <p data-video-record-history-empty="true">{view.historyEmptyText}</p>}
+          <small data-video-record-history-note="true">{view.historyNote}</small>
+          <small data-video-record-local-note="true">{VIDEO_RECORD_LOCAL_NOTE}</small>
+        </div>
+      </>}
   </section>;
 }
 
@@ -979,7 +1097,7 @@ function VideoClassTimeline({plan,view,onMove,onReset}){
  * 它读的是 `classEntries`（这个班级在这个周期的记录）与 `roster`（班级名单 = 顺序真源）；
  * 「顺序默认按班级名单、生成前可调整」用面板自己的 `classOrder` 局部 state 实现。
  */
-function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkCount,photoCount,teacherName,setToast,entries=[],scopeEntries=[],classEntries=[],roster=[],tokens=[],records=[],musicTracks=[],consents=null,setShareTokens=()=>{},recordAudit=()=>{},auditActor=null,navigate=null}){
+function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkCount,photoCount,teacherName,setToast,entries=[],scopeEntries=[],classEntries=[],roster=[],tokens=[],records=[],musicTracks=[],videoRecords=[],consents=null,setShareTokens=()=>{},setVideoRecords=()=>{},recordAudit=()=>{},auditActor=null,navigate=null}){
   const [jobs,setJobs]=useState(()=>listVideoJobs());
   const [notice,setNotice]=useState('');
   const [simulateFail,setSimulateFail]=useState(false);
@@ -1197,6 +1315,62 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
     recordAudit({...videoShareActor(),action:AUDIT_ACTIONS.shareRevoke,objectName,studentId:isClass?'':objectName,recordId:revoked.jobKey,studentName:isClass?'':objectName,version:revoked.version,shareToken:revoked.token,scope:period,detail:`撤回成片分享链接（${typeLabel} · ${period}）`});
   };
   const goAuthorization=()=>{if(typeof navigate==='function')navigate('authorization');};
+  // ---- 成片版本 · 更新与删除（[第四步 US-222] / FR-301 ~ FR-304）--------------------------------
+  // 这一版覆盖的归档记录在**生成那一刻**冻结进 `sources`（`videoRecordSources` 是唯一取法），
+  // 之后归档更新只影响 `videoRecordUpdateView` 的只读对账 —— 记录本身不因归档变化而改写
+  // （「不自动重出」在结构上成立：这里没有任何 effect 监听 records 去写记录）。
+  const [recordNotice,setRecordNotice]=useState('');
+  const [recordDeleteOpen,setRecordDeleteOpen]=useState(false);
+  const [recordViewingVersion,setRecordViewingVersion]=useState(0);
+  useEffect(()=>{setRecordNotice('');setRecordDeleteOpen(false);setRecordViewingVersion(0)},[objectName,period,isClass]);
+  const recordIdentity=useMemo(()=>({type,studentId:isClass?'':objectName,classId:isClass?objectName:'',period}),[type,isClass,objectName,period]);
+  const videoRecord=useMemo(()=>findVideoRecord(videoRecords,jobKey),[videoRecords,jobKey]);
+  const recordView=useMemo(()=>videoRecordView(videoRecord,{records,viewingVersion:recordViewingVersion}),[videoRecord,records,recordViewingVersion]);
+  const currentJob=useMemo(()=>jobs.find(job=>job.jobKey===jobKey)||null,[jobs,jobKey]);
+  const regenerateIssue=videoRecordRegenerateIssue({record:videoRecord,jobStatus:currentJob?currentJob.status:''});
+  /**
+   * 生成 / 重新生成时把这一版落库（FR-301 / FR-303）。规则全在 `data/videoRecords.js`：
+   * 没有记录 → `createVideoRecord`（第 1 版）；已有记录 → `updateVideoRecordVersion`（版本自增、上一版进历史）。
+   * 先写本机 state（App 的 effect 负责落盘）再推云端；云端表没建时如实说明「先保存在本机」。
+   */
+  const storeVideoRecord=useCallback(({at,music,regenerate})=>{
+    const sources=videoRecordSources(records,recordIdentity);
+    const snapshot=videoJobSpecSnapshot({...recordIdentity,objectName,lessonCount,artworkCount,photoCount,capturedAt:at,music});
+    const existing=findVideoRecord(videoRecords,jobKey);
+    const next=existing&&regenerate
+      ?updateVideoRecordVersion(existing,{specSnapshot:snapshot,sources,generatedAt:at,generatedBy:teacherName})
+      :(existing||createVideoRecord({...recordIdentity,objectName,specSnapshot:snapshot,sources,generatedAt:at,generatedBy:teacherName}));
+    setVideoRecords(list=>applyVideoRecord(list,next));
+    void saveRemoteVideoRecord(next).catch(()=>{});
+    return next;
+  },[records,recordIdentity,objectName,lessonCount,artworkCount,photoCount,videoRecords,jobKey,teacherName,setVideoRecords]);
+  const regenerateVideo=()=>{
+    if(regenerateIssue){setRecordNotice(regenerateIssue);setToast(regenerateIssue);return;}
+    const at=new Date().toISOString();
+    const submittedMusic=musicJobMusicFromSelection(musicSelection,{capturedAt:at});
+    // 重新生成 = 把上一轮的渲染任务记录摘掉、用同一个 jobKey 重新排一轮（不是新键、不是新对象）。
+    discardVideoJob(jobKey);
+    const result=submitVideoJob({...recordIdentity,objectName,lessonCount,artworkCount,photoCount,createdBy:teacherName,simulate:simulateFail?'fail':'success',simulateErrorCode,music:submittedMusic});
+    if(!result.ok){setRecordNotice(result.issue);setToast(result.issue);return;}
+    if(result.job)setLatestKey(result.job.jobKey);
+    const next=storeVideoRecord({at,music:submittedMusic,regenerate:true});
+    setRecordViewingVersion(0);
+    const text=VIDEO_RECORD_REGENERATE_DONE(next.version);
+    report(result);
+    setRecordNotice(text);
+    setToast(text);
+  };
+  /** 删除成片（FR-304）：只摘掉成片记录与它的渲染任务记录，归档记录一个字节都不动。 */
+  const deleteVideoRecord=()=>{
+    if(!videoRecord) return;
+    setRecordDeleteOpen(false);
+    setRecordViewingVersion(0);
+    setVideoRecords(list=>removeVideoRecord(list,videoRecord.videoKey));
+    discardVideoJob(videoRecord.videoKey);
+    void deleteRemoteVideoRecord(videoRecord.videoKey).catch(()=>{});
+    setRecordNotice(VIDEO_RECORD_DELETE_DONE);
+    setToast(VIDEO_RECORD_DELETE_DONE);
+  };
   const report=result=>{setJobs(listVideoJobs());setNotice(result.ok?result.notice:result.issue);setToast(result.ok?result.notice:result.issue)};
   const submit=()=>{
     // 版权证据随任务一起写进 `specSnapshot.music`（FR-295）：静音也是一个明确结论，老任务没有这一项。
@@ -1204,6 +1378,13 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
     const result=submitVideoJob({type,studentId:isClass?'':objectName,classId:isClass?objectName:'',period,objectName,lessonCount,artworkCount,photoCount,createdBy:teacherName,simulate:simulateFail?'fail':'success',simulateErrorCode,music:submittedMusic});
     if(result.ok&&result.job)setLatestKey(result.job.jobKey);
     report(result);
+    // 第一版成片记录随生成一起落库（FR-301）：已有记录**不因为再点一次生成而变化**
+    // （版本只在「重新生成」时自增 —— 这正是「不自动重出」的另一面，US-222）。
+    if(result.ok&&!findVideoRecord(videoRecords,jobKey)){
+      const next=storeVideoRecord({at:new Date().toISOString(),music:submittedMusic,regenerate:false});
+      setRecordViewingVersion(0);
+      setRecordNotice(`成片已落库：${next.videoKey} · ${next.version===1?'第 1 版':`第 ${next.version} 版`}（videoKey / 版本 / 生成时间 / specSnapshot 四项齐全）。`);
+    }
     // 已有成片记录、而这次选择与记录不同（换了曲子 / 改成静音）：**记录不改写**（举证材料要稳定），
     // 但必须当场说一句实话 —— 否则老师以为换上新曲子了，实际那条记录还是老的（本轮真踩）。
     const stored=result.job?result.job:(jobs.find(job=>job.jobKey===jobKey)||null);
@@ -1251,6 +1432,18 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
       onValidDays={value=>setShareValidDays(value)}
       onGoAuthorization={goAuthorization}
     />
+    <VideoRecordPanel
+      view={recordView}
+      notice={recordNotice}
+      deleteOpen={recordDeleteOpen}
+      onRegenerate={regenerateVideo}
+      onRegenerateIssue={regenerateIssue}
+      onDeleteOpen={()=>setRecordDeleteOpen(true)}
+      onDeleteCancel={()=>setRecordDeleteOpen(false)}
+      onDelete={deleteVideoRecord}
+      onHistoryView={version=>setRecordViewingVersion(version)}
+      onHistoryBack={()=>setRecordViewingVersion(0)}
+    />
     {notice?<p className="video-jobs-notice" data-video-notice="true">{notice}</p>:null}
     {view.resumeSummary?<p className="video-jobs-resumed" data-video-jobs-resumed="true">{view.resumeSummary}</p>:null}
     <p className="video-jobs-summary" data-video-jobs-summary="true">{view.summary}</p>
@@ -1260,7 +1453,7 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
   </section>;
 }
 
-export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,pageParams,recordsSource=null,reloadRecords=null,archiveReports=[],setArchiveReports=()=>{},teacherName='',shareTokens=[],setShareTokens=()=>{},musicTracks=[],consents=null,recordAudit=()=>{},auditActor=null}){
+export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,pageParams,recordsSource=null,reloadRecords=null,archiveReports=[],setArchiveReports=()=>{},teacherName='',shareTokens=[],setShareTokens=()=>{},musicTracks=[],videoRecords=[],setVideoRecords=()=>{},consents=null,recordAudit=()=>{},auditActor=null}){
   // 报告生成 / 更新要留痕（[第四步 US-211] 第 4 条：操作人 / 时间 / 对象 / 版本）——
   // 留痕入口与报告写入在同一次动作里（`generateReport`），界面只多显示一行回执。
   const [reportAuditEntry,setReportAuditEntry]=useState(null);
@@ -1531,7 +1724,7 @@ export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,p
             {timelineWindow.hasMore?<button type="button" className="primary" data-archive-page-more="true" onClick={()=>setTimelinePage(page=>Math.min(timelineWindow.pageCount,page+1))}>{timelineWindow.moreLabel}</button>:null}
           </nav>:null}
         </section>
-        <VideoJobsPanel isClass={view.isClass} objectName={view.name} period={videoPeriod} onPeriod={setVideoPeriod} lessonCount={view.summary.lessons} artworkCount={view.summary.artworks} photoCount={view.summary.photos} teacherName={teacherName} setToast={setToast} entries={videoEntries} scopeEntries={videoScopeEntries} classEntries={videoClassEntries} roster={classRoster} tokens={shareTokens} records={records} consents={consents} musicTracks={musicTracks} setShareTokens={setShareTokens} recordAudit={recordAudit} auditActor={auditActor} navigate={navigate}/>
+        <VideoJobsPanel isClass={view.isClass} objectName={view.name} period={videoPeriod} onPeriod={setVideoPeriod} lessonCount={view.summary.lessons} artworkCount={view.summary.artworks} photoCount={view.summary.photos} teacherName={teacherName} setToast={setToast} entries={videoEntries} scopeEntries={videoScopeEntries} classEntries={videoClassEntries} roster={classRoster} tokens={shareTokens} records={records} consents={consents} musicTracks={musicTracks} videoRecords={videoRecords} setShareTokens={setShareTokens} setVideoRecords={setVideoRecords} recordAudit={recordAudit} auditActor={auditActor} navigate={navigate}/>
         <section className="archive-perf-panel" data-archive-perf="true" data-archive-perf-measured={String(perfChecks.measured)} data-archive-perf-total={String(perfChecks.total)} data-archive-perf-all-ok={perfChecks.allOk?'true':'false'} data-archive-perf-summary-text={perfChecks.summary}>
           <div className="archive-perf-head"><Gauge size={15}/><b>档案性能</b><em data-archive-perf-summary="true">{perfChecks.summary}</em><small>{ARCHIVE_PERF_HINT}</small></div>
           <ul className="archive-perf-list">{perfChecks.rows.map(row=><li key={row.id} data-archive-perf-row={row.id} data-archive-perf-state={row.ok===null?'pending':row.ok?'ok':'over'} data-archive-perf-value={row.value} data-archive-perf-budget={row.budget} data-archive-perf-text={row.text}>

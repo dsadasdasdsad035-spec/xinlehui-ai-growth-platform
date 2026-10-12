@@ -239,7 +239,7 @@ import {
 import { loadRemoteShareTokens, revokeRemoteShareToken, saveRemoteShareToken } from './services/shareTokensApi';
 // 成片分享（[第四步 US-219]）：`/p/<token>` 上如果是成片令牌，分享页那一块要按令牌上的 `jobKey`
 // 找这条任务 —— 家长页在登录之外，只读本机镜像（`listVideoJobs` 进来时已经从镜像读好）。
-import { listVideoJobs } from './services/videoJobQueue';
+import { discardVideoJob, listVideoJobs } from './services/videoJobQueue';
 // 转发状态跟踪（[第四步 US-209] / F-ARCHIVE-SHARE-01）：未转发 / 已转发 / 已撤回三态的推导、
 // 转发四件事（时间 / 渠道 / 分享版本 / 打开次数）、家长打开的写入（firstOpenedAt 只写一次）、
 // 「重新发送」的执行计划全在 data 层（零依赖纯函数，可 Node 直跑断言）；界面只渲染它的产物。
@@ -332,6 +332,11 @@ import MusicLibraryPage from './admin/MusicLibraryPage';
 // 曲库的数据模型与本地兜底（授权状态 / 去重 / 引用范围都是零依赖纯函数）；云端读写走 musicLibraryApi。
 import { loadMusicTracks, mergeMusicTracks, persistMusicTracks } from './data/musicTracks';
 import { loadRemoteMusicTracks } from './services/musicLibraryApi';
+// 成片记录（US-222）：videoKey / 版本 / 生成时间 / specSnapshot 的模型、历史版本、更新提示与
+// 级联删除（归档记录被清理时成片一起摘掉）都在 data/videoRecords.js（零依赖纯函数）；
+// 云端读写走 services/videoRecordsApi.js。
+import { loadVideoRecords, mergeVideoRecords, persistVideoRecords, videoRecordCascadeNotice, videoRecordsCascadeRemoved } from './data/videoRecords';
+import { deleteRemoteVideoRecord, loadRemoteVideoRecords } from './services/videoRecordsApi';
 
 // 五个维度各自的留空提示语 —— 只说明「这一维该看什么」，不预填任何成句的点评。
 const REVIEW_DIMENSION_HINTS = {
@@ -477,6 +482,10 @@ function App(){
   // 本机镜像先渲染，云端 `music_tracks` 表回来就并进来（表还没建 → 写入被拒，改动只在本机落地；
   // 合并方向**本机镜像优先**：云端只补本机没有的 trackKey，否则刚确认的授权会被云端旧状态顶掉）。
   const [musicTracks,setMusicTracks]=useState(loadMusicTracks);
+  // 成片记录（[第四步 US-222]）：本机镜像先渲染，云端 `video_records` 表回来就并进来
+  // （表还没建 → 写入被拒，成片记录只在本机镜像里 —— 与阶段报告同一套兜底口径；
+  //  合并方向本机镜像优先：刚重新生成、还没推上云的那一版不能被云端旧版本顶回去）。
+  const [videoRecords,setVideoRecords]=useState(loadVideoRecords);
   // 阶段报告（[第四步 US-207a]）：本机镜像先渲染，云端 `archive_reports` 表回来就并进来
   // （表还没建 → 写入被拒，报告只在本机镜像里 —— 与审计日志 / 装裱模板同一套兜底口径；
   //  合并方向本机优先：刚生成、还没推上云的那一版不能被云端旧记录顶掉）。
@@ -523,6 +532,10 @@ function App(){
   // 推云端是写入动作那一条路径自己做的事（services/musicLibraryApi.js，先落镜像再推），
   // 这里不整表回写 —— 否则每次云端水合回来都会把本机刚改的授权状态覆盖回去。
   useEffect(()=>{persistMusicTracks(musicTracks)},[musicTracks]);
+  // 成片记录只在**本机镜像**里落盘（云端 video_records 表还没建，写入会被拒）；
+  // 推云端是生成 / 重新生成那一条路径自己做的事（GrowthArchiveData 的 storeVideoRecord），
+  // 这里不整表回写 —— 否则每次云端水合回来都会把本机刚生成的那一版覆盖回去。
+  useEffect(()=>{persistVideoRecords(videoRecords)},[videoRecords]);
   useEffect(()=>{persistGalleryVenues(galleryVenues)},[galleryVenues]);
   useEffect(()=>{persistGalleryExhibitions(galleryExhibitions)},[galleryExhibitions]);
   useEffect(()=>{persistLessons(lessons)},[lessons]);
@@ -629,6 +642,9 @@ function App(){
     // 音乐库（US-220a）：云端 music_tracks 表还没建 → 读取会抛错并被吞掉，本机镜像照常可用。
     // 合并方向是**本机镜像优先**（写入目前只在本机落地，让云端顶掉会把刚确认的授权状态弄丢）。
     loadRemoteMusicTracks().then(remote=>{if(active&&remote.length)setMusicTracks(current=>mergeMusicTracks(current,remote))}).catch(()=>{});
+    // 成片记录（US-222）：云端 video_records 表还没建 → 读取会抛错并被吞掉，本机镜像照常可用。
+    // 合并方向同样是**本机镜像优先**（写入只在本机落地，让云端顶掉会把刚重新生成的版本号拉回去）。
+    loadRemoteVideoRecords().then(remote=>{if(active&&remote.length)setVideoRecords(current=>mergeVideoRecords(current,remote))}).catch(()=>{});
     // 画廊这两个必须过 hydrate：内置展厅的实景图不进库，云端那条回来是没图的，
     // 直接 setState 顶掉会让内置展厅变成"没有实景图"。
     loadRemoteGalleryVenues().then(remote=>{if(active&&remote.length)setGalleryVenues(hydrateGalleryVenues(remote))}).catch(()=>{});
@@ -745,7 +761,7 @@ function App(){
     <main className="main">
       <Topbar role={role} onMenu={()=>setMobileNav(true)} onSwitch={(r)=>login(r,'demo')} onGuide={()=>navigate('guide')} onLogout={()=>setAuth(false)}/>
       <div className="content">
-        <PageRouter {...{page,role,navigate,setToast,setModal,apps,setApps,tasks,setTasks,demoState,setDemoState,records:archivedRecords,setRecords,recordsSource,reloadRecords:reloadFeedbackRecords,parentStudent,parentStudents,parentPhone,parentSession,setParentStudent,teacherProfiles,setTeacherProfiles,framingPresets,setFramingPresets,skillLibrary,setSkillLibrary,agentFiles,setAgentFiles,adminName:roleMeta.admin.name,galleryVenues,setGalleryVenues,galleryExhibitions,setGalleryExhibitions,lessons,setLessons,courses,setCourses,auditLog,recordAudit,reviewModels,reviewModelDefaults,setReviewModelDefaults,keywordTemplates,setKeywordTemplates,keywordTemplateRemote,musicTracks,setMusicTracks,traceLog,setTraceLog,tracePolicy,setTracePolicy,traceSource,refreshReviewTraces,cleanupReviewTraces,auditTraceEntry,auditActor:archiveAuditActor,adminTraceViewer,teacherTraceViewer,archiveReports,setArchiveReports,shareTokens,setShareTokens,teacherName:roleMeta.teacher.name,pageParams,consents,setConsents,archiveRetention,setArchiveRetention}}/>
+        <PageRouter {...{page,role,navigate,setToast,setModal,apps,setApps,tasks,setTasks,demoState,setDemoState,records:archivedRecords,setRecords,recordsSource,reloadRecords:reloadFeedbackRecords,parentStudent,parentStudents,parentPhone,parentSession,setParentStudent,teacherProfiles,setTeacherProfiles,framingPresets,setFramingPresets,skillLibrary,setSkillLibrary,agentFiles,setAgentFiles,adminName:roleMeta.admin.name,galleryVenues,setGalleryVenues,galleryExhibitions,setGalleryExhibitions,lessons,setLessons,courses,setCourses,auditLog,recordAudit,reviewModels,reviewModelDefaults,setReviewModelDefaults,keywordTemplates,setKeywordTemplates,keywordTemplateRemote,musicTracks,setMusicTracks,videoRecords,setVideoRecords,traceLog,setTraceLog,tracePolicy,setTracePolicy,traceSource,refreshReviewTraces,cleanupReviewTraces,auditTraceEntry,auditActor:archiveAuditActor,adminTraceViewer,teacherTraceViewer,archiveReports,setArchiveReports,shareTokens,setShareTokens,teacherName:roleMeta.teacher.name,pageParams,consents,setConsents,archiveRetention,setArchiveRetention}}/>
       </div>
     </main>
     {toast?<div className="toast panda-toast"><img src={pandaWave} alt="熊猫鼓励"/><span><CircleCheck size={18}/>{toast}</span>{toastAction?<button type="button" className="toast-action" data-toast-action={toastAction.label} onClick={()=>{const run=toastAction.onClick;setToastRaw('');setToastAction(null);if(run)run()}}>{toastAction.label}</button>:null}</div>:null}
@@ -7920,11 +7936,16 @@ function ArchiveComplianceNote(){
  * 到期清理**先预览影响范围**（逐条列出会被清理的档案：哪位学员、哪一天、第几版、几张素材、几条链接），
  * 确认后才执行；执行会连带把那些档案从本机镜像与云端一起摘掉，并留一条审计。
  * 预览与执行读同一份纯函数（`data/archiveRetention.js`），所以不会出现「预览说 3 条、执行删 5 条」。
+ *
+ * **级联删除成片**（[第四步 US-222] / FR-304）：归档记录被清理时，覆盖到它们的成片一并摘掉
+ * （成片记录 + 演示队列里的渲染任务记录）；判据是 `data/videoRecords.js` 的
+ * `videoRecordsCascadeRemoved` —— 任何新的「删归档记录」入口都必须调用它，否则会留下孤儿成片。
  */
-function ArchiveRetentionSection({policy,setPolicy,records=[],setRecords=()=>{},tokens=[],recordAudit=()=>{},auditActor=null,setToast=()=>{}}){
+function ArchiveRetentionSection({policy,setPolicy,records=[],setRecords=()=>{},tokens=[],videoRecords=[],setVideoRecords=()=>{},recordAudit=()=>{},auditActor=null,setToast=()=>{}}){
   const [preview,setPreview]=useState(null);
+  const [cascade,setCascade]=useState('');
   const current=normalizeArchiveRetentionPolicy(policy);
-  const change=patch=>{setPolicy(prev=>archiveRetentionPolicyPatch(prev,patch,{updatedBy:roleMeta.admin.name,at:new Date().toISOString()}));setPreview(null)};
+  const change=patch=>{setPolicy(prev=>archiveRetentionPolicyPatch(prev,patch,{updatedBy:roleMeta.admin.name,at:new Date().toISOString()}));setPreview(null);setCascade('')};
   const runPreview=()=>{
     const next=archiveCleanupPreview(records,current,new Date().toISOString(),{tokens});
     setPreview(next);
@@ -7935,6 +7956,14 @@ function ArchiveRetentionSection({policy,setPolicy,records=[],setRecords=()=>{},
     const now=new Date().toISOString();
     const result=applyArchiveRetentionCleanup(records,current,now,{tokens});
     setRecords(()=>result.kept);
+    // 级联删除成片：清理掉的档案所覆盖的成片一起摘掉（成片记录 + 渲染任务记录），
+    // 其余成片原样保留 —— 回执里如实说明删了几条。
+    const cascaded=videoRecordsCascadeRemoved(videoRecords,result.removed);
+    if(cascaded.removed.length){
+      setVideoRecords(()=>cascaded.kept);
+      cascaded.removed.forEach(record=>{discardVideoJob(record.videoKey);void deleteRemoteVideoRecord(record.videoKey).catch(()=>{});});
+    }
+    setCascade(videoRecordCascadeNotice(cascaded.removed.length));
     // 执行之后面板上的预览**换成清理后的那一份**（同一支纯函数重算）：到期数翻到 0、
     // 「执行清理」按钮随之禁用，不会让人以为还能再点一次；刚才清掉了什么由回执 / 审计说明。
     setPreview(archiveCleanupPreview(result.kept,current,now,{tokens}));
@@ -7961,13 +7990,14 @@ function ArchiveRetentionSection({policy,setPolicy,records=[],setRecords=()=>{},
     <small className="trace-policy-note" data-archive-retention-policy-note="true">{ARCHIVE_RETENTION_POLICY_NOTE}</small>
     {preview?<div className="archive-cleanup-preview" data-archive-cleanup-preview="true" data-archive-cleanup-expired={String(preview.expiredCount)} data-archive-cleanup-keep={String(preview.keepCount)} data-archive-cleanup-total={String(preview.total)} data-archive-cleanup-cutoff={preview.cutoff||''} data-archive-cleanup-media={String(preview.mediaTotal)} data-archive-cleanup-shares={String(preview.shareTotal)}>
       <p data-archive-cleanup-text="true">{preview.text}</p>
+      {cascade?<p data-archive-cleanup-cascade="true">{cascade}</p>:null}
       {preview.expired.length?<ul data-archive-cleanup-rows="true">{preview.expired.slice(0,10).map(row=><li key={row.id} data-archive-cleanup-row={row.id} data-archive-cleanup-row-student={row.student} data-archive-cleanup-row-version={String(row.version)} data-archive-cleanup-row-media={String(row.mediaCount)} data-archive-cleanup-row-shares={String(row.shareCount)}>{row.text}</li>)}</ul>:null}
       {preview.expired.length>10?<small>另有 {preview.expired.length-10} 条同样到期，执行清理时一并处理。</small>:null}
     </div>:null}
   </div>;
 }
 
-function SettingsPage({setToast,tracePolicy=null,setTracePolicy=()=>{},traceLog=[],cleanupReviewTraces=()=>{},archiveRetention=null,setArchiveRetention=()=>{},records=[],setRecords=()=>{},shareTokens=[],recordAudit=()=>{},auditActor=null}){return <><PageHeader title="系统配置" desc="管理上传阈值、任务超时、数据保存和通知策略。" prd="PRD-8.3 / F-CONFIG-01"/><div className="settings-stack"><div className="panel config-section"><h2>上传与任务阈值</h2><div className="form-grid"><label>每班学员上限<input defaultValue="60"/></label><label>单任务作品图上限<input defaultValue="30"/></label><label>单任务照片上限<input defaultValue="100"/></label><label>单个视频上限（分钟）<input defaultValue="10"/></label></div></div><div className="panel config-section"><h2>数据保存与隐私</h2><div className="form-grid"><label>原始素材默认保存<select><option>365 天</option><option>180 天</option><option>长期</option></select></label><label>删除冷静期<select><option>7 天</option><option>立即删除</option><option>30 天</option></select></label></div><small className="config-note">归档记录的保留期在下面单独配置（默认与这里的 365 天一致）；到期清理先预览影响范围再执行。</small></div><ArchiveRetentionSection policy={archiveRetention} setPolicy={setArchiveRetention} records={records} setRecords={setRecords} tokens={shareTokens} recordAudit={recordAudit} auditActor={auditActor} setToast={setToast}/><TraceRetentionSection policy={tracePolicy} setPolicy={setTracePolicy} traces={traceLog} onCleanup={cleanupReviewTraces} setToast={setToast}/><div><Button onClick={()=>setToast('系统配置已保存')}>保存配置</Button></div></div></>}
+function SettingsPage({setToast,tracePolicy=null,setTracePolicy=()=>{},traceLog=[],cleanupReviewTraces=()=>{},archiveRetention=null,setArchiveRetention=()=>{},records=[],setRecords=()=>{},shareTokens=[],videoRecords=[],setVideoRecords=()=>{},recordAudit=()=>{},auditActor=null}){return <><PageHeader title="系统配置" desc="管理上传阈值、任务超时、数据保存和通知策略。" prd="PRD-8.3 / F-CONFIG-01"/><div className="settings-stack"><div className="panel config-section"><h2>上传与任务阈值</h2><div className="form-grid"><label>每班学员上限<input defaultValue="60"/></label><label>单任务作品图上限<input defaultValue="30"/></label><label>单任务照片上限<input defaultValue="100"/></label><label>单个视频上限（分钟）<input defaultValue="10"/></label></div></div><div className="panel config-section"><h2>数据保存与隐私</h2><div className="form-grid"><label>原始素材默认保存<select><option>365 天</option><option>180 天</option><option>长期</option></select></label><label>删除冷静期<select><option>7 天</option><option>立即删除</option><option>30 天</option></select></label></div><small className="config-note">归档记录的保留期在下面单独配置（默认与这里的 365 天一致）；到期清理先预览影响范围再执行。</small></div><ArchiveRetentionSection policy={archiveRetention} setPolicy={setArchiveRetention} records={records} setRecords={setRecords} tokens={shareTokens} videoRecords={videoRecords} setVideoRecords={setVideoRecords} recordAudit={recordAudit} auditActor={auditActor} setToast={setToast}/><TraceRetentionSection policy={tracePolicy} setPolicy={setTracePolicy} traces={traceLog} onCleanup={cleanupReviewTraces} setToast={setToast}/><div><Button onClick={()=>setToast('系统配置已保存')}>保存配置</Button></div></div></>}
 
 function GuidePage({navigate}){const sections=[
  ['公共认证',['登录','注册','表单校验','角色快速体验'],PRD.auth,'从登录页开始'],

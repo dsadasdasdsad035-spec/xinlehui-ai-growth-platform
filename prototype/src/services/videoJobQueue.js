@@ -320,9 +320,26 @@ export function cancelVideoJob(jobKey, { now = Date.now() } = {}) {
   return { ok: true, job: getVideoJob(jobKey) || next, issue: '', notice: '已取消这条演示任务：队列位次已释放，随时可以重试。' };
 }
 
+/**
+ * 从队列里**摘掉一条任务的记录**（[第四步 US-222]）：删除成片时把它的渲染任务与中间产物记录一起清掉。
+ *
+ * 这不是状态机上的边（`VIDEO_JOB_TRANSITIONS` 一条没动）：`done / failed / canceled` 说的是
+ * 「这一轮结束」，而这里做的是「把这条任务整条从账上摘掉」—— 渲染中的任务也允许摘（等于先取消再清掉），
+ * 但摘掉之后**不产出任何成片**。成片记录（`video_records`）与归档记录都不在本函数职责内。
+ */
+export function discardVideoJob(jobKey, { persist = true } = {}) {
+  const key = String(jobKey ?? '').trim();
+  if (!key) return { ok: false, removed: 0, issue: '缺少 jobKey，未从演示队列里摘掉任何任务。', notice: '' };
+  const before = listVideoJobs();
+  const kept = before.filter(job => job.jobKey !== key);
+  if (kept.length === before.length) return { ok: true, removed: 0, issue: '', notice: '这条任务本来就不在演示队列里。' };
+  commit(kept, { persist });
+  if (!hasActiveJob()) stopVideoJobQueue();
+  return { ok: true, removed: 1, issue: '', notice: '已从演示队列里摘掉这条任务（含本轮渲染记录）。' };
+}
+
 /** 重试（`failed` / `canceled` 才允许；沿用同一个 jobKey，attempts 不清零）。 */
-export function retryVideoJob(jobKey, { now = Date.now() } = {}) {
-  const job = getVideoJob(jobKey);
+export function retryVideoJob(jobKey, { now = Date.now() } = {}) {  const job = getVideoJob(jobKey);
   if (!job) return { ok: false, job: null, issue: '没有这条任务。', notice: '' };
   const issue = videoJobActionIssue(job, 'retry');
   if (issue) return { ok: false, job, issue, notice: '' };
