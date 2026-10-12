@@ -21,6 +21,9 @@
 import { archiveRecordMediaView } from './archiveMedia';
 import { archiveVersionLabel, formatArchiveTime } from './archiveSummary';
 import { REVIEW_DIMENSION_NAMES } from './reviewDetailPanel';
+// 转发状态（[第四步 US-209]）：档案列表每一行都要显示「未转发 / 已转发 / 已撤回」与打开次数，
+// 判据是 `data/shareForward.js` 那一份（与第四步的状态块读同一个函数 —— 列表不自己拼状态）。
+import { shareForwardView } from './shareForward';
 import {
   ARCHIVE_PERIOD_ALL,
   ARCHIVE_TARGET_CLASS,
@@ -95,7 +98,7 @@ export function isAbsenceRecord(record) {
  * 五维摘要只列**真的写了正文的维度**（空维度不占位、更不编一段示例文案，FR-205 的口径）；
  * 缺课记录没有五维，只有那句温柔的话。
  */
-export function archiveLessonEntry(record, { surface = 'teacher' } = {}) {
+export function archiveLessonEntry(record, { surface = 'teacher', tokens = [], now = null } = {}) {
   const source = record && typeof record === 'object' ? record : {};
   const reviews = source.reviews && typeof source.reviews === 'object' && !Array.isArray(source.reviews) ? source.reviews : {};
   const isAbsence = isAbsenceRecord(source);
@@ -104,6 +107,8 @@ export function archiveLessonEntry(record, { surface = 'teacher' } = {}) {
     .map(name => ({ name, text: str(reviews[name]) }))
     .filter(row => row.text);
   const date = str(source.date);
+  // 这一条档案的转发状态（US-209）：按档案记录 id 找它最新的一条令牌，三态与打开次数都从那里推导。
+  const forward = shareForwardView({ tokens, recordId: str(source.id), record: source, now });
   return {
     id: str(source.id),
     recordKey: str(source.recordKey),
@@ -125,6 +130,8 @@ export function archiveLessonEntry(record, { surface = 'teacher' } = {}) {
     photoCount: media.photoCount,
     dimensions,
     dimensionCount: dimensions.length,
+    // 转发状态（US-209）：状态 / 渠道 / 转发时间 / 打开次数都在里面，界面只渲染 `line` 与这几个读数。
+    forward,
     // 缺课记录的那句话：记录自带 `summary` 就用它，没有才用统一占位（不编造老师的原话）。
     absenceText: isAbsence ? (str(reviews.summary) || ARCHIVE_ABSENCE_FALLBACK_TEXT) : ''
   };
@@ -190,13 +197,13 @@ export function archiveResidentOverview(summary) {
  * 返回里把「被筛掉的条数」分开报（`hiddenByPeriod` / `hiddenByAbsence`）—— 空态据此说清原因，
  * 而不是让老师以为档案丢了。
  */
-export function archiveResidentView({ records = [], target, student = '', className = '', period = ARCHIVE_PERIOD_ALL, absenceOnly = false, today } = {}) {
+export function archiveResidentView({ records = [], target, student = '', className = '', period = ARCHIVE_PERIOD_ALL, absenceOnly = false, today, tokens = [] } = {}) {
   const targetView = archiveTargetView(records, { target, student, className });
   const periodName = resolveArchivePeriod(period);
   const inPeriod = filterArchiveRecordsByPeriod(targetView.lessons, periodName, today);
   const onlyAbsence = absenceOnly === true || absenceOnly === ARCHIVE_ABSENCE_ONLY;
   const lessons = onlyAbsence ? inPeriod.filter(isAbsenceRecord) : inPeriod;
-  const entries = lessons.map(record => archiveLessonEntry(record));
+  const entries = lessons.map(record => archiveLessonEntry(record, { tokens }));
   const summary = archiveResidentSummary(entries);
   return {
     targetView,

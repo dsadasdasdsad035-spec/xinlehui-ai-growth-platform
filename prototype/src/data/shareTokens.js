@@ -235,8 +235,24 @@ export const SHARE_TOKEN_FIELDS = [
   'expiresAt',
   'createdBy',
   'revokedAt',
-  'revokedBy'
+  'revokedBy',
+  // 转发状态跟踪（[第四步 US-209]）：发送渠道 / 时刻 / 第几次 / 发送时的版本，
+  // 以及家长打开的次数与首次 / 最近打开时刻。**状态本身不在这里**（推导见 data/shareForward.js）。
+  'channel',
+  'sentAt',
+  'sentCount',
+  'sentVersion',
+  'sentBy',
+  'firstOpenedAt',
+  'lastOpenedAt',
+  'openCount'
 ];
+
+/** 计数类字段的收敛（脏数据不抛错：非数字 / 负数一律读成 0）。 */
+function counter(value) {
+  const num = Math.trunc(Number(value));
+  return Number.isFinite(num) && num > 0 ? num : 0;
+}
 
 /** 归一化一条令牌记录；**没有令牌本体就返回 null**（它没有任何意义）。 */
 export function normalizeShareTokenRecord(raw) {
@@ -260,7 +276,17 @@ export function normalizeShareTokenRecord(raw) {
     expiresAt: text(source.expiresAt),
     createdBy: text(source.createdBy),
     revokedAt: text(source.revokedAt),
-    revokedBy: text(source.revokedBy)
+    revokedBy: text(source.revokedBy),
+    // 转发状态跟踪（US-209）：合法渠道由 `shareForward.normalizeShareForwardChannel` 在写入侧收敛，
+    // 这里只做「字符串 / 计数」的粗归一化（读坏的值不冒充合法渠道，后续按「未记录渠道」显示）。
+    channel: text(source.channel),
+    sentAt: text(source.sentAt),
+    sentCount: counter(source.sentCount),
+    sentVersion: counter(source.sentVersion),
+    sentBy: text(source.sentBy),
+    firstOpenedAt: text(source.firstOpenedAt),
+    lastOpenedAt: text(source.lastOpenedAt),
+    openCount: counter(source.openCount)
   };
 }
 
@@ -376,9 +402,47 @@ export function dedupeShareTokens(tokens) {
 }
 
 /**
- * 合并本机镜像与云端：**撤回必须赢**。
- * 本机记录在前（云端只补本机没有的令牌）；同一个令牌两边都有时，只要云端那一条撤回过、本机还没撤，
- * 就采用云端那一条 —— 在另一台设备上撤掉的链接，这台设备也必须立即失效（隐私方向优先）。
+ * 合并两份同一个令牌的**转发跟踪字段**（US-209）：取「不漏信息」的那一侧 ——
+ * 发送时刻取较晚的（渠道 / 版本跟着那一次走）、发送次数与打开次数取大、首次打开取更早、最近打开取更晚。
+ * 身份字段与撤回字段由调用方决定（撤回必须赢）。
+ */
+function mergeShareTokenTracking(base, other) {
+  const time = value => {
+    const parsed = Date.parse(text(value));
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+  const baseSent = time(base.sentAt);
+  const otherSent = time(other.sentAt);
+  const sentSource = baseSent === null ? other : (otherSent === null ? base : (otherSent > baseSent ? other : base));
+  const earlier = (left, right) => {
+    if (!left) return right;
+    if (!right) return left;
+    return String(left) <= String(right) ? left : right;
+  };
+  const later = (left, right) => {
+    if (!left) return right;
+    if (!right) return left;
+    return String(left) >= String(right) ? left : right;
+  };
+  return {
+    ...base,
+    channel: text(sentSource.channel) || text(base.channel) || text(other.channel),
+    sentAt: text(sentSource.sentAt),
+    sentCount: Math.max(counter(base.sentCount), counter(other.sentCount)),
+    sentVersion: counter(sentSource.sentVersion) || counter(base.sentVersion) || counter(other.sentVersion),
+    sentBy: text(sentSource.sentBy) || text(base.sentBy) || text(other.sentBy),
+    firstOpenedAt: earlier(text(base.firstOpenedAt), text(other.firstOpenedAt)),
+    lastOpenedAt: later(text(base.lastOpenedAt), text(other.lastOpenedAt)),
+    openCount: Math.max(counter(base.openCount), counter(other.openCount))
+  };
+}
+
+/**
+ * 合并本机镜像与云端：**撤回必须赢**（撤过的链接在哪都失效），跟踪字段取「不漏信息」的一侧。
+ * 本机记录在前（云端只补本机没有的令牌）；同一个令牌两边都有时：
+ *  ① 只要有一侧撤回过，就采用**撤回过**的那一侧（撤回优先于有效期与发送状态）；
+ *  ② 转发次数 / 打开次数 / 首次打开时间按 `mergeShareTokenTracking` 取并集 ——
+ *     在另一台设备上打开的记录，这台设备刷新后也要看得到。
  */
 export function mergeShareTokens(localTokens, remoteTokens) {
   const merged = dedupeShareTokens(localTokens);
@@ -390,7 +454,13 @@ export function mergeShareTokens(localTokens, remoteTokens) {
       merged.push(remote);
       return;
     }
-    if (!merged[index].revokedAt && remote.revokedAt) merged[index] = remote;
+    const local = merged[index];
+    if (!local.revokedAt && remote.revokedAt) {
+      // 云端撤回过：撤回字段采用云端那一条，跟踪字段仍然合并（本机的打开记录不丢）。
+      merged[index] = mergeShareTokenTracking({ ...local, ...remote }, local);
+      return;
+    }
+    merged[index] = mergeShareTokenTracking(local, remote);
   });
   return merged.slice(0, SHARE_TOKEN_LIMIT);
 }

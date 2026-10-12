@@ -290,6 +290,43 @@ React + Vite 单页原型（`src/main.jsx` 是主入口，另按模块拆出 `sr
   所以点下载只给一句「长按图片保存」的如实回执，**不复用第二步的 `saveImageSheet`**
   （那张 sheet 只在 `step===2` 渲染，且有 `step!==2` 就关掉的 effect —— 在第四步设它不会显示）。
 
+## 转发状态跟踪（[第四步 US-209] / F-ARCHIVE-SHARE-01）
+
+> 「发过没发过、发的是哪一版、家长看没看」的唯一真源是 `src/data/shareForward.js`（零依赖纯函数 + 常量，
+> 可 `node` 直跑断言；字段仍落在 `data/shareTokens.js` 的令牌记录上）。第四步的**状态条 / 状态块**与
+> 档案列表那一行读的是**同一个** `shareForwardView()` —— 界面不自己拼「未转发 / 已转发 / 已撤回」。
+
+- **三态推导，不落库**：`shareForwardStatus(record)` → `idle`（还没有 `sentAt`）/ `sent` / `revoked`，
+  **撤回优先**。记录里没有 `forwardStatus` 字段（与 US-208a 的 `status` 同一条纪律：存了就会漂移）。
+- **转发四件事**（验收点名的四项）：`sentAt`（转发时间）/ `channel`（渠道，枚举只有 `wechat` 微信 · `link` 复制链接）/
+  `sentVersion`（**发送那一刻**的档案版本 → 显示「第 N 版」）/ `openCount`。另有 `sentCount`（第几次，
+  重新发送会累计，行说明里写「共 N 次」）。**「一次转发」= 复制成功那一下**（复制失败不记发送 ——
+  不谎报已转发）；「生成链接」本身不算转发。
+- **家长打开只由一条路径写**：`applyShareOpen(tokens, token, {at})` → `openCount+1`、`firstOpenedAt` **只写一次**、
+  `lastOpenedAt` 每次更新。地址是 `/p/<token>`（`readShareLinkToken(pathname)` 解析），App 在
+  **所有 hook 之后**按它提前 return `<ParentSharePage>`（家长页不登录、不挂侧边栏）。页面**内容**
+  （作品 / 照片 / 点评 / 390px）是 US-210 的范围，本轮只有状态与「这次打开已经记录下来」。
+- **「重新发送」的判断在 data 层**：`shareForwardResendPlan({forward, gate, record})` 给出
+  `allowed / reason / regenerate / channel / action`；链接不可用（没有 / 已过期 / 已撤回）时 `regenerate: true`
+  → 先生成新链接再复制（沿用上次渠道，没有上次就用默认微信）。撤回仍是 US-208a 那条二次确认路径，一字没动。
+- **多标签页写同一份账：落盘前先跟镜像并一次**。`persistShareTokens(mergeShareTokens(shareTokens, loadShareTokens()))`、
+  `recordForwardSend` 与重新发送的底账都是这条纪律 —— 否则另一张标签页（家长打开分享页）刚记下的
+  `openCount` 会被老师这一页的旧快照写回去（本轮真踩：打开 2 次被写回 1 次）。`mergeShareTokens` 的跟踪字段
+  是**只增不减**的：次数取并集、`firstOpenedAt` 取更早、`lastOpenedAt` 取更晚、发送时刻取更晚（渠道跟着那一次走），
+  撤回仍然是「谁撤过用谁」。
+- App 另外监听 `storage` 事件把另一张标签页的写入并回来（同浏览器多标签实时同步）；跨设备仍然靠云端
+  `share_tokens` 表（表未建时只落本机镜像），**刷新页面照样读得到**（验收第 5 条）。
+
+#### 真踩的坑（US-209）
+
+- **`Target.createTarget(url)` 直接开家长页时，多标签写入是竞态的**：验证脚本里「家长打开 → 老师端读数」
+  的断言要靠 `waitForCondition` 等收敛，别用固定 `sleep` 硬等；产品侧的解是上面的「落盘前先并镜像」。
+- **档案列表那一行的断言要按课次日期选行**：`[data-archive-lesson-forward]` 每节课都有一个（缺课卡也有），
+  `document.querySelector` 取到的是**第一条**（种子记录）而不是刚分享的那条 —— 选择器写成
+  `[data-archive-lesson-forward][data-archive-lesson-date="YYYY-MM-DD"]`。
+- **老师端侧边栏没有「成长档案」**（US-206 的既有事实）：档案列表只能从第四步点「进入成长档案」进去；
+  再回第四步只能重新走一遍流程（同一个学员 + 同一个课次日期命中同一条记录，recordKey 不变、版本自增）。
+
 ## 成长档案页的对象筛选（[第四步 US-205]）
 
 > `GrowthArchiveData.jsx` 只负责渲染；可选项 / 默认选中 / 过滤 / 空态四件事全在

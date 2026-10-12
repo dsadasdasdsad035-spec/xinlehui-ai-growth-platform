@@ -247,3 +247,39 @@
   .archive-report-review-grid{grid-template-columns:1fr}
   .archive-report-history li{flex-direction:column;align-items:flex-start;gap:6px}
 }
+
+/* [第四步 US-209] 转发状态跟踪：第四步的状态条与状态块 + 档案列表那一行 + 家长分享页的打开回执。
+   读数全部来自 `data/shareForward.js` 的产物（样式不参与判断，三种状态同一套结构）。 */
+.archive-forward-chip{display:inline-flex;align-items:center;gap:7px;margin:2px 0 8px;padding:5px 10px;border:1px dashed #e4d4a8;border-radius:999px;background:#fffdf6;font-size:10px;color:#6d6047}
+.archive-forward-chip b{font-size:10px;font-weight:800;color:#3d3527}
+.archive-forward-chip.is-sent{border-style:solid;border-color:#cfe6d6;background:#f4fbf6;color:#2f7a45}
+.archive-forward-chip.is-revoked{border-style:solid;border-color:#f0d3ce;background:#fdf5f4;color:#a53b2f}
+.archive-forward-status{margin-top:12px;padding:12px;border:1px solid #efe5cf;border-radius:12px;background:#fffdf6;text-align:left}
+.archive-forward-status-head{display:flex;align-items:center;gap:7px}
+.archive-forward-status-head b{font-size:12px;color:#4a3f2c}
+.archive-forward-status-head em{margin-left:auto;font-size:10px;font-style:normal;font-weight:800;padding:3px 8px;border-radius:999px;background:#f2ecd8;color:#7a6a45}
+.archive-forward-status-head em.is-sent{background:#e6f5ea;color:#2f7a45}
+.archive-forward-status-head em.is-revoked{background:#fbe6e4;color:#a53b2f}
+.archive-forward-status-rows{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:10px 0 0}
+.archive-forward-status-rows>div{min-width:0;padding:8px 10px;border:1px solid #efe5cf;border-radius:10px;background:#fff}
+.archive-forward-status-rows dt,.archive-forward-status-rows span{display:block;font-size:9px;font-weight:800;letter-spacing:.04em;color:#9a7200}
+.archive-forward-status-rows dd,.archive-forward-status-rows b{display:block;margin:3px 0 0;font-size:12px;color:#3d3527;word-break:break-word}
+.archive-forward-status-rows small{display:block;margin-top:3px;font-size:9px;color:#8a7c64}
+.archive-forward-status-note{margin:9px 0 0;font-size:10px;line-height:1.65;color:#8a7c64}
+.archive-lesson-forward{display:block;margin-top:4px;font-size:9px;color:#7a6a45}
+.archive-lesson-forward b{font-weight:800;color:#3d3527}
+.archive-lesson-forward.is-sent b{color:#2f7a45}
+.archive-lesson-forward.is-revoked b{color:#a53b2f}
+.parent-share-open{min-height:100vh;padding:32px 16px;background:linear-gradient(160deg,#fffdf4,#fff6d8);display:flex;flex-direction:column;gap:18px;align-items:center}
+.parent-share-brand{width:100%;max-width:520px;text-align:center}
+.parent-share-brand h1{margin:10px 0 6px;font-size:20px;color:#3d3527}
+.parent-share-brand p{margin:0;font-size:12px;color:#7a6a45}
+.parent-share-body{width:100%;max-width:520px;padding:22px;border:1px solid #eadfbd;border-radius:16px;background:#fff;box-shadow:0 12px 32px rgba(122,106,69,.10);display:flex;flex-direction:column;gap:8px;align-items:center;text-align:center}
+.parent-share-body b{font-size:15px;color:#3d3527}
+.parent-share-body p{margin:0;font-size:12px;line-height:1.7;color:#5c5241}
+.parent-share-body small{font-size:10px;line-height:1.7;color:#8a7c64}
+.parent-share-link{display:inline-flex;align-items:center;gap:6px;word-break:break-all}
+@media(max-width:800px){
+  .archive-forward-status-rows{grid-template-columns:1fr}
+  .parent-share-open{padding:20px 12px}
+}

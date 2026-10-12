@@ -232,10 +232,18 @@ import {
   SHARE_TOKEN_REVOKED_NOTICE, SHARE_TOKEN_REVOKE_CONFIRM_LABEL, SHARE_TOKEN_REVOKE_LABEL, SHARE_TOKEN_REVOKE_NOTE,
   SHARE_TOKEN_VALID_DAY_OPTIONS, SHARE_TOKEN_VALID_DAYS_NOTE,
   appendShareToken, createShareTokenRecord, loadShareTokens, mergeShareTokens,
-  persistShareTokens, replaceShareToken, revokeShareTokenRecord, shareTokenGenerationGate, shareTokenLink,
-  shareTokenStrength, shareTokenValidDaysLabel, shareTokenView
+  persistShareTokens, replaceShareToken, revokeShareTokenRecord, SHARE_TOKEN_STORAGE_KEY, shareTokenGenerationGate, shareTokenLink,
+  shareTokenStrength, shareTokenUrl, shareTokenValidDaysLabel, shareTokenView
 } from './data/shareTokens';
 import { loadRemoteShareTokens, revokeRemoteShareToken, saveRemoteShareToken } from './services/shareTokensApi';
+// 转发状态跟踪（[第四步 US-209] / F-ARCHIVE-SHARE-01）：未转发 / 已转发 / 已撤回三态的推导、
+// 转发四件事（时间 / 渠道 / 分享版本 / 打开次数）、家长打开的写入（firstOpenedAt 只写一次）、
+// 「重新发送」的执行计划全在 data 层（零依赖纯函数，可 Node 直跑断言）；界面只渲染它的产物。
+import {
+  SHARE_FORWARD_ROWS, applyShareOpen, applyShareSend, readShareLinkToken,
+  shareForwardResendPlan, shareForwardSendNotice, shareForwardView
+} from './data/shareForward';
+import ParentSharePage from './ParentSharePage';
 // 分享二维码与分享内容边界（[第四步 US-208b] / F-ARCHIVE-SHARE-01）：二维码的口径（纠错等级 / 静区 /
 // 画布 / 文件名）、微信文案的三项复核（含学员名与课次日期、不含联系方式）与
 // 「只分享成品素材与老师确认后的点评」的白名单 / 泄漏复核全在 data 层（零依赖、可直接 Node 断言）；
@@ -429,6 +437,11 @@ function App(){
   //  合并时**撤回必须赢**：在另一台设备上撤掉的链接，这台设备也必须立即失效）。
   // 放在 App 层是因为它不止第四步要读：档案列表（US-209 转发状态）与家长分享页（US-210）读同一份。
   const [shareTokens,setShareTokens]=useState(loadShareTokens);
+  // 家长分享页（[第四步 US-209]）：打开 `/p/<shareToken>` 时**先记一次打开**再渲染页面 ——
+  // 首次打开写 `firstOpenedAt`、每次打开 `openCount` 自增，老师端刷新后就能看到「家长看没看」。
+  // 令牌只在进页面时读一次地址（`readShareLinkToken`），页面本体在 `ParentSharePage` 里（内容 US-210）。
+  const [parentShareToken]=useState(()=>readShareLinkToken(typeof window==='undefined'?'':(window.location&&window.location.pathname)||''));
+  const [parentShareOpen,setParentShareOpen]=useState(null);
   // 管理端「生成日志 → 点评轨迹」读的轨迹账：本机镜像先渲染，云端表 / 开发适配器回来后并进去
   // （合并方向：`mergeReviewTraces` 按 traceId 去重、时间倒序）。清理（到期）也写回这一份。
   const [traceLog,setTraceLog]=useState(loadReviewTraces);
@@ -465,8 +478,40 @@ function App(){
   useEffect(()=>{persistArchiveReports(archiveReports)},[archiveReports]);
   useEffect(()=>{let active=true;loadRemoteArchiveReports().then(remote=>{if(active&&remote.length)setArchiveReports(current=>mergeArchiveReports(current,remote))}).catch(()=>{});return()=>{active=false}},[]);
   // 分享令牌同样只在本机镜像落盘、按令牌合并（撤回优先）；云端只补本机没有的令牌。
-  useEffect(()=>{persistShareTokens(shareTokens)},[shareTokens]);
+  // **落盘前先跟镜像并一次**（US-209）：同一浏览器可能有多张标签页在写这份账（老师端着第四步，
+  // 家长在另一标签打开分享页）—— 一张标签页的旧快照直接把 state 写回去，会把另一张刚记下的
+  // 打开次数 / 撤回状态顶掉。`mergeShareTokens(本页, 镜像)` 只增不减（次数取并集、撤回优先），
+  // 于是任何一张标签页的写入都不可能让这份账倒退。
+  useEffect(()=>{persistShareTokens(mergeShareTokens(shareTokens,loadShareTokens()))},[shareTokens]);
   useEffect(()=>{let active=true;loadRemoteShareTokens().then(remote=>{if(active&&remote.length)setShareTokens(current=>mergeShareTokens(current,remote))}).catch(()=>{});return()=>{active=false}},[]);
+  /**
+   * 同一个浏览器里**另一个标签页**写入了令牌账（[第四步 US-209]）：家长在另一标签打开分享页、
+   * 或另一处撤回，老师端这一页不刷新也要跟着更新 —— 监听 `storage` 事件把本机镜像并回来。
+   * 跨设备（另一台手机）仍然靠云端 `share_tokens` 表（表未建时只在本机镜像），
+   * 刷新页面照样能读到这份账（验收第 5 条：状态在刷新后保持）。
+   * 合并方向与别处一致：本机镜像在前、撤回优先、打开/发送次数取并集；两边内容相同时写盘不产生新事件（不会来回弹）。
+   */
+  useEffect(()=>{
+    if(typeof window==='undefined') return undefined;
+    const onShareTokenStorage=event=>{
+      if(event&&event.key&&event.key!==SHARE_TOKEN_STORAGE_KEY) return;
+      setShareTokens(current=>mergeShareTokens(loadShareTokens(),current));
+    };
+    window.addEventListener('storage',onShareTokenStorage);
+    return()=>window.removeEventListener('storage',onShareTokenStorage);
+  },[]);
+  // 家长打开分享页（[第四步 US-209]）：记一次打开 + 落本机镜像 + 推云端（表未建时只落本机镜像）。
+  // 读的是本机镜像（家长这一侧不依赖任何会话状态），state 用 `mergeShareTokens` 并回去 ——
+  // 云端刚读回来的令牌不会被这一次写入顶掉。React 的 effect 只在挂载时跑一次（App 没有 StrictMode 双跑）。
+  useEffect(()=>{
+    if(!parentShareToken) return;
+    const result=applyShareOpen(loadShareTokens(),parentShareToken,{at:new Date().toISOString()});
+    setParentShareOpen({found:result.found,first:result.first,recorded:result.changed});
+    if(!result.changed) return;
+    persistShareTokens(result.tokens);
+    setShareTokens(current=>mergeShareTokens(result.tokens,current));
+    if(result.record) void saveRemoteShareToken(result.record).catch(()=>{});
+  },[parentShareToken]);
   // 策略落盘（保留期 + 披露开关）：本机镜像是唯一真源（云端没有这张配置表的口径）。
   useEffect(()=>{persistReviewTracePolicy(tracePolicy)},[tracePolicy]);
   useEffect(()=>{let active=true;loadRemoteAuditLog().then(remote=>{if(active&&remote.length)setAuditLog(current=>mergeAuditLog(remote,current))}).catch(()=>{});return()=>{active=false}},[]);
@@ -573,6 +618,9 @@ function App(){
     if(nextRole==='parent'&&phone==='demo'){const demoStudents=loadStudentManagement().students.filter(item=>item.guardianName);setParentStudents(demoStudents.map(item=>item.name));setParentStudent(demoStudents[0]?.name||'');setParentPhone('');setParentSession('');}
     setRole(nextRole);setAuth(true);setPage(nextRole==='teacher'?'dashboard':nextRole==='parent'?'parent':'adminDash');setToast(`已进入${roleMeta[nextRole].label}体验`);return true;
   };
+  // 家长分享页走独立的只读页面（不进登录、不挂侧边栏）：`/p/<shareToken>` 就是全部上下文。
+  // 位置在**所有 hook 之后**（US-202 的白屏坑：提前 return 之前少一个 hook 就会「比上一次多一个 hook」）。
+  if(parentShareToken) return <ParentSharePage token={parentShareToken} tokens={shareTokens} open={parentShareOpen}/>;
   if(!auth) return <AuthScreen mode={authMode} setMode={setAuthMode} onLogin={login}/>;
   return <div className="app">
     <Sidebar role={role} page={page} nav={navByRole[role]} onNav={navigate} open={mobileNav} close={()=>setMobileNav(false)}/>
@@ -3194,10 +3242,11 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
     setArchiveShareCopy({phase:'idle',message:''});
   };
   // 复制微信转发文案：真写剪贴板（优先 Clipboard API，失败回落 execCommand，见 services/reviewDetailExport.js），
-  // 失败时给「请手动复制」的兜底提示 —— 不谎报「已发送」。
+  // 失败时给「请手动复制」的兜底提示 —— 不谎报「已发送」。复制成功 = 一次转发（渠道「微信」，US-209）。
   const copyArchiveWechatText=async()=>{
     const ok=await copyReviewDetailText(archiveForward.wechatText);
     setArchiveShareCopy({phase:ok?'done':'failed',message:ok?ARCHIVE_SHARE_COPY_DONE:ARCHIVE_SHARE_COPY_FAILED});
+    if(ok) recordForwardSend('wechat');
   };
   // ---- 家长分享令牌（[第四步 US-208a]）------------------------------------------------
   // 令牌本体 / 有效期 / 撤回状态全部由 `data/shareTokens.js` 判定（状态**推导**，存储里没有
@@ -3213,22 +3262,24 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
   // 面板开合 / 换记录时把撤回确认与回执清掉：上一次的中间态不带过来。
   useEffect(()=>{setShareTokenRevokeConfirm(false);setShareTokenNotice({phase:'idle',message:''})},[currentArchiveRecord?.id,archiveShareOpen]);
   // 生成分享链接：**先过授权闸门**（未授权时不生成、不留任何数据，只给原因与处理入口）。
+  // 令牌的字段构造只有这一份（「生成」与「重新发送」共用 —— 两处各拼一遍迟早会漏字段）。
+  const buildParentShareToken=()=>createShareTokenRecord({
+    recordId:currentArchiveRecord.id,
+    recordKey:currentArchiveRecord.recordKey,
+    orgId:DEFAULT_ORG_ID,
+    student:currentArchiveRecord.student,
+    studentId:currentArchiveRecord.studentId,
+    className:currentArchiveRecord.className,
+    lessonDate:currentArchiveRecord.lessonDate,
+    title:currentArchiveRecord.title,
+    version:currentArchiveRecord.version,
+    validDays:shareTokenValidDays,
+    createdBy:currentTeacherName
+  },{});
   const generateParentShareLink=()=>{
     if(!shareTokenGate.allowed){setShareTokenNotice({phase:'blocked',message:shareTokenGate.reason});return;}
     if(!currentArchiveRecord){setShareTokenNotice({phase:'failed',message:'先归档再生成分享链接。'});return;}
-    const created=createShareTokenRecord({
-      recordId:currentArchiveRecord.id,
-      recordKey:currentArchiveRecord.recordKey,
-      orgId:DEFAULT_ORG_ID,
-      student:currentArchiveRecord.student,
-      studentId:currentArchiveRecord.studentId,
-      className:currentArchiveRecord.className,
-      lessonDate:currentArchiveRecord.lessonDate,
-      title:currentArchiveRecord.title,
-      version:currentArchiveRecord.version,
-      validDays:shareTokenValidDays,
-      createdBy:currentTeacherName
-    },{});
+    const created=buildParentShareToken();
     if(!created){setShareTokenNotice({phase:'failed',message:'令牌生成失败，请重试。'});return;}
     setShareTokens(current=>appendShareToken(current,created));
     setShareTokenRevokeConfirm(false);
@@ -3248,6 +3299,26 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
     setShareTokenNotice({phase:'done',message:SHARE_TOKEN_REVOKED_NOTICE});
     setToast(SHARE_TOKEN_REVOKED_NOTICE);
     void revokeRemoteShareToken(revoked).catch(()=>{});
+  };
+  // 记一次转发（[第四步 US-209]）：复制成功之后才调用 —— **复制失败不记发送**（不谎报「已转发」）。
+  // 渠道（微信 / 复制链接）、第几次、发送那一刻的档案版本都写在这条令牌上；状态与打开次数都从它推导。
+  // `tokens` 可显式传入：重新发送那一次会**先**把新令牌并进列表，再记发送（不能读旧 state）。
+  const recordForwardSend=(channel,{tokens:base,tokenText}={})=>{
+    const target=tokenText||(shareTokenPanel.active?shareTokenPanel.tokenText:'');
+    if(!target) return null;
+    // 底账先跟本机镜像并一次：家长在另一标签打开过（打开次数在镜像里更大）时，
+    // 老师这一侧的旧快照不会把那个数字写小（与落盘那条路径同一条纪律）。
+    const ledger=mergeShareTokens(base||shareTokens,loadShareTokens());
+    const result=applyShareSend(ledger,target,{
+      channel,
+      at:new Date().toISOString(),
+      by:currentTeacherName,
+      version:currentArchiveRecord?.version
+    });
+    if(!result.changed||!result.record) return null;
+    setShareTokens(result.tokens);
+    void saveRemoteShareToken(result.record).catch(()=>{});
+    return result.record;
   };
   // ---- 分享二维码与「三个动作」（[第四步 US-208b] / F-ARCHIVE-SHARE-01）-------------------
   // 二维码只在**链接可用**时出图（撤回 / 过期后不给扫不开的码）；口径（纠错等级 / 静区 / 画布 /
@@ -3274,10 +3345,12 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
   // 换记录 / 换开合 / 换令牌时清掉两个回执（上一次的中间态不带过来，与令牌回执同一条纪律）。
   useEffect(()=>{setShareQrNotice({phase:'idle',message:''});setShareLinkNotice({phase:'idle',message:''})},[currentArchiveRecord?.id,archiveShareOpen,shareQrToken]);
   // 动作一：复制链接（完整地址 —— 就是二维码里编码的那一条，两处同源）。
+  // 复制成功 = 一次转发（渠道「复制链接」，US-209）；复制失败不记发送。
   const copyShareLink=async()=>{
     if(!shareQrView){setShareLinkNotice({phase:'failed',message:ARCHIVE_SHARE_QR_BLOCKED_NOTE});return;}
     const ok=await copyReviewDetailText(shareQrView.url);
     setShareLinkNotice({phase:ok?'done':'failed',message:ok?ARCHIVE_SHARE_COPY_LINK_DONE:ARCHIVE_SHARE_COPY_LINK_FAILED});
+    if(ok) recordForwardSend('link');
   };
   // 动作二：下载二维码。桌面 / Android 走 `<a download>`（与「保存图片」同一条路径）；
   // iOS Safari 与微信内置浏览器不执行 blob 下载 —— 面板上的二维码图片本身就能长按保存，
@@ -3295,6 +3368,90 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
       setShareQrNotice({phase:'preview',message:ARCHIVE_SHARE_QR_LONG_PRESS_NOTE});
     }
   };
+  // ---- 转发状态跟踪（[第四步 US-209] / F-ARCHIVE-SHARE-01）---------------------------------
+  // 「发过没发过、发的是哪一版、家长看没看」全部由 `data/shareForward.js` 判定：
+  // 三态（未转发 / 已转发 / 已撤回）是**推导**出来的（`sentAt` / `revokedAt`），
+  // 四行读数（转发时间 / 渠道 / 分享版本 / 打开次数）与「重新发送该不该先重新生成」也读它的产物。
+  // 界面只渲染：`data-share-forward-*` 读数与浏览器断言读同一份。
+  const [shareForwardNotice,setShareForwardNotice]=useState({phase:'idle',message:''});
+  const archiveForwardStatus=shareForwardView({
+    tokens:shareTokens,
+    recordId:currentArchiveRecord?.id||'',
+    record:currentArchiveRecord
+  });
+  // 「重新发送」的执行计划：沿用上次渠道；链接不可用（没有 / 已过期 / 已撤回）时先重新生成。
+  const shareForwardResend=shareForwardResendPlan({forward:archiveForwardStatus,gate:shareTokenGate,record:currentArchiveRecord});
+  // 面板开合 / 换记录时把回执清掉（与令牌回执同一条纪律）。
+  useEffect(()=>{setShareForwardNotice({phase:'idle',message:''})},[currentArchiveRecord?.id,archiveShareOpen]);
+  /**
+   * 重新发送（[第四步 US-209] 的第 4 条）：
+   *  ① 闸门 / 档案 / 计划都从 data 层拿（`shareForwardResendPlan`），不满足条件时只给原因；
+   *  ② 链接不可用时**先重新生成**一条（沿用 `buildParentShareToken`，字段构造只有一份）；
+   *  ③ 按计划里的渠道复制内容（微信文案 / 完整链接）——**复制失败就不记发送**（不谎报已转发）；
+   *  ④ 复制成功才写一次发送（渠道 + 版本 + 第几次），状态随之变成「已转发」。
+   */
+  const resendParentShare=async()=>{
+    if(!shareForwardResend.allowed){setShareForwardNotice({phase:'blocked',message:shareForwardResend.reason});return;}
+    // 底账 = 本页 state 与**本机镜像**的并集（家长在另一标签打开过，打开次数在镜像里更大）。
+    let list=mergeShareTokens(shareTokens,loadShareTokens());
+    let tokenText=shareTokenPanel.active?shareTokenPanel.tokenText:'';
+    let regenerated=false;
+    if(shareForwardResend.regenerate||!tokenText){
+      const created=buildParentShareToken();
+      if(!created){setShareForwardNotice({phase:'failed',message:'令牌生成失败，请重试。'});return;}
+      list=appendShareToken(list,created);
+      tokenText=created.token;
+      regenerated=true;
+      void saveRemoteShareToken(created).catch(()=>{});
+    }
+    const usingWechat=shareForwardResend.action==='copy-wechat';
+    const payload=usingWechat
+      ? {text:archiveForward.wechatText,failed:ARCHIVE_SHARE_COPY_FAILED}
+      : {text:shareTokenUrl(tokenText,{origin:shareQrOrigin}),failed:ARCHIVE_SHARE_COPY_LINK_FAILED};
+    const copied=await copyReviewDetailText(payload.text);
+    if(!copied){
+      // 复制失败：重新生成的链接仍然留下（老师可以手动复制），但**不记这次发送**。
+      if(regenerated) setShareTokens(list);
+      setShareForwardNotice({phase:'failed',message:payload.failed});
+      return;
+    }
+    const sent=recordForwardSend(shareForwardResend.channel,{tokens:list,tokenText});
+    const message=`${shareForwardSendNotice({channelLabel:shareForwardResend.channelLabel,count:sent?sent.sentCount:1,regenerated})}${regenerated?`${shareTokenLink(tokenText)}`:''}`;
+    setShareForwardNotice({phase:'done',message});
+    setToast(shareForwardSendNotice({channelLabel:shareForwardResend.channelLabel,count:sent?sent.sentCount:1,regenerated}));
+  };
+  // 「转发状态」块（[第四步 US-209]）：四行读数（转发时间 / 渠道 / 分享版本 / 打开次数）逐行渲染，
+  // 行与读数都来自 `shareForwardView`（三种状态同形状）。主操作「重新发送」在这里；
+  // 「撤回分享」仍与链接 / 有效期放在一起（US-208a 的那条路径与二次确认一字不动）。
+  const archiveForwardStatusField=(
+    <div className="archive-forward-status" data-share-forward-status="true" data-share-forward-status-state={archiveForwardStatus.state} data-share-forward-status-label={archiveForwardStatus.stateLabel} data-share-forward-status-sent-at={archiveForwardStatus.sentAt} data-share-forward-status-sent-text={archiveForwardStatus.sentText} data-share-forward-status-channel={archiveForwardStatus.channel} data-share-forward-status-version={String(archiveForwardStatus.version)} data-share-forward-status-version-label={archiveForwardStatus.versionLabel} data-share-forward-status-opens={String(archiveForwardStatus.openCount)} data-share-forward-status-first-opened-at={archiveForwardStatus.firstOpenedAt} data-share-forward-status-history={String(archiveForwardStatus.historyCount)} data-share-forward-status-resend-channel={shareForwardResend.channel}>
+      <div className="archive-forward-status-head">
+        <MessageSquareText size={14}/>
+        <b>转发状态</b>
+        <em className={`is-${archiveForwardStatus.state}`} data-share-forward-status-badge="true">{archiveForwardStatus.stateLabel}</em>
+      </div>
+      <dl className="archive-forward-status-rows">
+        {archiveForwardStatus.rows.map(row=><div key={row.id} data-share-forward-row={row.id} data-share-forward-row-value={row.value} data-share-forward-row-ok={row.ok?'true':'false'}>
+          <dt>{row.label}</dt>
+          <dd>{row.value}{row.detail?<small>{row.detail}</small>:null}</dd>
+        </div>)}
+      </dl>
+      <p className="archive-forward-status-note" data-share-forward-status-note="true">{archiveForwardStatus.note}</p>
+      <div className="archive-share-token-actions">
+        <Button variant="secondary" icon={RefreshCw} disabled={!shareForwardResend.allowed} onClick={resendParentShare} data-share-forward-resend="true">{shareForwardResend.label}</Button>
+        {shareForwardResend.allowed?null:<small data-share-forward-resend-reason="true">{shareForwardResend.reason}</small>}
+        {shareForwardNotice.message?<small data-share-forward-notice="true">{shareForwardNotice.message}</small>:null}
+      </div>
+    </div>
+  );
+  // 第四步**不展开也看得到**的转发状态条（状态 + 渠道 + 转发时间 + 打开次数），读数同一份产物。
+  const archiveForwardChip=(
+    <small className={`archive-forward-chip is-${archiveForwardStatus.state}`} data-forward-chip="true" data-forward-chip-state={archiveForwardStatus.state} data-forward-chip-label={archiveForwardStatus.stateLabel} data-forward-chip-line={archiveForwardStatus.line} data-forward-chip-opens={String(archiveForwardStatus.openCount)}>
+      <MessageSquareText size={13}/>
+      <b>转发状态：{archiveForwardStatus.stateLabel}</b>
+      {archiveForwardStatus.lineDetail?<span data-forward-chip-detail="true"> · {archiveForwardStatus.lineDetail}</span>:null}
+    </small>
+  );
   // 「家长分享链接」块：链接 / 有效期 / 撤回三个动作 + 授权闸门。链接形如 `/p/<shareToken>`。
   // 链接可用时再给二维码与「复制链接 / 下载二维码」两个动作（与「复制微信文案」合起来是验收的三个动作）。
   const archiveShareTokenField=(
@@ -3400,6 +3557,7 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
         <small data-share-boundary-note="true">{archiveShareBoundary.note}</small>
       </div>:null}
       {archiveShareTokenField}
+      {archiveForwardStatusField}
       <div className="archive-share-actions">
         {archiveForward.state==='ready'?<Button icon={MessageSquareText} onClick={copyArchiveWechatText} data-share-copy="true">{ARCHIVE_SHARE_COPY_LABEL}</Button>:null}
         {archiveForward.entryLabel?<Button variant="secondary" icon={ShieldCheck} onClick={()=>navigate('authorization')} data-share-consent-entry="true">{archiveForward.entryLabel}</Button>:null}
@@ -5115,7 +5273,7 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
       {step===1?<section className="scene-panel"><div className="scene-heading"><span>第一步</span><h2>创建课后反馈信息</h2><p>先确定服务对象，再同步收集本节课素材。素材只在本次操作中保留。</p></div>{draftRestored?<div className="intake-draft-restored"><Clock3 size={14}/><div><b>已恢复上次的课次信息；素材需重新选择</b><small>{draftRestoreDetail}</small></div>{pendingTitles.length?<em>已保留 {pendingTitles.length} 个作品名，「学员作品上传位」里重新选择素材后自动填回</em>:null}<button type="button" className="text-link" onClick={()=>setDraftRestored(false)}>知道了</button></div>:null}<div className="feedback-mode"><button className={mode==='个人反馈'?'selected':''} onClick={()=>selectMode('个人反馈')}>个人反馈<small>为一位孩子完成反馈</small></button><button className={mode==='班级反馈'?'selected':''} onClick={()=>selectMode('班级反馈')}>班级反馈<small>批量处理全班素材</small></button></div>{availableClasses.length?<div className="intake-scope"><span>班级范围</span><div className="intake-scope-switch"><button type="button" className={showAllClasses?'':'active'} onClick={()=>selectClassScope(false)}>我带的班（{myClasses.length}）</button><button type="button" className={showAllClasses?'active':''} onClick={()=>selectClassScope(true)}>全部班级（{availableClasses.length}）</button></div><small>当前登录老师：{currentTeacherName}</small></div>:null}{visibleClasses.length?<div className="task-form"><label>选择班级<select value={selectedClassId} onChange={event=>selectClass(event.target.value)}>{visibleClasses.map(item=><option key={item.id} value={item.id}>{item.name}{item.teacher?`（${item.teacher}）`:''}</option>)}</select></label><label>选择学员<select value={mode==='班级反馈'?'__class__':selectedStudentName} disabled={mode==='班级反馈'} onChange={event=>{setSelectedStudentName(event.target.value);setArchived(false);setCurrentRecordId('');clearReviewTrace();setWriteBackAttempt({status:'idle',quality:'',message:''})}}>{mode==='班级反馈'?<option value="__class__">本班全部学员（{classStudents.length}人）</option>:<><option value="">请选择学员</option>{classStudents.map(item=><option key={item.name} value={item.name}>{item.name}</option>)}</>}</select></label>{courseOptions.length?<label>选择课程<select value={activeCourseId} onChange={event=>selectCourse(event.target.value)}>{courseOptions.map(item=><option key={item.courseId} value={item.courseId}>{item.name}{item.courseId===classCourseId?' · 本班课程':''}</option>)}</select></label>:<div className="intake-course-empty"><b>课程库暂时没有可选课程</b><p>{classCourseName?`本班课程「${classCourseName}」不在可选课程里，可能已被停用。`:'课程由机构管理员在「课程库」中维护。'}</p>{role==='admin'?<Button variant="secondary" onClick={()=>navigate('courseLibrary')}>去课程库添加课程</Button>:<small>请联系机构管理员在「课程库」中新增或启用课程。</small>}</div>}{lessonScheduleField}{participantField}{consentNoticeField}{mediaIntakeNotice?<p className="intake-media-notice"><ShieldAlert size={14}/><span>{mediaIntakeNotice}</span></p>:null}</div>:<div className="intake-empty"><Users size={26}/><b>{showAllClasses?'机构里还没有任何班级':'还没有属于你的班级'}</b><p>{showAllClasses?'请先在「学员管理」中新建班级，再回到这里创建课后反馈。':'可以切到「全部班级」确认是否存在其他老师名下的班级，或先去「学员管理」新建班级。'}</p><div className="intake-empty-actions">{showAllClasses?null:<button type="button" className="text-link" onClick={()=>selectClassScope(true)}>查看全部班级</button>}<Button onClick={()=>navigate('classes')}>去学员管理添加班级</Button></div></div>}{mode==='个人反馈'&&selectedClass&&!classStudents.length?<p className="intake-hint">该班级还没有学员，请先在「学员管理」里导入名单，再创建课后反馈。</p>:null}{artworkSlotField}{photoSlotField}{mode==='个人反馈'?<div className="sync-upload"><div className={media.artwork?.url?'has-file':''}><Frame/><b>学员作品 <em>必选</em></b><small>{uploadSummary('artwork')}</small><input ref={artworkInput} type="file" accept="image/jpeg,image/png,image/webp" hidden multiple={mode==='班级反馈'} onChange={e=>readFiles('artwork',e.target.files,e.currentTarget)}/><button onClick={()=>artworkInput.current?.click()}>{media.artwork?.url?'已上传 · 重新选择':'上传作品'}</button></div><div className={media.photo?.url?'has-file':''}><Image/><b>学员照片 <em>选填</em></b><small>{uploadSummary('photo')}</small><input ref={photoInput} type="file" accept="image/jpeg,image/png,image/webp" hidden multiple={mode==='班级反馈'} onChange={e=>readFiles('photo',e.target.files,e.currentTarget)}/><button onClick={()=>photoInput.current?.click()}>{media.photo?.url?'已上传 · 重新选择':'上传照片'}</button></div></div>:null}{lostSessionMedia&&!mediaLostDismissed?<div className="intake-media-lost"><ShieldAlert size={14}/><div><b>上次选择的素材已失效</b><small>作品与课堂照片只在当次会话里有效（只使用会话内 object URL，不写入 localStorage / IndexedDB）。页面刷新或重新进入后，请重新选择原始素材。</small></div><button type="button" className="text-link" onClick={()=>setMediaLostDismissed(true)}>知道了</button></div>:null}<div className="upload-privacy-note"><ShieldCheck size={14}/>{mediaRulesText(UPLOAD_SLOTS_PER_STUDENT)}</div>{intakeReadinessPanel}<div className="scene-actions"><Button variant="secondary" onClick={resetDraft}>新建草稿</Button><Button variant="secondary" icon={Save} disabled={!activeCourseId||lessonSaveState.status==='saving'} onClick={requestLessonSave}>{lessonSaveState.status==='saving'?'保存中…':'保存课次'}</Button><Button icon={ArrowRight} disabled={!intakeReadiness.ok} onClick={()=>go(2)}>进入智能装裱</Button></div></section>:null}
       {step===2?<section className="scene-panel studio-task"><div className="scene-heading"><span>第二步</span><h2>智能装裱</h2><p>先旋转完整原图并确认方向；确认后自动裁掉纸外的桌面、地面与背景，只保留作品本身。装裱方案（画框、卡纸、展签、日期与署名）由管理员在「装裱设置」中统一维护，这里直接选用。</p></div><div className="media-process"><article><div className={`mini-frame uploaded-art${media.artwork?.framedUrl&&!artworkEditor.open?' framed-preview':''}${artworkEditor.open?' is-editing':''}`}>{media.artwork?.url?<><img src={artworkEditor.open?(editorPreview||media.artwork.originalUrl):(media.artwork.framedUrl||media.artwork.cleanUrl||media.artwork.orientedUrl||media.artwork.originalUrl)} alt={artworkEditor.open?'编辑中的旋转稿预览（低分辨率画布）':media.artwork.framedUrl?`已按「${activeFrame?.name||'默认装裱'}」完成装裱的作品`:media.artwork.cleanUrl?'已裁掉纸外背景、只保留作品本身':'等待确认方向的完整原图'}/>{media.artwork?.framedUrl&&!artworkEditor.open?<span className="framed-badge">{activeFrame?.name||'默认装裱'}</span>:null}{artworkEditor.open?<span className="framed-badge editing-badge">编辑中</span>:null}<div className="frame-rotate-controls" aria-label="旋转作品"><button type="button" title="向左旋转 90°" aria-label="向左旋转作品" disabled={artworkEditor.open&&editorPreviewPending} onClick={()=>quickRotateArtwork(-1)}><RotateCcw size={18}/></button><button type="button" title="向右旋转 90°" aria-label="向右旋转作品" disabled={artworkEditor.open&&editorPreviewPending} onClick={()=>quickRotateArtwork(1)}><RotateCw size={18}/></button></div></>:'✺'}</div><div><b>学员作品</b><p>{artworkEditor.open?(editorPreviewPending?'正在生成低分辨率预览…':'编辑中：调整旋转后点「完成编辑」，再按新的方向重新裁剪与装裱。'):framingState==='processing'?(media.artwork?.cleanUrl?'正在按当前装裱方案合成装裱图…':'正在裁掉纸外的桌面与地面，只保留作品本身…'):media.artwork?.framedUrl?`已装裱：${activeFrame?.name||'默认装裱'}。作品只做等比缩放与居中，不裁切主体、不重绘、不调色。`:media.artwork?.cleanUrl?'已完成作品裁剪，正在生成装裱图…':'当前仅显示完整原图；可以先点「编辑作品」把方向摆正，再开始裁剪与装裱。'}</p>{mode==='个人反馈'?artworkEditorField:null}{!media.artwork?.cleanUrl?<button type="button" className="confirm-artwork-button" onClick={startArtworkCleanup} disabled={framingState==='rotating'||framingState==='processing'}>{framingState==='processing'?'正在裁剪作品…':'方向正确，开始裁剪与装裱'}</button>:null}<span className="frame-choice-hint">相框样式在下方「相框样式」面板里挑（缩略图用这幅作品实时渲染）→</span></div></article><article><div className="photo-card">{media.photo?.url?<><img src={media.photo.url} alt="已自然优化的课堂照片" style={{transform:`rotate(${media.photo.rotation||0}deg)`}}/><button type="button" className="frame-rotate-button photo-rotate-button" onClick={rotatePersonalPhoto}><RefreshCw size={16}/>旋转照片</button></>:<img src={pandaMascot} alt="课堂照片占位预览"/>}</div><div><b>学员照片</b><p>{media.photo?.name||'未上传课堂照片，可返回上一步补充。'}</p></div></article></div>{batchFramingPanel}{studioDrawerTrigger('frame')}{frameStylePanel}{overlayPanelTrigger}{overlayDrawerOpen?<div className="lesson-overlay-scrim" data-overlay-scrim="true" onClick={()=>setOverlayDrawerOpen(false)}/>:null}{overlayPanel}{studioDrawerTrigger('save')}{saveImagePanel}{studioDrawer?<div className="studio-drawer-scrim" data-studio-drawer-scrim={studioDrawer} onClick={()=>setStudioDrawer('')}/>:null}{framingPerfPanel}{saveImageSheet}<div className="scene-actions"><Button variant="secondary" onClick={()=>go(1)}>返回创建信息</Button><Button icon={ArrowRight} onClick={()=>go(3)}>进入五维点评</Button></div></section>:null}
       {step===3?<section className="scene-panel review-task-v2"><div className="review-media"><div className="scene-heading"><span>{mode==='班级反馈'?'本班课后素材':'本次课素材'}</span><h2>{mode==='班级反馈'?'周六创意绘画 2 班 · 班级课后反馈':`${selectedStudentLabel}${activeFrame?.plaqueTitle?` · 《${activeFrame.plaqueTitle}》`:''}`}</h2></div><div className={`review-gallery ${mode==='班级反馈'?'class-review-gallery':''}`}>{mode==='班级反馈'?<><ClassMediaMosaic items={classMosaicArtworks} kind="artwork" date={lessonDateDots} writeBackKeyOf={classArtworkWriteBackKeyOf} onRotate={index=>rotateBatchItem('artwork',index)}/><ClassMediaMosaic items={classMosaicPhotos} kind="photo" groups={photoGroups} date={lessonDateDots} onRotateEntry={uploadId=>rotateUploadEntry('photo',uploadId)}/></>:<><div className={`review-art exhibition-art${reviewFramedSrc?' framed-art':''}`} data-review-artwork-source={reviewWrittenBackUrl?'writeback':'framed'} data-review-artwork-fingerprint={artworkUrlFingerprint(reviewFramedSrc)}>{reviewFramedSrc?<div className="framed-art-final"><img src={reviewFramedSrc} alt={`${selectedStudentLabel}的作品 · ${activeFrame?.name||'装裱'}`} data-review-artwork="true"/>{activeFrame?.name?<span className="framed-badge">{activeFrame.name}</span>:null}{reviewWrittenBackUrl?<span className="written-back-badge" data-review-artwork-written-back="true">老师保存的成品图</span>:null}</div>:<><div className="artwork-mat">{media.artwork?.url?<img src={media.artwork.cleanUrl||media.artwork.originalUrl||media.artwork.url} alt={`${selectedStudentLabel}的作品`}/>:'✺'}</div><div className="artwork-plaque"><div><b>{selectedStudentLabel}</b><span>{activeFrame?.plaqueTitle?`《${activeFrame.plaqueTitle}》`:''}</span></div><time>创作于 {plaqueDateText}</time></div></>}</div><div className="review-photo portrait-print"><div className="portrait-mat">{media.photo?.url?<img src={media.photo.url} alt="陈一诺课堂照片"/>:<img src={pandaMascot} alt="课堂照片占位"/>}</div><div className="portrait-caption">{selectedStudentLabel} · {plaqueDateText}</div></div></>}</div></div><ReviewKeywordDock visible selected={keywords} onToggle={toggleKeyword} suggested={aiKeywords} suggesting={keywordSuggesting} dirty={keywordDirty} generated={reviewGenerated} template={keywordTemplateView}/><div className={`coach-review ${mode==='班级反馈'?'class-coach-review':''}`}><div className="scene-heading"><span>第三步</span><h2>{mode==='班级反馈'?'班级课程反馈':'五维点评'}</h2></div><div className="review-subject-field" data-review-subject-field="true" data-review-subject-source={reviewSubject.source} data-review-subject-context={reviewLesson.contextSource} data-review-subject-picked={reviewSubject.picked?'true':'false'} data-review-subject-options={reviewLesson.options.length} data-review-subject-lesson-date={reviewLessonDate}>{reviewLesson.options.length?<label>本次课题<select value={reviewSubjectValue} onChange={event=>{setSubjectPick(event.target.value);setSubjectPicked(true)}} data-review-subject="true">{reviewLesson.options.map(item=><option key={item.value} value={item.value} data-review-subject-option={item.source}>{item.label}</option>)}</select></label>:<b className="review-subject-empty" data-review-subject-empty="true">还没有可选课题</b>}<small data-review-subject-note="true">{reviewSubjectNote}</small></div><p className="evidence">{mode==='班级反馈'?'以下内容基于本节课课程设计、班级素材与老师观察生成，老师可编辑确认后发布给家长。':`下列内容由大模型生成：先读懂作品与课堂素材，再结合「${activeProfileLabel}」的人设、已启用技能与长期记忆，按五个维度分别输出评语。老师可逐条修改后再发布。`}</p>{reviewRecoveryField}{mode==='班级反馈'?<ClassReviewContent subject={reviewSubjectValue}/>:<><div className={`review-source ${reviewGenerated?'ai':'pending'}`}>{reviewGenerated?<><Sparkles size={14}/><span>当前正文由大模型「{activeProfileLabel}」依据人设、技能与长期记忆生成，可直接编辑。</span></>:<><Sparkles size={14}/><span>五个维度等待大模型生成：点击上方「开始生成点评」，评语会逐字写入这里。</span></>}{keywordDirty&&reviewGenerated?<em>观察词已调整，建议重新生成</em>:null}</div>{Object.entries(reviews).map(([name,copy])=><article className={`coach-card${copy?'':' is-empty'}`} key={name}><b>{name}{copy?null:<em className="review-pending">待生成</em>}</b><textarea aria-label={name} value={copy} placeholder={REVIEW_DIMENSION_HINTS[name]||''} onChange={event=>setReviews(current=>({...current,[name]:event.target.value}))}/></article>)}</>}{reviewArchiveGateField}<div className="scene-actions"><Button variant="secondary" onClick={()=>go(2)}>返回智能装裱</Button><Button icon={Archive} onClick={archiveRecord} disabled={!reviewArchiveGate.ok} data-archive-gate={reviewArchiveGate.ok?'ok':'blocked'} data-archive-mode={archiveIsUpdate?'update':'create'} data-archive-version={archivedRecord?String(archivedRecord.version):''} data-archive-media-phase={archiveMediaAttempt.phase} data-archive-block-reason={reviewArchiveGate.ok?'':reviewArchiveGate.reasonText} title={archiveIsUpdate?'本次归档会更新已有的那条档案记录（同一课次 + 同一位学员只留一条）':'本次归档会新建一条档案记录'}>{archived?'保存修改并更新档案':'归档并生成分享'}</Button></div></div></section>:null}
-      {step===4?<section className="share-task scene-panel" data-archive-step="true" data-archive-step-state={archiveStep.state} data-archive-step-label={archiveStep.stateLabel}><img src={pandaObserve} alt="熊猫成长伙伴"/><div><span data-archive-step-headline="true">{archiveStep.state===ARCHIVE_STEP_STATES.archived?`已写入 ${(currentArchiveRecord?.student)||selectedStudentLabel} 的成长档案`:'归档状态'}</span><h2>{archiveStep.headline}</h2><p data-archive-step-note="true">{archiveStep.state===ARCHIVE_STEP_STATES.archived?'作品、课堂照片与五维点评已经写入成长档案。':archiveStep.note}</p>{archiveStep.state===ARCHIVE_STEP_STATES.archived&&archiveStep.hint?<small className="archive-step-hint" data-archive-step-hint="true">{archiveStep.hint}</small>:null}{archiveSummaryField}{archiveMediaSyncField}{archiveShareOpen?archiveShareField:null}<div className="share-actions scene-actions"><Button variant="secondary" onClick={()=>go(3)} data-archive-return-review="true">返回修改点评</Button><Button icon={MessageSquareText} onClick={toggleArchiveShare} data-archive-share-toggle="true" data-archive-share-open={archiveShareOpen?'true':'false'} aria-expanded={archiveShareOpen}>转发给家长</Button><Button icon={FileText} onClick={()=>navigate('archives',{student:(currentArchiveRecord?.student)||selectedStudentLabel,className:(currentArchiveRecord?.className)||selectedClassLabel})} data-archive-enter-archive="true">进入成长档案</Button></div></div></section>:null}
+      {step===4?<section className="share-task scene-panel" data-archive-step="true" data-archive-step-state={archiveStep.state} data-archive-step-label={archiveStep.stateLabel}><img src={pandaObserve} alt="熊猫成长伙伴"/><div><span data-archive-step-headline="true">{archiveStep.state===ARCHIVE_STEP_STATES.archived?`已写入 ${(currentArchiveRecord?.student)||selectedStudentLabel} 的成长档案`:'归档状态'}</span><h2>{archiveStep.headline}</h2><p data-archive-step-note="true">{archiveStep.state===ARCHIVE_STEP_STATES.archived?'作品、课堂照片与五维点评已经写入成长档案。':archiveStep.note}</p>{archiveStep.state===ARCHIVE_STEP_STATES.archived&&archiveStep.hint?<small className="archive-step-hint" data-archive-step-hint="true">{archiveStep.hint}</small>:null}{archiveSummaryField}{archiveMediaSyncField}{archiveForwardChip}{archiveShareOpen?archiveShareField:null}<div className="share-actions scene-actions"><Button variant="secondary" onClick={()=>go(3)} data-archive-return-review="true">返回修改点评</Button><Button icon={MessageSquareText} onClick={toggleArchiveShare} data-archive-share-toggle="true" data-archive-share-open={archiveShareOpen?'true':'false'} aria-expanded={archiveShareOpen}>转发给家长</Button><Button icon={FileText} onClick={()=>navigate('archives',{student:(currentArchiveRecord?.student)||selectedStudentLabel,className:(currentArchiveRecord?.className)||selectedClassLabel})} data-archive-enter-archive="true">进入成长档案</Button></div></div></section>:null}
     </section></>;
 }
 
