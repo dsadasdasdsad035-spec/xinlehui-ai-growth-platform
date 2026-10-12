@@ -3832,6 +3832,69 @@ US-303 补的是后半截，两个模块：
   画心盒子比例 == 素材原图比例（不拉伸）且落在盒子内、导出 2160×3840 + 文件名、切成没有成片记录的周期 →
   角标占位「时长 待生成」+ 导出禁用 + **预览照出**，切回去又放行）。
 
+## 成长报告长图海报：高度自适应 · 单边上限 · 「先降 DPI、再分段出多张」（[海报 US-307] / FR-317、FR-324 ~ FR-326）
+
+「把这位学员这个周期的内容做成一张能一路滑下去的长图」。仍是 `data` 定规则 + `services` 落笔的分工：
+
+- `src/data/posterReportLong.js`（data 层纯函数，可 `node` 直跑）= 分段排版 / 分页 / 降级 / 文件名：
+  - **画布 1080 宽、高度按内容算**：高度 = 各段内容块之和（封面头图 → 课程时间线 → 作品与点评摘要
+    → 成长概览 → 二维码），**没有任何一处写死「长图多高」**。`layout.height` 是整张的高度、
+    `page.height` 是这一张的高度。
+  - **块（block）是排版与分页的唯一单位**：`buildReportBlocks()` 把内容排成一串原子块
+    （封面 / 段标题 / 一行课次 / 一行作品 / 一条总结 / 码 / 落款），每块带 `height`（像素）、
+    `gapAfter`（段内 `blockGap`、分段边界 `sectionGap`、最后一块 0）与**块内偏移的占位区**（`dy`）。
+    `packReportBlocks()` 只在块边界上贪心分页 —— 因此**没有任何一段版式会被切一半**。
+    页面合成（`composeReportPageSpec`）只做一件事：`y = (block.y + slot.dy) / 短边`。
+    加一种行 / 加一段内容 = 加一个块，分页与估高自动跟上。
+  - **段标题 keep-with-next**：标题块装不进当前页时，连同下一块一起挪到下一页（标题孤零零落在页尾
+    会让老师以为漏了内容）。判据写在 packer 的 `need` 里（`block.kind === 'title'` 时把下一块的高度也算上）。
+  - **单边上限只读真源**：`POSTER_REPORT_MAX_EDGE = POSTER_CANVAS_EDGE_RANGE.max`（别再写 4096）。
+    降级顺序就是验收点名的那一条，`posterReportDegradeView()` 一个函数给全：
+    高度 ≤ 上限 ÷ 导出倍数 → `none`（一张图 2×）；≤ 上限 → `dpi`（**先降 DPI**：导出 2× → 1×，仍是一张图）；
+    > 上限 → `paged`（**再分段出多张**，每张 ≤ 4096，文件名 `…_长图_1of3.png`）。
+    `degrade.exportScale` 是**数据层的决定**，`services` 只读它、不自己判一遍。
+  - **预计高度与预计文件大小**：`layout.estimate` / `estimateText` 完全由数据层算出（不碰 canvas，
+    所以「渲染前就有」）。体积经验值 `POSTER_REPORT_BYTES_PER_PIXEL = 0.15` 是真机量出来的
+    （12 条记录的长图实测 0.149 bytes/px）；断言按量级比（实际落在预计的 0.5~1.6 倍）。
+  - **文字折行估算**（data 层没有 canvas）：`posterReportLineCapacity(width, fontSize)` = `width / fontSize`
+    （中文一字 ≈ 一个字号宽，保守），`posterReportFoldedLines()` 给出预留行数 → 写进占位区的 `maxLines`；
+    渲染层仍会按 `maxLines` 截断，所以「估多了只是多留白，估少了会叠字」。验证口径：
+    浏览器里断言 `plan.slots[].lines <= spec.maxLines` + 块之间不重叠。
+  - **内容全部来自归档数据**（FR-326）：课次行读 `archiveLessonEntry()`（成长档案时间线那一支）、
+    课题走 `resolveArchiveLesson()`（与单作品海报同一支两条路）、点评摘要走 `videoSubtitleFromReview()`
+    （逐字截取，40 字上限）、成长概览走 `posterPeriodSummary()`（阶段报告聚合那一支，**不另写一份**）、
+    有效分享走 `shareTokenView()`。数据不足时写 `ARCHIVE_REPORT_INSUFFICIENT_TEXT`（「本阶段数据不足」）。
+    「课程时间线 / 作品与点评摘要 / 成长概览」这几句是**版式分段标题**（与模板里的分段标题同类），
+    不是替内容写的话 —— 断言要把这条讲清楚（`E6` 一组）。
+  - **有内容才出图**：没有学员 / 这个周期一条记录都没有 → `pages: []`（结构上就渲染不出一张空白海报），
+    导出门同时拦下（原因点名「换一个周期 / 先完成课后反馈的归档」）。
+- `src/services/posterReportLong.js` = 渲染与下载：`renderPosterReport(plan,{pageIndex})`（预览 1×）、
+  `exportPosterReportPng(plan,{pageIndex})`（倍数读 `degrade.exportScale`）、`exportPosterReportPages(plan)`
+  （逐张渲染下载、页码文件名、某张失败只进 `failures`；张间隔复用 `POSTER_CLASS_BATCH_DOWNLOAD_GAP_MS`）。
+  下载走共用的 `downloadPosterSingleBlob`。
+- 界面（`GrowthArchiveData.jsx` 的 `ReportLongPosterPanel`，**只在个人成长档案视图**；
+  班级视图仍是 US-305 的班级作品墙）：周期下拉 + 降级说明 + 预计高度 / 预计文件大小 + 五个分段的读数 +
+  可滚动的长条预览（`.poster-report-long-preview{max-height:420px;overflow-y:auto}` —— 长图既不压扁也不撑满整页）+
+  出图张数选择器 + 「导出第 N 张 PNG」/「分段导出全部 N 张」。`data-poster-report-*` 上的读数全部来自
+  `buildPosterReportLongPlan()` 的产物。空态给「去创建课后反馈」入口。
+- **两处有意为之的取舍**（写下来免得被当成漏判）：
+  ① **长图里不放 Logo 位**：Logo 的高度只有渲染时才知道（`maxWRatio` × 图片自身比例），
+     放进自适应竖向排版会与下一段叠字 —— 机构标识由落款文字 `{机构名} · {老师姓名}` 承载；
+  ② **逐行文案写进占位区的 `template` 字面量**：渲染层的变量上下文是整张图一份，逐行内容无法走变量。
+     老师的作品名若**恰好**写了 `{日期}` 这类白名单变量名会被替换 —— 与「模板里的变量」同一口径，不另造转义。
+  ③ 模板里那条固定 `y` 的装饰线（decor）在自适应高度下没有位置含义 → 挪到**头图下沿**（只有含封面的那一张画）。
+- 验收口径：`/tmp/assert-us096.mjs`（Node，**113 项**）+ `/tmp/assert-us096-browser.mjs`（CDP，**88 项**：
+  真机链路走到成长档案 → 12 条归档记录 → 一张 1080×3894 的图（五段都有墨迹、时间线/作品段各数出 12 行墨迹、
+  块不重叠、0 溢出警告、二维码是真码）→ 24 条记录 → 分段 2 张（每张 ≤ 4096、`长图_1of2` / `长图_2of2`、
+  分段导出下载 2 张）→ 390px 无横向溢出 → 班级视图不挂长图）。截图 465~469。
+- **`pnpm run build` 抓不到「面板用到的常量没 import」**（本轮真踩：`POSTER_REPORT_DEFAULT_PERIOD` 漏 import →
+  进成长档案页整页白屏、`#root` 为空、build 全绿）。判据：Node 断言里扫一遍面板代码块用到的
+  `POSTER_REPORT_* / posterReport* / *PosterReport*` 标识符，逐个核对在 import 块里（`assert-us096.mjs` 的 I1）。
+- **CDP 的 `send(method, params)` 第三个参数是 sessionId**：传 `null` 会落到**浏览器级**会话，
+  `Emulation.setDeviceMetricsOverride` 在那里不存在（报 `-32601 was not found`），
+  且如果调用点写了 `.catch(()=>{})` 就变成「390px 断言静默跑在 1440px 上」。只传两个参数（用默认页面会话）。
+  390px 段先断言 `window.innerWidth === 390`，再断言没有横向溢出。
+
 ## 容易踩的坑
 
 - **「每次渲染后量一次」的测量签名里不能有时间戳**（US-224 真踩）：`useEffect(()=>{measure()})`

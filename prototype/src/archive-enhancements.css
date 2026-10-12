@@ -1032,3 +1032,44 @@
   .poster-class-order-actions button{min-height:44px}
   .poster-class-actions button{width:100%;min-height:44px;justify-content:center}
 }
+/* 成长报告长图海报（[海报 US-307]）：高度按内容自适应（可能 3000+px），预览是可滚动的长条。
+   预览容器限高 + 自己滚动：长图不被压扁、也不把整页撑到几屏高（比例由渲染结果决定，不裁切）。 */
+.poster-report-long{display:flex;flex-direction:column;gap:8px;margin-top:12px;padding:12px;border:1px solid #e0dfe8;border-radius:12px;background:#fbfaf7;text-align:left;min-width:0}
+.poster-report-long-head{display:flex;align-items:center;gap:7px}
+.poster-report-long-head b{font-size:12px;color:#3f3b33}
+.poster-report-long-head em{margin-left:auto;font-size:10px;font-style:normal;font-weight:800;padding:3px 8px;border-radius:999px;background:#eee9dd;color:#6f6551}
+.poster-report-long-head em.is-ready{background:#e6f5ea;color:#2f7a45}
+.poster-report-long-head em.is-blocked,.poster-report-long-head em.is-failed{background:#f7e3e0;color:#a5452f}
+.poster-report-long-head small{font-size:10px;color:#8b8064}
+.poster-report-long-body{display:grid;grid-template-columns:minmax(0,240px) minmax(0,1fr);gap:12px;align-items:start}
+.poster-report-long-controls{display:flex;flex-direction:column;gap:6px;min-width:0}
+.poster-report-long-controls label{display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:11px;color:#6a6252}
+.poster-report-long-controls select{font-size:11px;padding:4px 6px;border:1px solid #d9d7e0;border-radius:8px;background:#fff}
+.poster-report-long-controls small{font-size:10px;color:#8b8064;word-break:break-word}
+/* 降级说明读的是数据层那一句（先降 DPI、再分段出多张），界面不自己拼。 */
+.poster-report-long-controls [data-poster-report-degrade-inline="dpi"]{color:#9a6a1f}
+.poster-report-long-controls [data-poster-report-degrade-inline="paged"]{color:#a5452f}
+.poster-report-long-estimate,.poster-report-long-page-estimate{margin:0;font-size:10px;color:#6f6551}
+.poster-report-long-segments{margin:0;padding-left:14px;display:flex;flex-direction:column;gap:2px;font-size:10px;color:#7c7259}
+.poster-report-long-pages{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:10px;color:#6a6252}
+.poster-report-long-pages button{font-size:10px;padding:4px 8px;border:1px solid #d9d7e0;border-radius:999px;background:#fff;color:#544d40}
+.poster-report-long-pages button.active{border-color:#cfa52e;background:#fdf6e3;font-weight:800}
+.poster-report-long-preview{margin:0;border:1px solid #d9d7e0;border-radius:10px;background:#fff;max-width:240px;max-height:420px;overflow-y:auto;display:block}
+.poster-report-long-preview img{display:block;width:100%;height:auto}
+.poster-report-long-hold{display:block;font-size:11px;color:#8a7d5e;padding:20px;text-align:center}
+.poster-report-long-meta{display:flex;flex-direction:column;gap:6px;font-size:11px;color:#544d40;min-width:0}
+.poster-report-long-meta ul{margin:0;padding-left:14px;display:flex;flex-direction:column;gap:3px;word-break:break-word}
+.poster-report-long-notes{color:#8a7d5e;font-size:10px}
+.poster-report-long-warning{color:#a5452f;font-size:10px;margin:0}
+.poster-report-long-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.poster-report-long-actions small{font-size:10px;color:#7c7259}
+.poster-report-long-empty{font-size:11px;color:#8a7d5e;display:flex;flex-direction:column;gap:8px;align-items:flex-start}
+.poster-report-long-empty p{margin:0}
+@media(max-width:800px){
+  .poster-report-long{padding:10px}
+  .poster-report-long-body{grid-template-columns:minmax(0,1fr)}
+  .poster-report-long-preview{max-width:none;max-height:360px}
+  .poster-report-long-controls select{min-height:44px}
+  .poster-report-long-pages button{min-height:44px}
+  .poster-report-long-actions button{width:100%;min-height:44px;justify-content:center}
+}

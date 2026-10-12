@@ -286,6 +286,27 @@ import {
   renderPosterClass
 } from './services/posterClass';
 import { POSTER_SINGLE_SHARE_PENDING_TEXT } from './data/posterSingle';
+// 成长报告长图海报（[海报 US-307] / FR-317、FR-326）：竖向分段、高度按内容自适应、单边上限保护与
+// 「先降 DPI、再分段出多张」的降级顺序、预计高度与预计文件大小全在 `data/posterReportLong.js`
+// （零依赖纯函数，可 node 直跑断言），渲染与下载在 `services/posterReportLong.js`
+// （预览 / 每一张都是同一个 `renderPoster`，倍数读数据层的降级结论）。这一页只渲染它们的产物。
+import {
+  POSTER_REPORT_DEFAULT_PERIOD,
+  POSTER_REPORT_EXPORT_BLOCKED_TITLE,
+  POSTER_REPORT_EMPTY_TITLE,
+  POSTER_REPORT_PERIOD_OPTIONS,
+  buildPosterReportLongPlan,
+  posterReportExportGate
+} from './data/posterReportLong';
+import {
+  POSTER_REPORT_PREVIEW_SCALE,
+  POSTER_REPORT_RENDER_FAILED_TEXT,
+  createPosterReportUrl,
+  exportPosterReportPages,
+  exportPosterReportPng,
+  releasePosterReportUrl,
+  renderPosterReport
+} from './services/posterReportLong';
 // 成长视频封面海报（[海报 US-306] / FR-316、FR-323、FR-345）：画布比例、四条叠加件、时长角标与
 // 成片状态的联动、导出门全在 `data/posterVideoCover.js`（零依赖纯函数，可 node 直跑断言），
 // 渲染与下载在 `services/posterVideoCover.js`（预览 1×、导出 2×，同一个 `renderPoster`）。
@@ -1616,6 +1637,164 @@ function VideoCoverPosterPanel({isClass=false,objectName='',period='',jobKey='',
   );
 }
 
+function ReportLongPosterPanel({student='',records=[],lessons=[],tokens=[],teacherName='',orgName='',logo='',setToast=()=>{},navigate=null}){
+  const [period,setPeriod]=useState(POSTER_REPORT_DEFAULT_PERIOD);
+  const [pageIndex,setPageIndex]=useState(1);
+  const [preview,setPreview]=useState({key:'',url:'',phase:'idle',warnings:[],width:0,height:0,bytes:0});
+  const [notice,setNotice]=useState({phase:'idle',message:''});
+  const [busy,setBusy]=useState(false);
+  const shareOrigin=typeof window==='undefined'?'':(window.location?.origin||'');
+  // 装配（数据层产物）：分段高度、分页、降级档位、预计高度与预计体积都在 plan 里 —— 界面只渲染。
+  const plan=useMemo(()=>buildPosterReportLongPlan({
+    records,lessons,student,period,tokens,today:null,
+    teacherName,orgName,logo,origin:shareOrigin
+  }),[records,lessons,student,period,tokens,teacherName,orgName,logo,shareOrigin]);
+  const gate=posterReportExportGate(plan);
+  const pages=plan.pages||[];
+  const page=pages[Math.min(Math.max(1,pageIndex),Math.max(1,pages.length))-1]||null;
+  const currentIndex=page?page.index:1;
+  // 换学员 / 换周期：回到第一张，清掉回执（张数变了还停在「第 3 张」是没有意义的）。
+  useEffect(()=>{setPageIndex(1);setNotice({phase:'idle',message:''})},[student,period]);
+  // 预览重绘键 = 真正会改变这一张图的所有输入（学员 / 周期 / 张号 / 逐行内容 / 头图 / 链接 / 落款）。
+  const renderKey=plan.hasStudent&&gate.allowed&&page?[
+    plan.templateKey,plan.studentName,plan.periodLabel,page.index,page.height,
+    plan.rows.map(row=>`${row.recordKey||row.index}:${row.artworkUrl.slice(-24)}:${row.quote.text}`).join(','),
+    plan.cover.url,plan.data.shareUrl,plan.data.orgName,plan.data.teacherName
+  ].join('|'):'';
+  useEffect(()=>{
+    if(!renderKey){
+      setPreview({key:'',url:'',phase:'idle',warnings:[],width:0,height:0,bytes:0});
+      return ()=>{};
+    }
+    let cancelled=false;
+    let createdUrl='';
+    setPreview({key:renderKey,url:'',phase:'pending',warnings:[],width:0,height:0,bytes:0});
+    renderPosterReport(plan,{pageIndex:currentIndex,scale:POSTER_REPORT_PREVIEW_SCALE}).then(rendered=>{
+      if(cancelled) return;
+      if(!rendered||!rendered.blob){
+        setPreview({key:renderKey,url:'',phase:'failed',warnings:[],width:0,height:0,bytes:0});
+        return;
+      }
+      createdUrl=createPosterReportUrl(rendered);
+      setPreview({key:renderKey,url:createdUrl,phase:'ready',warnings:rendered.warnings||[],width:rendered.width,height:rendered.height,bytes:rendered.blob.size});
+    }).catch(()=>{
+      if(!cancelled) setPreview({key:renderKey,url:'',phase:'failed',warnings:[],width:0,height:0,bytes:0});
+    });
+    return ()=>{ cancelled=true; if(createdUrl) releasePosterReportUrl(createdUrl); };
+  // 预览随「重绘键」重跑：键里已经包含了 plan 上所有会影响这一张的输入。
+  },[renderKey]);
+  const exportCurrent=async()=>{
+    if(!gate.allowed){setNotice({phase:'blocked',message:gate.reason});return;}
+    setBusy(true);
+    const result=await exportPosterReportPng(plan,{pageIndex:currentIndex});
+    setBusy(false);
+    if(!result.ok){setNotice({phase:'failed',message:result.reason});return;}
+    const message=`长图已导出（第 ${result.page.index} / ${result.page.total} 张）：${result.filename} · ${result.rendered.width}×${result.rendered.height} · ${artworkExportSizeText(result.bytes)}`;
+    setNotice({phase:'done',message});
+    setToast(`${result.filename} 已下载`);
+  };
+  const exportAllPages=async()=>{
+    if(!gate.allowed){setNotice({phase:'blocked',message:gate.reason});return;}
+    setBusy(true);
+    const result=await exportPosterReportPages(plan);
+    setBusy(false);
+    if(!result.count){setNotice({phase:'failed',message:result.reason||POSTER_REPORT_RENDER_FAILED_TEXT});return;}
+    const message=`分段导出完成：${result.count} / ${result.total} 张已下载（${result.filenames.join('、')}）`;
+    setNotice({phase:result.ok?'done':'failed',message});
+    setToast(`已下载 ${result.count} 张长图`);
+  };
+  const state=!plan.hasStudent
+    ?'empty'
+    :(!gate.allowed?'blocked':(preview.phase==='failed'?'failed':(preview.phase==='ready'?'ready':preview.phase)));
+  const badge=state==='ready'?'已生成':state==='pending'?'生成中':state==='blocked'?'本周期无记录':state==='failed'?'生成失败':state==='empty'?'待选学员':'准备中';
+  return (
+    <section className="poster-report-long" data-poster-report="true"
+      data-poster-report-state={state}
+      data-poster-report-template={plan.templateKey}
+      data-poster-report-student={plan.studentName}
+      data-poster-report-period={plan.period}
+      data-poster-report-period-label={plan.periodLabel}
+      data-poster-report-width={String(plan.layout.width)}
+      data-poster-report-height={String(plan.layout.height)}
+      data-poster-report-max-edge={String(plan.layout.maxEdge)}
+      data-poster-report-pages={String(pages.length)}
+      data-poster-report-page={String(page?page.index:0)}
+      data-poster-report-page-height={String(page?page.height:0)}
+      data-poster-report-page-canvas={page?`${plan.layout.width}x${page.height}`:''}
+      data-poster-report-segments={page?page.segmentIds.join(','):''}
+      data-poster-report-segment-list={page?page.segments.map(segment=>`${segment.id}>${segment.label}@${segment.height}`).join('|'):''}
+      data-poster-report-degrade={plan.degrade.mode}
+      data-poster-report-degrade-label={plan.degrade.modeLabel}
+      data-poster-report-degrade-note={plan.degrade.note}
+      data-poster-report-export-scale={String(plan.degrade.exportScale)}
+      data-poster-report-estimate={plan.estimateText}
+      data-poster-report-estimated-height={String(plan.layout.estimate.height)}
+      data-poster-report-estimated-bytes={String(plan.layout.estimate.bytes)}
+      data-poster-report-page-estimate={page?`第 ${page.index} / ${page.total} 张：预计高度 ${page.estimate.height}px · 预计文件大小 ${artworkExportSizeText(page.estimate.bytes)}（${page.estimate.scale}× 导出 = ${page.estimate.deviceWidth}×${page.estimate.deviceHeight}）`:''}
+      data-poster-report-lessons={String(plan.rows.length)}
+      data-poster-report-artworks={String(plan.works.count)}
+      data-poster-report-cover={plan.cover.url||''}
+      data-poster-report-artwork-missing={plan.works.missing?'true':'false'}
+      data-poster-report-quotes-truncated={String(plan.quotes.truncated)}
+      data-poster-report-share={plan.share.pending?'pending':'active'}
+      data-poster-report-share-link={plan.share.link}
+      data-poster-report-page-filename={page?page.filename:''}
+      data-poster-report-export={gate.allowed?'allowed':'blocked'}
+      data-poster-report-export-reason={gate.reason}
+      data-poster-report-preview={preview.phase}>
+      <div className="poster-report-long-head">
+        <FileText size={14}/>
+        <b>成长报告长图</b>
+        <em className={`is-${state}`} data-poster-report-badge="true">{badge}</em>
+        {plan.templateName?<small data-poster-report-template-name="true">{plan.templateName}</small>:null}
+      </div>
+      {plan.hasStudent?<div className="poster-report-long-body">
+        <div className="poster-report-long-controls">
+          <label>周期<select value={period} onChange={event=>setPeriod(event.target.value)} data-poster-report-period-select="true">{POSTER_REPORT_PERIOD_OPTIONS.map(name=><option key={name} value={name}>{name}</option>)}</select></label>
+          <small data-poster-report-period-line="true">{plan.periodLabel}</small>
+          <small data-poster-report-degrade-line="true" data-poster-report-degrade-inline={plan.degrade.mode}>{plan.degrade.modeLabel}：{plan.degrade.note}</small>
+        </div>
+        <p className="poster-report-long-estimate" data-poster-report-estimate-line="true">{plan.estimateText}</p>
+        {page?<p className="poster-report-long-page-estimate" data-poster-report-page-estimate-line="true">{`第 ${page.index} / ${page.total} 张：高度 ${page.estimate.height}px · 预计文件大小 ${artworkExportSizeText(page.estimate.bytes)}（${page.estimate.scale}× 导出 = ${page.estimate.deviceWidth}×${page.estimate.deviceHeight}）`}</p>:null}
+        <ol className="poster-report-long-segments" data-poster-report-segment-list-box="true">
+          {(page?page.segments:[]).map(segment=><li key={segment.id} data-poster-report-segment={segment.id} data-poster-report-segment-height={String(segment.height)} data-poster-report-segment-blocks={String(segment.blocks)}>{segment.label}（{segment.height}px · {segment.blocks} 块）</li>)}
+        </ol>
+        {pages.length>1?<div className="poster-report-long-pages" data-poster-report-page-picker="true">
+          <span>出图张数</span>
+          {pages.map(item=><button type="button" key={item.index} className={item.index===(page?page.index:1)?'active':''} data-poster-report-page-pick={String(item.index)} data-poster-report-page-pick-height={String(item.height)} onClick={()=>setPageIndex(item.index)}>第 {item.index} 张（{item.height}px）</button>)}
+        </div>:null}
+        <figure className="poster-report-long-preview" data-poster-report-preview-box="true" data-poster-report-preview-canvas={page?`${plan.layout.width}x${page.height}`:''}>
+          {preview.url
+            ?<img src={preview.url} alt={`${plan.studentName}的成长报告长图预览（${plan.layout.width}×${page?page.height:0}，共 ${pages.length} 张）`} data-poster-report-image="true" data-poster-report-image-size={`${preview.width}x${preview.height}`} data-poster-report-image-bytes={String(preview.bytes)}/>
+            :<span className="poster-report-long-hold" data-poster-report-hold="true">{preview.phase==='failed'?POSTER_REPORT_RENDER_FAILED_TEXT:(gate.allowed?'正在生成长图预览…':gate.reason)}</span>}
+        </figure>
+        <div className="poster-report-long-meta">
+          <ul>
+            <li data-poster-report-line="student">学员：{plan.studentName} · {plan.periodLabel}</li>
+            <li data-poster-report-line="content">内容：{plan.rows.length} 节课次 · {plan.works.count} 幅成品作品 · 点评摘要 {plan.quotes.truncated?`${plan.quotes.truncated} 条按字数截断`:'全部在 40 字内'}</li>
+            <li data-poster-report-line="size">整张长图 {plan.layout.width}×{plan.layout.height}（上限 {plan.layout.maxEdge}px）· {plan.degrade.modeLabel}{pages.length>1?` · ${pages.length} 张`:''}</li>
+            <li data-poster-report-line="share">分享：{plan.share.pending?POSTER_SINGLE_SHARE_PENDING_TEXT:`链接可用 · ${plan.share.link}`}</li>
+            <li data-poster-report-line="file">文件名：{page?page.filename:''}</li>
+          </ul>
+          {plan.notes.length?<ul className="poster-report-long-notes">
+            {plan.notes.map(note=><li key={note} data-poster-report-note="true">{note}</li>)}
+          </ul>:null}
+          {preview.warnings.length?<p className="poster-report-long-warning" data-poster-report-warning="true">{preview.warnings.join('；')}</p>:null}
+          <div className="poster-report-long-actions">
+            <Button icon={Download} disabled={!gate.allowed||busy} onClick={exportCurrent} data-poster-report-export-button="true">{busy?'正在导出…':gate.allowed?`导出第 ${page?page.index:1} 张 PNG`:POSTER_REPORT_EXPORT_BLOCKED_TITLE}</Button>
+            {pages.length>1?<Button variant="secondary" icon={Download} disabled={!gate.allowed||busy} onClick={exportAllPages} data-poster-report-export-all="true">{`分段导出全部 ${pages.length} 张`}</Button>:null}
+            {gate.allowed?null:<small data-poster-report-block-reason="true">{gate.reason}</small>}
+            {notice.message?<small data-poster-report-notice="true">{notice.message}</small>:null}
+          </div>
+        </div>
+      </div>:<div className="poster-report-long-empty" data-poster-report-empty="true">
+        <p>{plan.notes[0]||POSTER_REPORT_EMPTY_TITLE}</p>
+        {navigate?<Button icon={Plus} data-poster-report-create="true" onClick={()=>navigate('create')}>去创建课后反馈</Button>:null}
+      </div>}
+    </section>
+  );
+}
+
 function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkCount,photoCount,teacherName,setToast,entries=[],scopeEntries=[],classEntries=[],roster=[],tokens=[],records=[],musicTracks=[],videoRecords=[],consents=null,setShareTokens=()=>{},setVideoRecords=()=>{},recordAudit=()=>{},auditActor=null,auditLog=[],videoQuota=null,videoRetention=null,management=null,navigate=null,logo=''}){
   const [jobs,setJobs]=useState(()=>listVideoJobs());
   const [notice,setNotice]=useState('');
@@ -2525,7 +2704,7 @@ export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,p
             {timelineWindow.hasMore?<button type="button" className="primary" data-archive-page-more="true" onClick={()=>setTimelinePage(page=>Math.min(timelineWindow.pageCount,page+1))}>{timelineWindow.moreLabel}</button>:null}
           </nav>:null}
         </section>
-        {view.isClass?<ClassPosterPanel className={view.name} roster={classRoster} records={records} tokens={shareTokens} teacherName={teacherName} orgName={DEFAULT_ORG_NAME} logo={archivePosterLogo} setToast={setToast}/>:null}
+        {view.isClass?<ClassPosterPanel className={view.name} roster={classRoster} records={records} tokens={shareTokens} teacherName={teacherName} orgName={DEFAULT_ORG_NAME} logo={archivePosterLogo} setToast={setToast}/>:<ReportLongPosterPanel student={view.name} records={records} lessons={lessonList} tokens={shareTokens} teacherName={teacherName} orgName={DEFAULT_ORG_NAME} logo={archivePosterLogo} setToast={setToast} navigate={navigate}/>}
         <VideoJobsPanel logo={archivePosterLogo} isClass={view.isClass} objectName={view.name} period={videoPeriod} onPeriod={setVideoPeriod} lessonCount={view.summary.lessons} artworkCount={view.summary.artworks} photoCount={view.summary.photos} teacherName={teacherName} setToast={setToast} entries={videoEntries} scopeEntries={videoScopeEntries} classEntries={videoClassEntries} roster={classRoster} tokens={shareTokens} records={records} consents={consents} musicTracks={musicTracks} videoRecords={videoRecords} auditLog={auditLog} videoQuota={videoQuota} videoRetention={videoRetention} management={management} setShareTokens={setShareTokens} setVideoRecords={setVideoRecords} recordAudit={recordAudit} auditActor={auditActor} navigate={navigate}/>
         <section className="archive-perf-panel" data-archive-perf="true" data-archive-perf-measured={String(perfChecks.measured)} data-archive-perf-total={String(perfChecks.total)} data-archive-perf-all-ok={perfChecks.allOk?'true':'false'} data-archive-perf-summary-text={perfChecks.summary}>
           <div className="archive-perf-head"><Gauge size={15}/><b>档案性能</b><em data-archive-perf-summary="true">{perfChecks.summary}</em><small>{ARCHIVE_PERF_HINT}</small></div>
