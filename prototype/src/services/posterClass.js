@@ -35,13 +35,14 @@ export const POSTER_CLASS_BATCH_DOWNLOAD_GAP_MS = 120;
 
 /**
  * 渲染一张班级作品墙海报（预览 / 导出 / 分批共用）。`plan` 来自 `buildPosterClassPlan()`。
+ * `type` / `quality` 是编码档（缺省 PNG；导出 JPG 时传 `POSTER_MIME_JPEG` + 0.9）。
  * 返回 `renderPoster` 的完整结果（`{ blob, dataURL, canvas, plan, warnings, … }`）；
  * 没有班级 / 没有 canvas 能力时返回 `null`（调用方自己决定怎么降级）。
  */
-export async function renderPosterClass(plan, { scale = POSTER_CLASS_PREVIEW_SCALE } = {}) {
+export async function renderPosterClass(plan, { scale = POSTER_CLASS_PREVIEW_SCALE, type, quality } = {}) {
   const value = plan && typeof plan === 'object' ? plan : null;
   if (!value || !value.hasClass || !value.spec) return null;
-  return renderPoster({ spec: value.spec, data: value.data, scale });
+  return renderPoster({ spec: value.spec, data: value.data, scale, type, quality });
 }
 
 /** 预览用的地址（object URL，用完必须 `releasePosterClassUrl` 回收）。 */

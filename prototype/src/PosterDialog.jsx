@@ -17,9 +17,31 @@
 // 因此这里不写任何「成长档案专属」的逻辑（档案页给的是 target / name / students / 周期筛选）。
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, Loader2, MessageSquareText, Plus, X } from 'lucide-react';
+import { Archive, Download, Loader2, MessageSquareText, Plus, Share2, X } from 'lucide-react';
 import { Button } from './ui';
 import { nowMs } from './services/archivePerformance';
+import {
+  POSTER_EXPORT_CHECKS_RULE,
+  POSTER_EXPORT_DEFAULT_FORMAT,
+  POSTER_EXPORT_FORMATS,
+  POSTER_EXPORT_LONG_PRESS_HINT,
+  POSTER_EXPORT_SHARE_EMPTY_TEXT,
+  posterExportBatchText,
+  posterExportChecks,
+  posterExportDoneText,
+  posterExportFormat,
+  posterExportLongPressText,
+  posterExportPages,
+  posterExportSaveStrategy
+} from './data/posterExport';
+import {
+  POSTER_EXPORT_RENDER_FAILED_TEXT,
+  canSharePosterFiles,
+  createPosterExportUrl,
+  exportPosterFiles,
+  releasePosterExportUrl,
+  sharePosterFiles
+} from './services/posterExport';
 import {
   POSTER_TEMPLATE_DELETE_NOTE,
   POSTER_TEMPLATE_MINE_LABEL,
@@ -116,12 +138,20 @@ export default function PosterDialog({
   const shareOrigin = typeof window === 'undefined' ? '' : (window.location?.origin || '');
   const [period, setPeriod] = useState(() => posterDialogPeriod(periodFilter));
   const [pickedId, setPickedId] = useState('');
-  const [preview, setPreview] = useState({ key: '', url: '', phase: 'idle', kind: '', templateId: '', width: 0, height: 0, warnings: [] });
+  const [preview, setPreview] = useState({ key: '', url: '', phase: 'idle', kind: '', templateId: '', width: 0, height: 0, warnings: [], checks: null });
   const [thumbs, setThumbs] = useState({});
   const [perf, setPerf] = useState({ firstPreviewMs: null, switchMs: null });
   // 「文案与作品微调」（[海报 US-310a] / FR-335 ~ FR-339）：老师填的五个字段。
   // 空值 = 不改这一项（留空 = 用原值），因此初始态是「原样」，一个字段都不覆盖。
   const [tuning, setTuning] = useState({ title: '', quote: '', date: '', qrcode: true, artworks: [] });
+  // 导出（[海报 US-311a] / FR-341 ~ FR-343、FR-348）：格式档 + 一次导出的回执 + 长按保存那一档的图片。
+  // `exportFiles` 是**已经交付出去的那几张 blob**（「直接分享」用的就是它们，不重新渲染）；
+  // `pressImages` 只在不执行 blob 下载的浏览器（iOS / 微信）里出现 —— 把图显示出来长按保存。
+  const [exportFormat, setExportFormat] = useState(POSTER_EXPORT_DEFAULT_FORMAT);
+  const [exportState, setExportState] = useState({ phase: 'idle', busy: false, notice: '', filename: '', bytes: 0, width: 0, height: 0, pages: 0, shared: '' });
+  const [exportFiles, setExportFiles] = useState([]);
+  const [pressImages, setPressImages] = useState([]);
+  const pressUrlsRef = useRef([]);
   // 模板库这一份**归弹窗自己管**（[海报 US-310b]）：另存 / 重命名 / 删除都会改它，
   // 改完就用本机镜像重读一次（`savePosterTemplate` 先写镜像、再推云端）—— 于是「退出重进」看到的
   // 就是刚存下的那一份，不依赖父组件的 state 是否记得刷新。调用方显式传了 `templates` 才以它为准。
@@ -215,37 +245,40 @@ export default function PosterDialog({
   // 预览：随「重绘键」重跑（键里已包含会影响这一张图的所有输入）。先出预览，缩略图排在后面。
   useEffect(() => {
     if (!planKey || !selectedPlan) {
-      setPreview({ key: '', url: '', phase: 'idle', kind: '', templateId: '', width: 0, height: 0, warnings: [] });
+      setPreview({ key: '', url: '', phase: 'idle', kind: '', templateId: '', width: 0, height: 0, warnings: [], checks: null });
       return () => {};
     }
     const request = perfRef.current.request;
+    const gate = selectedPlan.exportGate;
+    const blank = { key: planKey, url: '', phase: 'pending', kind: selectedRow ? selectedRow.kind : '', templateId: selectedId, width: 0, height: 0, warnings: [], checks: null };
     let cancelled = false;
     let createdUrl = '';
-    setPreview({ key: planKey, url: '', phase: 'pending', kind: selectedRow ? selectedRow.kind : '', templateId: selectedId, width: 0, height: 0, warnings: [] });
+    setPreview(blank);
     renderPosterDialog(selectedPlan, { scale: POSTER_DIALOG_PREVIEW_SCALE }).then((rendered) => {
       if (cancelled) return;
       if (!rendered || !rendered.blob) {
-        setPreview({ key: planKey, url: '', phase: 'failed', kind: selectedRow ? selectedRow.kind : '', templateId: selectedId, width: 0, height: 0, warnings: [] });
+        setPreview({ ...blank, phase: 'failed' });
         recordPerf(request);
         if (request === 'switch') perfRef.current.request = 'idle';
         return;
       }
       createdUrl = createPosterDialogUrl(rendered);
       setPreview({
-        key: planKey,
+        ...blank,
         url: createdUrl,
         phase: 'ready',
-        kind: selectedRow ? selectedRow.kind : '',
-        templateId: selectedId,
         width: rendered.width,
         height: rendered.height,
-        warnings: rendered.warnings || []
+        warnings: rendered.warnings || [],
+        // 导出前校验（FR-343）读的就是**这一次渲染的产物**：面板上的三行读数与导出时的判据
+        // 是同一次绘制的结果 —— 不存在「面板说没事、导出时才拦下来」。
+        checks: posterExportChecks({ rendered, gate })
       });
       recordPerf(request);
       if (request === 'switch') perfRef.current.request = 'idle';
     }).catch(() => {
       if (cancelled) return;
-      setPreview({ key: planKey, url: '', phase: 'failed', kind: selectedRow ? selectedRow.kind : '', templateId: selectedId, width: 0, height: 0, warnings: [] });
+      setPreview({ ...blank, phase: 'failed' });
       recordPerf(request);
       if (request === 'switch') perfRef.current.request = 'idle';
     });
@@ -326,6 +359,90 @@ export default function PosterDialog({
     });
   };
   const resetTuning = () => setTuning({ title: '', quote: '', date: '', qrcode: true, artworks: [] });
+
+  // ---- 导出（[海报 US-311a] / FR-341 ~ FR-343、FR-348）------------------------------------
+  // 「直接下载还是长按保存」与「能不能直接分享」是两个判据，都**不在这里自己判**：
+  // UA 那一支在 data 层（与装裱导出同一支），`navigator.canShare` 的真结果在服务层。
+  const exportStrategy = useMemo(() => posterExportSaveStrategy({
+    userAgent: typeof navigator === 'undefined' ? '' : navigator.userAgent,
+    canShareFiles: canSharePosterFiles()
+  }), []);
+  const exportPages = useMemo(() => (selectedPlan ? posterExportPages(selectedPlan) : []), [selectedPlan]);
+  const exportEntry = posterExportFormat(exportFormat);
+  // 面板上的三行读数 = 预览这一次渲染的产物（`posterExportChecks`），导出时再在**导出倍数**下
+  // 复核同一份判据（两处读同一个函数，面板不会「说没事、导出才拦」）。
+  const exportChecks = preview.checks || null;
+  const releasePressImages = () => {
+    pressUrlsRef.current.forEach((url) => releasePosterExportUrl(url));
+    pressUrlsRef.current = [];
+  };
+  // 换模板 / 换周期 / 换对象 / 改文案之后：上一次导出的回执与长按图片都不再是「这一张」的了。
+  // （导出本身不改重绘键，所以这一刻的清空不会把刚拿到的回执擦掉。）
+  useEffect(() => {
+    releasePressImages();
+    setPressImages([]);
+    setExportFiles([]);
+    setExportState({ phase: 'idle', busy: false, notice: '', filename: '', bytes: 0, width: 0, height: 0, pages: 0, shared: '' });
+  }, [planKey]);
+  useEffect(() => () => releasePressImages(), []);
+
+  const runExport = async () => {
+    if (!selectedPlan || exportState.busy) return;
+    releasePressImages();
+    setPressImages([]);
+    setExportFiles([]);
+    setExportState((current) => ({ ...current, phase: 'busy', busy: true, notice: '正在按导出倍数渲染要发出去的那张图…' }));
+    const download = exportStrategy.mode === 'download';
+    const result = await exportPosterFiles(selectedPlan, { format: exportEntry.id, download }).catch(() => null);
+    const blank = { busy: false, filename: '', bytes: 0, width: 0, height: 0, pages: 0, shared: '' };
+    if (!result) {
+      setExportState({ ...blank, phase: 'failed', notice: POSTER_EXPORT_RENDER_FAILED_TEXT });
+      return;
+    }
+    setExportFiles(result.files);
+    if (!result.count) {
+      setExportState({ ...blank, phase: result.blocked ? 'blocked' : 'failed', notice: result.reason || POSTER_EXPORT_RENDER_FAILED_TEXT });
+      return;
+    }
+    // 长按保存那一档：**不触发下载**（浏览器也不执行），把图显示出来让老师长按存相册。
+    if (!download) {
+      const images = result.files.map((file) => ({ url: createPosterExportUrl(file.blob), filename: file.filename }));
+      pressUrlsRef.current = images.map((item) => item.url);
+      setPressImages(images);
+    }
+    const first = result.files[0];
+    const partial = result.skipped.length
+      ? ` ${result.skipped.map((item) => `第 ${item.pageIndex} 张没导出：${item.reason}`).join(' ')}`
+      : '';
+    const head = result.total > 1
+      ? `${download ? posterExportBatchText({ count: result.count, total: result.total, format: result.format.id }) : posterExportLongPressText({ filename: first.filename, pageTotal: result.total })}`
+      : (download
+        ? posterExportDoneText({ filename: first.filename, width: first.width, height: first.height, bytes: first.bytes, format: result.format.id })
+        : posterExportLongPressText({ filename: first.filename, pageTotal: 1 }));
+    setExportState({
+      phase: download ? 'done' : 'longpress',
+      busy: false,
+      notice: `${head}${partial}`,
+      filename: first.filename,
+      bytes: first.bytes,
+      width: first.width,
+      height: first.height,
+      pages: result.count,
+      shared: ''
+    });
+  };
+  const shareExported = async () => {
+    if (!exportFiles.length) {
+      setExportState((current) => ({ ...current, notice: POSTER_EXPORT_SHARE_EMPTY_TEXT }));
+      return;
+    }
+    const shared = await sharePosterFiles(exportFiles, { title: `${subject.name || ''}海报`.trim() });
+    setExportState((current) => ({
+      ...current,
+      shared: shared.ok ? String(shared.shared) : '0',
+      notice: shared.ok ? `已调起系统分享（${shared.shared} 张）：存相册 / 发微信 / 发同事都在系统面板里选。` : shared.reason
+    }));
+  };
 
   // ---- 我的海报模板：另存为 / 重命名 / 删除（[海报 US-310b]）--------------------------------
   // 「老师把这张图调好 → 存成我的模板」：三件事都只对自己的个人模板开放 —— 平台与机构模板由管理员
@@ -653,6 +770,96 @@ export default function PosterDialog({
     </section>
   );
   const blockedReason = (rows.find((row) => !row.applicable) || {}).reason || '';
+  // 导出面板（[海报 US-311a]）：贴着预览的那一块 —— 老师看到图、看到三项校验读数、就地导出。
+  const exportPanel = empty.on ? null : (
+    <section
+      className="poster-dialog-export"
+      data-poster-export="true"
+      data-poster-export-format={exportEntry.id}
+      data-poster-export-mode={exportStrategy.mode}
+      data-poster-export-platform={exportStrategy.reason}
+      data-poster-export-can-share={exportStrategy.canShare ? 'true' : 'false'}
+      data-poster-export-state={exportState.phase}
+      data-poster-export-busy={exportState.busy ? 'true' : 'false'}
+      data-poster-export-filename={exportState.filename}
+      data-poster-export-bytes={String(exportState.bytes || 0)}
+      data-poster-export-size={exportState.filename ? `${exportState.width}x${exportState.height}` : ''}
+      data-poster-export-pages={String(exportPages.length)}
+      data-poster-export-files={String(exportFiles.length)}
+      data-poster-export-shared={exportState.shared}
+      data-poster-export-checks={exportChecks ? exportChecks.rows.map((row) => `${row.id}:${row.ok ? 'ok' : 'fail'}`).join(',') : ''}
+      data-poster-export-blocked={exportChecks && !exportChecks.ok ? 'true' : 'false'}
+    >
+      <header className="poster-dialog-export-head">
+        <Download size={14} />
+        <b>导出图片</b>
+        <small data-poster-export-rule="true">{POSTER_EXPORT_CHECKS_RULE}</small>
+      </header>
+      <div className="poster-dialog-export-formats" role="radiogroup" aria-label="导出格式" data-poster-export-formats="true">
+        {POSTER_EXPORT_FORMATS.map((item) => (
+          <label
+            key={item.id}
+            className="poster-dialog-export-format"
+            data-poster-export-format-option={item.id}
+            data-poster-export-format-selected={item.id === exportEntry.id ? 'true' : 'false'}
+          >
+            <input
+              type="radio"
+              name="poster-export-format"
+              value={item.id}
+              checked={item.id === exportEntry.id}
+              onChange={() => setExportFormat(item.id)}
+            />
+            <span>{item.label}</span>
+          </label>
+        ))}
+      </div>
+      <div className="poster-dialog-export-actions">
+        <button
+          type="button"
+          className="primary poster-dialog-export-button"
+          data-poster-export-button="true"
+          disabled={exportState.busy || preview.phase !== 'ready'}
+          onClick={runExport}
+        >{exportState.busy
+            ? '正在导出…'
+            : (exportPages.length > 1 ? `导出全部 ${exportPages.length} 张 ${exportEntry.shortLabel}` : exportEntry.actionLabel)}
+        </button>
+        {exportStrategy.canShare ? (
+          <button type="button" className="poster-dialog-export-share" data-poster-export-share-button="true" onClick={shareExported}><Share2 size={13} />直接分享</button>
+        ) : null}
+      </div>
+      <ul className="poster-dialog-export-checks" data-poster-export-checks-list="true">
+        {exportChecks ? exportChecks.rows.map((row) => (
+          <li
+            key={row.id}
+            data-poster-export-check={row.id}
+            data-poster-export-check-ok={row.ok ? 'true' : 'false'}
+            data-poster-export-check-policy={row.policy}
+            data-poster-export-check-value={row.value}
+          >
+            <b>{row.label}</b>
+            <span data-poster-export-check-value-text="true">{row.value}</span>
+            <em data-poster-export-check-detail="true">{row.detail}</em>
+          </li>
+        )) : <li data-poster-export-check-pending="true"><b>校验</b><span>待预览就绪</span><em>{POSTER_EXPORT_CHECKS_RULE}</em></li>}
+      </ul>
+      <small className="poster-dialog-export-platform" data-poster-export-platform-note="true">{`${exportStrategy.mode === 'download' ? '直接下载' : '长按保存'}：${exportStrategy.hint}`}</small>
+      <small className="poster-dialog-export-share-note" data-poster-export-share-note="true">{exportStrategy.shareNote}</small>
+      {pressImages.length ? (
+        <div className="poster-dialog-export-longpress" data-poster-export-longpress="true" data-poster-export-longpress-count={String(pressImages.length)}>
+          <small data-poster-export-longpress-hint="true">{POSTER_EXPORT_LONG_PRESS_HINT}</small>
+          {pressImages.map((item) => (
+            <figure key={item.url} className="poster-dialog-export-longpress-figure" data-poster-export-longpress-figure={item.filename}>
+              <img src={item.url} alt={`${item.filename}（长按图片可保存到相册）`} data-poster-export-longpress-image={item.filename} />
+              <figcaption>{item.filename}</figcaption>
+            </figure>
+          ))}
+        </div>
+      ) : null}
+      {exportState.notice ? <p className="poster-dialog-export-notice" data-poster-export-notice="true">{exportState.notice}</p> : null}
+    </section>
+  );
   const state = empty.on
     ? 'empty'
     : (!selectedRow ? 'blocked' : (preview.phase === 'ready' ? 'ready' : preview.phase === 'failed' ? 'failed' : preview.phase === 'pending' ? 'pending' : 'blocked'));
@@ -815,6 +1022,8 @@ export default function PosterDialog({
                   {selectedPlan.notes.map((note) => <li key={note} data-poster-dialog-note="true">{note}</li>)}
                 </ul> : null}
               </div>
+              {/* 导出贴着预览（AC 的「底部导出」）：左手边是「发给谁、怎么发」，这里是「存成什么文件」。 */}
+              {exportPanel}
             </div>
           </div>
         )}

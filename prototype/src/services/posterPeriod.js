@@ -26,13 +26,14 @@ export const POSTER_PERIOD_RENDER_FAILED_TEXT = '海报没有渲染成功：请�
 
 /**
  * 渲染一张阶段成长海报（预览与导出共用）。`plan` 来自 `buildPosterPeriodPlan()`。
+ * `type` / `quality` 是编码档（缺省 PNG；导出 JPG 时传 `POSTER_MIME_JPEG` + 0.9）。
  * 返回 `renderPoster` 的完整结果（`{ blob, dataURL, canvas, plan, warnings, … }`）；
  * 没有学员 / 没有 canvas 能力时返回 `null`（调用方自己决定怎么降级）。
  */
-export async function renderPosterPeriod(plan, { scale = POSTER_PERIOD_PREVIEW_SCALE } = {}) {
+export async function renderPosterPeriod(plan, { scale = POSTER_PERIOD_PREVIEW_SCALE, type, quality } = {}) {
   const value = plan && typeof plan === 'object' ? plan : null;
   if (!value || !value.hasStudent || !value.spec) return null;
-  return renderPoster({ spec: value.spec, data: value.data, scale });
+  return renderPoster({ spec: value.spec, data: value.data, scale, type, quality });
 }
 
 /** 预览用的地址（object URL，用完必须 `releasePosterPeriodUrl` 回收）。 */

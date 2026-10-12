@@ -34,13 +34,14 @@ import {
   POSTER_MUTED_COLORS,
   POSTER_VARIABLE_KEYS
 } from '../data/posterTemplates';
+// 编码口径的**唯一定义**在 `data/posterExport.js`（导出格式表与这里认的两个 mime 是同一份）；
+// 这一层只 re-export，既有调用方（五个 renderPosterX / 断言）一字不改。
+import { POSTER_MIME_PNG, POSTER_MIME_JPEG } from '../data/posterExport';
 import { paintQrMatrixBox } from './framing';
 import { applyOverlayVariables, estimateTextWidth, QR_QUIET_MODULES } from './overlayLayout';
 import { QR_DEFAULT_ECC, qrMatrix } from './qrCode';
 
-/** 渲染的编码口径（导出故事 US-311a 会另给 JPG / 质量档；这里给的是引擎默认档）。 */
-export const POSTER_MIME_PNG = 'image/png';
-export const POSTER_MIME_JPEG = 'image/jpeg';
+export { POSTER_MIME_PNG, POSTER_MIME_JPEG };
 
 /** 卡片阴影（image slot 的 `shadow: true`）：颜色 / 模糊 / 下移全部相对画布短边，随导出倍数放大。 */
 export const POSTER_SHADOW = {

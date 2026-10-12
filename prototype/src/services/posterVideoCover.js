@@ -26,13 +26,14 @@ export const POSTER_VIDEO_COVER_RENDER_FAILED_TEXT = '封面没有渲染成功�
 
 /**
  * 渲染一张成长视频封面（预览与导出共用）。`plan` 来自 `buildPosterVideoCoverPlan()`。
+ * `type` / `quality` 是编码档（缺省 PNG；导出 JPG 时传 `POSTER_MIME_JPEG` + 0.9）。
  * 返回 `renderPoster` 的完整结果（`{ blob, dataURL, canvas, plan, warnings, … }`）；
  * 没有对象 / 没有 canvas 能力时返回 `null`（调用方自己决定怎么降级）。
  */
-export async function renderPosterVideoCover(plan, { scale = POSTER_VIDEO_COVER_PREVIEW_SCALE } = {}) {
+export async function renderPosterVideoCover(plan, { scale = POSTER_VIDEO_COVER_PREVIEW_SCALE, type, quality } = {}) {
   const value = plan && typeof plan === 'object' ? plan : null;
   if (!value || !value.hasObject || !value.spec) return null;
-  return renderPoster({ spec: value.spec, data: value.data, scale });
+  return renderPoster({ spec: value.spec, data: value.data, scale, type, quality });
 }
 
 /** 预览用的地址（object URL，用完必须 `releasePosterVideoCoverUrl` 回收）。 */

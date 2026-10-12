@@ -1171,6 +1171,36 @@
 .poster-dialog-mine-save-button:disabled{opacity:.6;cursor:not-allowed}
 .poster-dialog-mine-save small{font-size:10px;color:#8b8064;word-break:break-word}
 .poster-dialog-mine-notice{margin:0;font-size:10px;color:#8a6a15;background:#fff6df;border-radius:8px;padding:5px 8px;word-break:break-word}
+/* 导出（[海报 US-311a]）：格式档 + 导出按钮 + 三项校验读数 + 长按保存的那几张图。 */
+.poster-dialog-export{display:flex;flex-direction:column;gap:8px;border:1px solid #e6e1d2;border-radius:12px;background:#fffdf6;padding:10px;min-width:0}
+.poster-dialog-export-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.poster-dialog-export-head b{font-size:12px;color:#3f3b33}
+.poster-dialog-export-head small{font-size:10px;color:#8b8064;flex:1 1 220px;min-width:0}
+.poster-dialog-export-formats{display:flex;gap:8px;flex-wrap:wrap}
+.poster-dialog-export-format{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:#544d40;border:1px solid #eee9dd;border-radius:8px;background:#fff;padding:4px 8px;min-height:32px}
+.poster-dialog-export-format[data-poster-export-format-selected="true"]{border-color:#cfa52e;background:#fdf6e3;color:#6a5316;font-weight:700}
+.poster-dialog-export-format input{flex:0 0 auto;width:16px;height:16px}
+.poster-dialog-export-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.poster-dialog-export-button{font-size:11px;padding:7px 12px;border:0;border-radius:8px;background:#cfa52e;color:#fff;font-weight:700;min-height:32px}
+.poster-dialog-export-button:disabled{opacity:.55;cursor:not-allowed}
+.poster-dialog-export-share{display:inline-flex;align-items:center;gap:5px;font-size:11px;padding:6px 10px;border:1px solid #cfa52e;border-radius:8px;background:#fff;color:#6a5316;font-weight:700;min-height:32px}
+.poster-dialog-export-share svg{width:13px}
+.poster-dialog-export-checks{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px;min-width:0}
+.poster-dialog-export-checks li{display:grid;grid-template-columns:52px minmax(0,1fr);gap:2px 8px;font-size:10px;color:#544d40;border:1px solid #eee9dd;border-radius:8px;background:#fff;padding:5px 8px;min-width:0}
+.poster-dialog-export-checks li>b{font-size:10px;color:#3f3b33}
+.poster-dialog-export-checks li>span{font-weight:700;color:#2f7a45}
+.poster-dialog-export-checks li[data-poster-export-check-ok="false"]>span{color:#a5452f}
+.poster-dialog-export-checks li>em{grid-column:2;font-style:normal;color:#8b8064;word-break:break-word}
+.poster-dialog-export-checks li[data-poster-export-check-ok="false"]{border-color:#f0d3cb;background:#fdf3f1}
+.poster-dialog-export-platform,.poster-dialog-export-share-note{font-size:10px;color:#8b8064;word-break:break-word}
+.poster-dialog-export-longpress{display:flex;flex-direction:column;gap:6px;border:1px dashed #cfa52e;border-radius:10px;background:#fff;padding:8px;min-width:0}
+.poster-dialog-export-longpress>small{font-size:10px;color:#9a6a1f}
+.poster-dialog-export-longpress-figure{margin:0;display:flex;flex-direction:column;gap:4px;align-items:center;min-width:0}
+.poster-dialog-export-longpress-figure img{display:block;width:auto;max-width:100%;max-height:min(70vh,640px);border:1px solid #e6e1d2;border-radius:8px;background:#fff}
+.poster-dialog-export-longpress-figure figcaption{font-size:10px;color:#8b8064;word-break:break-word}
+.poster-dialog-export-notice{margin:0;font-size:10px;color:#8a6a15;background:#fff6df;border-radius:8px;padding:5px 8px;word-break:break-word}
+.poster-dialog-export[data-poster-export-state="blocked"] .poster-dialog-export-notice{color:#8c3b25;background:#fdf1ee}
+.poster-dialog-export[data-poster-export-state="failed"] .poster-dialog-export-notice{color:#8c3b25;background:#fdf1ee}
 .poster-dialog-empty{display:flex;flex-direction:column;gap:8px;align-items:flex-start;font-size:11px;color:#8a7d5e;padding:8px 2px}
 .poster-dialog-empty b{font-size:13px;color:#3f3b33}
 .poster-dialog-empty p{margin:0;color:#544d40}
@@ -1207,4 +1237,12 @@
   .poster-dialog-mine-row button{min-height:44px;min-width:44px}
   .poster-dialog-mine-input{min-height:44px}
   .poster-dialog-mine-save-button{min-height:44px}
+  /* 导出在手机上要拇指够得着：格式档 / 导出 / 分享一律 ≥44px（宽高都要，别只给高度）。 */
+  .poster-dialog-export{padding:8px}
+  .poster-dialog-export-format{min-height:44px;min-width:44px}
+  .poster-dialog-export-format input{width:22px;height:22px}
+  .poster-dialog-export-button{min-height:44px;min-width:44px}
+  .poster-dialog-export-share{min-height:44px;min-width:44px;justify-content:center}
+  .poster-dialog-export-checks li{grid-template-columns:minmax(0,1fr);gap:2px}
+  .poster-dialog-export-checks li>em{grid-column:1}
 }

@@ -4067,8 +4067,69 @@ services / 界面只渲染产物」）：
   **刷新 + 重新登录 + 重新走到第四步**（镜像仍在那份 spec 一个字节没变）→ 390px → 删除后回落默认模板 →
   console 干净）。截图 491~497。
 
+### 海报导出：PNG / JPG 与导出前三项校验（[海报 US-311a] / FR-341 ~ FR-343、FR-348）
+
+弹窗里贴着预览的那一块（`PosterDialog.jsx` 的 `[data-poster-export]`）：老师**就地**把这张图存成文件。
+规则全在零依赖的 `src/data/posterExport.js`（可 `node` 直跑断言），编排在 `src/services/posterExport.js`，
+渲染仍然走同一个 `renderPoster`（预览 1× / 缩略图 0.25× / 导出 2×，只是倍数与编码档不同，FR-312）。
+
+- **两档格式只有一份真源**：`POSTER_EXPORT_FORMATS = [{ png, quality: null }, { jpg, quality: 0.9 }]`
+  ——`mimeType` / `extension` / `actionLabel` / `summary` 全在这一张表里。编码的两个 mime 常量
+  （`POSTER_MIME_PNG` / `POSTER_MIME_JPEG`）**定义在数据层**，`services/poster.js` 只
+  `export { … } from '../data/posterExport'`（既有调用方一字不改）——引擎里因此不再有 `'image/jpeg'`
+  字面量，断言查的就是这一条（`src/(data|services)/poster*.js` 里只有数据层那一个）。
+- **导出与预览是同一支分派**：`services/posterDialog.js` 里 `renderPosterDialog()`（预览 / 缩略图）与
+  `renderPosterDialogExport()`（导出档：倍数按 `posterDialogExportScale()`、编码档按格式表）都交给
+  **同样五支** `renderPosterX(plan, { scale, type, quality })` —— 五个渲染函数从 US-101 起转发
+  `type` / `quality`（缺省 PNG）。`posterReportPageScale()` 给长图的逐页倍数（降级后 1×）。
+- **三项校验读的是「真渲染一次的产物」**（FR-343）：`posterExportChecks({ rendered, gate })` 只看
+  渲染结果（`rendered.plan.slots` / `rendered.spec` / `rendered.scale`）与导出门，返回
+  `{ ok, rows, blocked }` —— 面板逐行渲染 `rows`、服务层照 `blocked` 决定「下不下载」。三个判据：
+  ① 素材缺失 = **给了地址却没画出来**（`url:''` 的有意占位格不算，那是有意留的；**逐格判**，
+  不看整格的 `drawn`）；② 二维码边长（画布短边口径的像素）≥ `POSTER_QR_MIN_PIXELS`（与将来的
+  管理端校验同一份常量，`PosterDialog` 与断言都读它）；③ 文字没有 `truncated`。
+  三项都是 `POSTER_EXPORT_CHECK_POLICY = block`：**校验没过就一个字节都不下载**，原因用数据层整句。
+- **校验没有第二次判据**：面板上的三行读数就是预览那一次渲染算出来的（`preview.checks`），
+  导出时在**导出倍数**下再跑同一个函数复核。同一份逻辑布局在 1× / 2× 下判据一致，因此不会出现
+  「面板说没事、导出才拦」。
+- **命名按 kind 分派**：`posterExportFilename(plan, { format, pageIndex })` 调各版式自己的
+  `posterXFilename(...)`（非法字符与空格走 `sanitizeArtworkExportSegment` 那一支，页码走
+  `posterClassFilename` / `posterReportFilename` 的 `1of2`）。**不要**直接用 `plan.batch.filename` /
+  `page.filename` —— 那两份是数据层按 PNG 算好的，导 JPG 时会留着 `.png`。
+- **导出几张由 `posterExportPages(plan)` 说**：班级 `batch.total`、长图 `pages.length`、其余 1 张；
+  多张逐张「渲染 → 校验 → 交付」，中间留 `POSTER_CLASS_BATCH_DOWNLOAD_GAP_MS`（复用班级分批那一支），
+  某一张没过只进 `skipped`（`blocked` 与 `renderFailed` 分开记），已交付的不回滚。
+- **交付路径两条，判据在数据层**：`posterExportSaveStrategy({ userAgent, canShareFiles })` ——
+  `mode`（`download` / `longpress`）复用装裱导出的 UA 判据（iOS 全系与微信内置浏览器不执行 blob
+  下载），`canShare` 由调用方把 `navigator.canShare({ files })` 的真结果传进来（`services/posterExport.js`
+  的 `canSharePosterFiles()`）。`longpress` 那一档**一张都不下载**，把 blob 交给界面显示
+  （`[data-poster-export-longpress-image]`）+ 一句长按提示；能 `navigator.share` 时多一个「直接分享」
+  （`sharePosterFiles()`，把导出的 `File` 原样交给系统分享面板）。
+- 验收口径：`/tmp/assert-us101.mjs`（Node，**96 项**：两档格式与 mime 同源 / 五类版式的命名与页码 /
+  三项校验的分支（含「有意占位不算缺失」「一格坏也要报」「阈值差 1px 就红」）/ 导出张数 /
+  交付路径（微信·iOS·桌面）/ 回执文案 / 源码接线）+ `/tmp/assert-us101-browser.mjs`（CDP，**75 项**：
+  真机走到第四步 → 面板读数 → **真导出 PNG 与 JPG 并落盘**（魔数 / 文件头尺寸 2160×2880 / 读回来解码
+  有墨 / 两张 48px 缩略图逐像素比 = 同一张画面）→ 现场抓 `toBlob` 的 `(type, quality)`（PNG 无质量、
+  JPG 0.9）→ 超长标题 → **不下载** + 回执点名文字位 → 改短后同一张图导出成功 → 成长档案阶段海报
+  带一幅坏素材 → 不下载（预览照出）→ 微信 / iOS UA → 长按保存（不下载、出图、真分享参数）→ 390px →
+  console 干净）。截图 498~505。
+
 ## 容易踩的坑
 
+- **「这一位没事」不能用 `slot.drawn` 判，`drawn` 只表示「至少画出来一格」**（US-101 真踩）：
+  海报的 image 位是**拼贴**（阶段海报一屏 3~12 格、班级墙 30 格），一格坏掉时整格的 `drawn` 仍是
+  `true`。素材缺失必须**逐格判**（`cells[].url` 有地址但 `drawn !== true`）——本轮 Node 侧单格夹具
+  全绿、浏览器侧一屏三格（两好一坏）才把它抓出来；反过来 `url:''` 的有意占位格（班级「本期暂无作品」）
+  绝不能被算成缺失，否则正常出图会被自己的校验拦死。
+- **「下载目录条数变多」不是「有没有真的下载」的判据**（US-101 真踩）：同名文件再下一遍会**覆盖成同名**
+  （本轮第二次导同一张 PNG 时目录条数没变，断言以为没下载）。判据要么**先清空下载目录**再看有没有新文件，
+  要么按「文件名 → mtime」认最后一个；`<a download>` 的补丁计数是页面级的、会跨用例累积，
+  要比的是「这一次导出前后的差值」。
+- **给同一份服务文件加第二支分派，会让「数调用次数」的老断言假红**（US-101 改了 US-097 / US-098 两条）：
+  `services/posterDialog.js` 多了导出档那一支之后，`renderPosterX(` 的出现次数从 5 变 10、
+  `import { renderPosterSingle } from './posterSingle'` 也变成了带常量的多条 import 形状。
+  改判据而不是删断言：前者换成「**去重后**正好是五类版式」，后者换成「五支渲染函数各自从自己的模块
+  import + 这一层不建画布」。同类的「数个数」断言都该写成「集合」而不是「次数」。
 - **「另存下来的东西」要不要跟着图走，先问一句「下一张海报还用得上吗」**（US-310b）：
   同一次调整里的五项，结局分了三类 —— 标题 / 金句 / 二维码显隐进模板（所见即所存），
   日期**不进模板**（US-038 早就定了「模板只承载日期的格式与位置」；把某一天固定进模板会与展签口径打架），

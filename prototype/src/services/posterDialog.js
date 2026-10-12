@@ -13,11 +13,12 @@
 //   ③ object URL 用完必须回收（`releasePosterDialogUrl`），换模板与关闭弹窗各回收一次。
 
 import { POSTER_DIALOG_PREVIEW_SCALE } from '../data/posterDialog';
-import { renderPosterSingle } from './posterSingle';
-import { renderPosterPeriod } from './posterPeriod';
-import { renderPosterClass } from './posterClass';
-import { renderPosterVideoCover } from './posterVideoCover';
-import { renderPosterReport } from './posterReportLong';
+import { POSTER_EXPORT_DEFAULT_FORMAT, posterExportFormat } from '../data/posterExport';
+import { POSTER_SINGLE_EXPORT_SCALE, renderPosterSingle } from './posterSingle';
+import { POSTER_PERIOD_EXPORT_SCALE, renderPosterPeriod } from './posterPeriod';
+import { POSTER_CLASS_EXPORT_SCALE, renderPosterClass } from './posterClass';
+import { POSTER_VIDEO_COVER_EXPORT_SCALE, renderPosterVideoCover } from './posterVideoCover';
+import { posterReportPageScale, renderPosterReport } from './posterReportLong';
 
 export { POSTER_DIALOG_PREVIEW_SCALE };
 
@@ -34,6 +35,38 @@ export async function renderPosterDialog(plan, { scale = POSTER_DIALOG_PREVIEW_S
   // 长图：弹窗里先看第一张（分段出多张是 US-311a 的导出口径，预览不必把 1of3 全画一遍）。
   if (value.kind === 'report-long') return renderPosterReport(value, { pageIndex: pageIndex || 1, scale });
   return renderPosterSingle(value, { scale });
+}
+
+/**
+ * 五类版式的**导出倍数**：单作品 / 阶段 / 班级 / 封面一律 2×（2160 宽，仍在 canvas 单边上限内）；
+ * 长图由数据层的降级结论逐页给出（`posterReportPageScale`：不降级 2×、降 DPI 或分段后 1×）。
+ * 分派仍然只有这一处 —— 导出与预览走同一组渲染函数，只是倍数与编码档不同（FR-312）。
+ */
+export function posterDialogExportScale(plan, pageIndex = 0) {
+  const value = plan && typeof plan === 'object' ? plan : {};
+  if (value.kind === 'period') return POSTER_PERIOD_EXPORT_SCALE;
+  if (value.kind === 'class') return POSTER_CLASS_EXPORT_SCALE;
+  if (value.kind === 'video-cover') return POSTER_VIDEO_COVER_EXPORT_SCALE;
+  if (value.kind === 'report-long') return posterReportPageScale(value, pageIndex);
+  return POSTER_SINGLE_EXPORT_SCALE;
+}
+
+/**
+ * 渲染**要交付的那一张**（[海报 US-311a] 的导出档）：倍数按上面的分派、编码档按导出格式表
+ * （PNG 无损 / JPG 质量 0.9）。返回值与 `renderPoster` 同形（`blob` / `mimeType` / `quality` / ...），
+ * 于是「导出前校验」与「下载字节」读的是同一次渲染的产物，不存在第二次绘制。
+ */
+export async function renderPosterDialogExport(plan, { format = POSTER_EXPORT_DEFAULT_FORMAT, pageIndex = 0 } = {}) {
+  const value = plan && typeof plan === 'object' ? plan : null;
+  if (!value) return null;
+  const entry = posterExportFormat(format);
+  const scale = posterDialogExportScale(value, pageIndex);
+  const options = { scale, type: entry.mimeType, quality: entry.quality === null ? undefined : entry.quality };
+  if (value.kind === 'period') return renderPosterPeriod(value, options);
+  if (value.kind === 'class') return renderPosterClass(value, options);
+  if (value.kind === 'video-cover') return renderPosterVideoCover(value, options);
+  if (value.kind === 'report-long') return renderPosterReport(value, { ...options, pageIndex: pageIndex || 1 });
+  return renderPosterSingle(value, options);
 }
 
 /** 预览 / 缩略图用的地址（object URL，用完必须 `releasePosterDialogUrl` 回收）。 */
