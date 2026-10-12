@@ -975,6 +975,57 @@ US-213a 那份本机演示队列（上面一节）**不是**真服务：真服�
      会被吃掉（`/\.mp4/` 变成 `/.mp4/`，于是 `-mp4` 这类属性名也算命中）。判据改成：
      名字查 `body.textContent`，媒体地址查 `[src],[href],[poster]` 的属性值。
 
+## 音乐库（`music_tracks`）与授权闸门（[第四步 US-220a] / F-ARCHIVE-MUSIC-01）
+
+> 把音乐混进发给家长的视频属于**商业使用**：来源不清的曲子一旦用上，侵权责任由平台承担。
+> 所以这一块的默认状态必须是「不可用」——新建入库一律 `pending`，由管理员确认授权后才放开。
+
+三份东西配套：
+
+| 关注点 | 位置 |
+|---|---|
+| 领域规则（状态机 / 去重 / 引用范围 / 列表读数，零依赖） | `src/data/musicTracks.js` |
+| 云端行读写（snake_case ↔ camelCase、白名单 payload） | `src/services/musicLibraryApi.js` |
+| 管理端页面（左列表 + 右编辑） | `src/admin/MusicLibraryPage.jsx` |
+
+- **两个构造入口别混用**：`createEmptyMusicTrack` 只做归一化（读历史记录时要原样保留 `confirmed`），
+  **`createNewMusicTrack` 才是新建入库的唯一入口**（无论传什么状态都落 `pending`）。页面与服务层的新建
+  只走后者 —— 用前者会让「新建入库默认 pending」这条在某个调用点上静默失效。
+- **授权到期由日期推导**：`musicLicenseState()` 看 `licenseExpiresAt`（到期日当天仍可用，次日算到期），
+  即使库里存的还是 `confirmed` 也读成 `expired`；老师端可选性的唯一判据是 `musicTrackAvailability()`
+  （US-221 的版权闸门读同一份），不要另写一套 `if (status === 'confirmed')`。
+- **引用范围（删除前必须说得清）只读原始记录行**：`musicTrackUsage()` / `musicTrackUsageIndex()` 认四种历史写法
+  （`record.music.trackId`、`record.versions[].music.trackId`、`record.specSnapshot.music.trackId`、平铺 `musicTrackId`）。
+  **页面的数据源必须是镜像里的原始 JSON**（`loadMusicReferenceRecords()`），不能只读 `listVideoJobs()` ——
+  `normalizeVideoJob` 会把不在 `VIDEO_JOB_FIELDS` 白名单里的键丢掉，而成片选了哪首曲子正是 US-221 才补进白名单的
+  字段：只读归一化产物会让这个数字永远停在 0（本轮真踩）。同一任务的多个历史版本只算**一条成片**
+  （`count`），但每一处引用都进 `versionCount`（界面写「含 N 处历史版本引用」）。
+- **列表行是渲染产物，不能当编辑草稿用**：`musicTrackListRow` 会把时长/BPM 拼成一句话、情绪拼成字符串，
+  拿它去填表单再保存会丢掉 `licenseStatus` / `licenseExpiresAt` / `commercialUse`（表现是「一改作者，
+  授权状态就被重置成待确认」——本轮真踩）。编辑值取 `musicTracks`（state）里的原始曲目，列表行只用来显示引用范围。
+- **空镜像 ≠ 没有镜像**：`loadMusicTracks()` 按 `localStorage.getItem(KEY) !== null` 分叉 ——
+  镜像存在但为空数组时返回**空库**。否则「删掉最后一首再刷新」会把演示曲目复活（与 `courses` 的「空即种子」口径
+  不同，这里删除是验收点，故意分叉）；`musicLibraryMirrorStored()` 同样按 `null` 判断。
+- **合并方向本机优先**：`loadAllMusicTracks()` = `mergeMusicTracks(本机, 云端)` —— 云表 `music_tracks` 还没建立
+  （写入被 PostgREST 拒掉 DATABASE_PGRST204），本机的授权确认才是最新的，云端只补本机没有的 `trackKey`。
+  与 `audit_logs` / `agent_files` / `framing_presets` 同一套兜底口径。写侧先落镜像再推云，
+  云端失败时**抛出**（调用方提示「已保存到本机」但必须把这条并回 React state，否则下一轮 persist 会覆盖镜像）。
+- **验收原文点名那句只能有一份**：`MUSIC_LIBRARY_DEMO_LABEL`（「演示数据 · 授权曲源未接入」）在
+  `data/musicTracks.js` 里，页面 import 它 —— 搜索与下载入库（US-220b）未接入是**如实标注**而不是静默。
+- **验证方式（本故事实测）**：`pnpm run build`（374~446ms）；Node 直跑 **116 项**
+  （`/tmp/assert-us080-data.mjs`：字段清单 / 三个构造入口的状态口径 / 到期推导与老师端可用性 / 去重 /
+  引用范围与索引逐字段一致 / 行映射与白名单 / 先落镜像再推云与云端拒写不丢数据 / 空镜像不复活种子）；
+  浏览器 **55 项**（`/tmp/assert-us080-browser.mjs`：五首演示曲目的四种状态 chip、九个元数据字段可改落盘、
+  授权状态/到期日/可商用勾选、停用启用、新建入库 pending（且状态框是只读 disabled 的 input）、
+  空标题被拦、刷新后仍在、删除确认两条路径（0 引用与 1 引用）、去重判据、老师端看不到入口、
+  0 未捕获异常 / 0 console.error）；回归 US-075/076/077/078/079 data（130/146/122/166/171）与
+  US-079 browser 110 全绿；截图 398~403 留档。
+- **验证脚本的两个坑（本故事真踩）**：
+  ① `type=number` / `type=date` 的输入框用 `Input.insertText` 会**追加**到原值上（`92` → `9295`）：
+     这类字段必须走原生 value setter + `input`/`change` 事件（与 `<select>` 同一套写法）。
+  ② 演示曲目里有的**本来就勾着**「可商用」：直接 `click()` 是取消勾选。要断言「勾上之后落盘」得先读
+     `.checked`，不是目标状态才点（`ensureChecked` 的写法）。
+
 ## 老师端「课后反馈」第一步（班级 / 学员 / 课程 / 课次推荐）
 
 > **课次表单全站只有一份实现 = `TeacherFlowV2`（`main.jsx`）。** 旧的 `CreateFlow` 五步向导

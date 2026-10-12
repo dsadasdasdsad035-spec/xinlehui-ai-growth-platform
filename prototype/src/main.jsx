@@ -4,7 +4,7 @@ import {
   Archive, ArrowDown, ArrowLeft, ArrowRight, ArrowUp, Bell, BookOpen, Boxes, Check, ChevronDown,
   CircleAlert, CircleCheck, Clock3, Download, FileText, Film, FolderOpen, Frame,
   GraduationCap, Image, Landmark, LayoutDashboard, LogOut, Menu, MessageSquareText, MoreHorizontal,
-  ListChecks, Link2, Package, PanelLeftClose, Plus, RefreshCw, RotateCcw, RotateCw, Save, Search, Settings, ShieldAlert, ShieldCheck, Sparkles,
+  ListChecks, Link2, Music, Package, PanelLeftClose, Plus, RefreshCw, RotateCcw, RotateCw, Save, Search, Settings, ShieldAlert, ShieldCheck, Sparkles,
   Store, Trash2, UploadCloud, UserRound, Users, Video, WandSparkles, X, Zap
 } from 'lucide-react';
 import './styles.css';
@@ -327,6 +327,11 @@ import CourseLibraryPage from './admin/CourseLibraryPage';
 import AgentFilesPage from './admin/AgentFilesPage';
 // 作品观察词模板（US-110a）：管理员维护多套模板的属性、分组与词条，是老师端观察词面板与提示词候选的来源。
 import KeywordTemplatesPage from './admin/KeywordTemplatesPage';
+// 音乐库（US-220a）：管理员维护背景音乐与授权状态；老师端只能选 confirmed 且未过期的曲目（US-221）。
+import MusicLibraryPage from './admin/MusicLibraryPage';
+// 曲库的数据模型与本地兜底（授权状态 / 去重 / 引用范围都是零依赖纯函数）；云端读写走 musicLibraryApi。
+import { loadMusicTracks, mergeMusicTracks, persistMusicTracks } from './data/musicTracks';
+import { loadRemoteMusicTracks } from './services/musicLibraryApi';
 
 // 五个维度各自的留空提示语 —— 只说明「这一维该看什么」，不预填任何成句的点评。
 const REVIEW_DIMENSION_HINTS = {
@@ -369,7 +374,7 @@ const navByRole = {
     ['gallery','3D 画廊',Landmark]
   ],
   parent: [['parent','首页',LayoutDashboard],['parentInsight','作品观察',Sparkles],['parentArchive','成长档案',Archive],['gallery','3D 画廊',Landmark],['growthCenter','个人成长中心',BookOpen],['authorization','授权管理',ShieldCheck],['profile','个人中心',UserRound]],
-  admin: [['adminDash','运营总览',LayoutDashboard],['apps','应用中心',Boxes],['providers','模型供应商',Zap],['teacherPersona','老师人设',GraduationCap],['skillLibrary','技能库',Boxes],['courseLibrary','课程库',BookOpen],['keywordTemplates','观察词模板',ListChecks],['agentFiles','指令与记忆',FileText],['framingSettings','装裱设置',Frame],['galleryAdmin','3D 画廊',Landmark],['users','用户管理',Users],['logs','生成日志',FileText],['archiveAdmin','档案管理',Archive],['permissions','权限设置',ShieldCheck],['settings','系统配置',Settings]]
+  admin: [['adminDash','运营总览',LayoutDashboard],['apps','应用中心',Boxes],['providers','模型供应商',Zap],['teacherPersona','老师人设',GraduationCap],['skillLibrary','技能库',Boxes],['courseLibrary','课程库',BookOpen],['keywordTemplates','观察词模板',ListChecks],['agentFiles','指令与记忆',FileText],['musicLibrary','音乐库',Music],['framingSettings','装裱设置',Frame],['galleryAdmin','3D 画廊',Landmark],['users','用户管理',Users],['logs','生成日志',FileText],['archiveAdmin','档案管理',Archive],['permissions','权限设置',ShieldCheck],['settings','系统配置',Settings]]
 };
 
 const aiAppsSeed = [
@@ -468,6 +473,10 @@ function App(){
   if(keywordTemplateSeedRef.current===undefined) keywordTemplateSeedRef.current=!reviewKeywordTemplateMirrorStored();
   // 点评轨迹的留存与披露策略（[第三步 US-112]）：系统配置里可改，缺省「保留 90 天 + 允许老师看提示词正文」。
   const [tracePolicy,setTracePolicy]=useState(loadReviewTracePolicy);
+  // 音乐库（[第四步 US-220a]）：管理端维护、老师端只读可选（US-221 的版权闸门）。
+  // 本机镜像先渲染，云端 `music_tracks` 表回来就并进来（表还没建 → 写入被拒，改动只在本机落地；
+  // 合并方向**本机镜像优先**：云端只补本机没有的 trackKey，否则刚确认的授权会被云端旧状态顶掉）。
+  const [musicTracks,setMusicTracks]=useState(loadMusicTracks);
   // 阶段报告（[第四步 US-207a]）：本机镜像先渲染，云端 `archive_reports` 表回来就并进来
   // （表还没建 → 写入被拒，报告只在本机镜像里 —— 与审计日志 / 装裱模板同一套兜底口径；
   //  合并方向本机优先：刚生成、还没推上云的那一版不能被云端旧记录顶掉）。
@@ -510,6 +519,10 @@ function App(){
   useEffect(()=>{persistReviewModelDefaults(reviewModelDefaults)},[reviewModelDefaults]);
   useEffect(()=>{persistReviewKeywordTemplates(keywordTemplates)},[keywordTemplates]);
   useEffect(()=>{persistAgentFiles(agentFiles)},[agentFiles]);
+  // 音乐库只在本机镜像里落盘（云端 music_tracks 表还没建，写入会被 PostgREST 拒掉）；
+  // 推云端是写入动作那一条路径自己做的事（services/musicLibraryApi.js，先落镜像再推），
+  // 这里不整表回写 —— 否则每次云端水合回来都会把本机刚改的授权状态覆盖回去。
+  useEffect(()=>{persistMusicTracks(musicTracks)},[musicTracks]);
   useEffect(()=>{persistGalleryVenues(galleryVenues)},[galleryVenues]);
   useEffect(()=>{persistGalleryExhibitions(galleryExhibitions)},[galleryExhibitions]);
   useEffect(()=>{persistLessons(lessons)},[lessons]);
@@ -613,6 +626,9 @@ function App(){
     // agent.md 与记忆文件：合并方向是**本机镜像优先**（agent_files 表缺 versions / history / updated_by 列时
     // 带新列的写入会被整条拒掉，改动只在本机落地；让云端顶掉本机会把刚存的版本历史弄丢）。云端只补本机没有的 id。
     loadRemoteAgentFiles().then(remote=>{if(active&&remote.length)setAgentFiles(current=>mergeAgentFiles(remote,current))}).catch(()=>{});
+    // 音乐库（US-220a）：云端 music_tracks 表还没建 → 读取会抛错并被吞掉，本机镜像照常可用。
+    // 合并方向是**本机镜像优先**（写入目前只在本机落地，让云端顶掉会把刚确认的授权状态弄丢）。
+    loadRemoteMusicTracks().then(remote=>{if(active&&remote.length)setMusicTracks(current=>mergeMusicTracks(current,remote))}).catch(()=>{});
     // 画廊这两个必须过 hydrate：内置展厅的实景图不进库，云端那条回来是没图的，
     // 直接 setState 顶掉会让内置展厅变成"没有实景图"。
     loadRemoteGalleryVenues().then(remote=>{if(active&&remote.length)setGalleryVenues(hydrateGalleryVenues(remote))}).catch(()=>{});
@@ -729,7 +745,7 @@ function App(){
     <main className="main">
       <Topbar role={role} onMenu={()=>setMobileNav(true)} onSwitch={(r)=>login(r,'demo')} onGuide={()=>navigate('guide')} onLogout={()=>setAuth(false)}/>
       <div className="content">
-        <PageRouter {...{page,role,navigate,setToast,setModal,apps,setApps,tasks,setTasks,demoState,setDemoState,records:archivedRecords,setRecords,recordsSource,reloadRecords:reloadFeedbackRecords,parentStudent,parentStudents,parentPhone,parentSession,setParentStudent,teacherProfiles,setTeacherProfiles,framingPresets,setFramingPresets,skillLibrary,setSkillLibrary,agentFiles,setAgentFiles,adminName:roleMeta.admin.name,galleryVenues,setGalleryVenues,galleryExhibitions,setGalleryExhibitions,lessons,setLessons,courses,setCourses,auditLog,recordAudit,reviewModels,reviewModelDefaults,setReviewModelDefaults,keywordTemplates,setKeywordTemplates,keywordTemplateRemote,traceLog,setTraceLog,tracePolicy,setTracePolicy,traceSource,refreshReviewTraces,cleanupReviewTraces,auditTraceEntry,auditActor:archiveAuditActor,adminTraceViewer,teacherTraceViewer,archiveReports,setArchiveReports,shareTokens,setShareTokens,teacherName:roleMeta.teacher.name,pageParams,consents,setConsents,archiveRetention,setArchiveRetention}}/>
+        <PageRouter {...{page,role,navigate,setToast,setModal,apps,setApps,tasks,setTasks,demoState,setDemoState,records:archivedRecords,setRecords,recordsSource,reloadRecords:reloadFeedbackRecords,parentStudent,parentStudents,parentPhone,parentSession,setParentStudent,teacherProfiles,setTeacherProfiles,framingPresets,setFramingPresets,skillLibrary,setSkillLibrary,agentFiles,setAgentFiles,adminName:roleMeta.admin.name,galleryVenues,setGalleryVenues,galleryExhibitions,setGalleryExhibitions,lessons,setLessons,courses,setCourses,auditLog,recordAudit,reviewModels,reviewModelDefaults,setReviewModelDefaults,keywordTemplates,setKeywordTemplates,keywordTemplateRemote,musicTracks,setMusicTracks,traceLog,setTraceLog,tracePolicy,setTracePolicy,traceSource,refreshReviewTraces,cleanupReviewTraces,auditTraceEntry,auditActor:archiveAuditActor,adminTraceViewer,teacherTraceViewer,archiveReports,setArchiveReports,shareTokens,setShareTokens,teacherName:roleMeta.teacher.name,pageParams,consents,setConsents,archiveRetention,setArchiveRetention}}/>
       </div>
     </main>
     {toast?<div className="toast panda-toast"><img src={pandaWave} alt="熊猫鼓励"/><span><CircleCheck size={18}/>{toast}</span>{toastAction?<button type="button" className="toast-action" data-toast-action={toastAction.label} onClick={()=>{const run=toastAction.onClick;setToastRaw('');setToastAction(null);if(run)run()}}>{toastAction.label}</button>:null}</div>:null}
@@ -7587,13 +7603,13 @@ function FramingSettingsPage({framingPresets=[],setFramingPresets,setToast,recor
 
 // 机构级基础数据页：只有管理员能进。导航已经隐藏入口，这里再拦一道，
 // 避免从导览页、历史链接或未来新增入口绕过。
-const ADMIN_ONLY_PAGES=['teacherPersona','skillLibrary','courseLibrary','keywordTemplates','agentFiles','framingSettings','galleryAdmin'];
+const ADMIN_ONLY_PAGES=['teacherPersona','skillLibrary','courseLibrary','keywordTemplates','agentFiles','musicLibrary','framingSettings','galleryAdmin'];
 
 function PageRouter(props){
  // 「课次表单」全站只有一份实现：`TeacherFlowV2`（第一步创建信息 / 后续装裱·点评·归档都在这个组件里）。
  // 旧的 CreateFlow 向导（StepLesson/StepUpload/StepApps/StepGenerate/StepSuccess）已删除，
  // `create` 这个路由 id 保留下来只作为别名，供工作台 / 课后反馈列表 / AI 创作台的历史入口复用同一组件。
- const map={dashboard:TeacherWelcome,teacherFlow:TeacherFlowV2,create:TeacherFlowV2,lessons:LessonsPage,ai:TeacherAIWorkspace,tasks:TasksPage,progress:ProgressBoard,classes:StudentArchiveData,growthCenter:PersonalGrowthCenter,archives:GrowthArchiveData,parent:ParentHomeFamily,parentInsight:ParentInsight,parentArchive:ParentArchiveFamily,authorization:AuthorizationPage,profile:ProfilePage,adminDash:AdminDashboard,apps:AppsPage,providers:ProvidersPage,teacherPersona:TeacherPersonaPage,skillLibrary:SkillLibraryPage,courseLibrary:CourseLibraryPage,keywordTemplates:KeywordTemplatesPage,agentFiles:AgentFilesPage,framingSettings:FramingSettingsPage,galleryAdmin:GalleryAdminPage,gallery:GalleryPage,users:UsersPage,logs:LogsPage,archiveAdmin:ArchiveAdmin,permissions:PermissionsPage,settings:SettingsPage,guide:GuidePage};
+ const map={dashboard:TeacherWelcome,teacherFlow:TeacherFlowV2,create:TeacherFlowV2,lessons:LessonsPage,ai:TeacherAIWorkspace,tasks:TasksPage,progress:ProgressBoard,classes:StudentArchiveData,growthCenter:PersonalGrowthCenter,archives:GrowthArchiveData,parent:ParentHomeFamily,parentInsight:ParentInsight,parentArchive:ParentArchiveFamily,authorization:AuthorizationPage,profile:ProfilePage,adminDash:AdminDashboard,apps:AppsPage,providers:ProvidersPage,teacherPersona:TeacherPersonaPage,skillLibrary:SkillLibraryPage,courseLibrary:CourseLibraryPage,keywordTemplates:KeywordTemplatesPage,agentFiles:AgentFilesPage,musicLibrary:MusicLibraryPage,framingSettings:FramingSettingsPage,galleryAdmin:GalleryAdminPage,gallery:GalleryPage,users:UsersPage,logs:LogsPage,archiveAdmin:ArchiveAdmin,permissions:PermissionsPage,settings:SettingsPage,guide:GuidePage};
  if(ADMIN_ONLY_PAGES.includes(props.page)&&props.role!=='admin'){
    const Fallback=props.role==='parent'?ParentHomeFamily:TeacherWelcome;
    return <Fallback {...props}/>;
