@@ -43,6 +43,9 @@ import {
   videoJobStatusLabel,
   videoJobSubmitIssue
 } from '../data/videoJobs';
+// 成片记录里的音乐（[第四步 US-221]）：形状与归一化只写在 `data/musicSelection.js` 那一份里，
+// 这一层只负责把它挂到任务的 `specSnapshot.music` 上（提交时写、处置时改 disposition）。
+import { normalizeMusicJobMusic } from '../data/musicSelection';
 
 /** 推演定时器的默认间隔（400ms 足够让进度读数动起来，又不至于把主线程占住）。 */
 export const VIDEO_JOB_TICK_MS = 400;
@@ -193,6 +196,9 @@ export function resumeVideoJobQueue(options = {}) {
  *  - `ok:false`：连提交都不该发生（没选对象 / 没选周期），`issue` 给可读原因，队列一个字节不改。
  * `simulate` / `simulateErrorCode` 是演示队列自己的失败开关（四类原因各一套文案），
  * 重复提交时按本次的选择更新 —— 真实的失败原因由渲染服务返回。
+ * `music`（[第四步 US-221] / FR-295）是「本片选用」生成的那一份（静音或曲目 id + 授权凭证快照）：
+ * 新任务写进 `specSnapshot.music`；重排队时**覆盖**它（老师这次换成了别的曲子 / 静音）；
+ * 不传（老调用方）时保持原样。
  */
 export function submitVideoJob({
   type,
@@ -206,6 +212,7 @@ export function submitVideoJob({
   createdBy = '',
   simulate = VIDEO_JOB_SIMULATIONS.success,
   simulateErrorCode = '',
+  music = null,
   now = Date.now()
 } = {}) {
   const submitIssue = videoJobSubmitIssue({ type, studentId, classId, period });
@@ -214,6 +221,7 @@ export function submitVideoJob({
   const stamp = stampOf(now);
   const mode = String(simulate) === VIDEO_JOB_SIMULATIONS.fail ? VIDEO_JOB_SIMULATIONS.fail : VIDEO_JOB_SIMULATIONS.success;
   const errorCode = normalizeSimulateErrorCode(simulateErrorCode || undefined);
+  const musicRecord = normalizeMusicJobMusic(music);
   const existing = getVideoJob(jobKey);
   if (existing) {
     // ① 正在进行 / 已经完成 → 幂等命中，**不产生第二条任务**。
@@ -223,7 +231,8 @@ export function submitVideoJob({
         : `已有一条同样的任务（${videoJobStatusLabel(existing.status)}）：沿用同一条任务，没有重复创建。`;
       return { ok: true, job: existing, created: false, issue: '', notice };
     }
-    // ② 失败 / 已取消 → 沿用它重新排队（同一个 jobKey，attempts 不清零）。
+    // ② 失败 / 已取消 → 沿用它重新排队（同一个 jobKey，attempts 不清零）；
+    //    这次要是换了音乐，快照里的 music 一起更新（版权证据跟着本片选用走）。
     const requeued = normalizeVideoJob({
       ...existing,
       status: VIDEO_JOB_STATUSES.queued,
@@ -232,6 +241,7 @@ export function submitVideoJob({
       errorCode: '',
       simulate: mode,
       simulateErrorCode: errorCode,
+      specSnapshot: musicRecord ? { ...existing.specSnapshot, music: musicRecord } : existing.specSnapshot,
       startedAt: '',
       finishedAt: '',
       updatedAt: stamp,
@@ -257,7 +267,7 @@ export function submitVideoJob({
     studentId,
     classId,
     period,
-    specSnapshot: videoJobSpecSnapshot({ type, studentId, classId, period, objectName, lessonCount, artworkCount, photoCount, capturedAt: stamp }),
+    specSnapshot: videoJobSpecSnapshot({ type, studentId, classId, period, objectName, lessonCount, artworkCount, photoCount, capturedAt: stamp, music: musicRecord }),
     status: VIDEO_JOB_STATUSES.queued,
     progress: 0,
     attempts: 0,
@@ -334,6 +344,34 @@ export function retryVideoJob(jobKey, { now = Date.now() } = {}) {
   const stored = getVideoJob(jobKey) || next;
   const view = videoJobQueueView([stored]).jobs[0];
   return { ok: true, job: stored, issue: '', notice: `已重新排队：沿用同一个 jobKey，${view ? view.attemptsLabel : ''}${stored.queuePosition ? ` · 队列第 ${stored.queuePosition} 位` : ''}。` };
+}
+
+/**
+ * 记录一条**处置结果**（[第四步 US-221] / FR-300）：成片记录里的曲目授权到期后，老师选择
+ * 「更换音乐」或「静音」时把这次处置写在 `specSnapshot.music.disposition` 上。
+ * 曲目 id 与授权凭证快照**一个字节都不动** —— 处置是「之后怎么办」，不是改写历史证据。
+ * 任务还不存在（没提交过）时如实返回 `ok:false`，不假装记下了。
+ */
+export function recordVideoJobMusicDisposition(jobKey, disposition, { now = Date.now() } = {}) {
+  const key = String(jobKey ?? '').trim();
+  const job = getVideoJob(key);
+  if (!job) return { ok: false, job: null, issue: '这条任务还不存在：提交过任务之后才有成片记录可记处置。', notice: '' };
+  const current = normalizeMusicJobMusic(job.specSnapshot?.music);
+  if (!current) return { ok: false, job, issue: '这条任务还没有音乐记录（老任务）：没有到期的曲目需要处置。', notice: '' };
+  const stamp = stampOf(now);
+  const next = normalizeVideoJob({
+    ...job,
+    specSnapshot: { ...job.specSnapshot, music: normalizeMusicJobMusic({ ...current, disposition }) },
+    updatedAt: stamp
+  });
+  commit(applyVideoJob(memoryJobs, next));
+  const record = normalizeMusicJobMusic(next.specSnapshot?.music);
+  return {
+    ok: true,
+    job: getVideoJob(key) || next,
+    issue: '',
+    notice: `已记录处置结果：${record?.disposition?.actionLabel || '处置'}（写入成片记录的音乐快照）。`
+  };
 }
 
 /** 清空演示队列（本机镜像一起清）—— 验证脚本与「想重新开始」时用。 */

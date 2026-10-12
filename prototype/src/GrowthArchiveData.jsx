@@ -117,6 +117,7 @@ import {
 import {
   cancelVideoJob,
   listVideoJobs,
+  recordVideoJobMusicDisposition,
   resumeVideoJobQueue,
   retryVideoJob,
   submitVideoJob,
@@ -150,6 +151,29 @@ import {
   videoSelectionPlan,
   videoSelectionView
 } from './data/videoSelection';
+// 背景音乐选用与版权闸门（[第四步 US-221] / F-ARCHIVE-MUSIC-02 / FR-294 ~ FR-300）：能选的曲目
+// （只有已确认授权且未过期）、静音默认值、成片记录里的授权凭证快照、到期提示与处置、混音参数
+// 全在 `data/musicSelection.js`（零依赖纯函数，判据复用管理端的 `musicTrackAvailability`）。
+// 这一页只渲染它的产物 —— 组件不自己判 `licenseStatus`、也不自己拼淡入淡出数字。
+import {
+  MUSIC_LICENSE_EXPIRED_NOTICE,
+  MUSIC_MIX_SECTION_TITLE,
+  MUSIC_MUTE_TITLE,
+  MUSIC_RECORD_TITLE,
+  MUSIC_RESUBMIT_KEEPS_RECORD_NOTE,
+  MUSIC_SELECTION_SECTION_DESC,
+  MUSIC_SELECTION_SECTION_TITLE,
+  MUSIC_SELECTION_TITLE,
+  applyMusicDisposition,
+  musicDispositionRecord,
+  musicJobMusicDiffers,
+  musicJobMusicFromSelection,
+  musicSelectionDefault,
+  musicSelectionFromJobMusic,
+  musicSelectionMuted,
+  musicSelectionPick,
+  musicSelectionView
+} from './data/musicSelection';
 // 个人成长视频时间线（[第四步 US-217]）：按课次日期升序串联 / 缺课 1.5 秒留白卡 / 片头写学员与周期 /
 // 成片信息（推算值带「预估」）/ 学员隔离全在 `data/videoPersonal.js`（零依赖纯函数）。
 // 这一页只渲染它的产物 —— 卡片文案、留白卡时长、「预估」两个字与收录范围读数都是数据层给的。
@@ -549,6 +573,80 @@ function VideoPreviewPanel({preview,share,notice,shareNotice,revokeOpen,onDownlo
 }
 
 /**
+ * 背景音乐选用与版权闸门（[第四步 US-221]）。
+ *
+ * 这一块是**版权举证**的界面：把音乐混进发给家长的视频属于商业使用，所以这里每一行都有出处。
+ * 判据与文案全部来自 `data/musicSelection.js`（组件只渲染产物）：
+ *  - 可选曲目**只有**「已确认授权且未过期」的（判据就是管理端曲库的 `musicTrackAvailability()`），
+ *    `pending` / 已到期 / 已停用的曲目在这里**结构上不出现**（不是渲染时判断）；
+ *  - **静音是默认值**（验收第 3 条）：进页面时选中的就是「静音（默认）」这一行；
+ *  - **成片记录**（验收第 2 条）：这条任务的 `specSnapshot.music`（曲目 id + 授权凭证快照：
+ *    标题 / 来源 / 授权类型 / 到期日）逐项显示；老任务没有这一项时如实写「未记录」；
+ *  - **到期提示与处置**（验收第 5 条）：记录里的曲目到期（或管理员把它改回未确认）时显示
+ *    `MUSIC_LICENSE_EXPIRED_NOTICE`，两个动作「更换音乐 / 静音」把处置结果写进成片记录
+ *    （`recordVideoJobMusicDisposition`，曲目 id 与凭证快照一个字节都不动）；
+ *  - **混音配置**（验收第 4 条）：1.5 秒淡入 / 2 秒淡出 / 音量归一化直接渲染数据层的读数与滤镜串。
+ */
+function MusicSelectionPanel({view,jobKey,notice,onPick,onMute,onDisposition}){
+  return <section className="music-selection" data-music-selection="true"
+    data-music-selection-muted={view.muted?'true':'false'}
+    data-music-selection-track={view.trackId}
+    data-music-selection-selectable={view.selectableCount}
+    data-music-selection-library={view.libraryCount}
+    data-music-selection-empty={view.empty?'true':'false'}
+    data-music-selection-expired-notice={view.expiredNotice?'true':'false'}
+    data-music-selection-revoked-notice={view.revokedNotice?'true':'false'}
+    data-music-selection-job-key={jobKey||''}>
+    <div className="archive-section-head"><span>版权闸门 · 只有已确认授权且未过期的曲目可选</span><h4>{MUSIC_SELECTION_SECTION_TITLE}</h4><p>{MUSIC_SELECTION_SECTION_DESC}</p></div>
+    <div className="music-selection-current" data-music-selection-current="true" data-music-selection-current-muted={view.muted?'true':'false'} data-music-selection-current-title={view.selectionTitle}>
+      <b>{MUSIC_SELECTION_TITLE}</b>
+      <em data-music-selection-current-label="true">{view.selectionTitle}</em>
+      <small data-music-selection-current-note="true">{view.selectionNote}</small>
+      {view.restoreNote?<small className="music-selection-restore" data-music-selection-restore-note="true">{view.restoreNote}</small>:null}
+      {view.muted?null:<button type="button" className="text-link" data-music-selection-mute="true" onClick={onMute}>改为静音</button>}
+    </div>
+    {notice?<p className="video-jobs-notice" data-music-selection-notice="true">{notice}</p>:null}
+    <ul className="music-selection-list" data-music-selection-list="true">
+      <li className={`music-selection-row is-mute${view.muted?' is-selected':''}`} data-music-selection-row="mute" data-music-selection-row-muted="true" data-music-selection-row-selected={view.muted?'true':'false'} data-music-selection-row-status="默认">
+        <label>
+          <input type="radio" name={`music-selection-${jobKey||'job'}`} checked={view.muted} data-music-selection-pick="mute" aria-label={MUSIC_MUTE_TITLE} onChange={onMute}/>
+          <span><b data-music-selection-row-title="true">{MUSIC_MUTE_TITLE}</b><em data-music-selection-row-meta="true">不选用任何曲目</em></span>
+        </label>
+        <small data-music-selection-row-note="true">{view.mix.muted?'成片输出无音轨或静音轨（当前就是这一项）。':'选它就把音乐关掉：成片输出无音轨或静音轨。'}</small>
+      </li>
+      {view.rows.map(row=><li key={row.trackKey} className={`music-selection-row${row.selected?' is-selected':''}`} data-music-selection-row={row.trackKey} data-music-selection-row-selected={row.selected?'true':'false'} data-music-selection-row-status={row.licenseStatusLabel} data-music-selection-row-expires={row.expiresAt}>
+        <label>
+          <input type="radio" name={`music-selection-${jobKey||'job'}`} checked={row.selected} data-music-selection-pick={row.trackKey} aria-label={row.title} onChange={()=>onPick(row.trackKey)}/>
+          <span><b data-music-selection-row-title="true">{row.title}</b><em data-music-selection-row-meta="true">{row.meta}</em></span>
+        </label>
+        <small data-music-selection-row-license="true">{row.licenseStatusLabel} · {row.licenseType} · {row.expiresText}</small>
+        <small data-music-selection-row-source="true">来源：{row.sourceProvider}</small>
+      </li>)}
+    </ul>
+    {view.empty?<p className="video-jobs-empty" data-music-selection-empty="true"><b data-music-selection-empty-title="true">{view.emptyTitle}</b>{view.emptyText}</p>:null}
+    <div className="music-selection-record" data-music-selection-record="true" data-music-selection-record-present={view.record.present?'true':'false'} data-music-selection-record-muted={view.record.muted?'true':'false'} data-music-selection-record-expired={view.record.expired?'true':'false'}>
+      <b>{MUSIC_RECORD_TITLE}</b>
+      <dl data-music-selection-record-rows="true">{view.record.rows.map(row=><div key={row.id} data-music-selection-record-row={row.id} data-music-selection-record-value={row.value}><dt>{row.label}</dt><dd>{row.value}</dd></div>)}</dl>
+      <small data-music-selection-record-note="true">{view.record.note}</small>
+      {view.dispositionText?<p className="music-selection-disposition-text" data-music-selection-disposition-text="true">{view.dispositionText}</p>:null}
+    </div>
+    {view.noticeVisible?<div className="music-selection-notice" data-music-selection-expiry="true" data-music-selection-notice-kind={view.expiredNotice?'expired':'revoked'}>
+      <p data-music-selection-expiry-line="true">{view.notice}</p>
+      <small data-music-selection-disposition-note="true">{view.dispositionNote}</small>
+      <div className="music-selection-notice-actions">
+        <Button variant="secondary" data-music-selection-disposition="switch" disabled={!view.dispositionActions.find(action=>action.id==='switch').allowed} onClick={()=>onDisposition('switch')}>更换音乐</Button>
+        <Button variant="secondary" data-music-selection-disposition="mute" onClick={()=>onDisposition('mute')}>静音</Button>
+      </div>
+    </div>:null}
+    <div className="music-selection-mix" data-music-selection-mix="true" data-music-selection-mix-muted={view.mix.muted?'true':'false'} data-music-selection-mix-filter={view.mix.filter}>
+      <b>{MUSIC_MIX_SECTION_TITLE}</b>
+      <ul>{view.mixRows.map(row=><li key={row.id} data-music-selection-mix-row={row.id} data-music-selection-mix-value={row.value}><span>{row.label}</span><b>{row.value}</b><small>{row.detail}</small></li>)}</ul>
+      <small data-music-selection-mix-note="true">{view.mixNote}</small>
+    </div>
+  </section>;
+}
+
+/**
  * 时长上限与自动精选（[第四步 US-216]）：这条片子放得下多少幅、哪些被舍弃、老师手动排除哪几幅。
  *
  * 判据与文案全部来自 `data/videoSelection.js`（组件只渲染产物，不自己算时长、不自己拼原因）：
@@ -881,7 +979,7 @@ function VideoClassTimeline({plan,view,onMove,onReset}){
  * 它读的是 `classEntries`（这个班级在这个周期的记录）与 `roster`（班级名单 = 顺序真源）；
  * 「顺序默认按班级名单、生成前可调整」用面板自己的 `classOrder` 局部 state 实现。
  */
-function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkCount,photoCount,teacherName,setToast,entries=[],scopeEntries=[],classEntries=[],roster=[],tokens=[],records=[],consents=null,setShareTokens=()=>{},recordAudit=()=>{},auditActor=null,navigate=null}){
+function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkCount,photoCount,teacherName,setToast,entries=[],scopeEntries=[],classEntries=[],roster=[],tokens=[],records=[],musicTracks=[],consents=null,setShareTokens=()=>{},recordAudit=()=>{},auditActor=null,navigate=null}){
   const [jobs,setJobs]=useState(()=>listVideoJobs());
   const [notice,setNotice]=useState('');
   const [simulateFail,setSimulateFail]=useState(false);
@@ -889,7 +987,12 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
   // 换对象 / 换周期 / 换类型后清空 —— 「排除」是对某个对象某个周期说的，不是一条永久规则。
   const [excludedArtworks,setExcludedArtworks]=useState([]);
   // 片尾寄语（帧清单的输入：≤40 字，超限由数据层给可读原因；空着就不显示寄语，不编一句）。
+  // 片尾寄语（帧清单的输入：≤40 字，超限由数据层给可读原因；空着就不显示寄语，不编一句）。
   const [endingNote,setEndingNote]=useState('');
+  // 本片选用（[第四步 US-221]）：默认静音（`musicSelectionDefault()`），**不写进草稿也不落库在界面里**
+  // —— 它随提交写进那条任务的 `specSnapshot.music`（版权证据），之后按记录回读。
+  const [musicSelection,setMusicSelection]=useState(musicSelectionDefault);
+  const [musicNotice,setMusicNotice]=useState('');
   // 班级集锦的学员顺序（[第四步 US-218] 第 2 条验收）：默认按班级名单（`null` = 跟着名单走），
   // 老师点过「上移 / 下移」之后才是一份显式顺序 —— 换班级就清空（顺序是对某个班级说的）。
   const [classOrder,setClassOrder]=useState(null);
@@ -933,6 +1036,56 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
   useEffect(()=>{setExcludedArtworks([])},[objectName,period,isClass]);
   const selection=useMemo(()=>videoSelectionPlan({entries,type,excluded:excludedArtworks}),[entries,type,excludedArtworks]);
   const selectionView=useMemo(()=>videoSelectionView(selection),[selection]);
+  // ---- 背景音乐选用与版权闸门（[第四步 US-221] / FR-294 ~ FR-300）-------------------------------
+  // 这条任务的成片记录（`specSnapshot.music`）：换对象 / 换周期就跟着换（预览面板读的是同一个 jobKey）。
+  // 混音读数里的淡出起点用**这条成片的预估时长**（`selection.durationSec`，与精选清单同源）。
+  const currentJobMusic=useMemo(()=>{
+    const stored=jobs.find(job=>job.jobKey===jobKey)||null;
+    return stored?stored.specSnapshot?.music||null:null;
+  },[jobs,jobKey]);
+  // 进面板 / 换对象 / 换周期：把**记录里的选择**带回界面（老任务没有记录 → 默认静音）。
+  // 「静音是默认值」这条口径由 `musicSelectionFromJobMusic(null)` → `musicSelectionDefault()` 保证；
+  // 传 `tracks` 是**再验一次可用性**：记录里的曲目已经不可选（授权被改回待确认 / 到期 / 停用 /
+  // 被删）时界面回到静音，不让老师点一下就把没授权的曲子又写进新记录。
+  useEffect(()=>{setMusicSelection(musicSelectionFromJobMusic(currentJobMusic,{tracks:musicTracks}));setMusicNotice('')},[objectName,period,isClass,musicTracks]);
+  const musicView=useMemo(()=>musicSelectionView({
+    selection:musicSelection,
+    tracks:musicTracks,
+    jobMusic:currentJobMusic,
+    durationSec:selection.durationSec,
+    actorName:teacherName
+  }),[musicSelection,musicTracks,currentJobMusic,selection.durationSec,teacherName]);
+  const pickMusic=useCallback(trackKey=>{
+    const result=musicSelectionPick({selection:musicSelection,tracks:musicTracks,trackKey,capturedAt:new Date().toISOString()});
+    if(!result.ok){setMusicNotice(result.issue);setToast(result.issue);return;}
+    setMusicSelection(result.selection);
+    setMusicNotice(`已选用「${result.row?result.row.title:''}」：提交任务时会把曲目 id 与授权凭证快照一起记进成片记录。`);
+  },[musicSelection,musicTracks,setToast]);
+  const muteMusic=useCallback(()=>{
+    setMusicSelection(current=>musicSelectionMuted(current));
+    setMusicNotice('已改为静音：成片输出无音轨或静音轨（这是默认值）。');
+  },[]);
+  // 处置（FR-300）：把这次处置写进成片记录（曲目 id 与凭证快照不动）；任务还不存在 / 老任务就只记在本次选择上。
+  // 处置的 `note` 用当前显示的那句提示（到期 = 验收原文那句；授权被收回 = 另一句，不把两件事说成一件）。
+  const disposeMusic=useCallback(action=>{
+    const reason=musicView.notice||MUSIC_LICENSE_EXPIRED_NOTICE;
+    const record=musicDispositionRecord({
+      action,
+      trackId:musicSelection.trackId,
+      trackTitle:musicView.selectionSnapshot?musicView.selectionSnapshot.title:'',
+      at:new Date().toISOString(),
+      by:teacherName,
+      note:reason
+    });
+    if(!record){setMusicNotice('处置动作不认识：没有记录任何结果。');return;}
+    const next=applyMusicDisposition(musicSelection,record);
+    setMusicSelection(action==='mute'?{...musicSelectionMuted(next),disposition:record}:next);
+    const recorded=recordVideoJobMusicDisposition(jobKey,record);
+    setMusicNotice(recorded.ok
+      ? `已记录处置结果：${record.actionLabel}（写进这条成片记录的音乐快照）。`
+      : `已记录处置结果：${record.actionLabel}（${recorded.issue}这条选择会用在下一版成片记录里。）`);
+    setToast(`${record.actionLabel}：${reason}`);
+  },[musicSelection,musicView.selectionSnapshot,musicView.notice,jobKey,teacherName,setToast]);
   const pickedEntries=selection.selectedEntries;
   const toggleExclude=useCallback(key=>{
     if(!key)return;
@@ -1046,9 +1199,18 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
   const goAuthorization=()=>{if(typeof navigate==='function')navigate('authorization');};
   const report=result=>{setJobs(listVideoJobs());setNotice(result.ok?result.notice:result.issue);setToast(result.ok?result.notice:result.issue)};
   const submit=()=>{
-    const result=submitVideoJob({type,studentId:isClass?'':objectName,classId:isClass?objectName:'',period,objectName,lessonCount,artworkCount,photoCount,createdBy:teacherName,simulate:simulateFail?'fail':'success',simulateErrorCode});
+    // 版权证据随任务一起写进 `specSnapshot.music`（FR-295）：静音也是一个明确结论，老任务没有这一项。
+    const submittedMusic=musicJobMusicFromSelection(musicSelection,{capturedAt:new Date().toISOString()});
+    const result=submitVideoJob({type,studentId:isClass?'':objectName,classId:isClass?objectName:'',period,objectName,lessonCount,artworkCount,photoCount,createdBy:teacherName,simulate:simulateFail?'fail':'success',simulateErrorCode,music:submittedMusic});
     if(result.ok&&result.job)setLatestKey(result.job.jobKey);
     report(result);
+    // 已有成片记录、而这次选择与记录不同（换了曲子 / 改成静音）：**记录不改写**（举证材料要稳定），
+    // 但必须当场说一句实话 —— 否则老师以为换上新曲子了，实际那条记录还是老的（本轮真踩）。
+    const stored=result.job?result.job:(jobs.find(job=>job.jobKey===jobKey)||null);
+    if(result.ok&&musicJobMusicDiffers(stored?stored.specSnapshot?.music:null,submittedMusic)){
+      setMusicNotice(MUSIC_RESUBMIT_KEEPS_RECORD_NOTE);
+      setToast(MUSIC_RESUBMIT_KEEPS_RECORD_NOTE);
+    }
   };
   const cancel=key=>report(cancelVideoJob(key));
   const retry=key=>report(retryVideoJob(key));
@@ -1069,6 +1231,7 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
     </div>
     <p className="video-jobs-note" data-video-submit-note="true">{VIDEO_JOB_SUBMIT_NOTE}</p>
     {submitIssue?<p className="video-jobs-issue" data-video-submit-issue="true">{submitIssue}</p>:null}
+    <MusicSelectionPanel view={musicView} trackRows={musicView.rows} selectedTrackId={musicSelection.trackId} jobKey={jobKey} notice={musicNotice} onPick={pickMusic} onMute={muteMusic} onDisposition={disposeMusic}/>
     <VideoSelectionPanel view={selectionView} onToggleExclude={toggleExclude}/>
     <VideoTimelinePreview plan={timelinePlan} endingNote={endingNote} onEndingNote={setEndingNote}/>
     {personalPlan?<VideoPersonalTimeline plan={personalPlan}/>:null}
@@ -1097,7 +1260,7 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
   </section>;
 }
 
-export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,pageParams,recordsSource=null,reloadRecords=null,archiveReports=[],setArchiveReports=()=>{},teacherName='',shareTokens=[],setShareTokens=()=>{},consents=null,recordAudit=()=>{},auditActor=null}){
+export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,pageParams,recordsSource=null,reloadRecords=null,archiveReports=[],setArchiveReports=()=>{},teacherName='',shareTokens=[],setShareTokens=()=>{},musicTracks=[],consents=null,recordAudit=()=>{},auditActor=null}){
   // 报告生成 / 更新要留痕（[第四步 US-211] 第 4 条：操作人 / 时间 / 对象 / 版本）——
   // 留痕入口与报告写入在同一次动作里（`generateReport`），界面只多显示一行回执。
   const [reportAuditEntry,setReportAuditEntry]=useState(null);
@@ -1368,7 +1531,7 @@ export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,p
             {timelineWindow.hasMore?<button type="button" className="primary" data-archive-page-more="true" onClick={()=>setTimelinePage(page=>Math.min(timelineWindow.pageCount,page+1))}>{timelineWindow.moreLabel}</button>:null}
           </nav>:null}
         </section>
-        <VideoJobsPanel isClass={view.isClass} objectName={view.name} period={videoPeriod} onPeriod={setVideoPeriod} lessonCount={view.summary.lessons} artworkCount={view.summary.artworks} photoCount={view.summary.photos} teacherName={teacherName} setToast={setToast} entries={videoEntries} scopeEntries={videoScopeEntries} classEntries={videoClassEntries} roster={classRoster} tokens={shareTokens} records={records} consents={consents} setShareTokens={setShareTokens} recordAudit={recordAudit} auditActor={auditActor} navigate={navigate}/>
+        <VideoJobsPanel isClass={view.isClass} objectName={view.name} period={videoPeriod} onPeriod={setVideoPeriod} lessonCount={view.summary.lessons} artworkCount={view.summary.artworks} photoCount={view.summary.photos} teacherName={teacherName} setToast={setToast} entries={videoEntries} scopeEntries={videoScopeEntries} classEntries={videoClassEntries} roster={classRoster} tokens={shareTokens} records={records} consents={consents} musicTracks={musicTracks} setShareTokens={setShareTokens} recordAudit={recordAudit} auditActor={auditActor} navigate={navigate}/>
         <section className="archive-perf-panel" data-archive-perf="true" data-archive-perf-measured={String(perfChecks.measured)} data-archive-perf-total={String(perfChecks.total)} data-archive-perf-all-ok={perfChecks.allOk?'true':'false'} data-archive-perf-summary-text={perfChecks.summary}>
           <div className="archive-perf-head"><Gauge size={15}/><b>档案性能</b><em data-archive-perf-summary="true">{perfChecks.summary}</em><small>{ARCHIVE_PERF_HINT}</small></div>
           <ul className="archive-perf-list">{perfChecks.rows.map(row=><li key={row.id} data-archive-perf-row={row.id} data-archive-perf-state={row.ok===null?'pending':row.ok?'ok':'over'} data-archive-perf-value={row.value} data-archive-perf-budget={row.budget} data-archive-perf-text={row.text}>

@@ -28,6 +28,10 @@
 // 字段**（US-204 的白屏坑：某一态少给一个字段就会在渲染期炸成白屏，而 `pnpm run build` 全绿）。
 
 import { formatArchiveTime } from './archiveSummary';
+// 成片记录里的音乐（[第四步 US-221] / FR-295 / FR-300）：`specSnapshot.music` 的形状与归一化
+// 只写在 `data/musicSelection.js` 那一份里（曲目 id + 授权凭证快照 + 处置结果），这里只负责
+// 把它作为快照的一部分带进任务 —— 白名单之外不做第二次判断。
+import { normalizeMusicJobMusic } from './musicSelection';
 
 const str = value => String(value ?? '').trim();
 const num = value => {
@@ -225,8 +229,10 @@ export function videoJobSubmitIssue({ type, studentId = '', classId = '', period
 /**
  * 提交时的快照（FR-257 的 `specSnapshot`）：**只记录这次任务指向什么**（对象 / 周期 / 归档里有多少
  * 节课与作品），不记录任何成片属性 —— 时长、精选清单与封面属于 US-215 / US-216，本故事不编。
+ * 音乐是唯一例外（[第四步 US-221] / FR-288）：`music` 记的是**版权证据**（曲目 id + 授权凭证快照 +
+ * 处置结果），不是成片属性 —— 事后要能证明「这条片子当时用的是有授权的曲子」。
  */
-export function videoJobSpecSnapshot({ type, objectName = '', studentId = '', classId = '', period = '', lessonCount = 0, artworkCount = 0, photoCount = 0, capturedAt = '' } = {}) {
+export function videoJobSpecSnapshot({ type, objectName = '', studentId = '', classId = '', period = '', lessonCount = 0, artworkCount = 0, photoCount = 0, capturedAt = '', music = null } = {}) {
   const kind = normalizeVideoJobType(type);
   const object = objectFields({ type: kind, studentId, classId });
   return {
@@ -239,7 +245,9 @@ export function videoJobSpecSnapshot({ type, objectName = '', studentId = '', cl
     lessonCount: Math.max(0, int(lessonCount)),
     artworkCount: Math.max(0, int(artworkCount)),
     photoCount: Math.max(0, int(photoCount)),
-    capturedAt: str(capturedAt)
+    capturedAt: str(capturedAt),
+    // `null` = 这条任务提交时还没有音乐选择（老记录），不是「静音」——两者在界面与断言里能分开。
+    music: normalizeMusicJobMusic(music)
   };
 }
 
@@ -255,20 +263,30 @@ export function normalizeVideoJobSnapshot(raw) {
     lessonCount: source.lessonCount,
     artworkCount: source.artworkCount,
     photoCount: source.photoCount,
-    capturedAt: source.capturedAt
+    capturedAt: source.capturedAt,
+    music: source.music
   });
 }
 
 /** 快照渲染成卡片上的几行读数（`value` 都给，界面不自己拼字符串）。 */
 export function videoJobSpecRows(snapshot) {
   const spec = normalizeVideoJobSnapshot(snapshot);
+  const music = spec.music;
   return [
     { id: 'object', label: '对象', value: spec.objectName || (spec.studentId || spec.classId) || '未记录' },
     { id: 'type', label: '类型', value: videoJobTypeLabel(spec.type) },
     { id: 'period', label: '周期', value: spec.period || '未记录' },
     { id: 'lessons', label: '课次', value: `${spec.lessonCount} 节课` },
     { id: 'artworks', label: '作品', value: `${spec.artworkCount} 幅` },
-    { id: 'photos', label: '课堂照片', value: `${spec.photoCount} 张` }
+    { id: 'photos', label: '课堂照片', value: `${spec.photoCount} 张` },
+    {
+      id: 'music',
+      label: '音乐',
+      // 音乐这一行读的是成片记录里的版权证据（US-221）：静音 / 曲目名（id）/ 老任务如实写「未记录」。
+      value: !music
+        ? '未记录（这条任务提交时还没有音乐选择）'
+        : (music.muted ? '静音' : `${music.title || '未命名曲目'}（${music.trackId || 'id 未记录'}）`)
+    }
   ];
 }
 
@@ -407,7 +425,13 @@ const timeValue = value => {
 /** 任务的变化指纹（服务层用它判断「要不要落盘 / 通知界面」）。 */
 export function videoJobSignature(job) {
   const source = normalizeVideoJob(job);
-  return [source.jobKey, source.status, source.progress, source.attempts, source.error, source.queuePosition, source.updatedAt].join('~');
+  const music = source.specSnapshot?.music;
+  // 音乐（曲目 id + 处置动作）必须在指纹里：换一首曲子而指纹不变时，服务层会判成「没变化」——
+  // 不落盘、也不通知界面，记录看着像写进去了，刷新就没了（US-221 真踩）。
+  const musicKey = music
+    ? [music.muted ? 'mute' : music.trackId, music.disposition?.action || '', music.disposition?.at || ''].join('/')
+    : 'legacy';
+  return [source.jobKey, source.status, source.progress, source.attempts, source.error, source.queuePosition, source.updatedAt, musicKey].join('~');
 }
 
 /**

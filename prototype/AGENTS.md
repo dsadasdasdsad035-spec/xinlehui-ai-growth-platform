@@ -1077,6 +1077,59 @@ US-220a 解决「曲目怎么管」，这一节解决「曲目从哪来」：管
   ≥44px 扫描要把 `input/select` 也算进去（`min-height:44px` 得单独给 `.music-source-search input/select`，
   全局样式里它们只有 ~36px）。
 
+## 老师端的音乐选用与版权闸门（[第四步 US-221] / F-ARCHIVE-MUSIC-02 / FR-294 ~ FR-300）
+
+US-220a 解决「曲目怎么管」、US-220b 解决「曲目从哪来」，这一节解决「老师怎么用、出了事怎么举证」。
+
+| 关注点 | 位置 |
+|---|---|
+| 领域规则（可选清单 / 静音默认 / 授权凭证快照 / 到期与处置 / 混音参数，零依赖） | `src/data/musicSelection.js` |
+| 成片记录里的 music（形状 + 归一化 + 白名单） | 同上；`data/videoJobs.js` 的 `videoJobSpecSnapshot({music})` 调它 |
+| 落地（提交时写进任务 + 处置回写） | `services/videoJobQueue.js`（`submitVideoJob({music})` / `recordVideoJobMusicDisposition`） |
+| 界面（选用 / 记录 / 到期处置 / 混音读数） | `GrowthArchiveData.jsx` 的 `MusicSelectionPanel` |
+
+- **可选的唯一判据是管理端的 `musicTrackAvailability()`**，不是界面里再写一遍 `if (status === 'confirmed')`：
+  `selectableMusicTracks()` 只返回「已确认授权 + 未过期 + 未停用」的曲目 —— `pending` / 到期 / 停用的曲目
+  在老师端**结构上拿不到**（不是渲染时隐藏）。到期日**当天仍可用**，次日算到期（与管理端同一口径）。
+- **静音是默认值，且必须结构性地成立**：`musicSelectionDefault()` / `normalizeMusicSelection()` 缺字段时
+  一律落回静音；界面 `useState(musicSelectionDefault)`。任何「不静音但没有 trackId」的脏数据也读成静音
+  （fail-safe：宁可不出声，也不放一首来路不明的曲子）。
+- **成片记录写进 `specSnapshot.music`**（`musicJobMusicFromSelection`）：静音也写一条
+  `{muted:true, …空…}`（明确结论），选了曲子就写 `trackId + 标题 / 来源 / 来源平台 / 授权类型 /
+  授权凭证 / 到期日 / 状态 + capturedAt`（举证四件套 + 记录时刻）。**老任务没有这一项时是 `null`**，
+  不是「静音」—— 界面与断言能分开（`musicRecordedView(null).present===false`）。
+- **记录里的证据不因再次操作被改写**：处置（更换音乐 / 静音）只写 `disposition`（动作 / 时间 / 操作人 /
+  当时那句原因），`trackId` 与整份授权凭证快照一个字节不动；同一 jobKey 再次提交也**不改写已有记录的
+  music**（举证材料要稳定），界面用 `MUSIC_RESUBMIT_KEEPS_RECORD_NOTE` 如实说明「这次的选择会用在下一版」
+  —— 不静默忽略（否则老师以为换上新曲子了）。
+- **记录里的曲目失效后，本片选择回到默认静音**（`musicSelectionFromJobMusic(music,{tracks})` 传当前曲库时
+  再验一次可用性）：不让老师点一下提交就把已经没授权 / 已停用 / 已删除的曲子又写进新记录；界面用
+  `MUSIC_RESTORE_MUTED_NOTE` 说明「为什么现在显示静音」。
+- **到期与「授权被收回」是两件事，两句提示分开写**：到期（记录自己的到期日过了，或曲库那条状态是
+  `expired`）→ 验收原文 `MUSIC_LICENSE_EXPIRED_NOTICE`「音乐授权已到期，建议更换或静音。」；
+  授权被改回 `pending` / 停用 / 删曲 → `MUSIC_RECORD_REVOKED_NOTICE`（也指向「建议更换或静音」，
+  但不把没到期说成已到期）。两句都只在 data 层写一次，界面 import。
+- **混音口径只有一份**（`MUSIC_MIX_CONFIG`）：1.5 秒淡入 / 2 秒淡出 / `loudnorm=I=-16:TP=-1.5:LRA=11`；
+  `musicMixPlan({durationSec,muted})` 拼出渲染服务要执行的滤镜串（静音时三件都不做、`filter` 是空串），
+  界面读它的 `mixRows`。将来接渲染服务时读同一份，别在服务端另配一套参数。
+- **任务指纹必须带音乐**（`videoJobSignature` 拼进 `music.trackId / disposition`）：服务层靠指纹判断
+  「要不要落盘 / 通知界面」，漏了它会出现「换了曲子、界面与镜像都不动」（US-221 真踩）。
+- **面板里做容器选择器时，读数 `data-*` 挂在块自己的根节点上**：`data-music-selection-mix*` 在
+  `.music-selection-mix` 上、`-record-*` 在 `.music-selection-record` 上 —— 挂在最外层
+  `[data-music-selection]` 之外的位置会让验证脚本读到 `null`（假红一次）。
+- **验证方式（本故事实测）**：`pnpm run build` 通过（370~501ms）；Node 直跑 **130 项**
+  （`/tmp/assert-us082-data.mjs`：可选性三种边界 / 静音默认值与归一化 / 快照九项 / 混音滤镜串 /
+  到期与处置 / 队列写读 / 静态口径）；浏览器 **100 项**（`/tmp/assert-us082-browser.mjs`：默认静音、
+  pending 与到期曲目不可见、选中后提交、记录五项逐项读出、改成 pending → 可选清单跟着变、
+  按日期到期的原文提示与两个处置动作、处置不改写证据、全部到期时的空态与禁用、390px ≥44px）；
+  回归 US-079 browser 110 全绿、US-073/074/075/076/077/078 browser 全绿（US-072 那 1 项
+  「提交按钮文案」在 HEAD 上就已失败，属 US-214 的口径变更，与本故事无关）；截图 409~416 留档。
+- **验证脚本的坑（本故事真踩）**：① 刷新会回到登录页 —— 要验「再次进入」必须把真实入口再走一遍
+  （`reloadToArchive()` 重登 + `walkToArchive`），否则等 `[data-music-selection]` 永远超时；
+  ② 390px 的 ≥44px 扫描要**排除 `input[type=radio]`**（点它的是外面那个 44px 的 label，
+  与 US-080/081 的扫描口径一致），否则会误报 1 个过矮控件；③ 面板读的是「当前 jobKey 那条任务」的记录 ——
+  想验「另一首曲子当记录」要么换生成周期（新 jobKey），要么直接改成片记录里的字段，不能只重选曲目。
+
 ## 老师端「课后反馈」第一步（班级 / 学员 / 课程 / 课次推荐）
 
 > **课次表单全站只有一份实现 = `TeacherFlowV2`（`main.jsx`）。** 旧的 `CreateFlow` 五步向导
