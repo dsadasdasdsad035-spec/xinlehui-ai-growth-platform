@@ -296,6 +296,17 @@ import {
   POSTER_SINGLE_PREVIEW_SCALE, createPosterSingleUrl, exportPosterSinglePng,
   releasePosterSingleUrl, renderPosterSingle
 } from './services/posterSingle';
+// 阶段成长海报（[海报 US-304] / FR-310、FR-313）：一位学员在一个周期里的作品拼贴 + 阶段总结。
+// 周期口径读成长档案的周期窗口、总结读阶段报告的聚合（同一份实现），收录上限 12 幅按课次均匀精选；
+// 规则与文案在 data/posterPeriod.js（零依赖纯函数，可直接 Node 断言），渲染与下载在 services/posterPeriod.js。
+import {
+  POSTER_PERIOD_DEFAULT_PERIOD, POSTER_PERIOD_MAX_CELLS, POSTER_PERIOD_OPTIONS,
+  buildPosterPeriodPlan, posterPeriodExportGate
+} from './data/posterPeriod';
+import {
+  POSTER_PERIOD_PREVIEW_SCALE, createPosterPeriodUrl, exportPosterPeriodPng,
+  releasePosterPeriodUrl, renderPosterPeriod
+} from './services/posterPeriod';
 // 录入页移动端与性能（US-413）：缩略图长边上限 / 44px 可点区域 / 20 人以上按出席折叠分组 / 录入用时。
 // 规则与文案是零依赖纯函数（可直接 Node 断言），浏览器侧的执行在 services/mediaIntake。
 import {
@@ -3904,6 +3915,142 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
       </div>:<p className="poster-single-empty" data-poster-single-empty="true">{posterSinglePlan.notes[0]}</p>}
     </div>
   );
+  // ---- 阶段成长海报（[海报 US-304]）------------------------------------------------------------
+  // 「这位孩子在这一段时间里的全部作品」拼成一张 1080×1920：顶部学员名与周期，中部自适应拼贴
+  // （4 幅 2×2 / 6–9 幅 3×3 / 10–12 幅 3×4，每格圆角细边框、contain 不裁切、格下标注课次日期），
+  // 下部阶段总结与二维码。数据装配全在 `data/posterPeriod.js`（周期窗口与总结都读成长档案那一支）；
+  // 这一块只渲染它的产物 + 渲染/导出两个动作，`data-poster-period-*` 上的读数全部来自同一份产物。
+  const [posterPeriodPeriod,setPosterPeriodPeriod]=useState(POSTER_PERIOD_DEFAULT_PERIOD);
+  // 每格下方的课次日期标注（[海报 US-304] 的「可选」）：默认开，可关；关掉只影响这一层显示参数。
+  const [posterPeriodDateCaptions,setPosterPeriodDateCaptions]=useState(true);
+  const [posterPeriodNotice,setPosterPeriodNotice]=useState({phase:'idle',message:''});
+  const [posterPeriodPreview,setPosterPeriodPreview]=useState({key:'',url:'',phase:'idle',warnings:[],width:0,height:0});
+  // 学员：正在看的这条路归档记录的学员优先；还没归档时回落到第一步选中的学员（与 `shareQrStudent` 同口径）。
+  const posterPeriodStudent=(currentArchiveRecord?.student)||(selectedStudentLabel==='未选择学员'?'':selectedStudentLabel);
+  const posterPeriodPlan=useMemo(()=>buildPosterPeriodPlan({
+    records,
+    student:posterPeriodStudent,
+    period:posterPeriodPeriod,
+    record:currentArchiveRecord,
+    tokens:shareTokens,
+    now:null,
+    teacherName:currentTeacherName,
+    orgName:DEFAULT_ORG_NAME,
+    logo:posterSingleLogo,
+    origin:shareQrOrigin,
+    dateCaptions:posterPeriodDateCaptions
+  }),[records,posterPeriodStudent,posterPeriodPeriod,currentArchiveRecord,shareTokens,currentTeacherName,posterSingleLogo,shareQrOrigin,posterPeriodDateCaptions]);
+  const posterPeriodGate=posterPeriodExportGate(posterPeriodPlan);
+  // 预览重绘键 = 真正会改变这张图的所有输入（学员 / 周期 / 收录哪几幅 / 总结 / 链接 / 占位 / 日期标注）。
+  const posterPeriodRenderKey=posterPeriodPlan.hasStudent?[
+    posterPeriodPlan.templateKey,posterPeriodPlan.studentName,posterPeriodPlan.periodLabel,
+    posterPeriodPlan.collage.count,posterPeriodPlan.collage.total,
+    posterPeriodPlan.collage.entries.map(entry=>`${entry.recordId}:${entry.url.slice(-24)}`).join(','),
+    posterPeriodPlan.summary.text,posterPeriodPlan.data.logo,posterPeriodPlan.data.shareUrl,
+    posterPeriodPlan.collage.count?'has-art':'no-art',
+    posterPeriodPlan.share.pending?'no-share':'has-share',
+    posterPeriodPlan.dateCaptions?'captions':'no-captions'
+  ].join('|'):'';
+  useEffect(()=>{
+    if(!posterPeriodRenderKey){
+      setPosterPeriodPreview({key:'',url:'',phase:'idle',warnings:[],width:0,height:0});
+      return ()=>{} ;
+    }
+    let cancelled=false;
+    let createdUrl='';
+    setPosterPeriodPreview({key:posterPeriodRenderKey,url:'',phase:'pending',warnings:[],width:0,height:0});
+    renderPosterPeriod(posterPeriodPlan,{scale:POSTER_PERIOD_PREVIEW_SCALE}).then(rendered=>{
+      if(cancelled) return;
+      if(!rendered||!rendered.blob){
+        setPosterPeriodPreview({key:posterPeriodRenderKey,url:'',phase:'failed',warnings:[],width:0,height:0});
+        return;
+      }
+      createdUrl=createPosterPeriodUrl(rendered);
+      setPosterPeriodPreview({key:posterPeriodRenderKey,url:createdUrl,phase:'ready',warnings:rendered.warnings||[],width:rendered.width,height:rendered.height});
+    }).catch(()=>{
+      if(!cancelled) setPosterPeriodPreview({key:posterPeriodRenderKey,url:'',phase:'failed',warnings:[],width:0,height:0});
+    });
+    return ()=>{ cancelled=true; if(createdUrl) releasePosterPeriodUrl(createdUrl); };
+  // 预览随「重绘键」重跑：键里已经包含了 plan 上所有会影响这张图的输入。
+  },[posterPeriodRenderKey]);
+  // 换学员 / 换记录时清掉导出回执；换周期时也清（回执里的文件名与周期绑在一起）。
+  useEffect(()=>{setPosterPeriodNotice({phase:'idle',message:''})},[posterPeriodStudent,posterPeriodPeriod]);
+  const exportPosterPeriod=async()=>{
+    if(!posterPeriodGate.allowed){setPosterPeriodNotice({phase:'blocked',message:posterPeriodGate.reason});return;}
+    const result=await exportPosterPeriodPng(posterPeriodPlan);
+    if(!result.ok){setPosterPeriodNotice({phase:'failed',message:result.reason});return;}
+    const message=`阶段海报已导出：${result.filename} · ${result.rendered.width}×${result.rendered.height} · ${artworkExportSizeText(result.bytes)}`;
+    setPosterPeriodNotice({phase:'done',message});
+    setToast(message);
+  };
+  const posterPeriodState=!posterPeriodPlan.hasStudent
+    ?'empty'
+    :(!posterPeriodGate.allowed?'blocked':(posterPeriodPreview.phase==='ready'?'ready':posterPeriodPreview.phase));
+  const posterPeriodField=(
+    <div className="poster-period" data-poster-period="true"
+      data-poster-period-state={posterPeriodState}
+      data-poster-period-template={posterPeriodPlan.templateKey}
+      data-poster-period-canvas={`${posterPeriodPlan.spec.canvas.width}x${posterPeriodPlan.spec.canvas.height}`}
+      data-poster-period-student={posterPeriodPlan.studentName}
+      data-poster-period-period={posterPeriodPlan.period}
+      data-poster-period-period-label={posterPeriodPlan.periodLabel}
+      data-poster-period-window-from={posterPeriodPlan.window.from}
+      data-poster-period-window-to={posterPeriodPlan.window.to}
+      data-poster-period-cells={String(posterPeriodPlan.collage.count)}
+      data-poster-period-total={String(posterPeriodPlan.collage.total)}
+      data-poster-period-grid={posterPeriodPlan.collage.grid.label}
+      data-poster-period-grid-columns={String(posterPeriodPlan.collage.grid.columns)}
+      data-poster-period-grid-rows={String(posterPeriodPlan.collage.grid.rows)}
+      data-poster-period-trim-note={posterPeriodPlan.collage.note}
+      data-poster-period-summary={posterPeriodPlan.summary.text}
+      data-poster-period-summary-insufficient={posterPeriodPlan.summary.insufficient?'true':'false'}
+      data-poster-period-date-captions={posterPeriodPlan.dateCaptions?'on':'off'}
+      data-poster-period-lessons={String(posterPeriodPlan.counts.lessons)}
+      data-poster-period-share-state={posterPeriodPlan.share.pending?'pending':'active'}
+      data-poster-period-share-link={posterPeriodPlan.share.link}
+      data-poster-period-export={posterPeriodGate.allowed?'allowed':'blocked'}
+      data-poster-period-export-reason={posterPeriodGate.reason}
+      data-poster-period-preview={posterPeriodPreview.phase}
+      data-poster-period-warnings={posterPeriodPreview.warnings.join(' / ')}>
+      <div className="poster-period-head">
+        <Boxes size={14}/>
+        <b>阶段成长海报</b>
+        <em className={`is-${posterPeriodState}`} data-poster-period-badge="true">{posterPeriodState==='ready'?'已生成':posterPeriodState==='pending'?'生成中':posterPeriodState==='blocked'?'暂无作品':posterPeriodState==='failed'?'生成失败':posterPeriodState==='empty'?'待归档':'准备中'}</em>
+        {posterPeriodPlan.templateName?<small data-poster-period-template-name="true">{posterPeriodPlan.templateName}</small>:null}
+      </div>
+      {posterPeriodPlan.hasStudent?<div className="poster-period-body">
+        <div className="poster-period-controls">
+          <label>周期<select value={posterPeriodPeriod} onChange={event=>setPosterPeriodPeriod(event.target.value)} data-poster-period-select="true">{POSTER_PERIOD_OPTIONS.map(name=><option key={name} value={name}>{name}</option>)}</select></label>
+          <small data-poster-period-range="true">{posterPeriodPlan.periodLabel}</small>
+          <label className="poster-period-toggle"><input type="checkbox" checked={posterPeriodDateCaptions} onChange={event=>setPosterPeriodDateCaptions(event.target.checked)} data-poster-period-captions-toggle="true"/><span>每格下方标注课次日期</span></label>
+          <small data-poster-period-limit="true">拼贴上限 {POSTER_PERIOD_MAX_CELLS} 幅</small>
+        </div>
+        {posterPeriodPlan.collage.note?<p className="poster-period-trim" data-poster-period-trim="true">{posterPeriodPlan.collage.note}</p>:null}
+        <figure className="poster-period-preview" data-poster-period-preview-box="true">
+          {posterPeriodPreview.url
+            ?<img src={posterPeriodPreview.url} alt={`${posterPeriodPlan.studentName}的阶段成长海报预览（1080×1920）`} data-poster-period-image="true"/>
+            :<span className="poster-period-hold" data-poster-period-hold="true">{posterPeriodPreview.phase==='failed'?'海报没有渲染成功':'正在生成海报预览…'}</span>}
+        </figure>
+        <div className="poster-period-meta">
+          <ul>
+            <li data-poster-period-line="student">学员：{posterPeriodPlan.studentName} · {posterPeriodPlan.periodLabel}</li>
+            <li data-poster-period-line="collage">拼贴：{posterPeriodPlan.collage.count} / {posterPeriodPlan.collage.total} 幅 · {posterPeriodPlan.collage.grid.label} 网格（{posterPeriodPlan.collage.grid.columns} 列 × {posterPeriodPlan.collage.grid.rows} 行）</li>
+            <li data-poster-period-line="summary">阶段总结：{posterPeriodPlan.summary.text.split('\n')[0]}</li>
+            <li data-poster-period-line="share">分享：{posterPeriodPlan.share.pending?POSTER_SINGLE_SHARE_PENDING_TEXT:`链接可用 · ${posterPeriodPlan.share.link}`}</li>
+          </ul>
+          {posterPeriodPlan.notes.length?<ul className="poster-period-notes">
+            {posterPeriodPlan.notes.map(note=><li key={note} data-poster-period-note="true">{note}</li>)}
+          </ul>:null}
+          {posterPeriodPreview.warnings.length?<p className="poster-period-warning" data-poster-period-warning="true">{posterPeriodPreview.warnings.join('；')}</p>:null}
+          <div className="poster-period-actions">
+            <Button icon={Download} disabled={!posterPeriodGate.allowed} onClick={exportPosterPeriod} data-poster-period-export-button="true">{posterPeriodGate.allowed?'导出 PNG':'暂时不能导出'}</Button>
+            {posterPeriodGate.allowed?null:<small data-poster-period-block-reason="true">{posterPeriodGate.reason}</small>}
+            {posterPeriodNotice.message?<small data-poster-period-notice="true">{posterPeriodNotice.message}</small>:null}
+          </div>
+        </div>
+      </div>:<p className="poster-period-empty" data-poster-period-empty="true">{posterPeriodPlan.notes[0]}</p>}
+    </div>
+  );
   // 第四步**不展开也看得到**的转发状态条（状态 + 渠道 + 转发时间 + 打开次数），读数同一份产物。
   const archiveForwardChip=(
     <small className={`archive-forward-chip is-${archiveForwardStatus.state}`} data-forward-chip="true" data-forward-chip-state={archiveForwardStatus.state} data-forward-chip-label={archiveForwardStatus.stateLabel} data-forward-chip-line={archiveForwardStatus.line} data-forward-chip-opens={String(archiveForwardStatus.openCount)}>
@@ -5772,7 +5919,7 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
       {step===1?<section className="scene-panel"><div className="scene-heading"><span>第一步</span><h2>创建课后反馈信息</h2><p>先确定服务对象，再同步收集本节课素材。素材只在本次操作中保留。</p></div>{draftRestored?<div className="intake-draft-restored"><Clock3 size={14}/><div><b>已恢复上次的课次信息；素材需重新选择</b><small>{draftRestoreDetail}</small></div>{pendingTitles.length?<em>已保留 {pendingTitles.length} 个作品名，「学员作品上传位」里重新选择素材后自动填回</em>:null}<button type="button" className="text-link" onClick={()=>setDraftRestored(false)}>知道了</button></div>:null}<div className="feedback-mode"><button className={mode==='个人反馈'?'selected':''} onClick={()=>selectMode('个人反馈')}>个人反馈<small>为一位孩子完成反馈</small></button><button className={mode==='班级反馈'?'selected':''} onClick={()=>selectMode('班级反馈')}>班级反馈<small>批量处理全班素材</small></button></div>{availableClasses.length?<div className="intake-scope"><span>班级范围</span><div className="intake-scope-switch"><button type="button" className={showAllClasses?'':'active'} onClick={()=>selectClassScope(false)}>我带的班（{myClasses.length}）</button><button type="button" className={showAllClasses?'active':''} onClick={()=>selectClassScope(true)}>全部班级（{availableClasses.length}）</button></div><small>当前登录老师：{currentTeacherName}</small></div>:null}{visibleClasses.length?<div className="task-form"><label>选择班级<select value={selectedClassId} onChange={event=>selectClass(event.target.value)}>{visibleClasses.map(item=><option key={item.id} value={item.id}>{item.name}{item.teacher?`（${item.teacher}）`:''}</option>)}</select></label><label>选择学员<select value={mode==='班级反馈'?'__class__':selectedStudentName} disabled={mode==='班级反馈'} onChange={event=>{setSelectedStudentName(event.target.value);setArchived(false);setCurrentRecordId('');clearReviewTrace();setWriteBackAttempt({status:'idle',quality:'',message:''})}}>{mode==='班级反馈'?<option value="__class__">本班全部学员（{classStudents.length}人）</option>:<><option value="">请选择学员</option>{classStudents.map(item=><option key={item.name} value={item.name}>{item.name}</option>)}</>}</select></label>{courseOptions.length?<label>选择课程<select value={activeCourseId} onChange={event=>selectCourse(event.target.value)}>{courseOptions.map(item=><option key={item.courseId} value={item.courseId}>{item.name}{item.courseId===classCourseId?' · 本班课程':''}</option>)}</select></label>:<div className="intake-course-empty"><b>课程库暂时没有可选课程</b><p>{classCourseName?`本班课程「${classCourseName}」不在可选课程里，可能已被停用。`:'课程由机构管理员在「课程库」中维护。'}</p>{role==='admin'?<Button variant="secondary" onClick={()=>navigate('courseLibrary')}>去课程库添加课程</Button>:<small>请联系机构管理员在「课程库」中新增或启用课程。</small>}</div>}{lessonScheduleField}{participantField}{consentNoticeField}{mediaIntakeNotice?<p className="intake-media-notice"><ShieldAlert size={14}/><span>{mediaIntakeNotice}</span></p>:null}</div>:<div className="intake-empty"><Users size={26}/><b>{showAllClasses?'机构里还没有任何班级':'还没有属于你的班级'}</b><p>{showAllClasses?'请先在「学员管理」中新建班级，再回到这里创建课后反馈。':'可以切到「全部班级」确认是否存在其他老师名下的班级，或先去「学员管理」新建班级。'}</p><div className="intake-empty-actions">{showAllClasses?null:<button type="button" className="text-link" onClick={()=>selectClassScope(true)}>查看全部班级</button>}<Button onClick={()=>navigate('classes')}>去学员管理添加班级</Button></div></div>}{mode==='个人反馈'&&selectedClass&&!classStudents.length?<p className="intake-hint">该班级还没有学员，请先在「学员管理」里导入名单，再创建课后反馈。</p>:null}{artworkSlotField}{photoSlotField}{mode==='个人反馈'?<div className="sync-upload"><div className={media.artwork?.url?'has-file':''}><Frame/><b>学员作品 <em>必选</em></b><small>{uploadSummary('artwork')}</small><input ref={artworkInput} type="file" accept="image/jpeg,image/png,image/webp" hidden multiple={mode==='班级反馈'} onChange={e=>readFiles('artwork',e.target.files,e.currentTarget)}/><button onClick={()=>artworkInput.current?.click()}>{media.artwork?.url?'已上传 · 重新选择':'上传作品'}</button></div><div className={media.photo?.url?'has-file':''}><Image/><b>学员照片 <em>选填</em></b><small>{uploadSummary('photo')}</small><input ref={photoInput} type="file" accept="image/jpeg,image/png,image/webp" hidden multiple={mode==='班级反馈'} onChange={e=>readFiles('photo',e.target.files,e.currentTarget)}/><button onClick={()=>photoInput.current?.click()}>{media.photo?.url?'已上传 · 重新选择':'上传照片'}</button></div></div>:null}{lostSessionMedia&&!mediaLostDismissed?<div className="intake-media-lost"><ShieldAlert size={14}/><div><b>上次选择的素材已失效</b><small>作品与课堂照片只在当次会话里有效（只使用会话内 object URL，不写入 localStorage / IndexedDB）。页面刷新或重新进入后，请重新选择原始素材。</small></div><button type="button" className="text-link" onClick={()=>setMediaLostDismissed(true)}>知道了</button></div>:null}<div className="upload-privacy-note"><ShieldCheck size={14}/>{mediaRulesText(UPLOAD_SLOTS_PER_STUDENT)}</div>{intakeReadinessPanel}<div className="scene-actions"><Button variant="secondary" onClick={resetDraft}>新建草稿</Button><Button variant="secondary" icon={Save} disabled={!activeCourseId||lessonSaveState.status==='saving'} onClick={requestLessonSave}>{lessonSaveState.status==='saving'?'保存中…':'保存课次'}</Button><Button icon={ArrowRight} disabled={!intakeReadiness.ok} onClick={()=>go(2)}>进入智能装裱</Button></div></section>:null}
       {step===2?<section className="scene-panel studio-task"><div className="scene-heading"><span>第二步</span><h2>智能装裱</h2><p>先旋转完整原图并确认方向；确认后自动裁掉纸外的桌面、地面与背景，只保留作品本身。装裱方案（画框、卡纸、展签、日期与署名）由管理员在「装裱设置」中统一维护，这里直接选用。</p></div><div className="media-process"><article><div className={`mini-frame uploaded-art${media.artwork?.framedUrl&&!artworkEditor.open?' framed-preview':''}${artworkEditor.open?' is-editing':''}`}>{media.artwork?.url?<><img src={artworkEditor.open?(editorPreview||media.artwork.originalUrl):(media.artwork.framedUrl||media.artwork.cleanUrl||media.artwork.orientedUrl||media.artwork.originalUrl)} alt={artworkEditor.open?'编辑中的旋转稿预览（低分辨率画布）':media.artwork.framedUrl?`已按「${activeFrame?.name||'默认装裱'}」完成装裱的作品`:media.artwork.cleanUrl?'已裁掉纸外背景、只保留作品本身':'等待确认方向的完整原图'}/>{media.artwork?.framedUrl&&!artworkEditor.open?<span className="framed-badge">{activeFrame?.name||'默认装裱'}</span>:null}{artworkEditor.open?<span className="framed-badge editing-badge">编辑中</span>:null}<div className="frame-rotate-controls" aria-label="旋转作品"><button type="button" title="向左旋转 90°" aria-label="向左旋转作品" disabled={artworkEditor.open&&editorPreviewPending} onClick={()=>quickRotateArtwork(-1)}><RotateCcw size={18}/></button><button type="button" title="向右旋转 90°" aria-label="向右旋转作品" disabled={artworkEditor.open&&editorPreviewPending} onClick={()=>quickRotateArtwork(1)}><RotateCw size={18}/></button></div></>:'✺'}</div><div><b>学员作品</b><p>{artworkEditor.open?(editorPreviewPending?'正在生成低分辨率预览…':'编辑中：调整旋转后点「完成编辑」，再按新的方向重新裁剪与装裱。'):framingState==='processing'?(media.artwork?.cleanUrl?'正在按当前装裱方案合成装裱图…':'正在裁掉纸外的桌面与地面，只保留作品本身…'):media.artwork?.framedUrl?`已装裱：${activeFrame?.name||'默认装裱'}。作品只做等比缩放与居中，不裁切主体、不重绘、不调色。`:media.artwork?.cleanUrl?'已完成作品裁剪，正在生成装裱图…':'当前仅显示完整原图；可以先点「编辑作品」把方向摆正，再开始裁剪与装裱。'}</p>{mode==='个人反馈'?artworkEditorField:null}{!media.artwork?.cleanUrl?<button type="button" className="confirm-artwork-button" onClick={startArtworkCleanup} disabled={framingState==='rotating'||framingState==='processing'}>{framingState==='processing'?'正在裁剪作品…':'方向正确，开始裁剪与装裱'}</button>:null}<span className="frame-choice-hint">相框样式在下方「相框样式」面板里挑（缩略图用这幅作品实时渲染）→</span></div></article><article><div className="photo-card">{media.photo?.url?<><img src={media.photo.url} alt="已自然优化的课堂照片" style={{transform:`rotate(${media.photo.rotation||0}deg)`}}/><button type="button" className="frame-rotate-button photo-rotate-button" onClick={rotatePersonalPhoto}><RefreshCw size={16}/>旋转照片</button></>:<img src={pandaMascot} alt="课堂照片占位预览"/>}</div><div><b>学员照片</b><p>{media.photo?.name||'未上传课堂照片，可返回上一步补充。'}</p></div></article></div>{batchFramingPanel}{studioDrawerTrigger('frame')}{frameStylePanel}{overlayPanelTrigger}{overlayDrawerOpen?<div className="lesson-overlay-scrim" data-overlay-scrim="true" onClick={()=>setOverlayDrawerOpen(false)}/>:null}{overlayPanel}{studioDrawerTrigger('save')}{saveImagePanel}{studioDrawer?<div className="studio-drawer-scrim" data-studio-drawer-scrim={studioDrawer} onClick={()=>setStudioDrawer('')}/>:null}{framingPerfPanel}{saveImageSheet}<div className="scene-actions"><Button variant="secondary" onClick={()=>go(1)}>返回创建信息</Button><Button icon={ArrowRight} onClick={()=>go(3)}>进入五维点评</Button></div></section>:null}
       {step===3?<section className="scene-panel review-task-v2"><div className="review-media"><div className="scene-heading"><span>{mode==='班级反馈'?'本班课后素材':'本次课素材'}</span><h2>{mode==='班级反馈'?'周六创意绘画 2 班 · 班级课后反馈':`${selectedStudentLabel}${activeFrame?.plaqueTitle?` · 《${activeFrame.plaqueTitle}》`:''}`}</h2></div><div className={`review-gallery ${mode==='班级反馈'?'class-review-gallery':''}`}>{mode==='班级反馈'?<><ClassMediaMosaic items={classMosaicArtworks} kind="artwork" date={lessonDateDots} writeBackKeyOf={classArtworkWriteBackKeyOf} onRotate={index=>rotateBatchItem('artwork',index)}/><ClassMediaMosaic items={classMosaicPhotos} kind="photo" groups={photoGroups} date={lessonDateDots} onRotateEntry={uploadId=>rotateUploadEntry('photo',uploadId)}/></>:<><div className={`review-art exhibition-art${reviewFramedSrc?' framed-art':''}`} data-review-artwork-source={reviewWrittenBackUrl?'writeback':'framed'} data-review-artwork-fingerprint={artworkUrlFingerprint(reviewFramedSrc)}>{reviewFramedSrc?<div className="framed-art-final"><img src={reviewFramedSrc} alt={`${selectedStudentLabel}的作品 · ${activeFrame?.name||'装裱'}`} data-review-artwork="true"/>{activeFrame?.name?<span className="framed-badge">{activeFrame.name}</span>:null}{reviewWrittenBackUrl?<span className="written-back-badge" data-review-artwork-written-back="true">老师保存的成品图</span>:null}</div>:<><div className="artwork-mat">{media.artwork?.url?<img src={media.artwork.cleanUrl||media.artwork.originalUrl||media.artwork.url} alt={`${selectedStudentLabel}的作品`}/>:'✺'}</div><div className="artwork-plaque"><div><b>{selectedStudentLabel}</b><span>{activeFrame?.plaqueTitle?`《${activeFrame.plaqueTitle}》`:''}</span></div><time>创作于 {plaqueDateText}</time></div></>}</div><div className="review-photo portrait-print"><div className="portrait-mat">{media.photo?.url?<img src={media.photo.url} alt="陈一诺课堂照片"/>:<img src={pandaMascot} alt="课堂照片占位"/>}</div><div className="portrait-caption">{selectedStudentLabel} · {plaqueDateText}</div></div></>}</div></div><ReviewKeywordDock visible selected={keywords} onToggle={toggleKeyword} suggested={aiKeywords} suggesting={keywordSuggesting} dirty={keywordDirty} generated={reviewGenerated} template={keywordTemplateView}/><div className={`coach-review ${mode==='班级反馈'?'class-coach-review':''}`}><div className="scene-heading"><span>第三步</span><h2>{mode==='班级反馈'?'班级课程反馈':'五维点评'}</h2></div><div className="review-subject-field" data-review-subject-field="true" data-review-subject-source={reviewSubject.source} data-review-subject-context={reviewLesson.contextSource} data-review-subject-picked={reviewSubject.picked?'true':'false'} data-review-subject-options={reviewLesson.options.length} data-review-subject-lesson-date={reviewLessonDate}>{reviewLesson.options.length?<label>本次课题<select value={reviewSubjectValue} onChange={event=>{setSubjectPick(event.target.value);setSubjectPicked(true)}} data-review-subject="true">{reviewLesson.options.map(item=><option key={item.value} value={item.value} data-review-subject-option={item.source}>{item.label}</option>)}</select></label>:<b className="review-subject-empty" data-review-subject-empty="true">还没有可选课题</b>}<small data-review-subject-note="true">{reviewSubjectNote}</small></div><p className="evidence">{mode==='班级反馈'?'以下内容基于本节课课程设计、班级素材与老师观察生成，老师可编辑确认后发布给家长。':`下列内容由大模型生成：先读懂作品与课堂素材，再结合「${activeProfileLabel}」的人设、已启用技能与长期记忆，按五个维度分别输出评语。老师可逐条修改后再发布。`}</p>{reviewRecoveryField}{mode==='班级反馈'?<ClassReviewContent subject={reviewSubjectValue}/>:<><div className={`review-source ${reviewGenerated?'ai':'pending'}`}>{reviewGenerated?<><Sparkles size={14}/><span>当前正文由大模型「{activeProfileLabel}」依据人设、技能与长期记忆生成，可直接编辑。</span></>:<><Sparkles size={14}/><span>五个维度等待大模型生成：点击上方「开始生成点评」，评语会逐字写入这里。</span></>}{keywordDirty&&reviewGenerated?<em>观察词已调整，建议重新生成</em>:null}</div>{Object.entries(reviews).map(([name,copy])=><article className={`coach-card${copy?'':' is-empty'}`} key={name}><b>{name}{copy?null:<em className="review-pending">待生成</em>}</b><textarea aria-label={name} value={copy} placeholder={REVIEW_DIMENSION_HINTS[name]||''} onChange={event=>setReviews(current=>({...current,[name]:event.target.value}))}/></article>)}</>}{reviewArchiveGateField}{archiveAccessField}<div className="scene-actions"><Button variant="secondary" onClick={()=>go(2)}>返回智能装裱</Button><Button icon={Archive} onClick={archiveRecord} disabled={!reviewArchiveGate.ok||!archiveAccess.allowed} data-archive-gate={reviewArchiveGate.ok?'ok':'blocked'} data-archive-access={archiveAccess.allowed?'allowed':'denied'} data-archive-access-reason={archiveAccess.allowed?'':archiveAccess.reason} data-archive-mode={archiveIsUpdate?'update':'create'} data-archive-version={archivedRecord?String(archivedRecord.version):''} data-archive-media-phase={archiveMediaAttempt.phase} data-archive-lesson-source={archiveLessonPlan.source} data-archive-lesson-id={archiveLessonId} data-archive-record-key={archiveLessonReady?archiveIdentity.recordKey:''} data-archive-lesson-natural-key={archiveLessonPlan.naturalKey} data-archive-block-reason={reviewArchiveGate.ok?'':reviewArchiveGate.reasonText} title={`${archiveIsUpdate?'本次归档会更新已有的那条档案记录（同一课次 + 同一位学员只留一条）':'本次归档会新建一条档案记录'}；${archiveLessonNote(archiveLessonPlan)}`}>{archived?'保存修改并更新档案':'归档并生成分享'}</Button></div></div></section>:null}
-      {step===4?<section className="share-task scene-panel" data-archive-step="true" data-archive-step-state={archiveStep.state} data-archive-step-label={archiveStep.stateLabel}><img src={pandaObserve} alt="熊猫成长伙伴"/><div><span data-archive-step-headline="true">{archiveStep.state===ARCHIVE_STEP_STATES.archived?`已写入 ${(currentArchiveRecord?.student)||selectedStudentLabel} 的成长档案`:'归档状态'}</span><h2>{archiveStep.headline}</h2><p data-archive-step-note="true">{archiveStep.state===ARCHIVE_STEP_STATES.archived?'作品、课堂照片与五维点评已经写入成长档案。':archiveStep.note}</p>{archiveStep.state===ARCHIVE_STEP_STATES.archived&&archiveStep.hint?<small className="archive-step-hint" data-archive-step-hint="true">{archiveStep.hint}</small>:null}{archiveSummaryField}{archiveAuditField}{archiveMediaSyncField}{archiveForwardChip}{posterSingleField}{archiveShareOpen?archiveShareField:null}<div className="share-actions scene-actions"><Button variant="secondary" onClick={()=>go(3)} data-archive-return-review="true">返回修改点评</Button><Button icon={MessageSquareText} onClick={toggleArchiveShare} data-archive-share-toggle="true" data-archive-share-open={archiveShareOpen?'true':'false'} aria-expanded={archiveShareOpen}>转发给家长</Button><Button icon={FileText} onClick={()=>navigate('archives',{student:(currentArchiveRecord?.student)||selectedStudentLabel,className:(currentArchiveRecord?.className)||selectedClassLabel})} data-archive-enter-archive="true">进入成长档案</Button></div></div></section>:null}
+      {step===4?<section className="share-task scene-panel" data-archive-step="true" data-archive-step-state={archiveStep.state} data-archive-step-label={archiveStep.stateLabel}><img src={pandaObserve} alt="熊猫成长伙伴"/><div><span data-archive-step-headline="true">{archiveStep.state===ARCHIVE_STEP_STATES.archived?`已写入 ${(currentArchiveRecord?.student)||selectedStudentLabel} 的成长档案`:'归档状态'}</span><h2>{archiveStep.headline}</h2><p data-archive-step-note="true">{archiveStep.state===ARCHIVE_STEP_STATES.archived?'作品、课堂照片与五维点评已经写入成长档案。':archiveStep.note}</p>{archiveStep.state===ARCHIVE_STEP_STATES.archived&&archiveStep.hint?<small className="archive-step-hint" data-archive-step-hint="true">{archiveStep.hint}</small>:null}{archiveSummaryField}{archiveAuditField}{archiveMediaSyncField}{archiveForwardChip}{posterSingleField}{posterPeriodField}{archiveShareOpen?archiveShareField:null}<div className="share-actions scene-actions"><Button variant="secondary" onClick={()=>go(3)} data-archive-return-review="true">返回修改点评</Button><Button icon={MessageSquareText} onClick={toggleArchiveShare} data-archive-share-toggle="true" data-archive-share-open={archiveShareOpen?'true':'false'} aria-expanded={archiveShareOpen}>转发给家长</Button><Button icon={FileText} onClick={()=>navigate('archives',{student:(currentArchiveRecord?.student)||selectedStudentLabel,className:(currentArchiveRecord?.className)||selectedClassLabel})} data-archive-enter-archive="true">进入成长档案</Button></div></div></section>:null}
     </section></>;
 }
 

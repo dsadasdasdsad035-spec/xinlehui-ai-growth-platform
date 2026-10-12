@@ -922,3 +922,39 @@
   .poster-single-body{grid-template-columns:minmax(0,1fr)}
   .poster-single-actions button{width:100%;min-height:44px;justify-content:center}
 }
+
+/* 阶段成长海报（[海报 US-304]）：一位学员在一个周期里的作品拼贴 + 阶段总结 + 二维码。
+   预览图是 `renderPoster` 的真图（1080×1920，与导出同一个函数、只差 scale）；
+   网格档位 / 收录上限 / 阶段总结都由 data/posterPeriod.js 算好，界面只渲染产物。
+   预览竖图较长，所以桌面下预览与读数并排、窄屏单栏堆叠（与单作品那一块同一套排版）。 */
+.poster-period{display:flex;flex-direction:column;gap:8px;margin-top:12px;padding:12px;border:1px solid #e6dcc4;border-radius:12px;background:#fffdf7;text-align:left;min-width:0}
+.poster-period-head{display:flex;align-items:center;gap:7px}
+.poster-period-head b{font-size:12px;color:#4a3f2c}
+.poster-period-head em{margin-left:auto;font-size:10px;font-style:normal;font-weight:800;padding:3px 8px;border-radius:999px;background:#f2ecd8;color:#7a6a45}
+.poster-period-head em.is-ready{background:#e6f5ea;color:#2f7a45}
+.poster-period-head em.is-blocked,.poster-period-head em.is-failed{background:#f7e3e0;color:#a5452f}
+.poster-period-head small{font-size:10px;color:#8b8064}
+.poster-period-body{display:grid;grid-template-columns:minmax(0,240px) minmax(0,1fr);gap:12px;align-items:start}
+.poster-period-controls{grid-column:1 / -1;display:flex;flex-wrap:wrap;align-items:center;gap:10px;font-size:11px;color:#7c7259}
+.poster-period-controls label{display:flex;align-items:center;gap:6px;font-size:11px;color:#5c5343}
+.poster-period-controls select{min-height:32px;border-radius:8px;border:1px solid #e0d5bb;background:#fffefb;padding:0 8px;font-size:12px;color:#4a3f2c}
+.poster-period-toggle{display:flex;align-items:center;gap:6px;font-size:11px;color:#5c5343;min-height:32px;cursor:pointer}
+.poster-period-toggle input{width:16px;height:16px;accent-color:#c9a227}
+.poster-period-trim{grid-column:1 / -1;margin:0;font-size:11px;font-weight:700;color:#8a6a1f}
+.poster-period-preview{margin:0;border:1px solid #eadfbd;border-radius:10px;overflow:hidden;background:#f6f1e4;min-height:200px;display:grid;place-items:center}
+.poster-period-preview img{display:block;width:100%;height:auto}
+.poster-period-hold{font-size:11px;color:#8b8064;padding:20px;text-align:center}
+.poster-period-meta{display:flex;flex-direction:column;gap:6px;font-size:11px;color:#5c5343;min-width:0}
+.poster-period-meta ul{margin:0;padding-left:14px;display:flex;flex-direction:column;gap:3px;word-break:break-word}
+.poster-period-notes{color:#8a7d5e;font-size:10px}
+.poster-period-warning{color:#a5452f;font-size:10px;margin:0}
+.poster-period-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.poster-period-actions small{font-size:10px;color:#7c7259}
+.poster-period-empty{font-size:11px;color:#8a7d5e;margin:0}
+@media(max-width:800px){
+  .poster-period{padding:10px}
+  .poster-period-body{grid-template-columns:minmax(0,1fr)}
+  .poster-period-controls select{min-height:44px}
+  .poster-period-toggle{min-height:44px}
+  .poster-period-actions button{width:100%;min-height:44px;justify-content:center}
+}

@@ -231,14 +231,25 @@ function posterSinglePlaceholderSlot(slot, text, { sizeRatio = 0.02, align = 'ce
  * 为什么换类型而不是「传一个空图」：海报模板里没有「空盒子」这个概念 —— 图片解码失败时那一格
  * 什么都不画（`reason: 'no-image'`），于是版式上留一块真的空白。验收要的是「显示占位而不是空白」，
  * 所以占位文案必须**进绘制层**；而「二维码区显示文字而不是空白方块」也只有这样才是结构保证。
+ *
+ * 阶段海报（[海报 US-304]）复用同一支：它的拼贴位缺件时文案是「本阶段数据不足」，
+ * 因此 `imagePlaceholderText` 可换（缺省仍是「作品尚未同步完成」，单作品那条路径一字不变）。
  */
-export function posterSingleSpecPatch(spec, { artworkMissing = false, sharePending = false, logoFallback = '' } = {}) {
+export function posterSingleSpecPatch(spec, {
+  artworkMissing = false,
+  sharePending = false,
+  logoFallback = '',
+  // 图位缺件的**文案**可换（[海报 US-304] 的阶段拼贴位缺件时写「本阶段数据不足」而不是
+  // 「作品尚未同步完成」）：位置、尺寸、字号一律不动，换的只是那一句。
+  imagePlaceholderText = POSTER_SINGLE_ARTWORK_MISSING_TEXT
+} = {}) {
   const normalized = normalizePosterSpec(spec);
   const artworkSlot = posterSingleArtworkSlot(normalized);
   const logoText = str(logoFallback);
+  const imageText = str(imagePlaceholderText) || POSTER_SINGLE_ARTWORK_MISSING_TEXT;
   const slots = normalized.slots.map((slot) => {
     if (artworkMissing && slot.type === 'image' && artworkSlot && slot.id === artworkSlot.id) {
-      return posterSinglePlaceholderSlot(slot, POSTER_SINGLE_ARTWORK_MISSING_TEXT, {
+      return posterSinglePlaceholderSlot(slot, imageText, {
         sizeRatio: POSTER_SINGLE_PLACEHOLDER_SIZE.image,
         color: POSTER_MUTED_COLORS.deep
       });

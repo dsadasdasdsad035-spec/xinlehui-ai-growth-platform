@@ -3711,6 +3711,44 @@ US-303 补的是后半截，两个模块：
   页面上的分享链接**、白底卡片占画布高度 54.9%、390px 44px）+ `/tmp/assert-us092-regression.mjs`
   （8 套内置模板自检 8/8 + 两套单作品版式渲染留档）。
 
+## 阶段成长海报的周期口径与自适应拼贴（[海报 US-304] / FR-310、FR-313）
+
+「这位学员在一个周期里的全部作品」拼成一张 1080×1920。两个模块，与单作品那一支同分工：
+
+- `src/data/posterPeriod.js`（data 层纯函数，可 `node` 直跑）= 周期、拼贴、总结、缺件：
+  - **周期口径不另写一套**：词表 / 窗口 / 过滤读 `data/archiveTargets.js`
+    （`archivePeriodWindow` / `filterArchiveRecordsByPeriod`）——与成长档案页的周期筛选器同一支
+    （「一学期」= 最近 180 天的**下界**，只有下界没有上界；读不出日期的记录留在窗口里）。
+  - **阶段总结只从聚合来**：快照走 `buildArchiveReportSnapshot()`、句子走 `archiveReportDigestView()`
+    （阶段报告那一支）；**海报上只留两句**（数字句 + 覆盖情况短句，短句取报告那句**冒号之前**的部分）。
+    为什么必须短：总结位 `maxLines: 3`，把报告里「美术能力（51/52 节课）」那种逐维明细搬上去会被省略号吃掉
+    （本轮真踩：53 节课的海报上省略了 70 个字）。聚合不出一句原文时写
+    `ARCHIVE_REPORT_INSUFFICIENT_TEXT`「本阶段数据不足」——不套示例文案。
+  - **拼贴只收有成品图的课次**（`archiveRecordMediaView(record,{surface:'teacher'})`，与档案 / 家长页
+    同一支判据），素材是 keyed 形状 `data.images = { collage: [{url, caption}] }`，`caption` = 展签口径的
+    课次日期；**超上限（默认 12）在本层按课次均匀精选**（`posterEvenSample`），渲染层因此收到「已经选好的
+    那几幅」，`total/count/trimmed` 与那句验收原文「共 N 幅，已收录 M 幅」（`posterPeriodTrimNote`）都来自
+    这里 —— 别再让渲染层与数据层各选一次。
+  - **缺件补丁复用 `posterSingleSpecPatch`**：`imagePlaceholderText` 可换成「本阶段数据不足」
+    （阶段拼贴位缺件时），二维码位「分享链接待生成」与 Logo 位机构名兜底**共用同一支**与同一批文案。
+  - 网格档位由 `posterGridShape()` 决定（1–4 幅 2×2 / 5–9 幅 3×3 / 10–12 幅 3×4）；
+    `POSTER_PERIOD_GRID_STEPS` 只是把验收要求的三档写下来给断言逐档比对（不另写一份网格实现）。
+  - 模板选择：`findPosterPeriodTemplate()` 优先**自适应网格**那套内置模板
+    （`poster-oak-period`；固定九宫格那套做不到 10–12 幅 → 3×4）。
+- `src/services/posterPeriod.js` = 渲染与下载：`renderPosterPeriod`（预览 1× = 1080×1920）与
+  `exportPosterPeriodPng`（导出 2× = 2160×3840，先过导出门再 `<a download>`）；下载那一支**复用**
+  `services/posterSingle.js` 的 `downloadPosterSingleBlob`（同一支 `<a download>` + 延后回收）。
+- 界面（课后反馈**第四步**，`.poster-period` 块）：周期下拉（半学期/一学期/一年度）+「每格下方标注课次
+  日期」开关（默认开）+ 超上限时预览**上方**那行「共 N 幅，已收录 M 幅」+ 导出 PNG。
+  学员取「正在看的归档记录 → 第一步选中的学员」（与 `shareQrStudent` 同口径）；二维码指向**周期内最新
+  一条记录**的有效分享令牌（生成分享后同一块预览立刻重画成真码）。
+- 验证口径：`/tmp/assert-us093.mjs`（Node，**109 项**：画布 1080×1920 / 三档网格逐档比对 / 均匀精选与
+  首尾必取 / 总结两句与「本阶段数据不足」/ 周期窗口三档与窗口外不进拼贴 / 缺件三种占位 / 文件名 / 分层纪律）+
+  `/tmp/assert-us093-browser.mjs`（CDP，**99 项**：两遍真机走查 —— ① 8 幅夹具 + 1 幅归档 = 9 幅 → 3×3
+  逐格量几何（等宽等高 · 列间距=gap · 行间距=gap+标注行高 · 每列对齐）与像素（逐格作品墨迹 · 逐格日期墨迹 ·
+  间隙干净）；② 14 幅 + 1 幅 = 15 幅 → 预览上方出现验收原文并只画 12 格（3×4）；另含周期切换、日期标注
+  开关（关掉 → 格子变高、格下无墨迹）、导出 PNG 2160×3840 + 文件名、390px、console 干净）。
+
 ## 容易踩的坑
 
 - **「每次渲染后量一次」的测量签名里不能有时间戳**（US-224 真踩）：`useEffect(()=>{measure()})`
