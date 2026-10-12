@@ -30,6 +30,7 @@ import {
   applyVideoJob,
   dedupeVideoJobs,
   loadVideoJobs,
+  normalizeSimulateErrorCode,
   normalizeVideoJob,
   persistVideoJobs,
   videoJobActionIssue,
@@ -190,6 +191,8 @@ export function resumeVideoJobQueue(options = {}) {
  *  - `created:false`：命中了已有的同一条（排队中 / 渲染中 / 已完成 → 原样返回，不重复创建；
  *    失败 / 已取消 → 沿用它重新排队，attempts 保留）；
  *  - `ok:false`：连提交都不该发生（没选对象 / 没选周期），`issue` 给可读原因，队列一个字节不改。
+ * `simulate` / `simulateErrorCode` 是演示队列自己的失败开关（四类原因各一套文案），
+ * 重复提交时按本次的选择更新 —— 真实的失败原因由渲染服务返回。
  */
 export function submitVideoJob({
   type,
@@ -202,12 +205,15 @@ export function submitVideoJob({
   photoCount = 0,
   createdBy = '',
   simulate = VIDEO_JOB_SIMULATIONS.success,
+  simulateErrorCode = '',
   now = Date.now()
 } = {}) {
   const submitIssue = videoJobSubmitIssue({ type, studentId, classId, period });
   if (submitIssue) return { ok: false, job: null, created: false, issue: submitIssue, notice: '' };
   const jobKey = videoJobKey({ type, studentId, classId, period });
   const stamp = stampOf(now);
+  const mode = String(simulate) === VIDEO_JOB_SIMULATIONS.fail ? VIDEO_JOB_SIMULATIONS.fail : VIDEO_JOB_SIMULATIONS.success;
+  const errorCode = normalizeSimulateErrorCode(simulateErrorCode || undefined);
   const existing = getVideoJob(jobKey);
   if (existing) {
     // ① 正在进行 / 已经完成 → 幂等命中，**不产生第二条任务**。
@@ -224,6 +230,8 @@ export function submitVideoJob({
       progress: 0,
       error: '',
       errorCode: '',
+      simulate: mode,
+      simulateErrorCode: errorCode,
       startedAt: '',
       finishedAt: '',
       updatedAt: stamp,
@@ -254,7 +262,8 @@ export function submitVideoJob({
     progress: 0,
     attempts: 0,
     error: '',
-    simulate: String(simulate) === VIDEO_JOB_SIMULATIONS.fail ? VIDEO_JOB_SIMULATIONS.fail : VIDEO_JOB_SIMULATIONS.success,
+    simulate: mode,
+    simulateErrorCode: errorCode,
     demo: true,
     createdBy,
     createdAt: stamp,

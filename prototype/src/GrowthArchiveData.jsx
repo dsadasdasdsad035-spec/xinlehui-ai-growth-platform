@@ -89,14 +89,25 @@ import {
 import { deleteRemoteArchiveReport, saveRemoteArchiveReport } from './services/archiveReportsApi';
 // 审计日志的动作键（[第四步 US-211]）：报告生成 / 更新也要留痕（操作人 / 时间 / 对象 / 版本）。
 import { AUDIT_ACTIONS, auditEntryMissingFields, auditTraceText } from './data/auditLog';
-// 视频任务（[第四步 US-213a]）：任务模型 / 状态机 / jobKey 幂等 / 演示推进 / 文案全在
+// 视频任务（[第四步 US-213a] / US-214）：任务模型 / 状态机 / jobKey 幂等 / 演示推进 / 文案全在
 // `data/videoJobs.js`（零依赖纯函数），落地与定时推演在 `services/videoJobQueue.js`。
 // 这一页只渲染视图产物 —— 图表、按钮与「演示数据 · 视频服务未接入」那句话都从数据层来。
+// US-214 起另有三件事也读数据层：生成入口的文案（`VIDEO_JOB_SUBMIT_LABEL`）、
+// 「预估剩余时间」（`videoJobEtaView`，明写「不是成片时长」）、
+// 「离开页面后按 jobKey 恢复」的判定（`videoJobQueueView` 的 `resumedAt` / `resumedCount`）。
 import {
   VIDEO_JOB_DEMO_LABEL,
+  VIDEO_JOB_ETA_LABEL,
+  VIDEO_JOB_SECTION_DESC,
+  VIDEO_JOB_SECTION_TITLE,
   VIDEO_JOB_SERVICE_UNAVAILABLE_TEXT,
+  VIDEO_JOB_SIMULATE_ERROR_DEFAULT,
+  VIDEO_JOB_SIMULATE_ERROR_OPTIONS,
   VIDEO_JOB_STATUSES,
+  VIDEO_JOB_SUBMIT_LABEL,
+  VIDEO_JOB_SUBMIT_NOTE,
   VIDEO_JOB_TYPES,
+  videoJobErrorText,
   videoJobKey,
   videoJobQueueView,
   videoJobSubmitIssue
@@ -342,14 +353,22 @@ function ArchiveReportPanel({reportKey, reportView, period, type, issue, busy, n
 }
 
 /**
- * 一条视频任务卡（[第四步 US-213a] 第 5 条）：卡片上必须**明确标注**「演示数据 · 视频服务未接入」。
- * 卡片渲染的每一行都取自 `data/videoJobs.js` 的 `videoJobView` 产物（状态 / 进度 / 次数 /
- * 失败原因 / 队列位次 / 演示标注），组件不自己拼字符串、也不自己判断该给哪个按钮。
+ * 一条视频任务卡（[第四步 US-213a] 第 5 条 / [第四步 US-214]）：卡片上必须**明确标注**
+ * 「演示数据 · 视频服务未接入」。卡片渲染的每一行都取自 `data/videoJobs.js` 的 `videoJobView` 产物
+ * （状态 / 进度百分比 / 预估剩余时间 / 任务键 / 次数 / 失败原因 / 队列位次 / 演示标注 / 是否按 jobKey 恢复），
+ * 组件不自己拼字符串、也不自己判断该给哪个按钮。
+ *
+ * 三条硬口径（US-214）：
+ *  - 「预估剩余时间」旁边永远跟着一句「不是成片时长」（`job.etaNote`）—— 两个时间不许被看成一个；
+ *  - `data-video-job-player="none"` / `has-output="false"` / 卡片里没有任何 `<video>` 元素：
+ *    未完成时不显示假播放器、假封面、假时长（成片只能来自渲染服务，结构上编不出来）；
+ *  - `is-latest`（刚提交的那条）与 `data-video-job-resumed`（离开页面前提交、这次按 jobKey 接回来的）
+ *    都是可见状态，不是内部细节 —— 「提交后立即进入任务卡片」与「重新进入恢复进度」都要看得出来。
  */
-function VideoJobCard({job,onCancel,onRetry}){
+function VideoJobCard({job,isLatest,onCancel,onRetry}){
   const cancelAction=job.actions.find(action=>action.id==='cancel');
   const retryAction=job.actions.find(action=>action.id==='retry');
-  return <article className="video-job-card" data-video-job-card="true" data-video-job-key={job.jobKey} data-video-job-type={job.type} data-video-job-object={job.objectName} data-video-job-status={job.status} data-video-job-progress={job.progress} data-video-job-attempts={job.attempts} data-video-job-queue={job.queueLabel} data-video-job-error={job.errorText} data-video-job-demo={job.demoLabel} data-video-job-output-url={job.output.url}>
+  return <article className={`video-job-card${isLatest?' is-latest':''}`} data-video-job-card="true" data-video-job-key={job.jobKey} data-video-job-type={job.type} data-video-job-object={job.objectName} data-video-job-status={job.status} data-video-job-progress={job.progress} data-video-job-attempts={job.attempts} data-video-job-queue={job.queueLabel} data-video-job-error={job.errorText} data-video-job-demo={job.demoLabel} data-video-job-output-url={job.output.url} data-video-job-latest={isLatest?'true':'false'} data-video-job-resumed={job.resumed?'true':'false'} data-video-job-eta={job.etaLabel} data-video-job-eta-known={job.eta.known?'true':'false'} data-video-job-has-output={job.hasOutput?'true':'false'} data-video-job-player="none" data-video-job-duration="">
     <header>
       <div>
         <span data-video-job-type-label="true">{job.typeLabel}</span>
@@ -358,15 +377,19 @@ function VideoJobCard({job,onCancel,onRetry}){
       <em className={`video-job-status is-${job.status}`} data-video-job-status-label="true">{job.statusLabel}</em>
     </header>
     <p className="video-job-demo" data-video-job-demo={job.demoLabel}>{job.demoLabel}</p>
+    {job.resumeNote?<p className="video-job-resume-note" data-video-job-resume-note="true">{job.resumeNote}</p>:null}
     <div className="video-job-progress" data-video-job-progress-row="true">
       <div className="video-job-bar" role="progressbar" aria-label={`${job.objectName} 视频任务进度`} aria-valuenow={job.progress} aria-valuemin="0" aria-valuemax="100"><i style={{width:job.progressLabel}} data-video-job-bar="true"/></div>
       <b data-video-job-progress-label="true">{job.progressLabel}</b>
     </div>
     <ul className="video-job-rows">
       <li><span>状态说明</span><b data-video-job-status-note="true">{job.statusNote}</b></li>
+      <li data-video-job-eta-row="true"><span>{VIDEO_JOB_ETA_LABEL}</span><b data-video-job-eta-label="true">{job.etaLabel}</b></li>
       <li><span>尝试次数</span><b data-video-job-attempts-label="true">{job.attemptsLabel}{job.queueLabel?` · ${job.queueLabel}`:''}</b></li>
+      <li data-video-job-key-row="true"><span>任务键</span><b data-video-job-key-label="true">{job.jobKey}</b></li>
       {job.errorText?<li data-video-job-error-row="true"><span>失败原因{job.errorCode?`（${job.errorCode}）`:''}</span><b>{job.errorText}</b></li>:null}
     </ul>
+    <p className="video-job-eta-note" data-video-job-eta-note="true">{job.etaNote}</p>
     <dl className="video-job-spec" data-video-job-spec="true">{job.specRows.map(row=><div key={row.id} data-video-job-spec-row={row.id}><dt>{row.label}</dt><dd>{row.value}</dd></div>)}</dl>
     {job.outputNote?<p className="video-job-output" data-video-job-output="true">{job.outputNote}</p>:null}
     <div className="video-job-actions">
@@ -377,22 +400,30 @@ function VideoJobCard({job,onCancel,onRetry}){
 }
 
 /**
- * 视频任务（演示队列）面板（[第四步 US-213a]）。
+ * 视频任务（演示队列）面板（[第四步 US-213a]，[第四步 US-214] 补入口 / 预估剩余时间 / 恢复读数）。
  *
  * 这一块是「渲染服务还没接进来，但前端不能空等」的落地：
+ *  - 「成长记录（视频）」类型下提供**生成入口**（`VIDEO_JOB_SUBMIT_LABEL`）：提交后立即拿到 jobKey
+ *    并进入下面的任务卡片，卡片上有状态、进度百分比与预估剩余时间；
  *  - 提交 / 取消 / 重试三个动作全部转给 `services/videoJobQueue.js`（判据在 data 层），
  *    被拒时把 `issue` 原样显示，不自己编文案；
  *  - 进面板先 `resumeVideoJobQueue()`：刷新 / 重新进入后按真实经过时间接上正在跑的任务，
- *    有进行中的任务才自动起表（没有就停着，不在后台空转）；
+ *    并按 jobKey 把进行中的任务标成「已恢复」（`resumedAt` = 本次挂载时刻）；
  *  - **类型跟着「查看对象」走**（个人档案 = 个人成长视频、班级档案 = 班级视频集锦），
  *    不给「选了班级却提交个人视频」这种错配留入口；
- *  - 「演示失败」开关是队列自身的演示能力（走到 45% 时失败），用来验证失败态与重试，
- *    不是产品规则 —— 真实的渲染失败由服务端返回。
+ *  - 「演示失败 + 失败原因」是队列自身的演示能力（走到 45% 时按选中的那类原因失败），
+ *    用来验证失败态、四套文案与重试，不是产品规则 —— 真实的渲染失败由服务端返回。
  */
 function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkCount,photoCount,teacherName,setToast}){
   const [jobs,setJobs]=useState(()=>listVideoJobs());
   const [notice,setNotice]=useState('');
   const [simulateFail,setSimulateFail]=useState(false);
+  // 演示失败原因（四类：模型 / 字体 / 素材 / 存储）—— 可选值与文案都来自数据层。
+  const [simulateErrorCode,setSimulateErrorCode]=useState(VIDEO_JOB_SIMULATE_ERROR_DEFAULT);
+  // 刚提交的那条（卡片高亮 + 滚动到卡片）：提交后「立即进入任务卡片」是可见的，不只是一个 state。
+  const [latestKey,setLatestKey]=useState('');
+  // 本次进入页面的时刻（组件挂载）：`videoJobResumed` 用它判断「这条是离开页面前提交的」。
+  const sessionStartRef=useRef(Date.now());
   // 真实渲染服务在不在（[第四步 US-213b]）：进面板探测一次并**如实显示** —— 不可用时那句话
   // 就是契约层抛出来的原文（`services/videoApi.js` 的「视频服务暂不可用」），
   // 于是下面这条演示队列是**明确标注的演示**，不是假装成片的来源。
@@ -413,15 +444,25 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
   useEffect(()=>{setJobs(resumeVideoJobQueue().jobs)},[]);
   // 探测一次渲染服务（挂载时一次；之后由「重新探测」按钮手动触发）。
   useEffect(()=>probe(),[probe]);
-  const view=videoJobQueueView(jobs);
+  // 提交完把那条卡片滚进视野（`block:'nearest'`：已经看得见就不动滚动位置）。
+  useEffect(()=>{
+    if(!latestKey||typeof document==='undefined')return;
+    const card=document.querySelector(`[data-video-job-card][data-video-job-key="${latestKey}"]`);
+    if(card&&typeof card.scrollIntoView==='function')card.scrollIntoView({block:'nearest'});
+  },[latestKey]);
+  const view=videoJobQueueView(jobs,{resumedAt:sessionStartRef.current});
   const submitIssue=videoJobSubmitIssue({type,studentId:isClass?'':objectName,classId:isClass?objectName:'',period});
   const jobKey=videoJobKey({type,studentId:isClass?'':objectName,classId:isClass?objectName:'',period});
   const report=result=>{setJobs(listVideoJobs());setNotice(result.ok?result.notice:result.issue);setToast(result.ok?result.notice:result.issue)};
-  const submit=()=>report(submitVideoJob({type,studentId:isClass?'':objectName,classId:isClass?objectName:'',period,objectName,lessonCount,artworkCount,photoCount,createdBy:teacherName,simulate:simulateFail?'fail':'success'}));
+  const submit=()=>{
+    const result=submitVideoJob({type,studentId:isClass?'':objectName,classId:isClass?objectName:'',period,objectName,lessonCount,artworkCount,photoCount,createdBy:teacherName,simulate:simulateFail?'fail':'success',simulateErrorCode});
+    if(result.ok&&result.job)setLatestKey(result.job.jobKey);
+    report(result);
+  };
   const cancel=key=>report(cancelVideoJob(key));
   const retry=key=>report(retryVideoJob(key));
-  return <section className="video-jobs" data-video-jobs-panel="true" data-video-jobs-count={view.total} data-video-jobs-active={view.active} data-video-jobs-empty={view.empty?'true':'false'} data-video-jobs-demo={VIDEO_JOB_DEMO_LABEL} data-video-jobs-source={view.sourceLabel}>
-    <div className="archive-section-head"><span>成长记录（视频）· {view.sourceLabel}</span><h3>视频任务队列（演示）</h3><p>按「对象 + 周期」提交一条渲染任务，状态机与进度在这里可见。渲染服务还没接进来，队列跑在本机。</p></div>
+  return <section className="video-jobs" data-video-jobs-panel="true" data-video-jobs-count={view.total} data-video-jobs-active={view.active} data-video-jobs-empty={view.empty?'true':'false'} data-video-jobs-demo={VIDEO_JOB_DEMO_LABEL} data-video-jobs-source={view.sourceLabel} data-video-jobs-latest-key={latestKey} data-video-jobs-resumed-count={view.resumedCount}>
+    <div className="archive-section-head"><span>{VIDEO_JOB_SECTION_TITLE} · {view.sourceLabel}</span><h3>视频任务（演示队列）</h3><p>{VIDEO_JOB_SECTION_DESC}</p></div>
     <p className="video-jobs-demo" data-video-demo-label={VIDEO_JOB_DEMO_LABEL}>{VIDEO_JOB_DEMO_LABEL}</p>
     <p className="video-jobs-note" data-video-demo-note="true">{view.demoNote}</p>
     <p className="video-jobs-service" data-video-service-state={service.phase} data-video-service-message={service.message}>
@@ -431,15 +472,18 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
     <div className="video-jobs-controls">
       <label>任务类型<input value={typeLabel} readOnly data-video-submit-type={type} aria-label="任务类型"/><small>跟着上面的「查看对象」走</small></label>
       <label>生成周期<select value={period} onChange={event=>onPeriod(event.target.value)} data-video-submit-period="true" aria-label="生成周期">{ARCHIVE_PERIODS.map(name=><option key={name} value={name}>{name}</option>)}</select></label>
-      <label className="video-jobs-simulate"><input type="checkbox" checked={simulateFail} onChange={event=>setSimulateFail(event.target.checked)} data-video-simulate-fail="true"/>演示失败（走到 45% 时失败，用于验证失败态与重试）</label>
-      <Button icon={Clapperboard} data-video-submit="true" data-video-submit-key={jobKey} disabled={Boolean(submitIssue)} onClick={submit}>提交演示任务</Button>
+      <label className="video-jobs-simulate"><input type="checkbox" checked={simulateFail} onChange={event=>setSimulateFail(event.target.checked)} data-video-simulate-fail="true"/>演示失败（跑到 45% 时失败，用于验证失败态与重试）</label>
+      {simulateFail?<label>演示失败原因<select value={simulateErrorCode} onChange={event=>setSimulateErrorCode(event.target.value)} data-video-simulate-error="true" aria-label="演示失败原因">{VIDEO_JOB_SIMULATE_ERROR_OPTIONS.map(option=><option key={option.id} value={option.id}>{option.label}</option>)}</select><small data-video-simulate-error-text="true">{videoJobErrorText(simulateErrorCode)}</small></label>:null}
+      <Button icon={Clapperboard} data-video-submit="true" data-video-submit-key={jobKey} disabled={Boolean(submitIssue)} onClick={submit}>{VIDEO_JOB_SUBMIT_LABEL}</Button>
     </div>
+    <p className="video-jobs-note" data-video-submit-note="true">{VIDEO_JOB_SUBMIT_NOTE}</p>
     {submitIssue?<p className="video-jobs-issue" data-video-submit-issue="true">{submitIssue}</p>:null}
     {notice?<p className="video-jobs-notice" data-video-notice="true">{notice}</p>:null}
+    {view.resumeSummary?<p className="video-jobs-resumed" data-video-jobs-resumed="true">{view.resumeSummary}</p>:null}
     <p className="video-jobs-summary" data-video-jobs-summary="true">{view.summary}</p>
     {view.empty
       ? <p className="video-jobs-empty" data-video-jobs-empty-text="true">{view.emptyText}</p>
-      : <div className="video-jobs-list">{view.jobs.map(job=><VideoJobCard key={job.jobKey} job={job} onCancel={cancel} onRetry={retry}/>)}</div>}
+      : <div className="video-jobs-list">{view.jobs.map(job=><VideoJobCard key={job.jobKey} job={job} isLatest={job.jobKey===latestKey} onCancel={cancel} onRetry={retry}/>)}</div>}
   </section>;
 }
 

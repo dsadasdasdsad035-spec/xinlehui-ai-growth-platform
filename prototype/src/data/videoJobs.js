@@ -19,6 +19,10 @@
 //     且演示任务**结构上带不了成片**：`outputUrl / durationSec / bytes` 在归一化里被清成
 //     空串 / 0 / 0（`videoJobOutputIssue` 是这条口径的判据）—— 进度可以走到 100，
 //     但「已完成」不等于「有成片」，卡片上如实写「未产出成片」。
+//  ⑥ **老师端任务卡（[第四步 US-214]）**：生成入口的文案（`VIDEO_JOB_SUBMIT_LABEL`）、
+//     「预估剩余时间」（`videoJobEtaView`，明写「不是成片时长」）、四类失败原因的可选值
+//     （`VIDEO_JOB_SIMULATE_ERROR_OPTIONS`）与「离开页面后按 jobKey 恢复」的判定
+//     （`videoJobResumed` / `videoJobResumeSummary`）都在这一份里，界面只渲染它们的产物。
 //
 // 与 `data/archiveReports.js` / `data/shareForward.js` 同一条纪律：**视图函数的所有状态返回同形状
 // 字段**（US-204 的白屏坑：某一态少给一个字段就会在渲染期炸成白屏，而 `pnpm run build` 全绿）。
@@ -53,6 +57,18 @@ export const VIDEO_JOB_DEMO_DONE_NOTE = '演示任务已完成（本机模拟推
 
 /** 空队列时的文案。 */
 export const VIDEO_JOB_EMPTY_TEXT = '演示队列里还没有任务。选好对象与周期，提交一个演示任务就能看到状态机与进度推进。';
+
+// ---------------------------------------------------------------------------
+// ⓪ 入口文案（[第四步 US-214] 第 1 条：成长档案页「成长记录（视频）」类型下的生成入口）
+// ---------------------------------------------------------------------------
+
+/** 入口所在的区块名（验收原文就是这七个字，界面与断言读同一份）。 */
+export const VIDEO_JOB_SECTION_TITLE = '成长记录（视频）';
+/** 入口标题与说明（界面渲染它，不各写一份）。 */
+export const VIDEO_JOB_SECTION_DESC = '这里是「成长记录」里的视频类型：选好对象与周期，点一下生成就能去忙别的，进度在下面的任务卡片上接着走。';
+export const VIDEO_JOB_SUBMIT_LABEL = '生成成长记录视频';
+/** 提交前写在按钮旁那句「提交之后会发生什么」（提交 → 任务卡片 → 可离开页面）。 */
+export const VIDEO_JOB_SUBMIT_NOTE = '提交后立即进入任务卡片（状态 / 进度百分比 / 预估剩余时间）；可以离开页面，重新进来会按 jobKey 恢复进度。';
 
 /** 任务类型（FR-257 的 `type`）：个人成长视频 / 班级视频集锦。 */
 export const VIDEO_JOB_TYPES = [
@@ -156,7 +172,7 @@ export const VIDEO_JOB_REQUIRED_FIELDS = ['jobKey', 'type', 'studentId', 'classI
 /** 全部字段白名单（归一化之外的键一律丢掉 —— 与审计日志同一条口径）。 */
 export const VIDEO_JOB_FIELDS = [
   ...VIDEO_JOB_REQUIRED_FIELDS,
-  'id', 'queuePosition', 'simulate', 'demo', 'createdBy', 'createdAt', 'updatedAt', 'startedAt', 'finishedAt',
+  'id', 'queuePosition', 'simulate', 'simulateErrorCode', 'demo', 'createdBy', 'createdAt', 'updatedAt', 'startedAt', 'finishedAt',
   'outputUrl', 'durationSec', 'bytes', 'errorCode'
 ];
 
@@ -298,6 +314,7 @@ export function normalizeVideoJob(raw) {
     errorCode: str(source.errorCode),
     queuePosition: Math.max(0, int(source.queuePosition)),
     simulate: str(source.simulate) === VIDEO_JOB_SIMULATIONS.fail ? VIDEO_JOB_SIMULATIONS.fail : VIDEO_JOB_SIMULATIONS.success,
+    simulateErrorCode: normalizeSimulateErrorCode(source.simulateErrorCode),
     demo: source.demo === false ? false : true,
     createdBy: str(source.createdBy),
     createdAt: str(source.createdAt),
@@ -415,7 +432,9 @@ export function videoJobAdvance(job, { now = Date.now(), mockSeconds = null, tim
   }
   const progress = videoJobProgressFromElapsed(elapsed, durationMs);
   if (current.simulate === VIDEO_JOB_SIMULATIONS.fail && progress >= VIDEO_JOB_SIMULATE_FAIL_AT) {
-    return { ...current, progress: Math.max(current.progress, progress), status: VIDEO_JOB_STATUSES.failed, errorCode: VIDEO_JOB_ERROR_CODES.asset.id, error: videoJobErrorText(VIDEO_JOB_ERROR_CODES.asset.id), finishedAt: stamp, updatedAt: stamp };
+    // 演示失败也会**如实报是哪一类原因**（`simulateErrorCode`，默认素材）：四套文案都验得到（US-214 第 4 条）。
+    const code = normalizeSimulateErrorCode(current.simulateErrorCode);
+    return { ...current, progress: Math.max(current.progress, progress), status: VIDEO_JOB_STATUSES.failed, errorCode: code, error: videoJobErrorText(code), finishedAt: stamp, updatedAt: stamp };
   }
   if (progress >= 100) {
     return { ...current, status: VIDEO_JOB_STATUSES.done, progress: 100, finishedAt: stamp, updatedAt: stamp };
@@ -447,6 +466,113 @@ export function videoJobErrorText(code) {
   if (!id) return '';
   const entry = VIDEO_JOB_ERROR_CODES[id];
   return entry ? entry.text : '任务这一次没有跑完，可以直接重试。';
+}
+
+// ---------------------------------------------------------------------------
+// ④b 预估剩余时间与「离开页面 → 按 jobKey 恢复」（[第四步 US-214]）
+// ---------------------------------------------------------------------------
+
+/** 验收点名的那一行读数就叫「预估剩余时间」（界面渲染它，不另起名字）。 */
+export const VIDEO_JOB_ETA_LABEL = '预估剩余时间';
+
+/**
+ * 这一行说的是**渲染还要多久**，不是成片时长 —— 视频服务接入前成片三件套一律为空，
+ * 所以这句话必须写在读数旁边，免得两个「时间」被看成一个（US-214 第 5 条：不得显示假时长）。
+ */
+export const VIDEO_JOB_ETA_NOTE = '按本机时钟推演，是渲染还要等多久，不是成片时长。';
+/** 排队中：还没轮到它，给的是「轮到之后」大约要渲染多久（不编一个「马上就好」）。 */
+export const VIDEO_JOB_ETA_QUEUED_NOTE = '队列还没轮到它：这个数是轮到它之后大约要渲染多久，不是成片时长。';
+/** 终态：没有剩余时间可说。 */
+export const VIDEO_JOB_ETA_ENDED_NOTE = '任务已结束，没有剩余时间；成片时长由渲染服务给出，接入前这里不会显示任何时长。';
+
+/** 毫秒 → 人话（约 N 秒 / 约 N 分 M 秒 / 约 N 小时 M 分）。 */
+export function videoJobRemainingText(ms) {
+  const total = Math.max(0, Math.round(num(ms) / 1000));
+  if (total < 60) return `约 ${total} 秒`;
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  if (minutes < 60) return seconds ? `约 ${minutes} 分 ${seconds} 秒` : `约 ${minutes} 分钟`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest ? `约 ${hours} 小时 ${rest} 分` : `约 ${hours} 小时`;
+}
+
+/**
+ * 还要等多久（毫秒）：
+ *  - `rendering`：模拟耗时 − 已经过去的那段（离开页面那段真实时间也算数，由 `startedAt` 推出来）；
+ *  - `queued`：整段渲染量（还没开始，但「轮到之后要多久」是个真实读数）；
+ *  - 终态：0。
+ */
+export function videoJobRemainingMs(job, { now = Date.now(), mockSeconds = null } = {}) {
+  const current = normalizeVideoJob(job);
+  const durationMs = videoJobMockSeconds(current.type, mockSeconds) * 1000;
+  if (current.status === VIDEO_JOB_STATUSES.rendering) {
+    const startedAt = timeValue(current.startedAt) || timeValue(current.createdAt) || num(now);
+    const elapsed = Math.max(0, num(now) - startedAt);
+    return Math.max(0, durationMs - elapsed);
+  }
+  if (current.status === VIDEO_JOB_STATUSES.queued) return durationMs;
+  return 0;
+}
+
+/**
+ * 「预估剩余时间」的视图产物（**五种状态同形状**：`status / known / ms / label / note`）：
+ *  - `rendering` → `约 N 秒`，`known:true`；
+ *  - `queued` → `轮到后约 N 秒`，`known:false`（那不是「还要等 N 秒」，别假装它是）；
+ *  - 终态 → `已结束`，`known:false`。
+ */
+export function videoJobEtaView(job, { now = Date.now(), mockSeconds = null } = {}) {
+  const current = normalizeVideoJob(job);
+  const status = current.status;
+  if (status === VIDEO_JOB_STATUSES.rendering) {
+    const ms = videoJobRemainingMs(current, { now, mockSeconds });
+    return { status, known: true, ms, label: videoJobRemainingText(ms), note: VIDEO_JOB_ETA_NOTE };
+  }
+  if (status === VIDEO_JOB_STATUSES.queued) {
+    const ms = videoJobRemainingMs(current, { now, mockSeconds });
+    return { status, known: false, ms, label: `轮到后${videoJobRemainingText(ms)}`, note: VIDEO_JOB_ETA_QUEUED_NOTE };
+  }
+  return { status, known: false, ms: 0, label: '已结束', note: VIDEO_JOB_ETA_ENDED_NOTE };
+}
+
+/**
+ * 演示失败可选的原因（四类：模型 / 字体 / 素材 / 存储 —— 验收第 4 条点名的那四套文案）。
+ * 超时不在里面：它由硬超时判出来，不是「挑一个原因让它失败」。
+ */
+export const VIDEO_JOB_SIMULATE_ERROR_IDS = ['model', 'font', 'asset', 'storage'];
+export const VIDEO_JOB_SIMULATE_ERROR_OPTIONS = VIDEO_JOB_SIMULATE_ERROR_IDS.map(id => ({ id, label: VIDEO_JOB_ERROR_CODES[id].label, text: VIDEO_JOB_ERROR_CODES[id].text }));
+export const VIDEO_JOB_SIMULATE_ERROR_DEFAULT = 'asset';
+
+/** 演示失败原因归一化：只认那四类，其余（含脏值 / 超时）一律回落 `asset`。 */
+export function normalizeSimulateErrorCode(value) {
+  const id = str(value);
+  return VIDEO_JOB_SIMULATE_ERROR_IDS.includes(id) ? id : VIDEO_JOB_SIMULATE_ERROR_DEFAULT;
+}
+
+/** 「离开页面 → 重新进来按 jobKey 恢复」的判定余量：刚提交完切走再切回来不算「恢复」。 */
+export const VIDEO_JOB_RESUME_TOLERANCE_MS = 1000;
+/** 恢复回来的任务卡片上那句实话（界面渲染它，组件不自己写）。 */
+export const VIDEO_JOB_RESUME_NOTE = '已按 jobKey 恢复这条任务：它是离开页面前提交的，进度按真实经过时间接着算，没有重新开始。';
+
+/**
+ * 这条任务是不是**这次进入之前**提交、且现在还在进行中（US-214 第 3 条）：
+ * `resumedAt` 是本次进入页面的时刻（组件挂载）。判定只用三个真实读数 ——
+ * 状态在 `queued / rendering` 里、`createdAt` 早于本次进入、且差了容差以上的时间。
+ */
+export function videoJobResumed(job, resumedAt = 0) {
+  const current = normalizeVideoJob(job);
+  const at = num(resumedAt);
+  if (!at) return false;
+  if (!VIDEO_JOB_ACTIVE_STATUSES.includes(current.status)) return false;
+  const created = timeValue(current.createdAt);
+  return created > 0 && created <= at - VIDEO_JOB_RESUME_TOLERANCE_MS;
+}
+
+/** 面板级的恢复读数（`count` 条进行中的任务按 jobKey 接了回来；0 条时不出声）。 */
+export function videoJobResumeSummary(count) {
+  const total = Math.max(0, int(count));
+  if (!total) return '';
+  return `本次进入按 jobKey 恢复了 ${total} 条进行中的任务：进度按真实经过时间接上，没有重新开始。`;
 }
 
 // ---------------------------------------------------------------------------
@@ -488,15 +614,19 @@ export function videoJobActionIssue(job, action) {
 
 /**
  * 一条任务的视图产物（**所有状态返回同一组字段**）。
- * 界面渲染的每一行（对象 / 状态 / 进度 / 次数 / 失败原因 / 队列位次 / 演示标注）都在这里，
- * 组件不自己拼字符串、也不自己判断该给哪个按钮。
+ * 界面渲染的每一行（对象 / 状态 / 进度 / 预估剩余时间 / 任务键 / 次数 / 失败原因 / 队列位次 /
+ * 演示标注 / 是否按 jobKey 恢复）都在这里，组件不自己拼字符串、也不自己判断该给哪个按钮。
+ * `now` / `resumedAt` 由界面注入（`resumedAt` = 本次进入页面的时刻），缺省不影响老调用方。
  */
-export function videoJobView(job) {
+export function videoJobView(job, { now = Date.now(), mockSeconds = null, resumedAt = 0 } = {}) {
   const current = normalizeVideoJob(job);
   const spec = current.specSnapshot;
   const objectName = spec.objectName || current.studentId || current.classId || '未记录对象';
   const active = VIDEO_JOB_ACTIVE_STATUSES.includes(current.status);
   const failed = current.status === VIDEO_JOB_STATUSES.failed;
+  const eta = videoJobEtaView(current, { now, mockSeconds });
+  const resumed = videoJobResumed(current, resumedAt);
+  const hasOutput = Boolean(current.outputUrl);
   return {
     jobKey: current.jobKey,
     id: current.id,
@@ -511,6 +641,11 @@ export function videoJobView(job) {
     statusNote: VIDEO_JOB_STATUS_NOTES[current.status] || '',
     progress: current.progress,
     progressLabel: videoJobProgressLabel(current.progress),
+    eta,
+    etaLabel: eta.label,
+    etaNote: eta.note,
+    resumed,
+    resumeNote: resumed ? VIDEO_JOB_RESUME_NOTE : '',
     attempts: current.attempts,
     attemptsLabel: `第 ${Math.max(1, current.attempts)} 次尝试`,
     error: current.error,
@@ -524,7 +659,10 @@ export function videoJobView(job) {
     demoLabel: VIDEO_JOB_DEMO_LABEL,
     demoNote: VIDEO_JOB_DEMO_NOTE,
     outputNote: current.status === VIDEO_JOB_STATUSES.done ? VIDEO_JOB_DEMO_DONE_NOTE : '',
+    // 成片三件套（演示队列里永远是空值）+ 一个判据：界面据此不渲染播放器、不显示任何时长。
     output: { url: '', durationSec: 0, bytes: 0 },
+    hasOutput,
+    playerLabel: hasOutput ? '渲染服务已给出成片' : '',
     createdAtText: formatArchiveTime(current.createdAt),
     updatedAtText: formatArchiveTime(current.updatedAt),
     startedAtText: formatArchiveTime(current.startedAt),
@@ -532,10 +670,10 @@ export function videoJobView(job) {
   };
 }
 
-/** 队列的视图产物（空队列也返回同形状字段）。 */
-export function videoJobQueueView(list) {
+/** 队列的视图产物（空队列也返回同形状字段；`resumedAt` 见 `videoJobResumed`）。 */
+export function videoJobQueueView(list, { now = Date.now(), mockSeconds = null, resumedAt = 0 } = {}) {
   const jobs = dedupeVideoJobs(list)
-    .map(videoJobView)
+    .map(job => videoJobView(job, { now, mockSeconds, resumedAt }))
     .sort((left, right) => String(right.createdAtText || '').localeCompare(String(left.createdAtText || '')) || String(right.jobKey).localeCompare(String(left.jobKey)));
   const counts = { queued: 0, rendering: 0, done: 0, failed: 0, canceled: 0 };
   jobs.forEach(job => { counts[job.status] = (counts[job.status] || 0) + 1; });
@@ -544,6 +682,8 @@ export function videoJobQueueView(list) {
   const summary = jobs.length
     ? `${source}：共 ${jobs.length} 条任务（排队 ${counts.queued} · 渲染中 ${counts.rendering} · 已完成 ${counts.done} · 失败 ${counts.failed} · 已取消 ${counts.canceled}）`
     : `${source}：${VIDEO_JOB_EMPTY_TEXT}`;
+  // 本次进入按 jobKey 接回来的进行中任务数（0 条时 `resumeSummary` 是空串 —— 界面不渲染空话）。
+  const resumedCount = jobs.filter(job => job.resumed).length;
   return {
     jobs,
     counts,
@@ -553,6 +693,8 @@ export function videoJobQueueView(list) {
     summary,
     empty: jobs.length === 0,
     emptyText: VIDEO_JOB_EMPTY_TEXT,
+    resumedCount,
+    resumeSummary: videoJobResumeSummary(resumedCount),
     demoLabel: VIDEO_JOB_DEMO_LABEL,
     demoNote: VIDEO_JOB_DEMO_NOTE,
     sourceLabel: source,

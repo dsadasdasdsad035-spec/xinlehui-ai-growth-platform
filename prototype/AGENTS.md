@@ -712,6 +712,48 @@ US-213a 那份本机演示队列（上面一节）**不是**真服务：真服�
   断言块会静默变成空操作（本轮真踩：46 项只跑了 42 项，靠打印条数与源码条数对不上才发现）。
   写完验证脚本先对一下「打印出来的条数 == 源码里的 `ok(` + `throwsAsync(` 条数」。
 
+## 老师端视频任务卡：入口 / 预估剩余时间 / 按 jobKey 恢复（[第四步 US-214]）
+
+上面两节（US-213a 演示队列 + US-213b 契约层）之后，老师端看到的是**一条任务卡**：
+入口在档案页「成长记录（视频）」区块里，提交后立刻进卡片，可以离开页面再回来接着看。
+
+- **入口与文案全在数据层**：`VIDEO_JOB_SECTION_TITLE`（`成长记录（视频）`）、`VIDEO_JOB_SECTION_DESC`、
+  `VIDEO_JOB_SUBMIT_LABEL`（`生成成长记录视频`，验收原文）、`VIDEO_JOB_SUBMIT_NOTE`。
+  组件里不许再写一遍这些句子（验收点名的句子只能有一份）。
+- **「预估剩余时间」与「成片时长」是两个概念**（US-214 第 5 条）：`videoJobEtaView(job,{now})` 五种状态
+  返回同形状 `{status,known,ms,label,note}` —— `rendering` → `约 N 秒`（`known:true`）、
+  `queued` → `轮到后约 N 秒`（`known:false`，**那不是「还要等 N 秒」**）、终态 → `已结束`。
+  `note` 里必写「不是成片时长」：视频服务接入前成片三件套一律为空，两个时间不许被看成一个。
+  剩余时间 = `videoJobRemainingMs`（`startedAt` + 模拟耗时 − 真实经过时间），离开页面那段也算数。
+- **「离开页面 → 按 jobKey 恢复」的判定**：`videoJobResumed(job, resumedAt)`，`resumedAt` = 面板**挂载**时刻
+  （组件里的 `sessionStartRef`），判据是「状态还在 `queued/rendering` 且 `createdAt` 早于本次进入
+  `VIDEO_JOB_RESUME_TOLERANCE_MS`（1 秒）以上」。`videoJobQueueView(list,{resumedAt})` 汇总出
+  `resumedCount` / `resumeSummary`，卡片上是 `data-video-job-resumed` + `VIDEO_JOB_RESUME_NOTE`。
+  卡片还渲染「任务键」那一行（`job.jobKey`）—— 让「按 jobKey 恢复」在界面上看得见。
+- **演示失败原因四类**（US-214 第 4 条）：`VIDEO_JOB_SIMULATE_ERROR_OPTIONS`（模型 / 字体 / 素材 / 存储，
+  文案取自 `VIDEO_JOB_ERROR_CODES`），落到任务的 `simulateErrorCode` 字段（默认 `asset`，`timeout` 不在可选里：
+  它由硬超时判出来）。`videoJobAdvance` 失败时按它取文案；服务层**重新排队分支**要接受本次提交的
+  `simulate / simulateErrorCode`（否则界面换了原因再提交不生效）。
+- **验证方式（本故事实测）**：`pnpm run build`；Node 直跑 24 项（`/tmp/assert-us074-data.mjs`：文案 / 剩余时间
+  三种口径 / 恢复判定与容差 / 四类原因 / 视图同形状 / 服务层幂等与重试）；浏览器 **72 项**
+  （`/tmp/assert-us074-browser.mjs`）；回归 US-072 data 37、US-072 browser 82/83、US-073 data 46、US-073 browser 37。
+  **US-072 里「提交按钮文案 = 提交演示任务」那一条自本故事起失效**（按钮改名成验收原文「生成成长记录视频」），
+  其余 82 项仍全绿；截图 367~371 留档。
+
+### 验「提交 → 离开页面 → 回来恢复」时的四个坑（本故事真踩）
+
+- **页面内 `await import('/src/services/videoJobQueue.js')` 拿到的是另一个模块实例**（Vite 给应用那份模块的
+  URL 带了版本参数）：它有自己的模块级内存队列，通过它 `submitVideoJob / clearVideoJobs` **界面不会变**
+  （本轮假红一次：四类失败文案都写进了那份内存，卡片上一张都没有）。队列状态一律读**界面 DOM** 或
+  `localStorage` 镜像（`xinlehui-video-jobs-v1`）；要改状态就走界面。
+- **演示任务跑到 45% 才失败，且只有 `failed / canceled` 才允许重新排队**：换原因重跑之前先
+  `waitForCondition` 等它收在 `failed`/`canceled`，否则重复提交会被幂等命中（`created:false`，什么都不发生）。
+- **恢复验证要留够时间窗**：提交 3 条**班级**任务（14 秒/条、并发 2 → 第 3 条排队），整页重载 + 重新登录 +
+  再走一遍流程约 7 秒，到达时仍有进行中的任务（个人演示只有 8 秒，会假红）。断言三条不依赖时序的读数：
+  任务在（按 jobKey 一条不少）、`startedAt` 未变（没重启）、进度不倒退。
+- **档案页的「查看对象」必须是有记录的学员 / 班级**：`VideoJobsPanel` 挂在 `showTimeline` 分支里，
+  换成没有归档记录的学员 / 班级时整块面板不渲染（本轮想用另外两位学员换 jobKey，发现面板直接没了）。
+
 ## 老师端「课后反馈」第一步（班级 / 学员 / 课程 / 课次推荐）
 
 > **课次表单全站只有一份实现 = `TeacherFlowV2`（`main.jsx`）。** 旧的 `CreateFlow` 五步向导
