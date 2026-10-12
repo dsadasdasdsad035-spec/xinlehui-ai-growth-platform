@@ -20,6 +20,8 @@
 
 import { archiveRecordMediaView } from './archiveMedia';
 import { archiveVersionLabel, formatArchiveTime } from './archiveSummary';
+// 课时序号的口径读 `data/lessons.js` 那一份（0 = 未知，不猜一个序号）。
+import { normalizeLessonNo } from './lessons';
 import { REVIEW_DIMENSION_NAMES } from './reviewDetailPanel';
 // 转发状态（[第四步 US-209]）：档案列表每一行都要显示「未转发 / 已转发 / 已撤回」与打开次数，
 // 判据是 `data/shareForward.js` 那一份（与第四步的状态块读同一个函数 —— 列表不自己拼状态）。
@@ -92,13 +94,34 @@ export function isAbsenceRecord(record) {
 }
 
 /**
+ * 这一条归档条目属于**哪一次课**的课时序号（[第四步到第一步联通] US-087）：`0` = 未知。
+ *
+ * 两条来源，先记录自己、再课次实体：
+ *  ① 记录上带着 `lessonNo`（归档时就写了，与课次自然键同源）→ 直接用；
+ *  ② 老记录只存了 `lessonId`（US-086 之前 / 别处归档的）→ 在当前课次列表里按 id 查它的序号；
+ *     查不到就如实是 0（**不猜**：序号猜错会把两节课的先后排反）。
+ */
+export function archiveEntryLessonNo(record, lessons = []) {
+  const source = record && typeof record === 'object' ? record : {};
+  const explicit = normalizeLessonNo(source.lessonNo);
+  if (explicit) return explicit;
+  const lessonId = str(source.lessonId);
+  if (!lessonId) return 0;
+  const hit = (Array.isArray(lessons) ? lessons : []).find(item => str(item && item.lessonId) === lessonId) || null;
+  return normalizeLessonNo(hit && hit.lessonNo);
+}
+
+/**
  * 一节课在时间线上的那一张卡（US-206 第 2 条点名的五项：日期与作品名、成品作品图、
  * 课堂照片、五维点评摘要、缺课记录）。
  *
  * 五维摘要只列**真的写了正文的维度**（空维度不占位、更不编一段示例文案，FR-205 的口径）；
  * 缺课记录没有五维，只有那句温柔的话。
+ *
+ * `lessons` 是当前可见的课次列表（可选）：老记录没有 `lessonNo` 时按 `lessonId` 在它里面补序号，
+ * 视频时间线因此按「课次日期 + 课时序号」把历史课次也排对（US-087）。
  */
-export function archiveLessonEntry(record, { surface = 'teacher', tokens = [], now = null } = {}) {
+export function archiveLessonEntry(record, { surface = 'teacher', tokens = [], now = null, lessons = [] } = {}) {
   const source = record && typeof record === 'object' ? record : {};
   const reviews = source.reviews && typeof source.reviews === 'object' && !Array.isArray(source.reviews) ? source.reviews : {};
   const isAbsence = isAbsenceRecord(source);
@@ -109,6 +132,7 @@ export function archiveLessonEntry(record, { surface = 'teacher', tokens = [], n
   const date = str(source.date);
   // 这一条档案的转发状态（US-209）：按档案记录 id 找它最新的一条令牌，三态与打开次数都从那里推导。
   const forward = shareForwardView({ tokens, recordId: str(source.id), record: source, now });
+  const lessonNo = archiveEntryLessonNo(source, lessons);
   return {
     id: str(source.id),
     recordKey: str(source.recordKey),
@@ -118,6 +142,9 @@ export function archiveLessonEntry(record, { surface = 'teacher', tokens = [], n
     // 展签口径的课次日期（US-038）：时间线主读数仍是记录的 `date`（与既有页面一致），
     // 这个字段给需要 `2026.08.04` 的位置（例如后续的分享页）。
     dateDots: date.replace(/-/g, '.'),
+    // 这一次课的课时序号（US-087）：视频时间线按「课次日期 + 课时序号」排序读它，0 = 未知。
+    lessonNo,
+    lessonNoText: lessonNo ? `第 ${lessonNo} 次课` : '',
     title: str(source.title),
     status: isAbsence ? ARCHIVE_LESSON_ABSENCE : (str(source.status) || ARCHIVE_LESSON_ARCHIVED),
     isAbsence,
@@ -193,17 +220,21 @@ export function archiveResidentOverview(summary) {
 /**
  * 常驻视图（界面只读这一份产物）。
  *
- * 入参：`records`（当前对象的全部归档记录）+ 筛选条件（对象 / 周期 / 是否只看缺课）+ 可注入的 `today`。
+ * 入参：`records`（当前对象的全部归档记录）+ 筛选条件（对象 / 周期 / 是否只看缺课）+ 可注入的 `today`；
+ * `lessons` 是当前可见的**课次实体列表**（可选）：老记录只有 `lessonId` 时靠它补课时序号，
+ * 视频时间线因此能按「课次日期 + 课时序号」把补录的历史课次排对（US-087）。
  * 返回里把「被筛掉的条数」分开报（`hiddenByPeriod` / `hiddenByAbsence`）—— 空态据此说清原因，
  * 而不是让老师以为档案丢了。
  */
-export function archiveResidentView({ records = [], target, student = '', className = '', period = ARCHIVE_PERIOD_ALL, absenceOnly = false, today, tokens = [] } = {}) {
+export function archiveResidentView({ records = [], target, student = '', className = '', period = ARCHIVE_PERIOD_ALL, absenceOnly = false, today, tokens = [], lessons = [] } = {}) {
   const targetView = archiveTargetView(records, { target, student, className });
   const periodName = resolveArchivePeriod(period);
   const inPeriod = filterArchiveRecordsByPeriod(targetView.lessons, periodName, today);
   const onlyAbsence = absenceOnly === true || absenceOnly === ARCHIVE_ABSENCE_ONLY;
-  const lessons = onlyAbsence ? inPeriod.filter(isAbsenceRecord) : inPeriod;
-  const entries = lessons.map(record => archiveLessonEntry(record, { tokens }));
+  // 注意：这里的 `visibleRecords` 是**筛完还看得见的归档记录**（视图产物里的 `lessons` 就是它），
+  // 与入参 `lessons`（课次实体列表，只用来给老记录补课时序号）是两件事 —— 别混（US-087 真踩过）。
+  const visibleRecords = onlyAbsence ? inPeriod.filter(isAbsenceRecord) : inPeriod;
+  const entries = visibleRecords.map(record => archiveLessonEntry(record, { tokens, lessons }));
   const summary = archiveResidentSummary(entries);
   return {
     targetView,
@@ -215,13 +246,13 @@ export function archiveResidentView({ records = [], target, student = '', classN
     periodWindow: archivePeriodWindow(periodName, today),
     absenceOnly: onlyAbsence,
     absenceFilter: onlyAbsence ? ARCHIVE_ABSENCE_ONLY : ARCHIVE_ABSENCE_ALL,
-    lessons,
+    lessons: visibleRecords,
     entries,
     // `count` = 当前筛选下看得到的；`total` = 这位对象一共归档了多少（对象筛选之后的条数）。
     count: entries.length,
     total: targetView.count,
     hiddenByPeriod: targetView.count - inPeriod.length,
-    hiddenByAbsence: inPeriod.length - lessons.length,
+    hiddenByAbsence: inPeriod.length - visibleRecords.length,
     summary,
     overview: archiveResidentOverview(summary),
     // 「一条记录都没有」的空态文案沿用 US-205 的 `archiveEmptyView`（验收点名的那一份）。

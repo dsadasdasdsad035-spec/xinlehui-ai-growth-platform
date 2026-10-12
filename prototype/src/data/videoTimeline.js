@@ -15,6 +15,9 @@
 //  ② **帧清单（时间线）**：`videoTimelinePlan` 按条 ① 把归档条目串成帧列表
 //     （`startSec / endSec / durationSec / transitionSec` 都给全），界面以帧清单展示。
 //     **不产出 mp4**：这一份里没有成片地址、封面或下载地址，连字段名都被禁（见条 ③）。
+//     串的顺序按**课次日期 + 课时序号**升序（[第四步到第一步联通] US-087）：排序只读课次字段，
+//     补录的历史课次按它自己的课次日期与序号就位，**归档先后与归档创建时间都不参与** ——
+//     个人 / 班级 / 精选三处排时间线一律 `orderVideoTimelineEntries`（不各写一份）。
 //
 //  ③ **字幕**（`videoSubtitleFromReview`）：取点评「美术能力」的**首句**且不超过 24 字；
 //     字字来自**老师确认后的点评原文**（归档记录里的原文）—— 超长只在停顿处**截断**，
@@ -31,6 +34,9 @@
 
 import { ARCHIVE_SHARE_WECHAT_FORBIDDEN } from './archiveShare';
 import { isPersistentMediaUrl } from './archiveMedia';
+// 课次字段的口径（日期 / 课时序号）读 `data/lessons.js` 那一份：排序键用它归一，
+// 不在这里另写一套「怎么算一天」「几才算序号」。
+import { normalizeLessonDate, normalizeLessonNo } from './lessons';
 import { REVIEW_DIMENSION_NAMES } from './reviewDetailPanel';
 import { isShareTokenActive } from './shareTokens';
 import { normalizeVideoJobType, videoJobTypeLabel } from './videoJobs';
@@ -71,6 +77,62 @@ export const VIDEO_TIMELINE_EMPTY_TEXT = '这个周期还没有归档的作品�
 
 /** 作品帧没有作品名时的显示口径（**不是**作品名，只是一句状态；FR-205 不许编假作品名）。 */
 export const VIDEO_FRAME_UNTITLED_TEXT = '作品名未记录';
+
+// ---------------------------------------------------------------------------
+// ⓪-b 时间线顺序（[第四步到第一步联通] US-087）：课次日期 + 课时序号
+// ---------------------------------------------------------------------------
+
+/**
+ * 时间线的顺序那一句（界面渲染它、断言读它）：
+ * 顺序**只**由课次字段决定 —— 课次日期升序，同一天再按课时序号升序。
+ * 归档时间（`archivedAt` / 列表里的先后）一个字都不参与：补录上周的课次时，
+ * 它按「上周 · 第 N 次课」就位，而不是因为「刚刚才归档」被排到队尾。
+ */
+export const VIDEO_TIMELINE_ORDER_TEXT = '按课次日期 + 课时序号升序';
+
+/** 顺序口径的补充说明（面板上的小字；「不看归档时间」这件事写在老师看得到的地方）。 */
+export const VIDEO_TIMELINE_ORDER_NOTE = `相邻两节课的先后只看课次日期与课时序号（${VIDEO_TIMELINE_ORDER_TEXT}）：补录的历史课次按它自己的课次日期与序号就位，归档先后不参与排序。`;
+
+/**
+ * 一条归档条目（或一帧）的课次排序键：`{ lessonDate, lessonNo }`。
+ *  - 日期认 `lessonDate` 与 `date` 两种字段名（记录上两种口径并存），一律过 `normalizeLessonDate`
+ *    —— `2026.08.04` 与 `2026-08-04` 是同一天，必须排在一起；
+ *  - 课时序号过 `normalizeLessonNo`：0 表示**未知**（历史记录本来就没有序号，不猜一个）。
+ */
+export function videoTimelineOrderKey(entry) {
+  const source = entry && typeof entry === 'object' ? entry : {};
+  return {
+    lessonDate: normalizeLessonDate(source.lessonDate || source.date),
+    lessonNo: normalizeLessonNo(source.lessonNo)
+  };
+}
+
+/**
+ * 两条条目（或两帧）谁在前（返回 <0 / 0 / >0）：课次日期升序 → 课时序号升序。
+ * 序号未知的排在同一天有记录的之后；两者都定不出来的（同日期 + 同序号 / 都未知）返回 0，
+ * 由调用方保持原有顺序（`orderVideoTimelineEntries` 是稳定排序）。
+ */
+export function compareVideoTimelineEntries(left, right) {
+  const a = videoTimelineOrderKey(left);
+  const b = videoTimelineOrderKey(right);
+  if (a.lessonDate !== b.lessonDate) return a.lessonDate < b.lessonDate ? -1 : 1;
+  if (a.lessonNo === b.lessonNo) return 0;
+  if (!a.lessonNo) return 1;
+  if (!b.lessonNo) return -1;
+  return a.lessonNo < b.lessonNo ? -1 : 1;
+}
+
+/**
+ * 按「课次日期 + 课时序号」升序排一条时间线（**唯一实现**：帧清单 / 精选 / 个人 / 班级都读它）。
+ * 排不出来的（同日期 + 同序号）**保持原有顺序** —— 同一节课里不同学员的条目属于同一时刻，
+ * 它们之间的先后不该被另一套规则打乱。返回新数组，不改入参。
+ */
+export function orderVideoTimelineEntries(entries) {
+  return (Array.isArray(entries) ? entries : [])
+    .map((entry, order) => ({ entry, order }))
+    .sort((left, right) => compareVideoTimelineEntries(left.entry, right.entry) || left.order - right.order)
+    .map(item => item.entry);
+}
 
 // ---------------------------------------------------------------------------
 // ① 帧序规则（FR-215 第 1、2、3、6 条）
@@ -368,6 +430,10 @@ export const VIDEO_FRAME_FIELDS = [
   'id', 'index', 'kind', 'kindLabel', 'objectName', 'entryId', 'date', 'title', 'titleText',
   'subtitle', 'subtitleSource', 'subtitleTruncated', 'lines', 'endingNote', 'asset', 'assetNote',
   'startSec', 'endSec', 'durationSec', 'transitionSec', 'isFirst',
+  // 这一帧属于**哪一次课**（[第四步到第一步联通] US-087）：课次日期与课时序号从源条目原样带过来，
+  // 「帧序按课次日期 + 课时序号」这件事因此能对着帧本身复核，而不是去信构建过程。
+  // `lessonNo = 0` 表示该条记录没有课时序号（历史记录），界面如实不写「第 0 次课」。
+  'lessonNo',
   // 这一帧的素材**属于哪位学员**（从源条目的 `student` 原样带过来）：
   // 「只收录该学员自己的作品」的判据要能对着帧本身复核，而不是去信构建过程（[第四步 US-217]）。
   'sourceStudent',
@@ -411,6 +477,7 @@ export function normalizeVideoFrame(raw) {
     durationSec: Math.max(0, round1(source.durationSec) || num(VIDEO_FRAME_DURATION_SEC[kind])),
     transitionSec: Math.max(0, round1(source.transitionSec)),
     isFirst: source.isFirst === true,
+    lessonNo: normalizeLessonNo(source.lessonNo),
     sourceStudent: str(source.sourceStudent),
     // 段号（班级集锦的分段）与姓名卡上写着的那一个作品数：不属于任何一段就是 `-1`。
     segmentIndex: Number.isFinite(Number(source.segmentIndex)) ? int(source.segmentIndex) : -1,
@@ -445,6 +512,8 @@ function photosOfEntries(entries) {
         url,
         name: str(photo && photo.name) || '课堂照片',
         lessonDate: str(entry && entry.date),
+        // 照片帧也属于**这一节课**（US-087）：课时序号从它挂着的条目带过来。
+        lessonNo: normalizeLessonNo(entry && entry.lessonNo),
         student: str(entry && entry.student)
       });
     });
@@ -456,7 +525,9 @@ function photosOfEntries(entries) {
  * 帧清单（时间线）：按条 ① 的帧序规则把归档条目串成一条时间线。
  *
  * 入参 `entries` 是**当前对象 + 生成周期**下的归档条目（`archiveResidentView().entries` 的口径：
- * 日期升序、带 `artwork` / `photos` / `dimensions` / `isAbsence`）。
+ * 带 `artwork` / `photos` / `dimensions` / `isAbsence` / `lessonNo`）。
+ * 顺序由 `orderVideoTimelineEntries` 排（课次日期 + 课时序号升序，[第四步到第一步联通] US-087）——
+ * 传进来的先后不影响帧序，补录的历史课次按它自己的课次日期与序号就位。
  * 缺课记录不进这一版帧序（它的 1.5 秒留白卡属于个人成长视频的编排），
  * 缺课条数如实报在 `counts.absenceLessons` 里。
  *
@@ -469,10 +540,7 @@ export function videoTimelinePlan({ entries = [], objectName = '', type = 'perso
   const periodText = str(period);
   const org = str(orgName);
   const note = str(endingNote);
-  const list = (Array.isArray(entries) ? entries : [])
-    .map((entry, order) => ({ entry, order }))
-    .sort((left, right) => str(left.entry && left.entry.date).localeCompare(str(right.entry && right.entry.date)) || left.order - right.order)
-    .map(item => item.entry);
+  const list = orderVideoTimelineEntries(entries);
   const lessons = list.filter(entry => !(entry && entry.isAbsence));
   const absenceLessons = list.length - lessons.length;
   const { photos, placeholders } = photosOfEntries(lessons);
@@ -520,6 +588,8 @@ export function videoTimelinePlan({ entries = [], objectName = '', type = 'perso
       objectName: name,
       entryId: str(source.id || source.recordKey),
       date: str(source.date),
+      // 这一帧属于哪一次课（US-087）：序号从条目带过来，档案时间线 / 面板据此显示「第 N 次课」。
+      lessonNo: source.lessonNo,
       title: str(source.title),
       titleText: str(source.title) || VIDEO_FRAME_UNTITLED_TEXT,
       subtitle: subtitle.text,
@@ -537,6 +607,7 @@ export function videoTimelinePlan({ entries = [], objectName = '', type = 'perso
     push(VIDEO_FRAME_KINDS.photo, {
       objectName: name,
       date: photo.lessonDate,
+      lessonNo: photo.lessonNo,
       title: photo.name,
       titleText: photo.name,
       asset: photoAsset,
@@ -626,6 +697,11 @@ export function videoFrameRow(frame) {
     subtitle: item.subtitle,
     subtitleSource: item.subtitleSource,
     subtitleTruncated: item.subtitleTruncated,
+    // 这一帧属于哪一次课（US-087）：序号未知（0）时 `lessonNoText` 是空串 —— 不写「第 0 次课」。
+    lessonNo: item.lessonNo,
+    lessonNoText: item.lessonNo ? `第 ${item.lessonNo} 次课` : '',
+    // 帧上的日期读数：有课时序号就带上（`2026.08.04 · 第 12 次课`），没有就是日期本身。
+    dateText: [item.date, item.lessonNo ? `第 ${item.lessonNo} 次课` : ''].filter(Boolean).join(' · '),
     // 字幕的两种说明：有字幕 → 逐字来自点评（超长时点明截断）；没字幕 → 如实说为什么留空。
     subtitleText: item.subtitle
       ? (item.subtitleTruncated ? videoSubtitleTruncatedNote(item.subtitle) : `字幕取自「${VIDEO_SUBTITLE_DIMENSION}」首句，逐字来自老师确认后的点评。`)
@@ -666,6 +742,9 @@ export function videoTimelineView(plan) {
   return {
     frames,
     rules: videoTimelineRuleRows(),
+    // 顺序读数（US-087）：帧序按课次日期 + 课时序号，组件只渲染这两句、不自己拼。
+    orderText: VIDEO_TIMELINE_ORDER_TEXT,
+    orderNote: VIDEO_TIMELINE_ORDER_NOTE,
     counts,
     totalSec,
     totalText: videoTimelineDurationText(totalSec),

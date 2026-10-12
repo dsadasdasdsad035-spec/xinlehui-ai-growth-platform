@@ -9,7 +9,8 @@
 //     `data/artworkLayers.js` 的地址指纹同一套算法）。**老记录保留原 id** —— 云端 `record_key`
 //     就是它，换掉会凭空多出孤儿行（兼容映射只补新字段，不动老字段）。
 //  ② `date` 只来自**课次日期**（`lesson.lessonDate`），不再取归档当天；`lessonDate` 字段仍保持
-//     展签口径（`2026.08.04`）。两条口径的字段并存，谁也别覆盖谁。
+//     展签口径（`2026.08.04`）。两条口径的字段并存，谁也别覆盖谁。`lessonNo`（[第四步到第一步联通]
+//     US-087）与课次自然键里的序号同源：视频时间线按「课次日期 + 课时序号」排序，归档时间不参与。
 //  ③ `title` 只能来自真实数据（老师填的作品名 → 展签上的作品名 → 本次课题），**禁止**写死
 //     「未命名作品」这类占位名（FR-205）：宁可为空，也不要一个假的作品名。
 //  ④ 渲染归档列表前按 `recordKey` 去重兜底（FR-207）：`loadFeedbackRecords` 与新记录入列都过
@@ -22,7 +23,7 @@
 //     素材同步成功时**不动 version / updatedAt** —— 它们记的是老师的正文改到第几版。
 //
 // 与 `data/lessons.js` 同一套模型：本地只是「断网 / 未开通云服务时的兜底」，云端表才是真源。
-import { makeStudentId, normalizeLessonDate } from './lessons';
+import { makeStudentId, normalizeLessonDate, normalizeLessonNo } from './lessons';
 import { stripSessionMediaUrls } from './mediaValidation';
 // 归档素材的持久化记录（[第四步 US-203]）：类别 / 同步状态 / 持久地址 / storageKey 的规则与
 // 「原图字段不许进 payload」的结构守卫都在 data 层，这里只负责把素材清单挂到记录上。
@@ -156,6 +157,9 @@ export function normalizeFeedbackRecord(raw) {
     student,
     className,
     date,
+    // 这一次课的课时序号（[第四步到第一步联通] US-087）：视频时间线按「课次日期 + 课时序号」排序读它。
+    // 0 = 未知（历史记录本来就没有序号，不猜）；老记录只有 lessonId 时由课次列表补齐（`archiveResident.js`）。
+    lessonNo: normalizeLessonNo(source.lessonNo),
     title,
     archivedAt,
     updatedAt: str(source.updatedAt) || archivedAt,
@@ -304,6 +308,9 @@ export function createFeedbackRecord({
   archiveMedia = [],
   lessonId = '',
   lessonDate = '',
+  // 课时序号（[第四步到第一步联通] US-087）：视频时间线按「课次日期 + 课时序号」排序，
+  // 记录自己带着它就不必再去课次表里查一遍。缺省 0 = 未知（不猜一个序号）。
+  lessonNo = 0,
   reviewTraceId = '',
   now = ''
 } = {}){
@@ -335,6 +342,8 @@ export function createFeedbackRecord({
     date: identity.date,
     // 展签口径的课次日期（`2026.08.04`）：展签、文件名与成长档案的口径都读它，保持老字段含义不变。
     lessonDate: lessonDateText,
+    // 课时序号（US-087）：与课次自然键（班级 + 日期 + 序号）里的那一个数字同源。
+    lessonNo: normalizeLessonNo(lessonNo),
     title: identity.title,
     status: '已归档',
     mode,

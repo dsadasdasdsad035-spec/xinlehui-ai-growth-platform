@@ -3412,6 +3412,58 @@ US-222 管「成片怎么版本化」，这一节管「谁能碰这些成片、�
   console 0 报错）；回归 US-058 66/66、US-059 data 53/53 + browser 46/46、US-060 data 27/27 +
   browser 79/79、US-061 67/67、US-071 80/80 全绿；截图 435~437 留档。
 
+## 视频时间线排序：课次日期 + 课时序号（[第四步到第一步联通] US-087 / FR-447）
+
+个人 / 班级视频时间线的顺序**只**由课次字段决定：`lessonDate` 升序 → 同一天再按 `lessonNo` 升序。
+归档时间（`archivedAt`、记录列表里的先后、谁先归档）**一个字都不参与** —— 补录上周的课次时，
+它按「上周 · 第 N 次课」就位，而不是因为「刚刚才归档」被排到队尾。
+
+- 唯一实现在 `src/data/videoTimeline.js`：`VIDEO_TIMELINE_ORDER_TEXT` / `ORDER_NOTE`（口径文案）、
+  `videoTimelineOrderKey()`（日期过 `normalizeLessonDate`、序号过 `normalizeLessonNo`）、
+  `compareVideoTimelineEntries()`、`orderVideoTimelineEntries()`（稳定排序，返回新数组）。
+  **四处调用点全部改读它**（`videoTimelinePlan`、精选 `videoSelectionPlan`、`videoPersonalPlan`、
+  `videoClassPlan`）—— 以前四处各抄一份「日期升序 + 同日按输入顺序」，改口径要改四遍。
+- 排序规则的三条细节（都写在 `compareVideoTimelineEntries` 的文档里）：① 日期口径统一
+  （`2026.08.04` 与 `2026-08-04` 是同一天）；② 同一天里**序号未知（0）的排在有序号的之后**
+  （未知不是「第 0 次课」）；③ 日期与序号都相同（同一节课里不同学员的条目 / 都未知）时**保持原有顺序**，
+  不要拿 `recordKey` / `id` 之类再排一道 —— 那会把班级成片里「同一节课多位学员」的相对次序
+  换成 id 字典序，US-216/217/218 的既有夹具与断言都会被莫名搅动，而验收要的只是课次先后。
+- `lessonNo` 的数据链路（一条记录怎么带上它）：
+  ① 归档时写入 —— `main.jsx` 把 `archiveLesson.lesson?.lessonNo || lessonNoValue` 传给
+     `createFeedbackRecord`（`data/feedbackRecords.js` 的 `normalizeFeedbackRecord` 收敛成 0 = 未知）；
+  ② 归档条目 —— `data/archiveResident.js` 的 `archiveLessonEntry(record, { lessons })` 走
+     `archiveEntryLessonNo()`：记录自带就用它，**老记录只有 `lessonId`** 时按 id 在课次列表里补序号，
+     查不到如实 0（不猜：序号猜错会把两节课的先后排反）；条目上给 `lessonNo` / `lessonNoText`；
+  ③ 帧 —— `videoTimelinePlan` 把条目的 `lessonNo` 抄到作品帧与照片帧上（`VIDEO_FRAME_FIELDS` 里有它），
+     `videoFrameRow` 给 `lessonNo` / `lessonNoText` / `dateText`（`2026.08.04 · 第 12 次课`）；
+  ④ 界面 —— `GrowthArchiveData.jsx` 用 `loadLessons()`（本机课次镜像，**云端没有 lessons 表**）
+     把课次列表传给 `archiveResidentView({ lessons })` 与三处 `archiveLessonEntry`，
+     帧行渲染 `data-*-frame-lesson-no` / `data-*-frame-date-text`，三个面板各渲染顺序读数与
+     「归档先后不参与排序」那一句（`data-video-timeline-order-text` / `data-personal-order-note` /
+     `data-class-frame-order-note`）。
+- **真踩过的两个坑**：
+  ① `archiveResidentView` 的入参 `lessons`（课次实体列表）与视图产物里的 `lessons`（筛完还看得见的
+     归档记录）**同名**：直接把它当局部变量用，返回的 `lessons` 就变成了课次列表（`count` / 空态 /
+     档案时间线一起错）。现在局部变量叫 `visibleRecords`，并在注释里点名这件事。
+  ② 班级视频的类目筛选读 `record.className`，而第一步班级下拉的 **option 文本带「（任课老师）」**
+     （`周六创意绘画 2 班（林晓老师）`）—— 拿它当 `className` 写进夹具/记录，班级面板永远筛不中
+     （个人面板却看得到，很容易误判成「班级面板坏了」）。夹具里的班名要取**记录上的 className**。
+- **本故事的边界**：档案页自己的「课次时间线」（`archiveResidentView` 的 `entries`，过滤在
+  `data/archiveTargets.js` 的 `filterArchiveRecords`）仍是**日期升序**（同日按记录顺序），
+  不按课时序号重排 —— 本故事只改视频时间线。以后要动它，先想清楚档案页与视频的窗口口径差异。
+- 验证方式（本轮实测）：`pnpm run build` 通过（361~417ms）；Node 直跑 **52 项**
+  （`/tmp/assert-us087.mjs`：排序键归一 / 同日两节课 / 日期优先 / 未知序号排后 / 同日期同序号保序 /
+  归档时间反着设不影响 / 记录与条目的 lessonNo 链路 / 四个视图产物给出同一份顺序读数）；
+  浏览器 **39 项**（`/tmp/assert-us087-browser.mjs`：真机归档两节课 → `lessonNo` 落库 +
+  成长档案上「较早的历史课次在前」、**倒着注入**同一天两节课 → 界面排出 3/4、
+  追加在数组最后的补录课次排在最前面、老记录（只有 `lessonId`）由课次镜像补出序号、
+  班级段内同样是课次顺序、390px 不溢出、console 0 异常）；回归 US-075 95/95、US-076 100/100、
+  US-077 91/91、US-078 94/94、US-079 110/110、US-059 46/46、US-060 79/79、US-071 80/80、
+  US-074 72/72（首跑因机器忙超时假红，清干净 Chrome 后重跑全绿）、US-082 100/100、US-083 62/62、
+  US-084 85/85、US-085 107/107、US-086 36/36 全绿；截图 438~440 留档。
+- 断言脚本口径：US-077 的「串联顺序读数 / order 规则那一条」文案已随本故事改成
+  `按课次日期 + 课时序号升序`（`/tmp/assert-us077-data.mjs` 三处 + `/tmp/assert-us077-browser.mjs` 一处）。
+
 ## 容易踩的坑
 
 - **「每次渲染后量一次」的测量签名里不能有时间戳**（US-224 真踩）：`useEffect(()=>{measure()})`

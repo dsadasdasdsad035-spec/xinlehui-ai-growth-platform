@@ -11,7 +11,7 @@
 //     改帧时长只需要改 `videoTimeline.js` 那一份常量。
 //
 //  ② **超出上限时按课次时间线均匀取样，首末两幅必留**（`videoSelectionSampleIndices`）：
-//     在按日期升序的作品列表上等距取 k 个位置，第一个与最后一个永远在里面 ——
+//     在按课次日期 + 课时序号升序的作品列表上等距取 k 个位置，第一个与最后一个永远在里面 ——
 //     「整段课次跨度」因此不会被丢掉，视频里仍然看得见从第一幅到最后一幅的推进。
 //
 //  ③ **班级先保证每位学员至少 1 幅，再按作品数比例分配剩余配额**
@@ -25,7 +25,7 @@
 // 判据与文案只在数据层写一次，组件不自己拼字符串、也不自己算时长。
 
 import { normalizeVideoJobType, videoJobTypeLabel } from './videoJobs';
-import { videoTimelineDurationText, videoTimelinePlan } from './videoTimeline';
+import { orderVideoTimelineEntries, videoTimelineDurationText, videoTimelinePlan } from './videoTimeline';
 
 const str = value => String(value ?? '').trim();
 const num = value => {
@@ -128,7 +128,7 @@ export function videoSelectionRuleRows() {
       id: 'sampling',
       label: '超出上限',
       value: '按课次时间线均匀取样',
-      detail: '在按日期升序的作品列表上等距取样：第一幅与最后一幅必留，中间的作品按课次跨度均匀分布。'
+      detail: '在按课次日期 + 课时序号升序的作品列表上等距取样：第一幅与最后一幅必留，中间的作品按课次跨度均匀分布。'
     },
     {
       id: 'quota',
@@ -234,12 +234,12 @@ export function videoSelectionEntryKey(entry) {
   return str(source.id) || str(source.recordKey);
 }
 
-/** 按课次时间线排序（日期升序，同日保持原顺序 —— 与 `videoTimelinePlan` 同一口径）。 */
+/**
+ * 按课次时间线排序：课次日期 + 课时序号升序（唯一实现在 `videoTimeline.js`；
+ * [第四步到第一步联通] US-087 起同日再按课时序号排 —— 四处排时间线不各写一份）。
+ */
 function orderByTimeline(entries) {
-  return (Array.isArray(entries) ? entries : [])
-    .map((entry, order) => ({ entry, order }))
-    .sort((left, right) => str(left.entry && left.entry.date).localeCompare(str(right.entry && right.entry.date)) || left.order - right.order)
-    .map(item => item.entry);
+  return orderVideoTimelineEntries(entries);
 }
 
 /** 学员分组（班级成片用）：按时间线上第一次出现的顺序排，组内保持时间线顺序。 */

@@ -4,7 +4,9 @@
 // **串联顺序**、**缺课留白卡**、**片头**与**成片信息**定死成零依赖纯函数 + 常量
 // （只 import 同样零依赖的 `videoTimeline.js` / `videoJobs.js`），Node 可直跑断言，界面只渲染它的产物。
 //
-//  ① **按课次日期升序串联**：把这位学员在当前周期里的作品按课次日期升序排成一条；
+//  ① **按课次日期 + 课时序号升序串联**（[第四步到第一步联通] US-087）：把这位学员在当前周期里的作品
+//     按课次日期升序排成一条，同一天再按课时序号升序（序号未知的排在之后）；排序只读课次字段，
+//     归档先后不参与 —— 补录的历史课次按它自己的课次日期与序号就位。
 //     帧序 / 帧时长 / 转场（含「每 4 幅作品插 1 张课堂照片」）沿用 `videoTimelinePlan`（US-215）那一份规则，
 //     起止由 **`videoFrameSpan`** 算 —— 这一条时间线不另写一套时长表与重叠量。
 //
@@ -31,7 +33,10 @@ import {
   VIDEO_FRAME_DURATION_SEC,
   VIDEO_FRAME_KINDS,
   VIDEO_INTRO_TITLE,
+  VIDEO_TIMELINE_ORDER_NOTE,
+  VIDEO_TIMELINE_ORDER_TEXT,
   normalizeVideoFrame,
+  orderVideoTimelineEntries,
   videoFrameRow,
   videoFrameSpan,
   videoTimelineContentIssue,
@@ -75,7 +80,8 @@ export function videoPersonalIntroLine(name, period) {
 export const VIDEO_PERSONAL_EMPTY_TEXT = '这个周期还没有这位孩子的归档记录：时间线目前只有片头与片尾。完成一节课的归档后，作品帧与留白卡会自动接上来。';
 
 // ---------------------------------------------------------------------------
-// ① 串联顺序（本故事第 1 条验收：按课次日期升序串联该学员的归档作品）
+// ① 串联顺序（本故事第 1 条验收：按课次日期升序串联该学员的归档作品；
+//    [第四步到第一步联通] US-087 起同一天再按课时序号升序）
 // ---------------------------------------------------------------------------
 
 /** 一条归档条目在时间线里的键（`id` 与 `recordKey` 都认，取先有的那一个 —— 与精选同一口径）。 */
@@ -84,17 +90,9 @@ export function videoPersonalEntryKey(entry) {
   return str(source.id) || str(source.recordKey);
 }
 
-/** 按课次日期升序排序（同日保持原顺序 —— 与 `videoTimelinePlan` / `videoSelectionPlan` 同一口径）。 */
-function orderByDate(entries) {
-  return (Array.isArray(entries) ? entries : [])
-    .map((entry, order) => ({ entry, order }))
-    .sort((left, right) => str(left.entry && left.entry.date).localeCompare(str(right.entry && right.entry.date)) || left.order - right.order)
-    .map(item => item.entry);
-}
-
-/** 串联顺序那一句（界面渲染它，断言读它）。 */
+/** 串联顺序那一句（界面渲染它，断言读它）：口径来自 `videoTimeline.js` 那一份，不另写一遍。 */
 export function videoPersonalOrderText(count) {
-  return `${Math.max(0, int(count))} 节课按课次日期升序串联`;
+  return `${Math.max(0, int(count))} 节课${VIDEO_TIMELINE_ORDER_TEXT}串联`;
 }
 
 // ---------------------------------------------------------------------------
@@ -286,11 +284,13 @@ export function videoPersonalOwnershipIssue(plan) {
 // ---------------------------------------------------------------------------
 
 /**
- * 个人成长视频时间线（纯函数、永不抛错）：按课次日期升序把**这一位学员**的作品串成一条，
+ * 个人成长视频时间线（纯函数、永不抛错）：按**课次日期 + 课时序号**升序把**这一位学员**的作品串成一条，
  * 缺课课次留 1.5 秒留白卡，片头写学员与周期，并给出成片信息（推算值带「预估」）。
+ * 顺序由 `orderVideoTimelineEntries` 排（US-087）：传进来的先后不影响串联顺序，归档先后不参与。
  *
  * 入参：
- *  - `entries`：当前**周期**下的归档条目（**可以带别的学员** —— 学员隔离在这里做）；
+ *  - `entries`：当前**周期**下的归档条目（**可以带别的学员** —— 学员隔离在这里做），
+ *    带 `lessonNo`（课时序号，0 = 历史记录没有记录）
  *  - `objectName`：这位学员的姓名（`entry.student === objectName` 才收录）；
  *  - `period`：生成周期（片头与成片信息读它）；
  *  - `selectedKeys`：可选的「收录清单」（US-216 的作品键）—— 传了就只排这些作品，
@@ -316,7 +316,8 @@ export function videoPersonalPlan({
   const org = str(orgName);
   const note = str(endingNote);
   const kind = normalizeVideoJobType(type);
-  const ordered = orderByDate(entries);
+  // 顺序的唯一实现（课次日期 + 课时序号升序，US-087）：传进来的先后不影响串联顺序。
+  const ordered = orderVideoTimelineEntries(entries);
   // ① 学员隔离：只留这位学员自己的条目（读不出学员名的记录也算「不属于」—— 没有证据就不收录）。
   const own = name ? ordered.filter(entry => str(entry && entry.student) === name) : ordered;
   const foreignEntries = name ? ordered.filter(entry => str(entry && entry.student) !== name) : [];
@@ -365,6 +366,8 @@ export function videoPersonalPlan({
         objectName: name,
         entryId: videoPersonalEntryKey(entry),
         date: str(entry && entry.date),
+        // 留白卡也属于**这一次课**（US-087）：序号从条目带过来，卡片上能写清「第 N 次课」。
+        lessonNo: entry && entry.lessonNo,
         title: card.text,
         titleText: card.text,
         // 卡片上的说明（文案来源）在帧上带一份：界面把它渲染成卡片**旁边**的旁注，不写进卡片。
@@ -396,6 +399,7 @@ export function videoPersonalPlan({
       objectName: name,
       entryId: frame.entryId,
       date: frame.date,
+      lessonNo: frame.lessonNo,
       title: frame.title,
       titleText: frame.titleText,
       subtitle: frame.subtitle,
@@ -473,8 +477,8 @@ export function videoPersonalRuleRows() {
     {
       id: 'order',
       label: '串联顺序',
-      value: '按课次日期升序',
-      detail: '这一位孩子在这个周期里的作品按课次日期升序排成一条，最后接片尾。'
+      value: VIDEO_TIMELINE_ORDER_TEXT,
+      detail: '这一位孩子在这个周期里的作品按课次日期 + 课时序号升序排成一条，最后接片尾；补录的历史课次按它自己的课次日期与序号就位，归档先后不参与排序。'
     },
     {
       id: 'intro',
@@ -579,6 +583,8 @@ export function videoPersonalView(plan) {
     totalSec,
     totalText: videoTimelineDurationText(totalSec),
     orderText: videoPersonalOrderText(counts.lessons),
+    // 顺序口径的补充说明（US-087）：「不看归档时间」这句话写在老师看得到的地方，组件不自己拼。
+    orderNote: VIDEO_TIMELINE_ORDER_NOTE,
     summary,
     notes,
     dates: frames.map(frame => frame.date).filter(Boolean),

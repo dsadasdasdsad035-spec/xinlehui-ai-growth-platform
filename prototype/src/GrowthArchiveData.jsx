@@ -206,7 +206,8 @@ import {
   musicSelectionPick,
   musicSelectionView
 } from './data/musicSelection';
-// 个人成长视频时间线（[第四步 US-217]）：按课次日期升序串联 / 缺课 1.5 秒留白卡 / 片头写学员与周期 /
+// 个人成长视频时间线（[第四步 US-217] / [第四步到第一步联通] US-087）：按课次日期 + 课时序号升序串联 /
+// 缺课 1.5 秒留白卡 / 片头写学员与周期 /
 // 成片信息（推算值带「预估」）/ 学员隔离全在 `data/videoPersonal.js`（零依赖纯函数）。
 // 这一页只渲染它的产物 —— 卡片文案、留白卡时长、「预估」两个字与收录范围读数都是数据层给的。
 import {
@@ -229,8 +230,10 @@ import {
   videoClassPlan,
   videoClassView
 } from './data/videoClass';
-// 机构名（帧清单的片头与片尾都要写它，与装裱叠加元素的变量同一份来源）。
-import { DEFAULT_ORG_NAME } from './data/lessons';
+// 机构名（帧清单的片头与片尾都要写它，与装裱叠加元素的变量同一份来源）；
+// `loadLessons` 读本机课次镜像（[第四步到第一步联通] US-087）：老归档记录只有 lessonId 时靠它补
+// 课时序号，视频时间线按「课次日期 + 课时序号」才排得出补录的历史课次。
+import { DEFAULT_ORG_NAME, loadLessons } from './data/lessons';
 // 成片预览 · 下载与分享（[第四步 US-219]）：三件事的规则与文案全在 `data/videoShare.js`
 // （零依赖纯函数）—— ① 竖屏 9:16 播放器占位（服务未接入时不显示任何假 mp4）；
 // ② 下载与分享的「暂不可用」提示；③ 成片分享链接（**与图文分享同一套规则**：授权闸门 / 有效期 / 撤回）。
@@ -362,7 +365,7 @@ function LazyArchiveImage({src,alt,attrs={},onThumb=null,thumbKey=''}){
 
 /** 一节课在时间线上的卡：日期与作品名 · 成品作品图 · 课堂照片 · 五维点评摘要 · 转发状态（US-209）。 */
 function ResidentLesson({entry,onThumb=null}){
-  return <article className="archive-lesson" data-archive-lesson="true" data-archive-lesson-id={entry.id} data-archive-lesson-date={entry.date} data-archive-lesson-status={entry.status} data-archive-lesson-plaque={entry.dateDots} data-archive-lesson-dimensions={entry.dimensionCount} data-archive-lesson-photos={entry.photoCount} data-archive-lesson-forward={entry.forward.state} data-archive-lesson-forward-label={entry.forward.stateLabel} data-archive-lesson-forward-opens={String(entry.forward.openCount)} data-archive-lesson-forward-text={entry.forward.line}>
+  return <article className="archive-lesson" data-archive-lesson="true" data-archive-lesson-id={entry.id} data-archive-lesson-date={entry.date} data-archive-lesson-status={entry.status} data-archive-lesson-plaque={entry.dateDots} data-archive-lesson-dimensions={entry.dimensionCount} data-archive-lesson-photos={entry.photoCount} data-archive-lesson-forward={entry.forward.state} data-archive-lesson-forward-label={entry.forward.stateLabel} data-archive-lesson-forward-opens={String(entry.forward.openCount)} data-archive-lesson-forward-text={entry.forward.line} data-archive-lesson-lesson-no={entry.lessonNo||''}>
     <div className="history-art" data-archive-lesson-artwork={entry.artwork.url?'ok':'empty'} data-archive-media-status={entry.artwork.status||''}>
       {entry.artwork.url?<LazyArchiveImage src={entry.artwork.url} alt={`${entry.title?entry.title+' ':''}成品作品图`} onThumb={onThumb} thumbKey={`${entry.id||entry.recordKey}-artwork`} attrs={{'data-archive-lesson-artwork-img':'true'}}/>:entry.artwork.placeholder?<span className="archive-media-placeholder" data-archive-media-hold="true">{entry.artwork.placeholderText}</span>:<Frame/>}
     </div>
@@ -905,6 +908,8 @@ function VideoTimelinePreview({plan,endingNote,onEndingNote}){
       <b>{rule.label}</b><span data-video-timeline-rule-text="true">{rule.value}</span><small>{rule.detail}</small>
     </li>)}</ul>
     <p className="video-timeline-summary" data-video-timeline-summary="true">{view.summary}</p>
+    <p className="video-timeline-order" data-video-timeline-order-text="true">{view.orderText}</p>
+    <small className="video-timeline-order-note" data-video-timeline-order-note="true">{view.orderNote}</small>
     {view.notes.map((note,index)=><p className="video-timeline-note" key={note} data-video-timeline-note={index}>{note}</p>)}
     <p className="video-timeline-no-output" data-video-timeline-no-output="true">{view.noOutputNote}</p>
     <label className="video-timeline-ending">片尾寄语（选填，≤{view.endingNoteMaxChars} 字）
@@ -915,6 +920,7 @@ function VideoTimelinePreview({plan,endingNote,onEndingNote}){
       {view.frames.map(frame=><li key={frame.id} className={`video-frame is-${frame.kind}`} data-video-frame={frame.kind}
         data-video-frame-index={frame.index} data-video-frame-start={frame.startSec} data-video-frame-end={frame.endSec}
         data-video-frame-duration={frame.durationSec} data-video-frame-time={frame.timeText} data-video-frame-date={frame.date}
+        data-video-frame-lesson-no={frame.lessonNo||''} data-video-frame-date-text={frame.dateText}
         data-video-frame-title={frame.titleText} data-video-frame-subtitle={frame.subtitle}
         data-video-frame-subtitle-truncated={frame.subtitleTruncated?'true':'false'}
         data-video-frame-subtitle-verbatim={frame.subtitle&&!frame.boundaryIssue?'true':'false'}
@@ -923,7 +929,7 @@ function VideoTimelinePreview({plan,endingNote,onEndingNote}){
         <div className="video-frame-body">
           {frame.asset.ready?<img src={frame.asset.url} alt={`${frame.titleText}帧`} loading="lazy" decoding="async" data-video-frame-image="true"/>:null}
           <div>
-            <p className="video-frame-title" data-video-frame-title-label="true">{frame.titleText}{frame.date?` · ${frame.date}`:''}</p>
+            <p className="video-frame-title" data-video-frame-title-label="true">{frame.titleText}{frame.dateText?` · ${frame.dateText}`:''}</p>
             {frame.lines.length?<ul className="video-frame-lines">{frame.lines.map((line,index)=><li key={line} data-video-frame-line={index}>{line}</li>)}</ul>:null}
             {frame.kind===VIDEO_FRAME_KINDS.artwork?<p className={`video-frame-subtitle${frame.subtitle?'':' is-empty'}`} data-video-frame-subtitle-line="true">{frame.subtitle||'（这一帧没有字幕）'}</p>:null}
             {frame.kind===VIDEO_FRAME_KINDS.artwork?<small className="video-frame-subtitle-note" data-video-frame-subtitle-note="true">{frame.subtitleText}</small>:null}
@@ -946,7 +952,8 @@ function VideoTimelinePreview({plan,endingNote,onEndingNote}){
 }
 
 /**
- * 个人成长视频时间线（[第四步 US-217]）：一位孩子的作品按课次日期升序串成一条 —— 片头写学员与周期、
+ * 个人成长视频时间线（[第四步 US-217] / [第四步到第一步联通] US-087）：一位孩子的作品按课次日期 + 课时序号
+ * 升序串成一条（排序只读课次字段，归档先后不参与）—— 片头写学员与周期、
  * 每幅作品一帧、缺课课次留一张 1.5 秒留白卡、最后给成片信息（时长 / 收录幅数 / 分辨率 / 文件大小）。
  *
  * 判据与文案全部来自 `data/videoPersonal.js`（组件只渲染产物）：
@@ -978,11 +985,13 @@ function VideoPersonalTimeline({plan}){
     </div>
     <p className="video-personal-summary" data-personal-summary="true">{view.summary}</p>
     <p className="video-personal-order" data-personal-order-text="true">{view.orderText}</p>
+    <small className="video-personal-order-note" data-personal-order-note="true">{view.orderNote}</small>
     {view.notes.map((note,index)=><p className="video-personal-note" key={note} data-personal-note={index}>{note}</p>)}
     <p className="video-personal-no-output" data-personal-no-output="true">{view.noOutputNote}</p>
     <ol className="video-personal-list" data-personal-frame-list="true">
       {view.frames.map(frame=><li key={frame.id} className={`video-personal-frame is-${frame.kind}`} data-personal-frame={frame.kind}
         data-personal-frame-index={frame.index} data-personal-frame-date={frame.date}
+        data-personal-frame-lesson-no={frame.lessonNo||''} data-personal-frame-date-text={frame.dateText}
         data-personal-frame-start={frame.startSec} data-personal-frame-end={frame.endSec}
         data-personal-frame-duration={frame.durationSec} data-personal-frame-time={frame.timeText}
         data-personal-frame-title={frame.titleText} data-personal-frame-subtitle={frame.subtitle}
@@ -995,7 +1004,7 @@ function VideoPersonalTimeline({plan}){
               <b data-personal-absence-text-label="true">{frame.cardText}</b>
             </div>
             : <div>
-              <p className="video-personal-frame-title" data-personal-frame-title-label="true">{frame.titleText}{frame.date?` · ${frame.date}`:''}</p>
+              <p className="video-personal-frame-title" data-personal-frame-title-label="true">{frame.titleText}{frame.dateText?` · ${frame.dateText}`:''}</p>
               {frame.lines.length?<ul className="video-personal-frame-lines">{frame.lines.map((line,index)=><li key={line} data-personal-frame-line={index}>{line}</li>)}</ul>:null}
               {frame.kind===VIDEO_FRAME_KINDS.artwork?<p className={`video-personal-frame-subtitle${frame.subtitle?'':' is-empty'}`} data-personal-frame-subtitle-line="true">{frame.subtitle||'（这一帧没有字幕）'}</p>:null}
             </div>}
@@ -1026,7 +1035,8 @@ function VideoPersonalTimeline({plan}){
 
 /**
  * 班级视频集锦（[第四步 US-218]）：全班按学员分段串成一条时间线 —— 每位学员一段，
- * 段首 1.5 秒姓名卡写着姓名与作品数，段内按课次时间线排；本期没有作品的学员保留一张留白卡。
+ * 段首 1.5 秒姓名卡写着姓名与作品数，段内按课次日期 + 课时序号升序排（[第四步到第一步联通] US-087）；
+ * 本期没有作品的学员保留一张留白卡。
  *
  * 判据与文案全部来自 `data/videoClass.js`（组件只渲染产物）：
  *  - 分段方式、姓名卡那一行（姓名 + 作品数）、留白卡文案与时长、「不串档」判据都是数据层给的；
@@ -1063,6 +1073,7 @@ function VideoClassTimeline({plan,view,onMove,onReset}){
     <div className="video-class-order" data-class-order="true" data-class-order-current={view.currentOrder.join(' > ')} data-class-order-default={view.defaultOrder.join(' > ')}>
       <b>学员顺序（{view.orderText}）</b>
       <small data-class-order-note="true">{view.orderNote}</small>
+      <small className="video-class-frame-order-note" data-class-frame-order-note="true">{`段内帧序：${view.frameOrderText}（${view.frameOrderNote}）`}</small>
       <ul data-class-order-list="true">{view.segments.map((row,index)=><li key={row.student||index} data-class-order-row={row.student}
         data-class-order-position={row.position} data-class-order-count={studentOf(row.student).count} data-class-order-kept={studentOf(row.student).kept}
         data-class-order-empty={row.isEmpty?'true':'false'}>
@@ -1093,13 +1104,14 @@ function VideoClassTimeline({plan,view,onMove,onReset}){
         <small className="video-class-name-card-note" data-class-name-card-note="true">段首 1.5 秒姓名卡 · 本段收录 {row.artworkCount} 幅{row.dateText?` · 课次 ${row.dateText}`:''}</small>
         {framesOfSegment(row.index).length?<ol className="video-class-frames" data-class-frame-list="true">{framesOfSegment(row.index).map(frame=><li key={frame.id} className={`video-class-frame is-${frame.kind}`} data-class-frame={frame.kind}
           data-class-frame-index={frame.index} data-class-frame-segment={row.index} data-class-frame-student={frame.sourceStudent}
-          data-class-frame-date={frame.date} data-class-frame-title={frame.titleText} data-class-frame-subtitle={frame.subtitle}
+          data-class-frame-date={frame.date} data-class-frame-lesson-no={frame.lessonNo||''} data-class-frame-date-text={frame.dateText}
+          data-class-frame-title={frame.titleText} data-class-frame-subtitle={frame.subtitle}
           data-class-frame-start={frame.startSec} data-class-frame-end={frame.endSec} data-class-frame-duration={frame.durationSec}>
           <header><b data-class-frame-kind-label="true">{frame.kindLabel}</b><span data-class-frame-time-label="true">{frame.timeText}</span><em data-class-frame-duration-label="true">{frame.durationText}</em></header>
           <div className="video-class-frame-body">
             {frame.asset.ready?<img src={frame.asset.url} alt={`${frame.titleText}帧`} loading="lazy" decoding="async" data-class-frame-image="true"/>:null}
             <div>
-              <p className="video-class-frame-title" data-class-frame-title-label="true">{frame.titleText}{frame.date?` · ${frame.date}`:''}</p>
+              <p className="video-class-frame-title" data-class-frame-title-label="true">{frame.titleText}{frame.dateText?` · ${frame.dateText}`:''}</p>
               {frame.kind===VIDEO_FRAME_KINDS.artwork?<p className={`video-class-frame-subtitle${frame.subtitle?'':' is-empty'}`} data-class-frame-subtitle-line="true">{frame.subtitle||'（这一帧没有字幕）'}</p>:null}
             </div>
           </div>
@@ -1864,16 +1876,19 @@ export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,p
     setStudent(current=>resolveArchiveTargetValue(targetLists.students,fresh?(preferred.student||''):current));
     setClassName(current=>resolveArchiveTargetValue(targetLists.classes,fresh?(preferred.className||''):current));
   },[preferred,targetLists]);
+  // 课次实体列表（[第四步到第一步联通] US-087）：本机镜像读一次 —— 给只有 `lessonId` 的老归档记录
+  // 补课时序号。记录自己带 `lessonNo` 的（US-087 之后归档的）不用查，查不到的就是 0（未知，不猜）。
+  const lessonList=useMemo(()=>loadLessons(),[]);
   // 常驻视图的唯一产物：概况 + 时间线 + 被筛掉的条数（界面只读它，不自己过滤一遍）。
   // 时间线每一行还带**转发状态**（US-209）：按档案记录 id 在令牌账里查，三态与打开次数都从 data 层推出来。
-  const view=useMemo(()=>archiveResidentView({records,target,student,className,period,absenceOnly:absenceFilter===ARCHIVE_ABSENCE_ONLY,tokens:shareTokens}),[records,target,student,className,period,absenceFilter,shareTokens]);
+  const view=useMemo(()=>archiveResidentView({records,target,student,className,period,absenceOnly:absenceFilter===ARCHIVE_ABSENCE_ONLY,tokens:shareTokens,lessons:lessonList}),[records,target,student,className,period,absenceFilter,shareTokens,lessonList]);
   // 帧清单（[第四步 US-215]）读的是**生成周期**（`videoPeriod`）而不是上面那个「周期筛选」：
   // 筛选是「看什么」，视频是「生成什么」—— 两件事各用各的窗口，与提交时的任务口径一致。
-  const videoEntries=useMemo(()=>archiveResidentView({records,target,student,className,period:videoPeriod,absenceOnly:false,tokens:shareTokens}).entries,[records,target,student,className,videoPeriod,shareTokens]);
+  const videoEntries=useMemo(()=>archiveResidentView({records,target,student,className,period:videoPeriod,absenceOnly:false,tokens:shareTokens,lessons:lessonList}).entries,[records,target,student,className,videoPeriod,shareTokens,lessonList]);
   // 个人成长视频时间线（[第四步 US-217]）读的是这个周期的**全部记录**（不带对象筛选）：
   // 「只收录该学员自己的作品」交给数据层保证（它自己按 `entry.student` 过滤，并把其他学员的记录如实报数），
   // 不靠这里传对了参数 —— 传错了也串不进去。
-  const videoScopeEntries=useMemo(()=>filterArchiveRecordsByPeriod(records,resolveArchivePeriod(videoPeriod)).map(record=>archiveLessonEntry(record,{tokens:shareTokens})),[records,videoPeriod,shareTokens]);
+  const videoScopeEntries=useMemo(()=>filterArchiveRecordsByPeriod(records,resolveArchivePeriod(videoPeriod)).map(record=>archiveLessonEntry(record,{tokens:shareTokens,lessons:lessonList})),[records,videoPeriod,shareTokens,lessonList]);
   // 班级视频集锦（[第四步 US-218]）读的是**这个班级**在这个周期的记录 + 班级名单（顺序真源）：
   // 分段顺序默认就是名单的顺序，名单之外但本期有记录的学员由数据层接在后面（并如实报数）。
   const videoClassEntries=useMemo(()=>{
@@ -1881,8 +1896,8 @@ export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,p
     const className=view.name;
     return filterArchiveRecordsByPeriod(records,resolveArchivePeriod(videoPeriod))
       .filter(record=>String((record&&record.className)||'').trim()===className)
-      .map(record=>archiveLessonEntry(record,{tokens:shareTokens}));
-  },[records,videoPeriod,view.isClass,view.name,shareTokens]);
+      .map(record=>archiveLessonEntry(record,{tokens:shareTokens,lessons:lessonList}));
+  },[records,videoPeriod,view.isClass,view.name,shareTokens,lessonList]);
   const classRoster=useMemo(()=>{
     if(!view.isClass) return [];
     const className=view.name;

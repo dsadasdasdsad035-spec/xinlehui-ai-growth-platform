@@ -7,8 +7,9 @@
 //
 //  ① **按学员分段，每位学员一段**（`videoClassSegments`）：段首一张 **1.5 秒姓名卡**
 //     （`VIDEO_FRAME_KINDS.nameCard`）写着姓名与这一段收录的作品数；段内沿用 `videoTimelinePlan`
-//     那一套帧序规则（作品帧按课次日期升序、每 4 幅作品后插 1 张课堂照片），起止一律走
-//     **`videoFrameSpan`** —— 这一条时间线不另写一套时长表与重叠量。
+//     那一套帧序规则（作品帧按**课次日期 + 课时序号**升序、每 4 幅作品后插 1 张课堂照片），起止一律走
+//     **`videoFrameSpan`** —— 这一条时间线不另写一套时长表与重叠量。段内顺序只读课次字段
+//     （[第四步到第一步联通] US-087）：补录的历史课次按它自己的课次日期与序号就位，归档先后不参与。
 //
 //  ② **学员顺序默认按班级名单，生成前可调整**（`roster` + `order`）：`roster` 是名单（顺序真源），
 //     `order` 是老师调整后的顺序（只对名单上的名字重新排列）；名单之外但本期有记录的学员
@@ -34,7 +35,10 @@ import {
   VIDEO_FRAME_DURATION_SEC,
   VIDEO_FRAME_KINDS,
   VIDEO_INTRO_TITLE,
+  VIDEO_TIMELINE_ORDER_NOTE,
+  VIDEO_TIMELINE_ORDER_TEXT,
   normalizeVideoFrame,
+  orderVideoTimelineEntries,
   videoFrameRow,
   videoFrameSpan,
   videoTimelineContentIssue,
@@ -367,13 +371,8 @@ export function videoClassInfoRows({ durationSec = 0, artworks = 0 } = {}) {
 // ⑦ 编排（纯函数；界面只渲染它的产物）
 // ---------------------------------------------------------------------------
 
-/** 按课次时间线排序（日期升序，同日保持原顺序 —— 与 US-215/216/217 同一口径）。 */
-function orderByTimeline(entries) {
-  return (Array.isArray(entries) ? entries : [])
-    .map((entry, order) => ({ entry, order }))
-    .sort((left, right) => str(left.entry && left.entry.date).localeCompare(str(right.entry && right.entry.date)) || left.order - right.order)
-    .map(item => item.entry);
-}
+/** 段内帧序：按课次日期 + 课时序号升序（唯一实现在 `videoTimeline.js`，[第四步到第一步联通] US-087）。 */
+const orderByTimeline = entries => orderVideoTimelineEntries(entries);
 
 /**
  * 一条时间线（分段草稿）：位学员一段 —— 段首姓名卡 + 段内帧（作品 / 照片），没有作品就是留白卡。
@@ -452,6 +451,7 @@ function composeClassPlan({ kind, className, period, orgName, endingNote, shareR
         objectName: className,
         entryId: frame.entryId,
         date: frame.date,
+        lessonNo: frame.lessonNo,
         title: frame.title,
         titleText: frame.titleText,
         subtitle: frame.subtitle,
@@ -498,6 +498,7 @@ function composeClassPlan({ kind, className, period, orgName, endingNote, shareR
  * 入参：
  *  - `entries`：当前**班级 + 生成周期**下的归档条目（**可以带缺课记录** —— 缺课没有作品帧，
  *    这位学员的段自然走留白卡那一支）；缺课条数如实报在 `counts.absence` 里；
+ *    段内帧序由 `orderVideoTimelineEntries` 排（课次日期 + 课时序号，传进来的先后不影响）；
  *  - `className` / `period` / `orgName` / `endingNote` / `shareReady`：片头与片尾的字段（与 US-215 同一口径）；
  *  - `roster`：班级名单（**顺序真源**：默认顺序就是它）；`order`：老师调整后的顺序（只重排名单上的名字）；
  *  - `selectedKeys`：可选的「收录清单」（US-216 的作品键）—— 传了就只排这些作品；
@@ -683,7 +684,7 @@ export function videoClassRuleRows() {
       id: 'artwork',
       label: '段内帧序',
       value: `每幅 ${VIDEO_FRAME_DURATION_SEC.artwork} 秒 · 课堂照片 ${VIDEO_FRAME_DURATION_SEC.photo} 秒`,
-      detail: '与上面帧清单同一套帧序规则：按课次日期升序、等比缩放留边、每 4 幅作品后插 1 张课堂照片。'
+      detail: `与上面帧清单同一套帧序规则：${VIDEO_TIMELINE_ORDER_TEXT}、等比缩放留边、每 4 幅作品后插 1 张课堂照片。`
     },
     {
       id: 'cap',
@@ -837,6 +838,10 @@ export function videoClassView(plan) {
     sampled: source.sampled === true,
     orderText: videoClassOrderText(segmentsRaw.length),
     orderNote: videoClassOrderNote(defaultOrder.length || segmentsRaw.length),
+    // 段内帧序的口径（[第四步到第一步联通] US-087）：与帧清单 / 个人时间线同一份排序（课次日期 + 课时序号），
+    // 组件只渲染这两句 —— 「段内不看归档时间」这句话写在老师看得到的地方。
+    frameOrderText: VIDEO_TIMELINE_ORDER_TEXT,
+    frameOrderNote: VIDEO_TIMELINE_ORDER_NOTE,
     externalLessons: Math.max(0, int(counts.externalLessons)),
     externalNote: Math.max(0, int(counts.externalLessons))
       ? `其中 ${Math.max(0, int(counts.externalLessons))} 幅在精选（时长上限或老师手动排除）时没有进收录清单：它们不排进这条时间线。`

@@ -3377,6 +3377,9 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
       lessonId:archiveLessonIdForWrite||currentLessonId,
       // 展签口径的课次日期（`2026.08.04`）：记录里的 `date` 由它换算成 ISO，不再取归档当天。
       lessonDate:reviewLessonDateDots,
+      // 课时序号（[第四步到第一步联通] US-087）：视频时间线按「课次日期 + 课时序号」排序，
+      // 序号取这次归档绑定的那条课次（`ensureArchiveLesson` 的产物）；没有课次实体时退回落表单值。
+      lessonNo:archiveLesson.lesson?.lessonNo||lessonNoValue,
       // 第三步推理轨迹的关联（US-102 的轨迹在下面 `commitReviewTrace` 里才落盘）。
       reviewTraceId:reviewTraceRef.current?.traceId||''
     });
