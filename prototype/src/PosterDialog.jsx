@@ -23,6 +23,7 @@ import { nowMs } from './services/archivePerformance';
 import { loadPosterTemplates } from './data/posterTemplates';
 import { listVideoJobs } from './services/videoJobQueue';
 import {
+  POSTER_DIALOG_ARCHIVE_ONLY_NOTE,
   POSTER_DIALOG_ASSET_NOTE,
   POSTER_DIALOG_ENTRY_ARCHIVE,
   POSTER_DIALOG_ENTRY_LABELS,
@@ -99,8 +100,12 @@ export default function PosterDialog({
   const empty = useMemo(() => posterDialogEmptyView({ records, object: subject, period }), [records, subject, period]);
   const recordView = useMemo(() => posterDialogSubjectRecord({ records, object: subject, period }), [records, subject, period]);
   const periodRecords = useMemo(() => posterDialogRecords({ records, object: subject, period }), [records, subject, period]);
-  const periodNote = posterDialogPeriodNote(periodFilter);
+  const periodNote = posterDialogPeriodNote(periodFilter, entry);
   const periodSource = posterDialogPeriodSource(periodFilter);
+  // 置灰读数（FR-333）：课后反馈入口下「阶段 / 班级 / 封面 / 长图」几套按周期与多幅作品生成的版式
+  // 只在成长档案里有数据 —— 这一条把「几套置灰、原因原文是什么」变成可读的一处读数，
+  // 界面文案、浏览器断言与验收原文读同一份（不各自数一遍灰按钮）。
+  const archiveOnlyRows = rows.filter((row) => !row.applicable && row.reason === POSTER_DIALOG_ARCHIVE_ONLY_NOTE);
 
   // 每一套模板的 plan（同一个对象 + 同一个周期的真实数据）—— 预览用选中那一份，缩略图逐张用各自那一份。
   const plans = useMemo(() => rows.map((row) => ({
@@ -268,6 +273,8 @@ export default function PosterDialog({
         data-poster-dialog-period-source={periodSource}
         data-poster-dialog-templates={String(rows.length)}
         data-poster-dialog-templates-applicable={String(rows.filter((row) => row.applicable).length)}
+        data-poster-dialog-archive-only={String(archiveOnlyRows.length)}
+        data-poster-dialog-archive-only-note={archiveOnlyRows.length ? POSTER_DIALOG_ARCHIVE_ONLY_NOTE : ''}
         data-poster-dialog-selected={selectedId}
         data-poster-dialog-selected-kind={selectedRow ? selectedRow.kind : ''}
         data-poster-dialog-canvas={canvasLine}
@@ -277,6 +284,7 @@ export default function PosterDialog({
         data-poster-dialog-thumbs={String(Object.values(thumbs).filter((item) => item.phase === 'ready').length)}
         data-poster-dialog-records={String(periodRecords.length)}
         data-poster-dialog-record-source={recordView.source}
+        data-poster-dialog-record={recordView.record ? String(recordView.record.id || recordView.record.recordKey || '') : ''}
         data-poster-dialog-perf-first={perfChecks.rows[0].value}
         data-poster-dialog-perf-first-ok={perfChecks.rows[0].ok === null ? 'pending' : perfChecks.rows[0].ok ? 'true' : 'false'}
         data-poster-dialog-perf-switch={perfChecks.rows[1].value}

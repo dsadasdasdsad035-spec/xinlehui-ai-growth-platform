@@ -3950,6 +3950,39 @@ services / 界面只渲染产物」）：
   导航状态在内存里）—— 浏览器脚本里这类「离开当前页」的用例要排在最后，别在中途 `Page.reload` 之后
   再指望能回到档案页。
 
+### 两处入口复用同一个弹窗（[海报 US-309] / FR-327、FR-331、FR-333）
+
+课后反馈第四步的「转发给家长」打开的**就是上面这个组件**（`main.jsx` 的 `archivePosterDialogField`），
+`GrowthArchiveData.jsx` 的档案入口一个字没变。两处只差两个入参，其余全走同一份规则与同一支渲染：
+
+- `entry={POSTER_DIALOG_ENTRY_FEEDBACK}` → `posterDialogTemplateRows()` 把六套按周期 / 多幅作品生成的
+  版式（阶段 2 / 班级 2 / 封面 1 / 长图 1）置灰，原因就是验收原文「需在成长档案中生成」；两套单作品
+  仍在，默认选中 `poster-warm-gold-single`（FR-313 的单作品默认口径，模板库的 `isDefault` 也是它）。
+- 对象里带**本次课次的归档记录**（`{target:'个人', name, record: currentArchiveRecord, students}`）→
+  `posterDialogSubjectRecord()` 命中 `object.record` 分支（`source: 'lesson'`），单作品海报的内容
+  （学员 / 作品名 / 课次日期 / 美术能力金句）全部来自这条记录，**不会退回「本周期最新一条」**。
+  `records / lessons / tokens / teacherName / orgName / logo / origin` 也传第四步那一份（与档案页同源）。
+- **没有本次课次的归档记录时不开弹窗**（`openArchiveForwardPoster()`）：那一刻弹窗只能画「本周期最新
+  一条」，数据来源就错了 —— 打开分享面板把「先归档」说清楚（US-204 的既有口径）。
+- **分享面板（分享链接 / 二维码 / 微信文案 / 转发状态）另起入口**：`data-archive-share-toggle` 挂在转发
+  状态条旁边的 `.archive-share-toggle` 文字链接上。第四步的主操作行仍是**三项**
+  （返回修改点评 / 转发给家长 / 进入成长档案，US-204 的口径，老断言按 `.scene-actions button` 逐字比）。
+- 弹窗新增两处只读读数：`data-poster-dialog-archive-only` / `-archive-only-note`（几套因入口置灰、原因
+  原文是什么）与 `data-poster-dialog-record`（用的是哪一条记录）。反馈入口的周期说明由
+  `posterDialogPeriodNote(value, entry)` 给出**空串**（那边没有「档案页筛选」可跟随）；
+  `posterDialogEmptyView()` 在对象自带记录时直接返回非空态（补录一节很老的课次会落在默认周期窗口之外，
+  按周期判会把一张有内容的图误判成空态）。
+- 验收口径：`/tmp/assert-us098.mjs`（Node，**48 项**：反馈入口适用性 / 本次课次的数据来源 / 两处入口
+  同一份 plan 与同一个重绘键 / 空态与周期口径 / **全仓只有一份渲染实现**（引擎定义、五支渲染函数的
+  import、弹窗组件、导出文件名规则各一份）/ 源码接线）+ `/tmp/assert-us098-browser.mjs`（CDP，**53 项**：
+  真机链路到第四步 → 点转发 → 弹窗 entry=feedback / 8 套里 2 套可用 6 套置灰 / 默认单作品 / 预览
+  1080×1440 有墨 → **内联单作品海报与弹窗 1:1 预览逐字节相同** → 生成分享后二维码也同源 → 真导出一次
+  （文件名规则 + 2× 2160×2880）→ 390px → **同一学员在两处入口的预览与 2× 渲染逐字节相同** → console 干净）。
+  截图 479~483。
+- 第四步的旧海报面板（`.poster-single` / `.poster-period`，US-303 / US-304）仍在原地：它们的验收面
+  （导出 PNG、拼贴网格读数）还在用，且两条都走同一个 `renderPoster`（不构成第二套实现）。US-311a
+  把导出搬进弹窗之后再考虑收敛它们。
+
 ## 容易踩的坑
 
 - **「每次渲染后量一次」的测量签名里不能有时间戳**（US-224 真踩）：`useEffect(()=>{measure()})`
@@ -3963,6 +3996,13 @@ services / 界面只渲染产物」）：
 - **回归 / 验证脚本跑之前先清干净进程**（US-224 实测）：上一次被中断的 Chrome（`Google Chrome for
   Testing` 主进程）会拖满 CPU，表现是**随机**的「等待条件超时 / Runtime.evaluate 超时 / 页面像卡死」，
   很容易被误判成产品 bug。`pkill -9 -f "Google Chrome for Testing"` 之后再跑。
+- **往 `localStorage` 直塞夹具的脚本与 App 的云端合并有竞态**（US-098 实测）：`main.jsx` 有一条
+  `useEffect(()=>{persistFeedbackRecords(records); if(recordsRemoteReady) saveRemoteFeedbackRecords(records)},[records,recordsRemoteReady])`
+  —— 脚本写完夹具镜像、还没 `Page.reload` 时，云表读取完成（`recordsRemoteReady` false→true）会
+  触发这条 effect，用 App **内存里的那批 records** 覆写刚写进去的夹具（表现：第二遍夹具少了 6 条，
+  断言全线红，重跑又全绿）。判据：`localStorage.getItem('xinlehui-feedback-records-v1')` 里的
+  `feedback-us093-fix-*` 条数与脚本注入的条数不一致。脚本侧要**等云表读完再写夹具**
+  （或写完立刻 reload），别把这类偶发红当成产品 bug。
 
 - **派生值（`const x = f(state)`）必须排在被它读的 state 之后**（US-108b 真踩）：把
   `evaluateReviewArchiveGate({… generated: reviewGenerated …})` 放在

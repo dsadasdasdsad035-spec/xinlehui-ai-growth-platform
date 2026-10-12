@@ -123,8 +123,13 @@ export function posterDialogPeriodSource(value) {
   return ARCHIVE_PERIODS.includes(str(value)) ? 'filter' : 'default';
 }
 
-/** 周期说明（跟随筛选时为空串）：说明为什么不是「全部」。 */
-export function posterDialogPeriodNote(value) {
+/**
+ * 周期说明（跟随筛选时为空串）：说明为什么不是「全部」。
+ * **只对成长档案入口有意义**（那边真的有「周期筛选」这一档）：课后反馈入口的数据来源是本次课次
+ * （FR-331 的第二条），没有「档案页筛选」可跟随 —— 这时返回空串，别把档案页的句子搬到反馈入口。
+ */
+export function posterDialogPeriodNote(value, entry = POSTER_DIALOG_ENTRY_ARCHIVE) {
+  if (str(entry) === POSTER_DIALOG_ENTRY_FEEDBACK) return '';
   const name = str(value);
   if (ARCHIVE_PERIODS.includes(name)) return '';
   const label = name ? `「${name}」` : '未设置';
@@ -305,6 +310,12 @@ export function posterDialogSelectTemplate(rows = [], currentId = '') {
  */
 export function posterDialogEmptyView({ records = [], object = {}, period = '', today = null } = {}) {
   const subject = isPlainObject(object) ? object : {};
+  // 对象自带记录（课后反馈入口的「本次课次」，FR-331）时**不是空态**：这一张图的内容来自这条记录，
+  // 与「这个周期里有没有归档记录」是两件事 —— 补录一节很老的课次时它会落在默认周期窗口之外，
+  // 按周期判会把一张有内容的图误判成空态。
+  if (isPlainObject(subject.record)) {
+    return { on: false, reason: 'lesson', count: 1, outside: 0, title: '', desc: '', hint: '', action: '' };
+  }
   const inPeriod = posterDialogRecords({ records, object: subject, period, today });
   if (inPeriod.length) return { on: false, reason: 'ready', count: inPeriod.length, outside: 0, title: '', desc: '', hint: '', action: '' };
   const all = posterDialogTargetRecords({ records, object: subject });
