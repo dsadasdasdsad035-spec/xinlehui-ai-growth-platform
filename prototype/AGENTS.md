@@ -140,6 +140,57 @@ React + Vite 单页原型（`src/main.jsx` 是主入口，另按模块拆出 `sr
   `pending`（`lastError` 里才有原因，界面上只看到「图片同步中」）。加头时同步改
   `server/index.mjs` 的 `send()` 白名单，并用 curl 复核两条 403（缺身份 / 缺授权）与一条 201。
 
+## 第四步「归档状态 + 转发」（[第四步 US-204] / F-ARCHIVE-01）
+
+> **第四步只回答两件事**：存好了没（归档摘要）、发出去了没（转发准备）。两件事的判据全在
+> `src/data/archiveSummary.js`（零依赖以外的依赖只是 `consent.js` / `reviewDetailPanel.js` /
+> `reviewTrace.js` 这几份纯数据模块，可 `node` 直跑断言）：组件只渲染它的产物，
+> `data-archive-*` / `data-share-*` 属性与浏览器断言读同一份，**摘要字段齐全是结构性的**。
+
+- **`archiveStepView({record, fallback, media, trace})`** 是第四步的整份视图。`record` 必须是
+  **已经落库的那条记录**（`currentRecordId` 命中的那一条），不是会话里的临时产物。
+  - `state`：`archived`（有记录）/ `incomplete`（没有记录）。**未归档时如实写「还没有写入成长档案」+ 具体原因**
+    （缺作品 / 缺点评 / 还没点归档），绝不显示「已完成」。
+  - `rows`：验收点名的七项（`ARCHIVE_SUMMARY_FIELDS` 是顺序真源）—— 学员 / 课次日期 / 作品名 /
+    归档时间 / 版本号 / 素材同步状态 / 点评状态；两种状态都给全七行。
+  - `ok` = 这一项正不正常；`blocking` = 缺了它算不算「摘要不全」。**素材同步状态不 blocking**
+    （US-203 的口径：对象存储未接入只是降级为本地留存），它只进 `warnings`；`missing` 只收 blocking 的缺项。
+  - 点评状态：个人反馈按五维逐维计数 + 「推理轨迹已留档（成功）」；班级反馈按**记录是否落库**判定
+    （归档前置校验保证过「本次点评已生成」），没落库时不替老师声称已确认。
+- **`archiveForwardView({step, consent, student, lessonDate, title})`** 是「转发给家长」面板的三态：
+  `incomplete`（先归档）/ `blocked`（家长未完成查看授权 → 阻止转发 + 「去授权管理」入口，
+  照 US-208 第 3 条）/ `ready`（内容清单 + 微信文案）。
+  - 授权读 `data/consent.js` 的 `findConsent(loadConsents(), {name, studentId})`：**与 US-411 第一步的提示、
+    US-208 转发前的硬校验同一份来源**，不要在这里另写一套判断；没有授权记录的学员 fail-safe 算未授权。
+  - 微信文案含学员名 + 课次日期、不含联系方式；链接与二维码归 US-208（`ARCHIVE_SHARE_LINK_NOTE`
+    如实说明未接入，不给假回执）。
+- **第四步的界面（`main.jsx` 的 `step===4`）**：`.archive-summary` 七行摘要 + `.archive-media-sync`
+  （US-203 的素材面板）+ 按需展开的 `.archive-share` 转发面板；主操作三个 ——
+  **返回修改点评** / **转发给家长** / **进入成长档案**。正文那一句统一写
+  `作品、课堂照片与五维点评已经写入成长档案。`（`assert-us108a` 有源码级断言，别改这句）；
+  归档回执同样以「已写入成长档案：…」开头（更新路径仍是「档案已更新（第 N 版）」，有脚本断言）。
+- **「返回修改点评 → 再归档 = 就地更新」**：`archiveRecord` 读 `applyFeedbackRecordArchive` 的结论，
+  同键走 `updateFeedbackRecord`（version 自增、id / recordKey / archivedAt 不变），两种模式都 `go(4)`，
+  只差 toast 文案 —— 这是 US-202 的既有口径，第四步的摘要因此天然显示第 N 版与「最近更新」时间。
+- **旧档案实现已清空**：`CourseLearningTimeline` / `StageReviewSummary` / `GrowthArchiveBuilder*` /
+  `AcademicAssessment*` / `LearningRadar*` / `OnlineExhibition` / `StudentArchiveHub*` / `StudentAssessment` /
+  `ArchivesPage` / `ParentArchive` / `ParentHome` / `Timeline` 全部删除（US-204 第 6 条），
+  全站只剩 `GrowthArchiveData`（成长档案页）+ `StudentArchiveData`（学员档案页）这一份实现。
+  **删改这一族时先 grep 全 `src/` 确认没有活引用**（它们只服务于彼此，删一个就要连带删它的专用小组件）。
+  已知边界：这些组件的 CSS 规则（`.timeline` / `.holistic-radar` / `.learning-radar` / `.student-archive-hub` 等）
+  仍留在样式表里（不影响功能，`parent-timeline` 这类前缀相近的类仍在用，清理时不要按前缀盲删）。
+
+#### 两个真踩的坑（US-204）
+
+- **`archiveStepView` 的返回值里少一个字段 = 渲染期白屏，而 `pnpm run build` 全绿**：第四步的两块面板
+  （`archiveSummaryField` / `archiveShareField`）在组件 body 里**无条件计算**，`data-archive-summary-missing
+  ={archiveStep.missing.join(',')}` 一旦在某个状态拿到 `undefined` 就整页炸掉（现象：点「课后反馈」白屏、
+  只留 `Runtime.exceptionThrown`）。**两种状态的返回结构必须同形状**（`missing` / `warnings` / `blockers`
+  都要给），验证脚本要覆盖「未归档就点第四步」这条路径。
+- **流程状态是会话内的**：离开「课后反馈」页再回来会重挂载 `TeacherFlowV2`（素材与 `currentRecordId` 归零、
+  草稿把班级/学员带回来但从第一步重来）。想在第四步上做 UI 断言（390px、转发面板）**必须在离开之前做完**；
+  第二轮的浏览器验证要显式把班级与学员再选一遍（「新建草稿」回到未选学员的初始态），别假设第一轮选中的学员还在。
+
 ## 老师端「课后反馈」第一步（班级 / 学员 / 课程 / 课次推荐）
 
 > **课次表单全站只有一份实现 = `TeacherFlowV2`（`main.jsx`）。** 旧的 `CreateFlow` 五步向导

@@ -37,3 +37,37 @@
 .parent-entry-media .archive-media-placeholder{width:100%;height:96px;border:0;border-radius:0}
 .parent-entry-media figcaption{padding:4px 6px;font-size:9px;color:#8a7c64;text-align:center}
 @media(max-width:800px){.archive-media-admin li{align-items:flex-start;flex-direction:column}.archive-media-admin li>div{width:100%}.archive-media-admin-head{flex-direction:column}.archive-media-admin-head em{margin-left:0}.archive-media-list{grid-template-columns:1fr}}
+
+/* [第四步 US-204] 第四步收敛为「归档状态 + 转发」：归档摘要七项 + 转发面板。
+   两块都只渲染 data 层的产物（行 / 状态 / 文案），样式不参与判断；长文案在窄屏断行不横向溢出。 */
+.archive-step-hint{display:block;margin:6px 0 0;font-size:10px;line-height:1.7;color:#8a7c64}
+.archive-summary{margin-top:14px;padding:14px;border:1px solid #eadfbd;border-radius:14px;background:#fffdf6;text-align:left}
+.archive-summary-head{display:flex;align-items:center;gap:7px}
+.archive-summary-head svg{color:#bb8b00;flex:none}
+.archive-summary-head b{font-size:12px;color:#4a3f2c}
+.archive-summary[data-archive-summary-state="incomplete"] .archive-summary-head svg{color:#b4632c}
+.archive-summary-note{margin:8px 0 0;font-size:10px;line-height:1.65;color:#6b6250;word-break:break-word}
+.archive-summary-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:12px 0 0}
+.archive-summary-list>div{min-width:0;padding:9px 11px;border:1px solid #efe5cf;border-radius:10px;background:#fff}
+.archive-summary-list dt{font-size:9px;font-weight:800;letter-spacing:.04em;color:#9a7200}
+.archive-summary-list dd{margin:4px 0 0;font-size:11px;line-height:1.55;color:#3d3527;word-break:break-word}
+.archive-summary-list dd small{display:block;margin-top:3px;font-size:9px;color:#8a7c64}
+.archive-summary-list>div[data-archive-summary-ok="false"]{border-style:dashed;background:#fffaf0}
+.archive-summary-list>div[data-archive-summary-ok="false"] dd{color:#8a6414}
+.archive-share{margin-top:14px;padding:14px;border:1px solid #eadfbd;border-radius:14px;background:#fffdf6;text-align:left}
+.archive-share-head{display:flex;align-items:center;gap:7px}
+.archive-share-head b{font-size:12px;color:#4a3f2c}
+.archive-share-head em{margin-left:auto;font-size:10px;font-style:normal;font-weight:800;padding:3px 8px;border-radius:999px;background:#f2ecd8;color:#7a6a45}
+.archive-share-head em.is-ready{background:#e6f5ea;color:#2f7a45}
+.archive-share-head em.is-blocked{background:#fdf0d5;color:#8a6414}
+.archive-share-reason{margin:8px 0 0;font-size:10px;line-height:1.65;color:#8a6414;word-break:break-word}
+.archive-share-content{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin:12px 0 0;padding:0;list-style:none}
+.archive-share-content li{min-width:0;padding:9px 11px;border:1px solid #efe5cf;border-radius:10px;background:#fff}
+.archive-share-content b{display:block;font-size:9px;font-weight:800;letter-spacing:.04em;color:#9a7200}
+.archive-share-content span{display:block;margin-top:4px;font-size:11px;line-height:1.55;color:#3d3527;word-break:break-word}
+.archive-share-content small{display:block;margin-top:3px;font-size:9px;color:#8a7c64}
+.archive-share-privacy,.archive-share-link{display:block;margin-top:9px;font-size:9px;line-height:1.6;color:#8d8168}
+.archive-share-link{color:#9a7b34}
+.archive-share-actions{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-top:10px}
+.archive-share-actions small{font-size:9px;color:#7a6a45}
+@media(max-width:800px){.archive-summary-list,.archive-share-content{grid-template-columns:1fr}}
