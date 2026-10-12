@@ -96,6 +96,23 @@ const archivePolicy = {
   consentsEndpoint: '/api/archive/consents',
   note: '家长只能查看自己孩子（按监护人手机号匹配）的记录，服务端强制校验，不依赖前端隐藏。'
 };
+// 授权曲源（[第四步 US-220b] / FR-289 ~ FR-297）的**接口契约**：开发适配器如实声明「曲源未配置」。
+// 这不是占位数据 —— 前端（`data/musicSource.js` + `services/musicSourceApi.js`）拿这份声明判定
+// 「未配置授权曲源」，搜索与下载入库一律提示验收原文那句，**不返回演示搜索结果**。
+// 真正接入时要在这里换成：① 读服务端保管的曲源密钥 → ② 代理调用曲源 API（关键词 / 情绪 /
+// 时长 / BPM）→ ③ 下载入库时抓取 → 探测格式 → ffmpeg 转 mp3 128kbps → 计算 hash 去重。
+const musicSourcePolicy = {
+  configured: false,
+  provider: '',
+  // 下载入库的两步 TODO（前端 `MUSIC_SOURCE_IMPORT_STEPS` 里也标着，两边说的是同一件事）。
+  transcode: { todo: true, target: 'mp3 128kbps', note: '转码尚未接入：入库文件按曲源原格式抓取（FR-290 待实现）' },
+  dedupe: { todo: true, key: '来源 URL + 文件 hash', note: '去重尚未接入：hash 待服务端计算（FR-291 待实现）' },
+  routes: {
+    search: '/api/music/source/search',
+    import: '/api/music/source/tracks'
+  },
+  note: '授权曲源尚未配置（密钥在服务端，不下发前端）：搜索与下载入库返回 501，前端如实提示「未配置授权曲源」。'
+};
 const managementSeed = {
   students: [
     { name: '陈一诺', birthDate: '2019-04-18', className: '周六创意绘画 2 班', guardianName: '陈一诺妈妈', guardianPhone: '', expect: '希望孩子更自信地表达自己的想法。' },
@@ -526,6 +543,12 @@ http.createServer(async (request, response) => {
     // 儿童素材的存储策略（[第二步 US-013]）：服务端自己声明落点与鉴权要求，
     // 客户端（`services/mediaStorage.js`）拿 `/health` 的 storage 字段与这份声明复核。
     if (request.method === 'GET' && url.pathname === '/api/compliance/storage-policy') return send(response, 200, childMediaStoragePolicy);
+    // 授权曲源（[第四步 US-220b]）：能力声明是公开读数（配没配），两个业务路由在曲源未配置时
+    // **明确回 501**（而不是 200 + 空结果）—— 客户端把 501 读成「未配置授权曲源」并如实提示。
+    if (request.method === 'GET' && url.pathname === '/api/music/source') return send(response, 200, musicSourcePolicy);
+    if (url.pathname === '/api/music/source/search' || url.pathname === '/api/music/source/tracks') {
+      return sendError(response, 501, '授权曲源未配置：本机开发适配器不提供搜索与下载入库（密钥在服务端、曲源尚未签约）。');
+    }
     if (request.method === 'GET' && url.pathname === '/api/management') {
       if (!requireTeacher(request, response)) return;
       return send(response, 200, loadManagement());

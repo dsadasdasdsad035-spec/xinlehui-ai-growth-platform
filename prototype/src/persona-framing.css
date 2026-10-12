@@ -50,6 +50,49 @@
 .music-library [data-music-commercial] { flex-direction: row; align-items: center; gap: 8px; }
 .music-library [data-music-commercial] input { flex: none; width: 16px; height: 16px; min-height: 0; padding: 0; margin: 0; accent-color: var(--blue); }
 .music-library [data-music-commercial-text] { display: block; margin-top: 0; font-size: 12px; color: var(--muted); }
+
+/* —— 管理端音乐库：从授权曲源搜索 + 下载入库（US-220b）——
+   搜索框下方常驻版权提示（FR-296）与「未配置授权曲源」的如实状态各占一行，都不折叠。 */
+.music-source { margin-bottom: 16px; }
+.music-source .panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.music-source .panel-head p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+.music-source-contract-label { align-self: center; font-weight: 800; color: #6d6047; background: #fffdf6; border: 1px dashed #e4d4a8; border-radius: 999px; padding: 4px 10px; font-size: 11px; }
+.music-source-search { display: grid; grid-template-columns: minmax(140px, 1.2fr) minmax(110px, .8fr) minmax(170px, 1.2fr) minmax(150px, 1fr) auto; gap: 10px; align-items: end; margin-top: 14px; }
+.music-source-search label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--muted); }
+.music-source-search input, .music-source-search select { padding: 9px 10px; border: 1px solid var(--border); border-radius: 9px; font: inherit; font-size: 13px; color: var(--ink); min-width: 0; }
+.music-source-search input:focus, .music-source-search select:focus { outline: none; border-color: var(--blue); }
+.music-source-range { display: flex; align-items: center; gap: 6px; }
+.music-source-range input { flex: 1; min-width: 0; }
+.music-source-range em { font-style: normal; color: var(--muted); }
+.music-source-copyright { margin: 12px 0 0; padding: 9px 12px; border: 1px solid #eadcbb; background: var(--yellow-50); border-radius: 10px; color: #7a5b12; font-size: 12px; font-weight: 700; }
+.music-source-summary, .music-source-state, .music-source-note { margin: 8px 0 0; color: var(--muted); font-size: 12px; }
+.music-source-state { color: var(--ink); }
+.music-source-notice { margin: 8px 0 0; color: var(--blue); font-size: 13px; }
+.music-source-results { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+.music-source-result { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 11px; background: var(--surface); }
+.music-source-result div { min-width: 0; }
+.music-source-result b { display: block; font-size: 14px; }
+.music-source-result small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
+.music-source-imports { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+.music-source-import { display: flex; align-items: center; gap: 10px; margin: 0; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--border); font-size: 12px; background: var(--soft); }
+.music-source-import b { flex: none; font-size: 13px; }
+.music-source-import span { flex: 1; color: var(--muted); }
+.music-source-import.is-imported { border-color: #bfe0c7; background: var(--green-50); }
+.music-source-import.is-failed { border-color: #f0c8c0; background: var(--coral-50); }
+.music-source-import.is-failed span { color: #8a2f20; }
+@media (max-width: 800px) {
+  /* 390px：搜索面板单列（关键词 / 情绪 / 时长 / BPM 各占一行），控件 ≥44px，行内读数换行。 */
+  .music-source-search { grid-template-columns: minmax(0, 1fr); }
+  .music-source-search input, .music-source-search select { min-height: 44px; }
+  .music-source-search button { min-height: 44px; }
+  .music-source .row-actions { flex-wrap: wrap; }
+  .music-source .row-actions button { min-height: 44px; }
+  .music-source-result { flex-wrap: wrap; }
+  .music-source-result button { min-height: 44px; }
+  .music-source-import { flex-wrap: wrap; }
+  .music-source-import b { flex: 1 1 100%; }
+  .music-source-import button { min-height: 44px; }
+}
 @media (max-width: 800px) {
   /* 390px：列表与编辑区各占一行；行内读数换行，按钮 ≥44px。 */
   .music-library { grid-template-columns: minmax(0, 1fr); }

@@ -10,8 +10,8 @@
 //     云端不通时仍要更新 React state —— 否则下一次 persist 会用不含它的旧列表覆盖镜像；
 //  ③ **删除前必须说清有多少成片引用过它**：引用范围由 `data/musicTracks.js` 的
 //     `musicLibraryRows` 一次算好（列表与编辑区读同一份），删除确认里点名数量。
-import React, { useEffect, useMemo, useState } from 'react';
-import { CircleAlert, Music, Plus, ShieldCheck, Trash2 } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { CircleAlert, Music, Plus, Search, ShieldCheck, Trash2 } from 'lucide-react';
 import { Button, PageHeader } from '../ui';
 import {
   MUSIC_LIBRARY_DEMO_LABEL,
@@ -30,6 +30,20 @@ import {
   musicTrackSaveIssue,
   normalizeMusicTrack
 } from '../data/musicTracks';
+import {
+  MUSIC_SOURCE_COPYRIGHT_NOTE,
+  MUSIC_SOURCE_IMPORT_NOTE,
+  MUSIC_SOURCE_IMPORT_STEPS,
+  MUSIC_SOURCE_NO_MATCH_TEXT,
+  MUSIC_SOURCE_SEARCH_EMPTY_TEXT,
+  MUSIC_SOURCE_UNCONNECTED_LABEL,
+  createMusicSourceQuery,
+  musicSourceProbeView,
+  musicSourceQueryIssue,
+  musicSourceQuerySummary,
+  musicSourceResultRow
+} from '../data/musicSource';
+import { importMusicSourceTrack, probeMusicSource, searchMusicSource } from '../services/musicSourceApi';
 import { createMusicTrack, deleteMusicTrack, loadMusicReferenceRecords, setMusicTrackEnabled, updateMusicTrack } from '../services/musicLibraryApi';
 // 引用范围要数「有多少成片引用过它」：成片任务由视频模块的本机队列持有（US-213a），
 // 这一页订阅它（与档案页的 VideoJobsPanel 同一份数据源），引用数字才会随任务变化实时更新。
@@ -79,6 +93,155 @@ function payloadFromDraft(draft) {
     fileUrl: draft.fileUrl,
     hash: draft.hash
   };
+}
+
+/**
+ * 「从授权曲源搜索 + 下载入库」面板（[第四步 US-220b] / FR-289 ~ FR-297）。
+ *
+ * 这条面板的全部规矩都在验收原文里，逐条落在这里：
+ *  ① 搜索入口与四个过滤条件（关键词 / 情绪 / 时长 / BPM）是真的：条件归一化与查询串在
+ *     `data/musicSource.js`，服务层照它发请求；
+ *  ② 搜索框下方**常驻**版权提示（`MUSIC_SOURCE_COPYRIGHT_NOTE`，FR-296 的原文，一个字不改）；
+ *  ③ 未配置授权曲源时只显示验收原文那句「未配置授权曲源」，结果列表保持为空 ——
+ *     **不返回假数据**（本文件与 data 层都没有任何演示结果数组）；
+ *  ④ 下载入库按契约走服务端（抓取 → 探测格式 → 转码 → 去重）；失败原因（防盗链 / 超时 / 格式不支持）
+ *     来自服务端失败码的翻译，**不凭空编原因**；每条失败记录都带「重试」；
+ *     转码与去重是服务端 TODO，面板上如实标注「尚未接入」（`MUSIC_SOURCE_IMPORT_NOTE`）。
+ */
+function MusicSourcePanel({ onImported, setToast }) {
+  const [query, setQuery] = useState(() => createMusicSourceQuery());
+  const [probe, setProbe] = useState(null);
+  const [checking, setChecking] = useState(true);
+  const [searching, setSearching] = useState(false);
+  const [results, setResults] = useState([]);
+  const [notice, setNotice] = useState('');
+  const [imports, setImports] = useState([]);
+  const seqRef = useRef(0);
+
+  const view = useMemo(() => musicSourceProbeView(checking ? null : probe), [checking, probe]);
+
+  // 进页面就探测一次：曲源配没配是「当前事实」，不该让管理员先搜一次才知道。
+  useEffect(() => {
+    let alive = true;
+    probeMusicSource().then(result => { if (alive) { setProbe(result); setChecking(false); } });
+    return () => { alive = false; };
+  }, []);
+
+  const runProbe = async () => {
+    setChecking(true);
+    const result = await probeMusicSource();
+    setProbe(result);
+    setChecking(false);
+  };
+
+  const patch = (key, value) => setQuery(current => ({ ...current, [key]: value }));
+
+  const runSearch = async () => {
+    const issue = musicSourceQueryIssue(query);
+    if (issue) { setNotice(issue); setResults([]); return; }
+    setSearching(true);
+    setNotice('');
+    try {
+      const out = await searchMusicSource(query);
+      setResults(out.results);
+      setNotice(out.results.length
+        ? `找到 ${out.results.length} 条结果${out.dropped ? `；另有 ${out.dropped} 条结果字段不全，已如实忽略（不猜元数据）` : ''}。`
+        : MUSIC_SOURCE_NO_MATCH_TEXT);
+    } catch (error) {
+      setResults([]);
+      setNotice(String((error && error.message) || '搜索失败。'));
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  const updateImport = (id, patchValue) => setImports(list => list.map(item => (item.id === id ? { ...item, ...patchValue } : item)));
+
+  const runImport = async (id, candidate, attempts) => {
+    updateImport(id, {
+      status: 'downloading',
+      attempts,
+      failureCode: '',
+      text: `正在下载入库：${MUSIC_SOURCE_IMPORT_STEPS.map(step => step.label).join(' → ')}…`
+    });
+    try {
+      const out = await importMusicSourceTrack(candidate);
+      onImported(out.track);
+      updateImport(id, {
+        status: 'imported',
+        trackKey: out.track.trackKey,
+        text: `已入库「${out.track.title}」：授权状态「待确认授权」，确认后老师端才可选。`
+      });
+      setToast(`曲目「${out.track.title}」已从授权曲源入库；授权状态为「待确认授权」，确认后老师端才可选。`);
+    } catch (error) {
+      const message = String((error && error.message) || '下载入库失败。');
+      updateImport(id, { status: 'failed', failureCode: String((error && error.failureCode) || ''), text: message });
+      setToast(message);
+    }
+  };
+
+  const startImport = candidate => {
+    seqRef.current += 1;
+    const id = `source-import-${seqRef.current}`;
+    setImports(list => [{ id, candidate, attempts: 0, status: 'downloading', failureCode: '', text: '' }, ...list]);
+    runImport(id, candidate, 1);
+  };
+
+  const retryImport = attempt => runImport(attempt.id, attempt.candidate, attempt.attempts + 1);
+
+  const rows = results.map(musicSourceResultRow);
+  const downloading = imports.filter(item => item.status === 'downloading').map(item => item.candidate.sourceUrl);
+  const emptyText = view.state === 'unconfigured' ? view.text : MUSIC_SOURCE_SEARCH_EMPTY_TEXT;
+
+  return <div className="panel music-source" data-music-source data-music-source-state={view.state} data-music-source-count={results.length} data-music-source-imports={imports.length}>
+    <div className="panel-head">
+      <div>
+        <h2>从授权曲源搜索</h2>
+        <p>服务端代理调用已签约的授权曲源（密钥不下发前端），支持关键词 / 情绪 / 时长 / BPM 过滤。</p>
+      </div>
+      <div className="row-actions">
+        <span className="music-source-contract-label" data-music-source-label>{MUSIC_SOURCE_UNCONNECTED_LABEL}</span>
+        <Button variant="secondary" data-music-source-probe onClick={runProbe}>{checking ? '探测中…' : '重新探测'}</Button>
+      </div>
+    </div>
+
+    <div className="music-source-search" data-music-source-filters>
+      <label>关键词<input value={query.keyword} data-music-source-field="keyword" placeholder="曲名 / 作者" onChange={event => patch('keyword', event.target.value)}/></label>
+      <label>情绪<select value={query.mood} data-music-source-field="mood" onChange={event => patch('mood', event.target.value)}><option value="">全部情绪</option>{MUSIC_MOOD_OPTIONS.map(option => <option key={option} value={option}>{option}</option>)}</select></label>
+      <label>时长（秒）<span className="music-source-range"><input type="number" min="0" value={query.durationMin || ''} data-music-source-field="durationMin" placeholder="下限" onChange={event => patch('durationMin', event.target.value)}/><em>–</em><input type="number" min="0" value={query.durationMax || ''} data-music-source-field="durationMax" placeholder="上限" onChange={event => patch('durationMax', event.target.value)}/></span></label>
+      <label>BPM<span className="music-source-range"><input type="number" min="0" value={query.bpmMin || ''} data-music-source-field="bpmMin" placeholder="下限" onChange={event => patch('bpmMin', event.target.value)}/><em>–</em><input type="number" min="0" value={query.bpmMax || ''} data-music-source-field="bpmMax" placeholder="上限" onChange={event => patch('bpmMax', event.target.value)}/></span></label>
+      <Button icon={Search} data-music-source-search onClick={runSearch}>{searching ? '搜索中…' : '搜索'}</Button>
+    </div>
+    {/* 搜索框下方的常驻版权提示（FR-296）：不随探测 / 搜索状态消失，也不进任何折叠。 */}
+    <p className="music-source-copyright" data-music-source-copyright>{MUSIC_SOURCE_COPYRIGHT_NOTE}</p>
+    <p className="music-source-summary" data-music-source-summary>{musicSourceQuerySummary(query)}</p>
+    <p className="music-source-state" data-music-source-state-text>{view.text}</p>
+    <p className="music-source-note" data-music-source-note>{MUSIC_SOURCE_IMPORT_NOTE}</p>
+    {notice ? <p className="music-source-notice" data-music-source-notice>{notice}</p> : null}
+
+    {rows.length ? <div className="music-source-results" data-music-source-results>
+      {rows.map((row, index) => {
+        const candidate = results[index];
+        const busy = downloading.includes(candidate.sourceUrl);
+        return <div className="music-source-result" key={row.id || index} data-music-source-result={row.id || index} data-music-source-result-url={candidate.sourceUrl}>
+          <div>
+            <b>{row.name}</b>
+            <small>{row.meta}{row.mood ? ` · ${row.mood}` : ''}</small>
+            <small>{row.sourceProvider} · {row.licenseType}</small>
+          </div>
+          <Button variant="secondary" data-music-source-import-btn={row.id || index} onClick={() => startImport(candidate)}>{busy ? '下载中…' : '下载入库'}</Button>
+        </div>;
+      })}
+    </div> : <p className="persona-empty" data-music-source-empty>{emptyText}</p>}
+
+    {imports.length ? <div className="music-source-imports" data-music-source-imports>
+      {imports.map(item => <p key={item.id} className={`music-source-import is-${item.status}`} data-music-source-import={item.id} data-music-source-import-status={item.status} data-music-source-import-code={item.failureCode || ''} data-music-source-import-attempts={item.attempts}>
+        <b>{item.candidate.title || item.candidate.sourceUrl}</b>
+        <span data-music-source-import-text>{item.text}</span>
+        {item.status === 'failed' ? <Button variant="secondary" data-music-source-import-retry onClick={() => retryImport(item)}>重试</Button> : null}
+      </p>)}
+    </div> : null}
+  </div>;
 }
 
 export default function MusicLibraryPage({ musicTracks = [], setMusicTracks, setToast, adminName = '' }) {
@@ -209,6 +372,8 @@ export default function MusicLibraryPage({ musicTracks = [], setMusicTracks, set
       prd="PRD-15 / F-ARCHIVE-MUSIC-01"
       actions={<Button icon={Plus} onClick={startNew} data-music-new>新增曲目</Button>}
     />
+    {/* US-220b：从授权曲源搜索 + 下载入库（接口契约）；曲源未配置时只如实提示，不返回假数据 */}
+    <MusicSourcePanel onImported={commit} setToast={setToast}/>
     <div className="split-page music-library" data-music-library data-music-library-count={rows.length} data-music-library-referenced={referencedCount}>
       <div className="panel persona-list">
         <div className="panel-head">
@@ -234,7 +399,7 @@ export default function MusicLibraryPage({ musicTracks = [], setMusicTracks, set
         {rows.length ? null : <p className="persona-empty" data-music-empty>{MUSIC_TRACK_EMPTY_TEXT}</p>}
         <p className="persona-empty">
           <span className="music-demo-label" data-music-demo-label>{MUSIC_LIBRARY_DEMO_LABEL}</span>
-          {' '}演示曲目覆盖「已确认 / 待确认 / 到期 / 已停用」几种情形；搜索与下载入库（授权曲源）尚未接入，可在右侧手工录入。
+          {' '}演示曲目覆盖「已确认 / 待确认 / 到期 / 已停用」几种情形；搜索与下载入库按接口契约实现（见上方面板，授权曲源本身仍未接入），也可在右侧手工录入。
         </p>
         <p className="persona-empty">{MUSIC_LIBRARY_LICENSE_NOTE}</p>
       </div>

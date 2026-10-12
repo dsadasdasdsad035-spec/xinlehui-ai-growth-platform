@@ -1026,6 +1026,57 @@ US-213a 那份本机演示队列（上面一节）**不是**真服务：真服�
   ② 演示曲目里有的**本来就勾着**「可商用」：直接 `click()` 是取消勾选。要断言「勾上之后落盘」得先读
      `.checked`，不是目标状态才点（`ensureChecked` 的写法）。
 
+## 授权曲源的**搜索与下载入库**契约（[第四步 US-220b] / FR-289 ~ FR-297）
+
+US-220a 解决「曲目怎么管」，这一节解决「曲目从哪来」：管理端的搜索入口与下载入库按**接口契约**实现，
+曲源本身还没签约（PRD Q10 是阻塞项）——所以这一块的全部纪律是**「未配置时只说真话」**。
+
+| 关注点 | 位置 |
+|---|---|
+| 规则（过滤条件 / 结果白名单 / 失败码 / 入库步骤 TODO / 文案） | `src/data/musicSource.js`（零依赖，Node 可直跑） |
+| 网络动作（拼 URL / fetch / 抛错，**无 mock 分支**） | `src/services/musicSourceApi.js`（可注入 `fetchImpl`） |
+| 界面（面板 + 失败清单与重试） | `src/admin/MusicLibraryPage.jsx` 的 `MusicSourcePanel` |
+
+- **未配置授权曲源时是抛错，不是返回空结果**：`services/musicSourceApi.js` 在「0（连不上）/ 404 / 405 / 501 /
+  200 但 `configured:false`」四种情形下一律抛 `MusicSourceError`（`unconfigured:true`），消息以
+  `MUSIC_SOURCE_UNCONFIGURED_TEXT` 开头（含验收原文「未配置授权曲源」，并写明不返回演示或虚假搜索结果）。
+  界面的结果区因此**结构上**为空 —— 全模块不存在演示 / 种子搜索结果数组（有断言查 `seed|demo|mockResults` 这类键名）。
+- **HTTP 状态只有一个含义**（`musicSourceStatusVerdict`）：`200/201/202` = ok；`0/404/405/501` = 未配置；
+  其余 = 服务在但拒绝了这次请求（下载失败的三类原因走这一支）。与视频服务契约层同一纪律。
+- **搜索过滤条件是真入口**：`createMusicSourceQuery` 归一化四组条件（关键词 / 情绪 / 时长 / BPM 上下限），
+  `musicSourceQueryString` 拼查询串（固定顺序 + 逐项编码），`musicSourceQueryIssue` 在下限大于上限时
+  **发请求之前**就拦下（断言：拦下时一个请求都没发）。
+- **入库结果契约有三道硬判据**（`musicSourceImportTrackIssue`）：必带 `trackKey/title/sourceUrl/fileKey/fileUrl/hash`
+  六项、`fileUrl` 必须 http(s)、**返回的 `sourceUrl` 必须与这次下载的那条搜索结果一致**（曲源串档比慢更糟）。
+  入库成功后走 `createNewMusicTrack`（授权状态强制 `pending`，服务端谎称 `confirmed` 也不作数）——FR-293 的闸门
+  只用一份，不因为来源是「授权曲源」就放行。落库路径复用 `mirrorMusicTrackLocally`（先落本机镜像再推云）。
+- **失败原因来自服务端失败码的翻译，不凭空编**（FR-297）：`MUSIC_SOURCE_IMPORT_FAILURES` 三个码
+  `hotlink / timeout / format` → 防盗链 / 超时 / 格式不支持；认不出的码说
+  `MUSIC_SOURCE_IMPORT_UNKNOWN_REASON`（「曲源服务没有给出可识别的原因」），服务端给的说明只作补充括号。
+  界面给每条失败记录渲染「重试」按钮（`data-music-source-import-retry`，attempts 自增）。
+- **转码与去重是服务端 TODO，界面上如实标注**：`MUSIC_SOURCE_IMPORT_STEPS` 四步里 `transcode`（mp3 128kbps）
+  与 `dedupe`（来源 URL + hash）标 `todo:true`，面板常驻 `MUSIC_SOURCE_IMPORT_NOTE` 说「尚未接入」；
+  `prototype/server/index.mjs` 的 `musicSourcePolicy` 也声明 `transcode/dedupe: { todo: true }`
+  （前端与服务端说的是同一件事，改一处要改两处）。
+- **常驻版权提示的唯一一份**：`MUSIC_SOURCE_COPYRIGHT_NOTE` =「请仅下载可商用授权音乐，并保留授权凭证」
+  （FR-296 原文）在 data 层，页面无条件渲染在搜索框下方（`data-music-source-copyright`）——
+  探测 / 搜索 / 切换曲源状态都不消失，组件里不许抄第二份。
+- **本地服务端**：`GET /api/music/source` 公开声明能力（`configured:false` + 两个 TODO + 路由表）；
+  `GET /api/music/source/search` 与 `POST /api/music/source/tracks` 一律 `501`
+  （**不是** 200 + 空结果 —— 501 才有「未配置」这个唯一含义）。真接入时在服务端换实现，前端不动。
+- **验证方式（本故事实测）**：`pnpm run build` 通过（397~446ms）；Node 直跑 **102 项**
+  （`/tmp/assert-us081-data.mjs`：四组过滤条件与查询串 / 五种「未配置」路径 / 不入库坏结果 / 入库契约四道 /
+  三类失败码翻译 / 版权提示唯一份 / 静态口径）；浏览器 **55 项**（`/tmp/assert-us081-browser.mjs`：
+  真实页面探测到「未配置授权曲源」且结果 0 条、条件非法被拦、页面内替换 `window.fetch` 验
+  「已配置」替身路径（搜索查询串逐项 / 坏结果报数 / 入库 POST / 待确认授权）、403 hotlink → 可读原因 +
+  重试 attempts=2 成功、390px 无横向滚动且控件 ≥44px、console 0 异常）；回归 US-075/076/077/078/079 data
+  （130/146/122/166/171）与 US-080 data 116 + browser 55、US-079 browser 110 全绿；截图 404~408 留档。
+- **验证脚本的坑（本故事真踩）**：替身 `fetch` 返回的**入库 `trackKey` 不能写死常量** —— 同一替身跑两次入库
+  （首次 + 重试）会带回同一个 `trackKey`，第二次把第一次那条覆盖掉，「列表里应有 N 条」的断言会少一条
+  （看着像产品丢数据）。替身按 `sourceUrl` 派生 `trackKey`，或断言改成按 title 找。另外 390px 的
+  ≥44px 扫描要把 `input/select` 也算进去（`min-height:44px` 得单独给 `.music-source-search input/select`，
+  全局样式里它们只有 ~36px）。
+
 ## 老师端「课后反馈」第一步（班级 / 学员 / 课程 / 课次推荐）
 
 > **课次表单全站只有一份实现 = `TeacherFlowV2`（`main.jsx`）。** 旧的 `CreateFlow` 五步向导
