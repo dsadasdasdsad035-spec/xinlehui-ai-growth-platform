@@ -59,6 +59,27 @@ import {
 import { deletePosterTemplate, mirrorPosterTemplateLocally, saveRemotePosterTemplate } from './services/posterTemplatesApi';
 import { DEFAULT_ORG_ID } from './data/lessons';
 import { listVideoJobs } from './services/videoJobQueue';
+// 微信文案与转发状态（[海报 US-311b] / FR-344 ~ FR-347）：
+//   - 规则（文案本体 / 三项复核 / 「这一张对应哪条记录」）在 `data/posterForward.js`（零依赖纯函数）；
+//   - 转发状态**直接读归档模块那一支**（`shareForwardView`）——「未转发 / 已转发 / 已撤回」全仓一份口径；
+//   - 复制成功 = 一次转发（与 US-209 同一条），记发送的编排在 `services/shareForwardSend.js`；
+//   - 留痕（AC3）走 `data/auditLog.js` 的两个动作，条目由调用方传进来的 `recordAudit` 落库。
+import {
+  POSTER_FORWARD_CHANNEL,
+  POSTER_WECHAT_COPY_EMPTY_TEXT,
+  POSTER_WECHAT_COPY_FAILED_TEXT,
+  POSTER_WECHAT_COPY_HEADING,
+  POSTER_WECHAT_COPY_LABEL,
+  POSTER_WECHAT_PRIVACY_NOTE,
+  posterCopyAuditDetail,
+  posterExportAuditDetail,
+  posterForwardSendNote,
+  posterForwardView,
+  posterWechatCheckRows
+} from './data/posterForward';
+import { AUDIT_ACTIONS, auditEntryMissingFields, auditTraceText } from './data/auditLog';
+import { copyReviewDetailText } from './services/reviewDetailExport';
+import { recordShareForwardSend } from './services/shareForwardSend';
 import {
   POSTER_TUNING_ARTWORKS_MIN_NOTE,
   POSTER_TUNING_FIELD_ARTWORKS,
@@ -116,6 +137,9 @@ import {
  * @param {{target?:string,name?:string,record?:object,students?:Array}} props.object 档案页当前选中的对象
  * @param {string} props.periodFilter 档案页的「周期筛选」值（跟随它；`全部` 时回落默认周期并说明）
  * @param {string} props.teacherName 当前登录老师的姓名（可见性、个人模板的 ownerKey 与落款都用它）
+ * @param {Function} [props.setShareTokens] 令牌账的写入（复制微信文案 = 一次转发，与第四步同一支）
+ * @param {Function} [props.recordAudit] 审计写入（`(input) => entry`；海报导出 / 转发两个动作各写一条）
+ * @param {object} [props.auditActor] 审计操作人四件套（调用方传；缺省时回执会照实点名缺哪一项）
  */
 export default function PosterDialog({
   entry = POSTER_DIALOG_ENTRY_ARCHIVE,
@@ -133,6 +157,9 @@ export default function PosterDialog({
   orgName = '',
   logo = '',
   navigate = null,
+  setShareTokens = null,
+  recordAudit = null,
+  auditActor = null,
   onClose = () => {}
 } = {}) {
   const shareOrigin = typeof window === 'undefined' ? '' : (window.location?.origin || '');
@@ -152,6 +179,9 @@ export default function PosterDialog({
   const [exportFiles, setExportFiles] = useState([]);
   const [pressImages, setPressImages] = useState([]);
   const pressUrlsRef = useRef([]);
+  // 微信文案与转发状态（[海报 US-311b]）：复制回执 + 最近两条留痕的回执（导出 / 转发各一条）。
+  const [forwardCopy, setForwardCopy] = useState({ phase: 'idle', message: '' });
+  const [posterAudit, setPosterAudit] = useState({ export: null, forward: null });
   // 模板库这一份**归弹窗自己管**（[海报 US-310b]）：另存 / 重命名 / 删除都会改它，
   // 改完就用本机镜像重读一次（`savePosterTemplate` 先写镜像、再推云端）—— 于是「退出重进」看到的
   // 就是刚存下的那一份，不依赖父组件的 state 是否记得刷新。调用方显式传了 `templates` 才以它为准。
@@ -372,6 +402,35 @@ export default function PosterDialog({
   // 面板上的三行读数 = 预览这一次渲染的产物（`posterExportChecks`），导出时再在**导出倍数**下
   // 复核同一份判据（两处读同一个函数，面板不会「说没事、导出才拦」）。
   const exportChecks = preview.checks || null;
+  // ---- 微信文案与转发状态（[海报 US-311b] / FR-344 ~ FR-347）--------------------------------
+  // 这一块的三件事都不在这里判断：文案本体与三项复核在 `data/posterForward.js`，
+  // 「未转发 / 已转发 / 已撤回」在归档模块那一支（`shareForwardView`：按**这一张对应的记录**查令牌账）。
+  const forward = useMemo(() => posterForwardView({ plan: selectedPlan, tokens }), [selectedPlan, tokens]);
+  const forwardRows = useMemo(() => posterWechatCheckRows({ names: forward, checks: forward.checks }), [forward]);
+  /** 留痕（AC3）：条目由 data 层白名单构造，操作人四件套由调用方补齐（缺项由回执点名）。 */
+  const writePosterAudit = (input) => {
+    if (typeof recordAudit !== 'function') return null;
+    try {
+      const entry = recordAudit({
+        ...(auditActor && typeof auditActor === 'object' ? auditActor : {}),
+        orgId: orgId || DEFAULT_ORG_ID,
+        ...input
+      });
+      return entry || null;
+    } catch {
+      return null;
+    }
+  };
+  /** 这一次动作的留痕输入：对象（学员 / 班级）+ 记录 + 模板 + 入口与周期（两个动作共用一份）。 */
+  const posterAuditInput = (extra = {}) => ({
+    objectName: subject.name,
+    studentName: subject.kind === 'student' ? subject.name : '',
+    recordId: forward.recordId,
+    templateId: selectedRow ? selectedRow.id : '',
+    templateName: selectedRow ? selectedRow.name : '',
+    scope: `${POSTER_DIALOG_ENTRY_LABELS[entry] || ''} · ${period}`,
+    ...extra
+  });
   const releasePressImages = () => {
     pressUrlsRef.current.forEach((url) => releasePosterExportUrl(url));
     pressUrlsRef.current = [];
@@ -383,6 +442,7 @@ export default function PosterDialog({
     setPressImages([]);
     setExportFiles([]);
     setExportState({ phase: 'idle', busy: false, notice: '', filename: '', bytes: 0, width: 0, height: 0, pages: 0, shared: '' });
+    setForwardCopy({ phase: 'idle', message: '' });
   }, [planKey]);
   useEffect(() => () => releasePressImages(), []);
 
@@ -430,6 +490,70 @@ export default function PosterDialog({
       pages: result.count,
       shared: ''
     });
+    // 导出留痕（AC3）：**真的导出成功之后**才写（被校验拦下 / 渲染失败都不写 —— 没有发生的行为不留痕）。
+    const exportAudit = writePosterAudit({
+      ...posterAuditInput({}),
+      action: AUDIT_ACTIONS.posterExport,
+      bytes: first.bytes,
+      detail: posterExportAuditDetail({
+        format: result.format.id,
+        count: result.count,
+        total: result.total,
+        filename: first.filename,
+        width: first.width,
+        height: first.height
+      })
+    });
+    if (exportAudit) setPosterAudit((current) => ({ ...current, export: exportAudit }));
+  };
+  /**
+   * 复制微信文案（AC1）：复制的是**这一张海报**的文案（`posterForwardView().text`）。
+   * 复制成功 = 一次转发（与第四步 US-209 同一条口径）：
+   *  - 令牌在 → 记一次发送（`services/shareForwardSend.js`），状态随之变成「已转发」（推导出来的）；
+   *  - 令牌不在 → 文案照给，但如实说「没有记成已转发」（不谎报）；
+   * 两种情形都留痕（AC3：转发行为写审计日志）—— 复制失败则一个字都不写。
+   */
+  const copyPosterWechatText = async () => {
+    const text = forward.text;
+    if (!text) {
+      setForwardCopy({ phase: 'failed', message: POSTER_WECHAT_COPY_EMPTY_TEXT });
+      return;
+    }
+    const copied = await copyReviewDetailText(text);
+    if (!copied) {
+      setForwardCopy({ phase: 'failed', message: POSTER_WECHAT_COPY_FAILED_TEXT });
+      return;
+    }
+    let recorded = null;
+    if (forward.tokenText && typeof setShareTokens === 'function') {
+      const result = recordShareForwardSend({
+        tokens,
+        tokenText: forward.tokenText,
+        channel: POSTER_FORWARD_CHANNEL,
+        by: teacherName,
+        version: 0
+      });
+      if (result) {
+        setShareTokens(result.tokens);
+        recorded = result.record;
+      }
+    }
+    setForwardCopy({
+      phase: 'done',
+      message: posterForwardSendNote({
+        text,
+        recorded: Boolean(recorded),
+        channelLabel: forward.channelLabel || '微信',
+        count: recorded ? recorded.sentCount : 0
+      })
+    });
+    const forwardAudit = writePosterAudit({
+      ...posterAuditInput({}),
+      action: AUDIT_ACTIONS.posterForward,
+      shareToken: forward.tokenText,
+      detail: posterCopyAuditDetail({ channelLabel: forward.channelLabel || '微信', text, recorded: Boolean(recorded) })
+    });
+    if (forwardAudit) setPosterAudit((current) => ({ ...current, forward: forwardAudit }));
   };
   const shareExported = async () => {
     if (!exportFiles.length) {
@@ -858,6 +982,96 @@ export default function PosterDialog({
         </div>
       ) : null}
       {exportState.notice ? <p className="poster-dialog-export-notice" data-poster-export-notice="true">{exportState.notice}</p> : null}
+      {/* 导出留痕的回执（AC3）：动作 / 操作人 / 对象 / 时间 + 缺项点名（与归档模块同一套写法）。 */}
+      {posterAudit.export ? (
+        <p
+          className="poster-dialog-export-audit"
+          data-poster-export-audit={posterAudit.export.id}
+          data-poster-export-audit-action={posterAudit.export.action}
+          data-poster-export-audit-actor={posterAudit.export.actorId}
+          data-poster-export-audit-object={posterAudit.export.objectName}
+          data-poster-export-audit-record={posterAudit.export.recordId}
+          data-poster-export-audit-at={posterAudit.export.at}
+          data-poster-export-audit-missing={auditEntryMissingFields(posterAudit.export).join(',')}
+        >
+          已写入审计日志：{posterAudit.export.actionLabel} · {auditTraceText(posterAudit.export)}
+        </p>
+      ) : null}
+    </section>
+  );
+  // 微信文案与转发状态（[海报 US-311b]）：与「导出图片」并排的两件事 —— 一个发给谁（文案），一个存成文件。
+  // 面板上的每个字都来自 `posterForwardView()`（文案本体 / 三项复核 / 状态三态与说明句）。
+  const forwardPanel = empty.on ? null : (
+    <section
+      className="poster-dialog-forward"
+      data-poster-forward="true"
+      data-poster-forward-kind={forward.kind}
+      data-poster-forward-subject={forward.subject}
+      data-poster-forward-artwork={forward.artwork}
+      data-poster-forward-artworks={String(forward.artworkCount)}
+      data-poster-forward-record={forward.recordId}
+      data-poster-forward-state={forward.state}
+      data-poster-forward-state-label={forward.stateLabel}
+      data-poster-forward-line={forward.line}
+      data-poster-forward-opens={String(forward.openCount)}
+      data-poster-forward-token={forward.tokenText}
+      data-poster-forward-text={forward.text}
+      data-poster-forward-check-ok={forward.checks.ok ? 'true' : 'false'}
+      data-poster-forward-check-summary={forwardRows.map((row) => `${row.id}:${row.ok ? 'ok' : 'fail'}`).join(',')}
+      data-poster-forward-blocked={forward.blocked}
+      data-poster-forward-copied={forwardCopy.phase}
+    >
+      <header className="poster-dialog-forward-head">
+        <MessageSquareText size={14} />
+        <b>{POSTER_WECHAT_COPY_HEADING}</b>
+        <em className={`is-${forward.state}`} data-poster-forward-state-note="true">{`转发状态：${forward.stateLabel}`}</em>
+      </header>
+      <p className="poster-dialog-forward-status" data-poster-forward-status-note="true">{forward.note}</p>
+      <p className="poster-dialog-forward-text" data-poster-forward-text-visible="true">{forward.text || POSTER_WECHAT_COPY_EMPTY_TEXT}</p>
+      <ul className="poster-dialog-forward-checks" data-poster-forward-checks-list="true">
+        {forwardRows.map((row) => (
+          <li
+            key={row.id}
+            data-poster-forward-check={row.id}
+            data-poster-forward-check-ok={row.ok ? 'true' : 'false'}
+            data-poster-forward-check-required={row.required ? 'true' : 'false'}
+            data-poster-forward-check-value={row.value}
+          >
+            <b>{row.label}</b>
+            <span data-poster-forward-check-value-text="true">{row.value}</span>
+            <em data-poster-forward-check-detail="true">{row.detail}</em>
+          </li>
+        ))}
+      </ul>
+      <div className="poster-dialog-forward-actions">
+        <button
+          type="button"
+          className="primary poster-dialog-forward-copy"
+          data-poster-forward-copy="true"
+          disabled={!forward.text}
+          onClick={copyPosterWechatText}
+        >{POSTER_WECHAT_COPY_LABEL}
+        </button>
+        <small data-poster-forward-line="true">{forward.lineDetail || forward.line}</small>
+      </div>
+      <small className="poster-dialog-forward-privacy" data-poster-forward-privacy="true">{POSTER_WECHAT_PRIVACY_NOTE}</small>
+      {forward.blocked ? <p className="poster-dialog-forward-blocked" data-poster-forward-blocked-note="true">{forward.blocked}</p> : null}
+      {forwardCopy.message ? <p className="poster-dialog-forward-notice" data-poster-forward-notice="true">{forwardCopy.message}</p> : null}
+      {posterAudit.forward ? (
+        <p
+          className="poster-dialog-forward-audit"
+          data-poster-forward-audit={posterAudit.forward.id}
+          data-poster-forward-audit-action={posterAudit.forward.action}
+          data-poster-forward-audit-actor={posterAudit.forward.actorId}
+          data-poster-forward-audit-object={posterAudit.forward.objectName}
+          data-poster-forward-audit-record={posterAudit.forward.recordId}
+          data-poster-forward-audit-token={posterAudit.forward.shareToken}
+          data-poster-forward-audit-at={posterAudit.forward.at}
+          data-poster-forward-audit-missing={auditEntryMissingFields(posterAudit.forward).join(',')}
+        >
+          已写入审计日志：{posterAudit.forward.actionLabel} · {auditTraceText(posterAudit.forward)}
+        </p>
+      ) : null}
     </section>
   );
   const state = empty.on
@@ -1022,7 +1236,9 @@ export default function PosterDialog({
                   {selectedPlan.notes.map((note) => <li key={note} data-poster-dialog-note="true">{note}</li>)}
                 </ul> : null}
               </div>
-              {/* 导出贴着预览（AC 的「底部导出」）：左手边是「发给谁、怎么发」，这里是「存成什么文件」。 */}
+              {/* 「发给家长」的两件事贴着预览：先是微信文案与转发状态（这一张要发什么、发过没有），
+                  再是导出图片（存成什么文件）—— 顺序就是老师发给家长的动作顺序。 */}
+              {forwardPanel}
               {exportPanel}
             </div>
           </div>

@@ -380,6 +380,9 @@ export function buildPosterSinglePlan({
     spec: patchedSpec,
     data,
     lessonSource,
+    // 这条海报的归档记录 id（[海报 US-311b]）：转发状态（令牌账按记录查）与审计留痕都读它。
+    // 五类版式里其余四支各自有 `shareRecordId` / `artwork.recordId`，单作品这一支原本没带出来。
+    recordId: str(source && source.id),
     lesson: lesson
       ? { lessonId: str(lesson.lessonId), lessonDate: str(lesson.lessonDate), lessonNo: lesson.lessonNo || 0, topic: str(lesson.topic) }
       : null,

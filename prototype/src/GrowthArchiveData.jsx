@@ -2740,6 +2740,9 @@ export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,p
           orgName={DEFAULT_ORG_NAME}
           logo={archivePosterLogo}
           navigate={navigate}
+          setShareTokens={setShareTokens}
+          recordAudit={recordAudit}
+          auditActor={auditActor}
           onClose={()=>setPosterDialogOpen(false)}
         />:null}
       </>:null}

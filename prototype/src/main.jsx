@@ -243,6 +243,9 @@ import {
   shareTokenStrength, shareTokenUrl, shareTokenValidDaysLabel, shareTokenView
 } from './data/shareTokens';
 import { loadRemoteShareTokens, revokeRemoteShareToken, saveRemoteShareToken } from './services/shareTokensApi';
+// 记一次转发的编排（并本机镜像 → 记发送 → 推云端）：[第四步 US-209] 与 [海报 US-311b] 的海报弹窗
+// 复制微信文案时走同一支，两处的转发口径因此不可能分叉。
+import { recordShareForwardSend } from './services/shareForwardSend';
 // 成片分享（[第四步 US-219]）：`/p/<token>` 上如果是成片令牌，分享页那一块要按令牌上的 `jobKey`
 // 找这条任务 —— 家长页在登录之外，只读本机镜像（`listVideoJobs` 进来时已经从镜像读好）。
 import { discardVideoJob, listVideoJobs } from './services/videoJobQueue';
@@ -250,7 +253,7 @@ import { discardVideoJob, listVideoJobs } from './services/videoJobQueue';
 // 转发四件事（时间 / 渠道 / 分享版本 / 打开次数）、家长打开的写入（firstOpenedAt 只写一次）、
 // 「重新发送」的执行计划全在 data 层（零依赖纯函数，可 Node 直跑断言）；界面只渲染它的产物。
 import {
-  SHARE_FORWARD_ROWS, applyShareOpen, applyShareSend, readShareLinkToken,
+  SHARE_FORWARD_ROWS, applyShareOpen, readShareLinkToken,
   shareForwardResendPlan, shareForwardSendNotice, shareForwardView
 } from './data/shareForward';
 // 归档的访问权限与保留期（[第四步 US-211] / F-ARCHIVE-PERM-01）：老师只能归档与转发**自己班级**的
@@ -3664,21 +3667,19 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
   // 记一次转发（[第四步 US-209]）：复制成功之后才调用 —— **复制失败不记发送**（不谎报「已转发」）。
   // 渠道（微信 / 复制链接）、第几次、发送那一刻的档案版本都写在这条令牌上；状态与打开次数都从它推导。
   // `tokens` 可显式传入：重新发送那一次会**先**把新令牌并进列表，再记发送（不能读旧 state）。
+  // 编排（并镜像 → 记发送 → 推云端）收在 `services/shareForwardSend.js`：
+  // [海报 US-311b] 的海报弹窗复制文案时走的是**同一支**（两处都记一次转发，口径不许分叉）。
   const recordForwardSend=(channel,{tokens:base,tokenText}={})=>{
     const target=tokenText||(shareTokenPanel.active?shareTokenPanel.tokenText:'');
-    if(!target) return null;
-    // 底账先跟本机镜像并一次：家长在另一标签打开过（打开次数在镜像里更大）时，
-    // 老师这一侧的旧快照不会把那个数字写小（与落盘那条路径同一条纪律）。
-    const ledger=mergeShareTokens(base||shareTokens,loadShareTokens());
-    const result=applyShareSend(ledger,target,{
+    const result=recordShareForwardSend({
+      tokens:base||shareTokens,
+      tokenText:target,
       channel,
-      at:new Date().toISOString(),
       by:currentTeacherName,
       version:currentArchiveRecord?.version
     });
-    if(!result.changed||!result.record) return null;
+    if(!result) return null;
     setShareTokens(result.tokens);
-    void saveRemoteShareToken(result.record).catch(()=>{});
     return result.record;
   };
   // ---- 分享二维码与「三个动作」（[第四步 US-208b] / F-ARCHIVE-SHARE-01）-------------------
@@ -4092,6 +4093,8 @@ function TeacherFlowV2({navigate,setToast,setRecords,records=[],framingPresets=[
       orgName={DEFAULT_ORG_NAME}
       logo={posterSingleLogo}
       navigate={navigate}
+      setShareTokens={setShareTokens}
+      recordAudit={auditTeacherEntry}
       onClose={()=>setArchivePosterOpen(false)}
     />
   ):null;

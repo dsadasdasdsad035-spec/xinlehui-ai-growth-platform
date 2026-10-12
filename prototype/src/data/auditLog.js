@@ -56,7 +56,12 @@ export const AUDIT_ACTIONS = {
   videoJobDone: 'video.job.done',
   videoDownload: 'video.output.download',
   videoMusicChange: 'video.music.change',
-  videoRecordDelete: 'video.record.delete'
+  videoRecordDelete: 'video.record.delete',
+  // [海报 US-311b] 海报的两条留痕：**导出图片**与**复制微信文案（转发）**都要留痕
+  // （操作人 / 时间 / 对象：学员或班级 + 记录 + 模板）。不并进 `ARCHIVE_AUDIT_ACTIONS`：
+  // 那一份是归档与分享九个动作的清单（US-211 的面板与断言逐条读它）。
+  posterExport: 'poster.export',
+  posterForward: 'poster.forward'
 };
 
 export const AUDIT_ACTION_LABELS = {
@@ -81,7 +86,10 @@ export const AUDIT_ACTION_LABELS = {
   'video.job.done': '视频任务完成（成片就绪）',
   'video.output.download': '下载成片',
   'video.music.change': '更换成片音乐',
-  'video.record.delete': '删除成片'
+  'video.record.delete': '删除成片',
+  // [海报 US-311b] 两个动作的标签（面板上那一行读它，界面不各写一份）。
+  'poster.export': '导出海报图片',
+  'poster.forward': '转发海报文案'
 };
 
 /**
@@ -102,6 +110,12 @@ export const ARCHIVE_AUDIT_ACTIONS = [
 
 /** 复制 / 导出轨迹的两个动作（合规面板与断言按它们筛选，导出范围写在 `scope` 里）。 */
 export const TRACE_AUDIT_ACTIONS = ['trace.copy', 'trace.export'];
+
+/**
+ * 海报的两个动作（[海报 US-311b] 第 3 条「导出与转发行为写入审计日志」）：
+ * 导出图片与复制微信文案各留一条 —— 断言与界面回执读这一份，不各写一遍动作键。
+ */
+export const POSTER_AUDIT_ACTIONS = ['poster.export', 'poster.forward'];
 
 /** 观察词 AI 补充的三个动作（面板上的「AI 补充留痕」按它们筛选，验收原文「候选、采纳与丢弃都留痕」）。 */
 export const KEYWORD_AI_AUDIT_ACTIONS = [
@@ -148,7 +162,12 @@ export const AUDIT_ACTION_REQUIRED = {
   'video.job.done': ['actorId', 'at', 'jobKey'],
   'video.output.download': ['actorId', 'at', 'jobKey'],
   'video.music.change': ['actorId', 'at', 'jobKey'],
-  'video.record.delete': ['actorId', 'at', 'videoKey']
+  'video.record.delete': ['actorId', 'at', 'videoKey'],
+  // [海报 US-311b] 海报的两条：操作人 / 时间 / 对象（学员名或班级名）必填。
+  // `recordId` 不是必填 —— 班级海报与长图覆盖多条记录，挑不出「那一条」；
+  // 单作品海报会照实带上记录 id（`detail` 里也写清这一次导出 / 转发的是什么）。
+  'poster.export': ['actorId', 'at', 'objectName'],
+  'poster.forward': ['actorId', 'at', 'objectName']
 };
 
 /**

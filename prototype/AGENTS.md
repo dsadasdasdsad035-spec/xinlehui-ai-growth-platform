@@ -4114,8 +4114,58 @@ services / 界面只渲染产物」）：
   带一幅坏素材 → 不下载（预览照出）→ 微信 / iOS UA → 长按保存（不下载、出图、真分享参数）→ 390px →
   console 干净）。截图 498~505。
 
+### 海报的微信文案与转发状态（[海报 US-311b] / FR-344 ~ FR-347）
+
+弹窗里「导出图片」上面那一块（`PosterDialog.jsx` 的 `[data-poster-forward]`）：老师复制一段**发给家长的
+微信文案**，并看到「这张海报发过没有」。规则全在零依赖的 `src/data/posterForward.js`（可 `node` 直跑断言）：
+
+- **文案本体只有一份**：`posterWechatCopyText(names)`（五类版式各一句，含**学员名**与**作品名**；
+  多作品版式写收录幅数 —— 没有单一作品名可写，与 US-101 文件名「作品名或周期」同一条口径）。
+  文案由 `posterForwardNames(plan)` 先解析出「谁 + 哪件作品」：`subject`（学员名 / 班级名）、
+  `artwork`（只有单作品与视频封面这两支有）、`artworkCount`、`artworkRequired`（单作品 / 封面必须含作品名）、
+  `recordId`（**转发状态与留痕都按它查**）。四类版式的记录 id 放在 plan 的**三个不同位置**
+  （阶段 / 长图 `shareRecordId`、班级 `share.recordId`、封面 `artwork.recordId`、单作品 `plan.recordId`）——
+  只有 `posterForwardNames` 知道这件事，界面与断言读它这一个出口。
+- **「不含任何联系方式」复用归档模块那一份禁词表**：`posterWechatChecks()` 调
+  `data/archiveShare.js` 的 `archiveWechatContactIssues()`（手机号 / 座机 / 邮箱 / 微信 QQ / 链接），
+  不在这里另写一套正则。复核三行由 `posterWechatCheckRows()` 产出（界面逐行渲染，不自己数哪一行红）；
+  `required: false` 的那一行（多作品版式的「收录范围」）是**如实读数**，不是失败。
+- **转发状态与归档模块同一支**：`posterForwardView({ plan, tokens })` = `posterForwardNames()` +
+  **`data/shareForward.js` 的 `shareForwardView()`**（未转发 / 已转发 / 已撤回三态由令牌账推导：
+  撤回优先 > `sentAt` > 未转发）。界面因此不可能出现「档案里显示已转发、弹窗里显示未转发」；
+  AC2 的机器判据就是「同一份 tokens 下两支视图逐字段相同」。
+- **复制成功 = 一次转发**（与 US-209 同一条口径）：`recordShareForwardSend()`（`services/shareForwardSend.js`，
+  **全仓只有这一份**「并镜像 → `applyShareSend` → 推云端」的编排，第四步的 `recordForwardSend` 也调它）
+  把 `sentAt` / 渠道（`wechat`）/ 第几次写在那条令牌上，状态随之推导成「已转发」。
+  **令牌不在时文案照给，但如实说「没有记成已转发」**（`posterForwardSendNote` 两个分支）——
+  不谎报；复制失败则一个字都不动。
+- **两条留痕（AC3）**：`AUDIT_ACTIONS.posterExport` / `.posterForward`（`POSTER_AUDIT_ACTIONS`），
+  必填 `actorId / at / objectName`（班级 / 长图覆盖多条记录，`recordId` 只作可选读数）。
+  界面把条目里最近一条渲染成回执（`[data-poster-forward-audit*]` / `[data-poster-export-audit*]`），
+  缺项由 `auditEntryMissingFields` 点名；**只有动作真的发生了才写**（导出被校验拦下 / 复制失败都不写）。
+  两个动作键**没有**并进 `ARCHIVE_AUDIT_ACTIONS`（那是 US-211 面板与断言逐条读的九个归档动作）。
+- 验收口径：`/tmp/assert-us102.mjs`（Node，**121 项**）+ `/tmp/assert-us102-browser.mjs`（CDP，**76 项**：
+  真机归档 → 弹窗读文案 → **剪贴板逐字符等于面板那一份** → 无链接时复制「不谎报」→ 生成链接后复制
+  → 状态变「已转发」且与第四步状态条 / 状态块同步 → 撤回后「已撤回」（撤回优先）→ 真导出落盘
+  + 两条留痕 → 390px）。截图 506~510。
+
 ## 容易踩的坑
 
+- **同一个概念散落在五个 plan 的五个字段名里时，只给界面留一个出口**（US-102）：
+  「这张海报对应哪条归档记录」在阶段 / 长图叫 `shareRecordId`、班级叫 `share.recordId`、
+  封面叫 `artwork.recordId`、单作品原本**压根没带**（本轮补上 `plan.recordId`）。
+  界面与断言只管 `posterForwardNames(plan).recordId` 这一个出口 —— 否则每加一支版式就要在
+  三处（转发状态 / 留痕 / 断言）各补一次分支，漏一处就是「这张图永远显示未转发」。
+- **本地跑浏览器回归时，同一份脚本会因为「多一次往返」而换结果**（US-102 回归 US-068 踩到）：
+  US-068 的 6 条「打开次数 = 2」断言在 headless 下**时红时绿** —— 同一份代码 4 次里 1~2 次通过；
+  把 US-102 的弹窗文件整个 `git stash` 回退后**照样红**（2/2），所以它不是本轮改动引入的。
+  症状是「家长第二个标签的第二次打开，在老师那一侧的本机镜像里看不到」（跨渲染进程的 localStorage
+  提交时机）。判红之前先看：① 是不是只有这几条「跨标签同步」的断言红；② **单独重跑**一遍；
+  ③ 顺手核对同一份脚本在改动前后是否都红 —— 别急着改产品代码（US-093 也踩过同一类）。
+- **文案类功能的「合规」判据要复用已有的那一份禁词表**（US-102）：海报的微信文案与归档模块的
+  微信文案是**两种文案、同一条隐私边界** —— 海报侧直接调 `archiveWechatContactIssues()`，
+  不在新模块里再写一套手机号 / 邮箱正则。判据也因此可以写成「两处文案都过同一支复核」，
+  改一处边界两边一起生效。
 - **「这一位没事」不能用 `slot.drawn` 判，`drawn` 只表示「至少画出来一格」**（US-101 真踩）：
   海报的 image 位是**拼贴**（阶段海报一屏 3~12 格、班级墙 30 格），一格坏掉时整格的 `drawn` 仍是
   `true`。素材缺失必须**逐格判**（`cells[].url` 有地址但 `drawn !== true`）——本轮 Node 侧单格夹具

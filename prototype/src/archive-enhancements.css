@@ -1201,6 +1201,35 @@
 .poster-dialog-export-notice{margin:0;font-size:10px;color:#8a6a15;background:#fff6df;border-radius:8px;padding:5px 8px;word-break:break-word}
 .poster-dialog-export[data-poster-export-state="blocked"] .poster-dialog-export-notice{color:#8c3b25;background:#fdf1ee}
 .poster-dialog-export[data-poster-export-state="failed"] .poster-dialog-export-notice{color:#8c3b25;background:#fdf1ee}
+/* 导出留痕的回执（[海报 US-311b]）：与归档模块那几条回执同一套读法。 */
+.poster-dialog-export-audit{margin:0;font-size:10px;color:#6d7f6a;background:#f2f7f1;border-radius:8px;padding:5px 8px;word-break:break-word}
+/* 微信文案与转发状态（[海报 US-311b]）：贴着预览的第二块 —— 与「导出图片」同宽、同一种卡片。 */
+.poster-dialog-forward{display:flex;flex-direction:column;gap:8px;border:1px solid #e6e1d2;border-radius:12px;background:#fffdf6;padding:10px;min-width:0}
+.poster-dialog-forward-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.poster-dialog-forward-head b{font-size:12px;color:#3f3b33}
+.poster-dialog-forward-head em{margin-left:auto;font-style:normal;font-size:10px;font-weight:700;border-radius:999px;padding:3px 9px;background:#f3efe2;color:#6f6650}
+.poster-dialog-forward-head em.is-sent{background:#eef7ef;color:#2f7a45}
+.poster-dialog-forward-head em.is-revoked{background:#fdf1ee;color:#8c3b25}
+.poster-dialog-forward-status{margin:0;font-size:10px;color:#8b8064;word-break:break-word}
+.poster-dialog-forward-text{margin:0;font-size:11px;line-height:1.7;color:#3f3b33;background:#fff;border:1px dashed #e6e1d2;border-radius:8px;padding:8px;word-break:break-word;user-select:text}
+.poster-dialog-forward-checks{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:4px;min-width:0}
+.poster-dialog-forward-checks li{display:grid;grid-template-columns:60px minmax(0,1fr);gap:2px 8px;font-size:10px;color:#544d40;border:1px solid #eee9dd;border-radius:8px;background:#fff;padding:5px 8px;min-width:0}
+.poster-dialog-forward-checks li>b{font-size:10px;color:#3f3b33}
+.poster-dialog-forward-checks li>span{font-weight:700;color:#2f7a45}
+.poster-dialog-forward-checks li[data-poster-forward-check-ok="false"]>span{color:#a5452f}
+/* 「如实读数」的那一行（多作品版式没有单一作品名）：不红不绿，只如实说收录了几幅。 */
+.poster-dialog-forward-checks li[data-poster-forward-check-required="false"]>span{color:#8a6a15}
+.poster-dialog-forward-checks li>em{grid-column:2;font-style:normal;color:#8b8064;word-break:break-word}
+.poster-dialog-forward-checks li[data-poster-forward-check-ok="false"]{border-color:#f0d3cb;background:#fdf3f1}
+.poster-dialog-forward-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.poster-dialog-forward-copy{font-size:11px;padding:7px 12px;border:0;border-radius:8px;background:#cfa52e;color:#fff;font-weight:700;min-height:32px}
+.poster-dialog-forward-copy:disabled{opacity:.55;cursor:not-allowed}
+.poster-dialog-forward-actions small{font-size:10px;color:#8b8064;word-break:break-word}
+.poster-dialog-forward-privacy{font-size:10px;color:#8b8064;word-break:break-word}
+.poster-dialog-forward-blocked{margin:0;font-size:10px;color:#8c3b25;background:#fdf1ee;border-radius:8px;padding:5px 8px;word-break:break-word}
+.poster-dialog-forward-notice{margin:0;font-size:10px;color:#8a6a15;background:#fff6df;border-radius:8px;padding:5px 8px;word-break:break-word}
+.poster-dialog-forward[data-poster-forward-copied="failed"] .poster-dialog-forward-notice{color:#8c3b25;background:#fdf1ee}
+.poster-dialog-forward-audit{margin:0;font-size:10px;color:#6d7f6a;background:#f2f7f1;border-radius:8px;padding:5px 8px;word-break:break-word}
 .poster-dialog-empty{display:flex;flex-direction:column;gap:8px;align-items:flex-start;font-size:11px;color:#8a7d5e;padding:8px 2px}
 .poster-dialog-empty b{font-size:13px;color:#3f3b33}
 .poster-dialog-empty p{margin:0;color:#544d40}
@@ -1245,4 +1274,9 @@
   .poster-dialog-export-share{min-height:44px;min-width:44px;justify-content:center}
   .poster-dialog-export-checks li{grid-template-columns:minmax(0,1fr);gap:2px}
   .poster-dialog-export-checks li>em{grid-column:1}
+  /* 微信文案与转发状态在手机上同样拇指够得着：复制按钮 ≥44px（宽高都要）。 */
+  .poster-dialog-forward{padding:8px}
+  .poster-dialog-forward-copy{min-height:44px;min-width:44px}
+  .poster-dialog-forward-checks li{grid-template-columns:minmax(0,1fr);gap:2px}
+  .poster-dialog-forward-checks li>em{grid-column:1}
 }
