@@ -94,6 +94,7 @@ import { AUDIT_ACTIONS, auditEntryMissingFields, auditTraceText } from './data/a
 // 这一页只渲染视图产物 —— 图表、按钮与「演示数据 · 视频服务未接入」那句话都从数据层来。
 import {
   VIDEO_JOB_DEMO_LABEL,
+  VIDEO_JOB_SERVICE_UNAVAILABLE_TEXT,
   VIDEO_JOB_STATUSES,
   VIDEO_JOB_TYPES,
   videoJobKey,
@@ -108,6 +109,10 @@ import {
   submitVideoJob,
   subscribeVideoJobs
 } from './services/videoJobQueue';
+// 真实渲染服务的契约层（[第四步 US-213b]）：只用来**探测服务在不在**并如实显示。
+// 演示队列（上面那份）与真服务是两件事：探测不可用时，这里显示契约层抛出的原文，
+// 队列本身仍然明确标注为「演示数据 · 视频服务未接入」。
+import { probeVideoService } from './services/videoApi';
 import { Button } from './ui';
 
 /**
@@ -388,11 +393,26 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
   const [jobs,setJobs]=useState(()=>listVideoJobs());
   const [notice,setNotice]=useState('');
   const [simulateFail,setSimulateFail]=useState(false);
+  // 真实渲染服务在不在（[第四步 US-213b]）：进面板探测一次并**如实显示** —— 不可用时那句话
+  // 就是契约层抛出来的原文（`services/videoApi.js` 的「视频服务暂不可用」），
+  // 于是下面这条演示队列是**明确标注的演示**，不是假装成片的来源。
+  const [service,setService]=useState(()=>({phase:'checking',ok:false,message:''}));
+  const probe=useCallback(()=>{
+    let alive=true;
+    setService({phase:'checking',ok:false,message:''});
+    probeVideoService().then(result=>{
+      if(!alive)return;
+      setService({phase:result.ok?'online':'unavailable',ok:result.ok,message:result.ok?`渲染服务已接入（${result.service||'video-render'}）`:(result.message||VIDEO_JOB_SERVICE_UNAVAILABLE_TEXT)});
+    });
+    return ()=>{alive=false};
+  },[]);
   const type=isClass?VIDEO_JOB_TYPES[1].id:VIDEO_JOB_TYPES[0].id;
   const typeLabel=isClass?VIDEO_JOB_TYPES[1].label:VIDEO_JOB_TYPES[0].label;
   // 订阅队列（提交 / 推进 / 取消都从这里回到界面）；进面板接上正在跑的任务。
   useEffect(()=>subscribeVideoJobs(rows=>setJobs(rows)),[]);
   useEffect(()=>{setJobs(resumeVideoJobQueue().jobs)},[]);
+  // 探测一次渲染服务（挂载时一次；之后由「重新探测」按钮手动触发）。
+  useEffect(()=>probe(),[probe]);
   const view=videoJobQueueView(jobs);
   const submitIssue=videoJobSubmitIssue({type,studentId:isClass?'':objectName,classId:isClass?objectName:'',period});
   const jobKey=videoJobKey({type,studentId:isClass?'':objectName,classId:isClass?objectName:'',period});
@@ -404,6 +424,10 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
     <div className="archive-section-head"><span>成长记录（视频）· {view.sourceLabel}</span><h3>视频任务队列（演示）</h3><p>按「对象 + 周期」提交一条渲染任务，状态机与进度在这里可见。渲染服务还没接进来，队列跑在本机。</p></div>
     <p className="video-jobs-demo" data-video-demo-label={VIDEO_JOB_DEMO_LABEL}>{VIDEO_JOB_DEMO_LABEL}</p>
     <p className="video-jobs-note" data-video-demo-note="true">{view.demoNote}</p>
+    <p className="video-jobs-service" data-video-service-state={service.phase} data-video-service-message={service.message}>
+      <span data-video-service-text="true">{service.phase==='checking'?'正在探测真实渲染服务…':service.message}</span>
+      <button type="button" className="video-jobs-service-probe" data-video-service-probe="true" onClick={probe} disabled={service.phase==='checking'}>{service.phase==='checking'?'探测中':'重新探测'}</button>
+    </p>
     <div className="video-jobs-controls">
       <label>任务类型<input value={typeLabel} readOnly data-video-submit-type={type} aria-label="任务类型"/><small>跟着上面的「查看对象」走</small></label>
       <label>生成周期<select value={period} onChange={event=>onPeriod(event.target.value)} data-video-submit-period="true" aria-label="生成周期">{ARCHIVE_PERIODS.map(name=><option key={name} value={name}>{name}</option>)}</select></label>

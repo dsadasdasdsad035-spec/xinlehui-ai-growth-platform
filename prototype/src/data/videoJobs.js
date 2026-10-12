@@ -583,3 +583,160 @@ export function persistVideoJobs(list) {
     /* 配额不够：不阻断队列推进。 */
   }
 }
+
+// ---------------------------------------------------------------------------
+// ⑥ 渲染服务的接口契约（[第四步 US-213b] / FR-254 ~ FR-263）
+// ---------------------------------------------------------------------------
+//
+// 视频渲染服务还没接进来（服务端那一半是 US-213 的事）。这一节把**前端与服务之间的契约**定死：
+// 路由表、响应里的字段清单、成片三件套的判定、HTTP 状态的含义、以及「连不上时说什么」。
+// `services/videoApi.js` 只做网络动作（拼 URL / fetch / 抛错），**一条业务判据都不新增**；
+// 界面（US-214 起）读这里的判据与文案，分流「真服务 / 本机演示队列」，不自己写 if。
+
+/**
+ * 「服务端未接入」时**唯一**那句话（验收原文）：`services/videoApi.js` 的四个契约函数
+ * （submitJob / getJob / cancelJob / retryJob）在连不上 / 路由不存在时**抛错**，消息以这句开头 ——
+ * 绝不回落到本机演示队列假装这次提交成功了（那样老师会以为真在出片）。
+ */
+export const VIDEO_JOB_SERVICE_UNAVAILABLE_TEXT = '视频服务暂不可用：渲染服务还没接入，这里不会伪造进度、时长或成片。';
+
+/** 统一的可读错误文案：`detail` 说清「为什么」（连不上 / 404 / 超时），消息仍以验收原文开头。 */
+export function videoServiceUnavailableText(detail = '') {
+  const extra = str(detail);
+  return extra ? `${VIDEO_JOB_SERVICE_UNAVAILABLE_TEXT}（${extra}）` : VIDEO_JOB_SERVICE_UNAVAILABLE_TEXT;
+}
+
+/**
+ * 契约点名的字段：返回的任务对象必须带全这些键 ——
+ * 验收原文的 `jobKey / status / progress / outputUrl / durationSec / bytes / specSnapshot`
+ * 加上 PRD 任务模型里的其余必填项（对象 / 周期 / 次数 / 失败原因）。
+ */
+export const VIDEO_JOB_CONTRACT_FIELDS = [
+  'jobKey', 'type', 'studentId', 'classId', 'period', 'specSnapshot',
+  'status', 'progress', 'attempts', 'error', 'outputUrl', 'durationSec', 'bytes'
+];
+
+/**
+ * 契约里**没有**的字段（封面 / 缩略图 / 海报图）：字段白名单整个丢掉它 ——
+ * 「不得返回假封面」因此在结构上成立（界面拿不到这个键，就不可能显示一张来路不明的封面）。
+ */
+export const VIDEO_JOB_CONTRACT_IGNORED_FIELDS = ['cover', 'coverUrl', 'coverImageUrl', 'poster', 'posterUrl', 'thumbnail', 'thumbnailUrl'];
+
+/** 成片地址的判定（空串 = 可用）：只认 http(s) —— 本机临时地址与相对路径都不是渲染服务的成片。 */
+export function videoJobOutputUrlIssue(value) {
+  const url = str(value);
+  if (!url) return '成片地址是空的';
+  if (/^blob:/i.test(url) || /^data:/i.test(url)) return '成片地址不能是本机临时地址（blob: / data:）：那只是这个浏览器里的一个副本，不是渲染服务的成片';
+  if (!/^https?:\/\//i.test(url)) return `成片地址必须是 http(s) 地址（收到「${url.slice(0, 24)}」）`;
+  return '';
+}
+
+/**
+ * 成片三件套**按状态分叉**的判据（空串 = 合规）——「不得返回假成片、假时长」那一句的落地：
+ *  - `done`：必须有成片地址（http(s)）+ 时长（> 0）+ 体积（> 0），缺一项就判契约不成立；
+ *  - 其余状态：三件套必须全空 —— 没渲染完就没有成片，客户端也不会把空壳当成品。
+ */
+export function videoJobRemoteOutputIssue({ status, outputUrl, durationSec, bytes } = {}) {
+  const reached = normalizeVideoJobStatus(status) === VIDEO_JOB_STATUSES.done;
+  const url = str(outputUrl);
+  const duration = num(durationSec);
+  const size = num(bytes);
+  if (!reached) {
+    if (!url && duration <= 0 && size <= 0) return '';
+    return `${videoJobStatusLabel(status)}的任务不得携带成片地址 / 时长 / 体积：还没渲染完就没有成片，这三项只能是空值。`;
+  }
+  const urlIssue = videoJobOutputUrlIssue(url);
+  if (urlIssue) return `任务标了已完成，但${urlIssue}。`;
+  if (duration <= 0) return '任务标了已完成，但没有时长（durationSec）：不接受没有时长的「完成」。';
+  if (size <= 0) return '任务标了已完成，但没有文件体积（bytes）：不接受没有体积的「完成」。';
+  return '';
+}
+
+/**
+ * 一条**服务端响应**是否满足契约（空串 = 成立；否则给可读原因）。
+ * 判据全部对着 PRD 的任务模型：必填字段 / 状态枚举 / 进度是 0~100 的整数 / 成片三件套按状态分叉。
+ * 服务层拿它当收口的闸门：不成立就抛错，**不把半条任务交给界面**（那正是「假装」的来源）。
+ */
+export function videoJobContractIssue(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return '响应不是一个任务对象。';
+  const status = str(raw.status);
+  if (!VIDEO_JOB_STATUS_IDS.includes(status)) return `响应里的 status「${status || '(空)'}」不在状态机里（queued / rendering / done / failed / canceled）。`;
+  const kind = normalizeVideoJobType(raw.type);
+  if (!VIDEO_JOB_TYPE_IDS.includes(str(raw.type))) return `响应里的 type「${str(raw.type) || '(空)'}」不是 personal / class。`;
+  if (!str(raw.jobKey)) return '响应里没有 jobKey：这条任务与哪一次提交对应，无从确认。';
+  if (!raw.specSnapshot || typeof raw.specSnapshot !== 'object' || Array.isArray(raw.specSnapshot)) return '响应里没有 specSnapshot：任务指向什么必须随任务一起回来。';
+  const progress = Number(raw.progress);
+  if (!Number.isFinite(progress) || Math.trunc(progress) !== progress || progress < 0 || progress > 100) {
+    return `响应里的 progress「${str(raw.progress) || '(空)'}」不是 0~100 的整数。`;
+  }
+  if (status === VIDEO_JOB_STATUSES.done && progress !== 100) return `任务标了已完成，但进度是 ${progress}%：完成即 100%，不接受对不上的读数。`;
+  if (!str(raw.period)) return '响应里没有 period：没有周期就说不出这是哪一段成长记录。';
+  // 对象字段按类型判（个人任务要 studentId，班级任务要 classId —— 与 `videoJobMissingFields` 同一口径）。
+  const object = objectFields({ type: kind, studentId: raw.studentId, classId: raw.classId });
+  if (kind === 'personal' && !object.studentId) return '个人任务必须带回 studentId。';
+  if (kind === 'class' && !object.classId) return '班级任务必须带回 classId。';
+  const attemptValue = str(raw.attempts);
+  if (attemptValue && (!Number.isFinite(Number(raw.attempts)) || Number(raw.attempts) < 0 || Math.trunc(Number(raw.attempts)) !== Number(raw.attempts))) {
+    return `响应里的 attempts「${attemptValue}」不是非负整数。`;
+  }
+  if (raw.error !== undefined && raw.error !== null && typeof raw.error !== 'string') return '响应里的 error 必须是字符串（没有失败原因就给空串）。';
+  return videoJobRemoteOutputIssue({ status, outputUrl: raw.outputUrl, durationSec: raw.durationSec, bytes: raw.bytes });
+}
+
+/**
+ * 按契约归一化一条**服务端任务**（永不抛错）：字段白名单 + 类型 / 状态归一化 + **真实的成片三件套**。
+ * 与 `normalizeVideoJob` 只差一处：这里**保留**服务端给的成片三件套（`done` 时原样带回），
+ * 其余状态一律清空 —— 「有成片」这件事只能来自服务端，客户端一个字节都编不出来。
+ */
+export function normalizeRemoteVideoJob(raw) {
+  const source = raw && typeof raw === 'object' ? raw : {};
+  const status = normalizeVideoJobStatus(source.status);
+  const job = normalizeVideoJob({ ...source, demo: false });
+  if (status !== VIDEO_JOB_STATUSES.done) return { ...job, outputUrl: '', durationSec: 0, bytes: 0 };
+  return { ...job, outputUrl: str(source.outputUrl), durationSec: Math.max(0, num(source.durationSec)), bytes: Math.max(0, int(source.bytes)) };
+}
+
+/**
+ * 渲染服务的**路由表**（契约的一部分，唯一真源）：`services/videoApi.js` 按它发请求。
+ * 接口语义（服务端实现时照这份写）：
+ *  - 提交 / 查询 / 取消 / 重试都返回**任务对象**（或放在 `job` 键下）；
+ *  - 「没有这条任务」用 **200 + `{job: null}`** 表达，于是 404 只有一个含义：**路由不存在**；
+ *  - 提交按 `jobKey` 幂等（同一键重复提交命中同一条）。
+ */
+export const VIDEO_JOB_SERVICE_ROUTES = {
+  capability: { id: 'capability', method: 'GET', path: '/api/video/service', note: '能力探测：渲染服务在不在、队列口径是什么' },
+  submit: { id: 'submit', method: 'POST', path: '/api/video/jobs', note: '提交任务（按 jobKey 幂等）' },
+  job: { id: 'job', method: 'GET', path: '/api/video/jobs/:jobKey', note: '查一条任务（没有 → job: null）' },
+  cancel: { id: 'cancel', method: 'POST', path: '/api/video/jobs/:jobKey/cancel', note: '取消一条任务' },
+  retry: { id: 'retry', method: 'POST', path: '/api/video/jobs/:jobKey/retry', note: '重试一条任务（沿用同一个 jobKey）' }
+};
+export const VIDEO_JOB_SERVICE_ROUTE_IDS = Object.keys(VIDEO_JOB_SERVICE_ROUTES);
+
+/** 路由 → 具体路径（`:jobKey` 段按百分号编码；不认识的 route / 缺 jobKey 返回空串）。 */
+export function videoJobServicePath(route, jobKey = '') {
+  const entry = VIDEO_JOB_SERVICE_ROUTES[str(route)];
+  if (!entry) return '';
+  if (!entry.path.includes(':jobKey')) return entry.path;
+  const key = str(jobKey);
+  return key ? entry.path.replace(':jobKey', encodeURIComponent(key)) : '';
+}
+
+/**
+ * HTTP 状态 → 契约层的结论（**唯一真源**）：
+ *  - `ok`：200 / 201 / 202 —— 响应体是任务对象（或 `job: null`）；
+ *  - `unavailable`：404 / 405 / 501（路由没接）与 502 / 503 / 504（服务不可达）与 0（连不上）
+ *    —— 一律「视频服务暂不可用」。**404 只能是路由不存在**（「没有这条任务」由 200 + job:null 表达），
+ *    所以一个状态只有一个含义，不需要猜；
+ *  - `rejected`：其余（400 / 403 / 409 / 500…）—— 服务在，但拒绝了这次请求，用它的可读原因。
+ */
+export function videoServiceStatusVerdict(status) {
+  const code = int(status);
+  if (code === 200 || code === 201 || code === 202) return 'ok';
+  if (code === 0 || code === 404 || code === 405 || code === 501 || code === 502 || code === 503 || code === 504) return 'unavailable';
+  return 'rejected';
+}
+
+/** 服务端明确回答「没有这条任务」（200 + `job: null`）时的话（`action` 是这次想做的事）。 */
+export function videoJobMissingText(jobKey, action = '查看') {
+  return `服务端没有 jobKey 为「${str(jobKey)}」的任务，没法${str(action) || '查看'}：这条任务可能已经被清掉，不能假装它还在。`;
+}

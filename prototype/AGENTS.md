@@ -674,6 +674,44 @@ React + Vite 单页原型（`src/main.jsx` 是主入口，另按模块拆出 `sr
 - **CDP 脚本里带变量的选择器别用单引号**：`'[data-video-job-key="…${STUDENT}…"]'` 不会插值，
   报错是「找不到可点击元素」（本轮假红一次）；用模板字符串。
 
+## 视频渲染服务的**契约层**（[第四步 US-213b] / FR-254 ~ FR-263）
+
+US-213a 那份本机演示队列（上面一节）**不是**真服务：真服务的接口契约单独收在
+`src/data/videoJobs.js` 的第 ⑥ 节（零依赖规则）+ `src/services/videoApi.js`（只有网络动作）。
+
+- **四个契约函数**：`submitJob` / `getJob` / `cancelJob` / `retryJob`（`services/videoApi.js`）。
+  它们与服务端未接入的关系是**抛错**：`VideoServiceError` + `unavailable:true` + 消息以
+  「视频服务暂不可用」开头（`VIDEO_JOB_SERVICE_UNAVAILABLE_TEXT`，**那句话只能有一份**）。
+  界面用 `isVideoServiceUnavailable(error)` 分流：可用走真服务、不可用如实告知并把演示队列标注成演示。
+  **契约层不许有 mock 分支**（不许 import `services/videoJobQueue.js`、不许碰 localStorage）——
+  这条纪律有断言兜着（查 `import` 行），因为它一旦破口就会出现「老师以为在出片，其实是演示」。
+- **四个函数必须抛错，只有 `probeVideoService` 不抛**（巡检口径，与 `probeChildMediaSink` 一致）：
+  探测给界面一个真实读数 `{ok,status,reachable,service,queue,message,checkedAt}`；
+  面板上的读数是 `GrowthArchiveData.jsx` 的 `[data-video-service-state]` / `[data-video-service-text]`
+  （挂载探测一次 + 「重新探测」按钮）。
+- **HTTP 状态只有一个含义**（`videoServiceStatusVerdict`）：`200/201/202` = 任务；
+  `404/405/501`（路由没接）与 `502/503/504`（不可达）与 `0`（连不上）= 「视频服务暂不可用」；
+  其余（400/403/409/500）= 服务在但拒绝了这次请求，用它的可读原因。
+  因此**「没有这条任务」必须用 `200 + {job: null}` 表达**（`getJob` 返回 `null`），
+  404 只能解释成路由不存在 —— 别把 job-not-found 写成 404，那会和「未接入」撞在一起。
+- **成片三件套按状态分叉**（`videoJobRemoteOutputIssue`，本故事第 3 条验收的落地）：
+  `done` 必须有 **http(s) 的 `outputUrl` + `durationSec>0` + `bytes>0`**，缺一项就是契约不成立；
+  其余状态必须三项全空。响应先过 `videoJobContractIssue`（必填字段 / 状态枚举 / 进度 0~100 整数）再过
+  `normalizeRemoteVideoJob`（**只保留**服务端给的真实成片，`done` 之外一律清空）——
+  「不得返回假成片、假时长、假封面」因此是结构性的：封面 / 缩略图 / 海报类键名
+  （`VIDEO_JOB_CONTRACT_IGNORED_FIELDS`）根本不在字段白名单里，界面拿不到就不可能显示。
+- **提交体只带指向信息**：`{jobKey, type, studentId, classId, period, specSnapshot, createdBy}`，
+  `jobKey` 由客户端 `videoJobKey()` 派生后随请求发出（服务端按它幂等），`specSnapshot` 复用
+  `videoJobSpecSnapshot()`（对象 / 周期 / 课次·作品·照片计数）—— **不发任何儿童素材**（FR-46 同口径）。
+  响应里的 `jobKey` 与提交的不一致要抛错（幂等键串档比慢更糟）。
+- **可注入 `fetchImpl`**：四个函数与 `probeVideoService` 都接受 `{baseUrl,timeoutMs,fetchImpl}`，
+  所以 Node 断言不用真服务（`/tmp/assert-us073-data.mjs` 46 项，覆盖 404 / 连不上 / 超时 / 500 /
+  谎称 done / 幂等键不符 / 封面字段被丢 / 路由表与路径编码）。路由表 `VIDEO_JOB_SERVICE_ROUTES`
+  在 data 层（契约的一部分），`videoJobServicePath('job', key)` 负责百分号编码。
+- **验证脚本的坑**：`await (async()=>{ … })();` 少了末尾的 `()`（写成 `});`）**不报错、也不执行**——
+  断言块会静默变成空操作（本轮真踩：46 项只跑了 42 项，靠打印条数与源码条数对不上才发现）。
+  写完验证脚本先对一下「打印出来的条数 == 源码里的 `ok(` + `throwsAsync(` 条数」。
+
 ## 老师端「课后反馈」第一步（班级 / 学员 / 课程 / 课次推荐）
 
 > **课次表单全站只有一份实现 = `TeacherFlowV2`（`main.jsx`）。** 旧的 `CreateFlow` 五步向导
