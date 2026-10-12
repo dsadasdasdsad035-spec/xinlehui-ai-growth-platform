@@ -14,6 +14,8 @@
 //     「未命名作品」这类占位名（FR-205）：宁可为空，也不要一个假的作品名。
 //  ④ 渲染归档列表前按 `recordKey` 去重兜底（FR-207）：`loadFeedbackRecords` 与新记录入列都过
 //     `dedupeFeedbackRecords`，任何路径都不会让同一个键出现两条。
+//  ⑤ 再次归档**不是**「删旧的插新的」：`applyFeedbackRecordArchive` 判同键后走
+//     `updateFeedbackRecord`（id / recordKey / archivedAt 不变，version 自增、updatedAt 刷新）。
 //
 // 与 `data/lessons.js` 同一套模型：本地只是「断网 / 未开通云服务时的兜底」，云端表才是真源。
 import { makeStudentId, normalizeLessonDate } from './lessons';
@@ -68,6 +70,32 @@ export function deriveRecordId(recordKey) {
  */
 export function resolveRecordTitle({ artworkTitle = '', plaqueTitle = '', topic = '' } = {}) {
   return str(artworkTitle) || str(plaqueTitle) || str(topic);
+}
+
+/**
+ * 「这一次归档会落到哪一条记录」的身份推导（[第四步 US-202] 的唯一真源）。
+ *
+ * `createFeedbackRecord`（写入侧）与界面（按钮文案「归档并生成分享 / 保存修改并更新档案」、
+ * 「这次是同键再归档吗」的判断）都读这一份 —— 谁都不许自己再拼一次 recordKey：
+ * 两处各算一遍，一边算出 `lessonId::studentId`、另一边算出退化键，就会「界面上说要更新、
+ * 实际却新建了一条」。返回值里的 `id` 也一并给出（幂等更新的命中判据就是它派生自同一个键）。
+ */
+export function feedbackRecordIdentity({
+  lessonId = '',
+  studentId = '',
+  student = '',
+  className = '',
+  lessonDate = '',
+  artworkTitle = '',
+  plaqueTitle = '',
+  topic = ''
+} = {}) {
+  const lessonDateText = str(lessonDate);
+  const date = normalizeLessonDate(lessonDateText) || lessonDateText;
+  const title = resolveRecordTitle({ artworkTitle, plaqueTitle, topic });
+  const studentKey = str(studentId) || makeStudentId(student);
+  const recordKey = resolveRecordKey({ lessonId, studentId: studentKey, student, className, date, title });
+  return { recordKey, id: deriveRecordId(recordKey), date, title, studentId: studentKey };
 }
 
 /**
@@ -260,24 +288,31 @@ export function createFeedbackRecord({
   now = ''
 } = {}){
   const archivedAt = str(now) || new Date().toISOString();
-  const studentKey = str(studentId) || makeStudentId(student);
   const lessonDateText = str(lessonDate);
-  const date = normalizeLessonDate(lessonDateText) || lessonDateText;
-  const title = resolveRecordTitle({ artworkTitle, plaqueTitle, topic });
-  const recordKey = resolveRecordKey({ lessonId, studentId: studentKey, student, className, date, title });
+  // 业务键 / id / date / title 全部来自 `feedbackRecordIdentity`（界面的按钮文案与更新判断读同一份）。
+  const identity = feedbackRecordIdentity({
+    lessonId,
+    studentId,
+    student,
+    className,
+    lessonDate: lessonDateText,
+    artworkTitle,
+    plaqueTitle,
+    topic
+  });
   return normalizeFeedbackRecord({
-    id: deriveRecordId(recordKey),
-    recordKey,
+    id: identity.id,
+    recordKey: identity.recordKey,
     lessonId: str(lessonId),
     courseId: str(courseId),
     classId: str(classId),
-    studentId: studentKey,
+    studentId: identity.studentId,
     student,
     className,
-    date,
+    date: identity.date,
     // 展签口径的课次日期（`2026.08.04`）：展签、文件名与成长档案的口径都读它，保持老字段含义不变。
     lessonDate: lessonDateText,
-    title,
+    title: identity.title,
     status: '已归档',
     mode,
     subject,
@@ -298,4 +333,37 @@ export function createFeedbackRecord({
     framedArtwork: framedArtworkOf(media, framedArtwork),
     reviews
   });
+}
+
+/**
+ * 归档的落库动作（[第四步 US-202] / FR-202）：**同一个 `recordKey` 再次归档 = 更新那一条**。
+ *
+ * 入参 `incoming` 是本次归档现算出来的那条记录（`createFeedbackRecord` 的产物），
+ * `records` 是当前列表：
+ *  ① 列表里没有同键 → `mode: 'created'`，新记录入列（先过 `dedupeFeedbackRecords`，FR-207 的兜底）；
+ *  ② 列表里有同键 → `mode: 'updated'`，走 `updateFeedbackRecord` 就地更新 ——
+ *     **id / recordKey 不变**（云端 upsert 的 `record_key` 冲突键才对得上），`version` 自增、
+ *     `updatedAt` 刷新，正文 / 素材 / 成品图按这一次编辑后的内容覆盖；`archivedAt` 保留第一次归档的时间。
+ *
+ * 界面（按钮文案、toast 里的「第 N 版」）只读返回的 `mode` / `record.version`，不自己找同键记录 ——
+ * 「判定」与「写入」必须是同一次计算，否则会出现「提示说更新了、实际新建了一条」。
+ */
+export function applyFeedbackRecordArchive(records, incoming, { now = '' } = {}) {
+  const list = Array.isArray(records) ? records : [];
+  const fresh = normalizeFeedbackRecord(incoming);
+  const existing = list.find(item => str(item.recordKey) === fresh.recordKey) || null;
+  if (!existing) {
+    return { mode: 'created', record: fresh, list: dedupeFeedbackRecords([fresh, ...list]) };
+  }
+  const updated = updateFeedbackRecord(existing, {
+    ...fresh,
+    // 第一次归档的时间不动：它是「这条记录什么时候建档」，不是「最后一次改到什么时候」。
+    archivedAt: str(existing.archivedAt) || fresh.archivedAt
+  }, { now });
+  return {
+    mode: 'updated',
+    record: updated,
+    // 就地替换：位置、顺序都不动（同键只可能命中一条 —— 确定性 id 与去重兜底保证的）。
+    list: list.map(item => (str(item.recordKey) === updated.recordKey ? updated : normalizeFeedbackRecord(item)))
+  };
 }

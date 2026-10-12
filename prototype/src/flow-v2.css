@@ -708,3 +708,10 @@
 .save-image-writeback-trace.is-ok{color:#1b7f34;background:#eef7ec}
 .save-image-writeback-trace.is-missing{color:#8a2f20;background:#fdece7}
 .save-image-audit{margin:0;font-size:10px;line-height:1.6;border-radius:9px;padding:6px 9px;background:#eef7ec;color:#1b7f34}
+
+/* 带动作的 toast（[第四步 US-202]）：「档案已更新（第 N 版）」后面挂一个「查看档案」入口。
+   样式按 `.toast` 的深底白字走（父级 + 类名，避免被既有规则的特异度压掉）；≤430px 时不额外定尺寸 ——
+   `.feedback-flow-v2 button` 的 44px 下限不覆盖它（它在 .app 下，不在流程容器里），这里自己给足触摸高度。 */
+.toast .toast-action{border:1px solid rgba(255,255,255,.45);background:rgba(255,255,255,.14);color:#fff;
+  border-radius:9px;padding:7px 12px;font-size:12px;font-weight:700;min-height:32px;flex:none;white-space:nowrap}
+.toast .toast-action:hover{background:rgba(255,255,255,.24)}

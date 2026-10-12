@@ -60,11 +60,38 @@ React + Vite 单页原型（`src/main.jsx` 是主入口，另按模块拆出 `sr
 - **读盘一律过 `normalizeFeedbackRecord`**（`loadFeedbackRecords` / `mergeFeedbackRecords` 都调它）：
   旧记录补出新字段、原字段一个都不丢。云端 payload 也要过这一道，否则新字段在界面上是 undefined。
 - **按 `recordKey` 去重兜底**（`dedupeFeedbackRecords`，FR-207）：读盘、新记录入列、写盘都过它 ——
-  确定性 id 意味着同一个键只该有一条记录。同键再归档的「更新同一条 + version 自增」是 US-202。
+  确定性 id 意味着同一个键只该有一条记录。渲染侧的兜底在 `App` 里：
+  `const archivedRecords = useMemo(()=>dedupeFeedbackRecords(records),[records])` 传给 `PageRouter`
+  （消费方：成长档案 / 学员档案 / 家长端 / 模板引用统计），`setRecords` 仍然改原始 state。
 - 就地更新记录走 `updateFeedbackRecord(record, patch)`：`recordKey`/`id` 不变、`updatedAt` 刷新、
-  `version` 自增（成品图写回 US-008b 与将来的同键再归档共用这一个入口）。
+  `version` 自增（成品图写回 US-008b 与同键再归档共用这一个入口）。
+- **同键再归档 = 更新那一条（[第四步 US-202]）**：落库动作收在 `applyFeedbackRecordArchive(records, incoming)`
+  —— 列表里没有同键就 `{mode:'created'}`（新记录入列，先过去重），有同键就 `{mode:'updated'}` 走
+  `updateFeedbackRecord`（`id`/`recordKey`/`archivedAt` 不变，`version` 自增、`updatedAt` 刷新，
+  正文/素材/成品图按这一次的内容覆盖），列表**就地替换**、顺序不动。
+  界面的按钮文案、`data-archive-mode`、toast 里的「第 N 版」只读它的结论，**不自己找同键记录**
+  （判定与写入必须是同一次计算，否则会出现「提示说更新了、实际新建了一条」）。
+- **「这次归档落到哪一条」的唯一真源是 `feedbackRecordIdentity({…})`**（`recordKey` / `id` / `date` / `title`）：
+  `createFeedbackRecord`（写入侧）与界面（按钮 `data-archive-mode`）都读它。谁都不许自己再拼一次
+  `recordKey` —— 两处各算一遍，一边 `lessonId::studentId`、一边退化键，就会出现「界面说要更新、实际新建」。
+- **按钮文案读的是本次会话的 `archived`，写入语义读的是「列表里有没有同键记录」**（两件事，别混）：
+  文案按验收原文「未归档 → 归档并生成分享 / 已归档 → 保存修改并更新档案」；
+  `data-archive-mode` 永远是 `update`（同键记录在网表/镜像里已经存在，会就地更新）或 `create`。
+  典型分歧场景：老师刷新后再录入同一次课（`archived` 回到 false 但记录还在）—— 文案会说「归档并生成分享」，
+  点下去照样更新那一条（`version` 自增，toast 会说「第 N 版」），不会凭空多出一条。
+- **更新路径与首次归档走同一条完成路径**：都 `go(4)`（第四步面板上有「进入成长档案」）；
+  区别只在 toast —— 更新是「档案已更新（第 N 版）」+ 一个「查看档案」动作（见下）并额外提交一份推理轨迹
+  （正文改过 → 这一版的推理过程值得留档）。
+- **全局 toast 现在支持一个可选动作**：`setToast(text, {label, onClick})`（`App` 里 `toastAction` state）。
+  普通的 `setToast('…')` 会把旧动作清掉（否则上一条提示的按钮会挂在下一条提示上）；带动作的 toast
+  存活 6.5 秒（普通 2.6 秒），渲染成 `.toast-action` + `data-toast-action="<label>"`。
 - `data/feedbackRecords.js` 的三条 `seedRecords` **刻意保持旧口径**（无新字段）：它们是兼容映射的活样例，
   别顺手给它们补上 `lessonId` 之类的新字段。
+- **`App` 里的 hook 一律放在登录页那条提前 `return` 之前**（US-202 真踩）：新加的
+  `useMemo(()=>dedupeFeedbackRecords(records))` 写在 `if(!auth) return <AuthScreen/>` **之后**，
+  登录那一次渲染就变成「比上一次多一个 hook」，React 直接抛错、整页白屏（`#root` 有内容但只剩错误栈），
+  而 `pnpm run build` 与静态检查全绿。诊断信号：脚本点「我是老师」之后 `.sidebar nav button` 永远不出现 +
+  `Runtime.exceptionThrown` 里那条 hook 数量不匹配。
 
 ## 老师端「课后反馈」第一步（班级 / 学员 / 课程 / 课次推荐）
 
@@ -2628,3 +2655,25 @@ service 模块也能在 Node 里测：`cloud.database` 是**可写属性**，导
 - **`normalizeFrameSpecV2` 之类的收敛器要单独喂一份「全非法」夹具**：形状 `star`、九宫格
   `middle-centre`、白名单外字体、外链二维码目标、`visible: 'yes'`、越界比例一起上，
   断言逐字段落到默认值且**不抛错** —— 界面上的「一句可读文案」不能替代这一层。
+
+### 验证「同键再归档 / 幂等更新」类功能（US-202 起）
+
+- **「同一条记录被更新」要一次断言五件事**：`id` 不变、`recordKey` 不变、`version` 自增、
+  `updatedAt > archivedAt`、`archivedAt` 保持第一次归档的时间；再加「同键只剩一条」（去重不变量）
+  与「新正文写进去了、旧正文一个字没剩」（`JSON.stringify(reviews)` 里搜不到旧句子）。
+- **云表是「一所机构共享一份工作区」，脚本会互相污染**（US-202 真踩两次）：
+  ① 固定课次日期的脚本，第二次跑时同键记录已经躺在云表里 —— 一进第三步按钮就是「保存修改并更新档案」，
+  首次归档的断言全红；② 上一轮脚本注入的脏副本也被推上云，后面的「档案里没有那条重复正文」会命中
+  **别人**的那条。姿势：**每轮挑一个随机的历史日期**（`2025-MM-DD`）让 `recordKey` 天然唯一，
+  注入的副本正文带上本轮标识（例如日期），断言只搜自己的标识。
+- **脚本收尾要把自己写进云表的记录摘掉**：`saveRemoteFeedbackRecords(keep)` 自带「列表里没有的
+  `record_key` 就删」的孤儿清理 —— 传「本轮全部记录减去我要清的那些」，云端只会删这几条，别人的不动。
+  这条同时是「本轮遗留的脏数据自愈」手段（本故事顺手清掉了开发期用固定日期跑出来的那条）。
+- **课次实体不在场 = 记录走四段退化键**：脚本点「保存课次」时要先处理同日已有课次 / 未来日期的确认条
+  （`.intake-lesson-confirm .text-link`），否则课次不落库、`currentLessonId` 为空，
+  记录的业务键会变成 `className::date::studentId::title` —— 断言「recordKey = lessonId::studentId」会红，
+  而且这个退化键还能撞上别的轮次（因为它不含课次 id）。
+- **按钮文案的判据是 `data-archive-mode` / `data-archive-version`，不是文案本身**：
+  文案在「保留修改并更新档案 / 归档并生成分享」之间按会话的 `archived` 切换，
+  老脚本（`assert-us108b.mjs`）用 `clickExact('.scene-actions button','归档并生成分享')` 点它 ——
+  第一次归档那次点击仍然成立，别把它改成按 `data-archive-mode` 取第一个按钮（会点到「返回智能装裱」）。
