@@ -305,7 +305,7 @@ React + Vite 单页原型（`src/main.jsx` 是主入口，另按模块拆出 `sr
 - **家长打开只由一条路径写**：`applyShareOpen(tokens, token, {at})` → `openCount+1`、`firstOpenedAt` **只写一次**、
   `lastOpenedAt` 每次更新。地址是 `/p/<token>`（`readShareLinkToken(pathname)` 解析），App 在
   **所有 hook 之后**按它提前 return `<ParentSharePage>`（家长页不登录、不挂侧边栏）。页面**内容**
-  （作品 / 照片 / 点评 / 390px）是 US-210 的范围，本轮只有状态与「这次打开已经记录下来」。
+  （作品 / 照片 / 点评 / 390px）见下一节「家长分享页（US-210）」。
 - **「重新发送」的判断在 data 层**：`shareForwardResendPlan({forward, gate, record})` 给出
   `allowed / reason / regenerate / channel / action`；链接不可用（没有 / 已过期 / 已撤回）时 `regenerate: true`
   → 先生成新链接再复制（沿用上次渠道，没有上次就用默认微信）。撤回仍是 US-208a 那条二次确认路径，一字没动。
@@ -326,6 +326,57 @@ React + Vite 单页原型（`src/main.jsx` 是主入口，另按模块拆出 `sr
   `[data-archive-lesson-forward][data-archive-lesson-date="YYYY-MM-DD"]`。
 - **老师端侧边栏没有「成长档案」**（US-206 的既有事实）：档案列表只能从第四步点「进入成长档案」进去；
   再回第四步只能重新走一遍流程（同一个学员 + 同一个课次日期命中同一条记录，recordKey 不变、版本自增）。
+
+## 家长分享页（[第四步 US-210] / F-ARCHIVE-SHARE-01）
+
+> 家长点开 `/p/<shareToken>` 看到的那一页：课次日期 · 成品作品图 · 课堂照片 · 五维点评（老师确认后的版本）+
+> 机构视觉（暖金 / 墨黑 / 暖白，`.parent-share-*` 在 `src/archive-enhancements.css`）。
+> 组件 `src/ParentSharePage.jsx` **只渲染**（没有一句写死的文案、没有一处状态判断、没有逻辑），
+> 整份读数在 `src/data/parentShareView.js`（零依赖纯函数 + 常量，可 `node` 直跑断言）。
+
+- **只有令牌可用（active）才渲染内容**：`parentShareView` 在 `resolved.active` 为假时连学员名都不取
+  （`contentVisible:false`、`student/lessonDate/title:''`、`artwork.url:''`、`dimensions:[]`）——
+  撤回之后还能从页面上读到孩子的名字与作品，就等于没撤回。判据只有一份：`resolveShareToken`。
+  验证脚本因此有一条「撤回后页面 HTML 里不出现学员名 / 作品名 / 日期」。
+- **正文与图都走分享白名单**：正文 = `archiveSharePayload()` 的产物（点评只有五维白名单维度）；
+  图 = 那一份 payload 里的素材再逐条过 `archiveMediaView(entry, {surface:'parent'})` —— 只有 https
+  持久地址能显示，`data:` 本地副本与 pending 一律「图片同步中」占位。
+  **不要**改用 `archiveRecordMediaView(record, …)` 取图：它会把 `record.artworkUrl`（归档前地址）与
+  `record.framedArtwork.imageUrl`（老师本机的写回副本）当兜底显示出来，而这两者按 US-208b 的口径
+  **不进分享数据**（「分享里的每个素材地址都出现在 record.media 的地址集合里」是既有断言）。
+- **四种状态同形状**（US-204 的纪律照旧）：`parentShareStateView(status, message)` 一次给全
+  `{state, headline, note}`；「打不开」的细则仍只由 `SHARE_TOKEN_PARENT_MESSAGES` 给 ——
+  本模块与组件里都 0 命中 `SHARE_TOKEN_REVOKED_PHRASE` 与「过了有效期」那句。
+- **只读是结构性的**：这一页没有按钮 / 链接 / 输入框（断言 `querySelectorAll('button,a,input,select,textarea').length===0`），
+  组件源码里也没有 `onClick` / `navigator.clipboard` / 下载动作；视图的 `actions` 恒为空数组、`readOnly` 恒真。
+- **记录从哪来**：App 把 `archivedRecords`（云端读取 + 本机镜像去重后那一份）传进组件，视图按令牌上的
+  `recordId`（次选 `recordKey`）找那一条。**换一台设备**打开时内容区给一句「还没有同步到这台设备」的占位
+  （原型没有服务端分享接口，这是如实降级，不编内容）。
+- **`data-parent-share-*` 的老读数一个都不能改名**（US-068 的浏览器脚本直接读它们）：根节点
+  `-token / -state / -found / -active / -open-count / -first-opened-at / -first-open`，子元素
+  `[data-parent-share-headline] / -note / -open-note / -student / -link`。
+  新读数后缀一律避开控件选择器的名字（US-206 的坑）：根节点用 `-value`（`-student-value` /
+  `-lesson-date-value`）与 `-count`（`-dimensions-count` / `-photos-count`），带 `="true"` 标记的
+  `[data-parent-share-content] / -lesson / -artwork / -photos / -reviews / -dimension / -absence` 只在内容区出现。
+
+#### 真踩的坑 / 验证要点（US-210）
+
+- **要证明「图真的显示出来了」就得给它一个真图**：对象存储接入前归档素材是 `data:` 本地副本，
+  家长端按 US-203 只认 https，真机上这一页只会是「图片同步中」占位。验证脚本的做法：把镜像里那条记录的
+  `media` 换成 `https://cdn.us069.test/…`，再用 CDP `Fetch.enable({patterns:[{urlPattern:'https://cdn.us069.test/*'}]})`
+  + `Fetch.fulfillRequest`（body = 真 PNG 的 base64）当对象存储的替身，断言 `img.naturalWidth > 0` ——
+  「页面挂上了图」与「图真的解码出来了」是两件事。
+- **`Fetch` 拦截要按 sessionId 过滤**：家长页在新标签打开，而 `cdp.mjs` 的事件监听是 browser 级的
+  （`on(method, (params, sessionId) => …)`），不按 `eventSessionId` 过滤会拦到别的标签的请求；
+  `urlPattern` 也要收紧到那个域名，别用 `*`。
+- **同一条令牌在账上只能有一条记录**：`revokeShareTokenRecord` 产出的记录与原来的 `token` 是同一个字符串，
+  夹具里若把「未撤回版」和「撤回版」一起塞进 `tokens`，`resolveShareToken` 取**第一条**会读到未撤回那版
+  （本轮 data 断言真踩：撤回态断言全红）。写入侧的口径是 `replaceShareToken` 就地替换、`mergeShareTokens` 撤回优先。
+- **DOM 读数的相邻元素之间没有分隔符**：`.parent-share-lesson` 里日期 / 作品名 / 班级是三个相邻元素，
+  `textContent` 拼出来是 `2026.09.15《圆形变变变》周六创意绘画 2 班` —— 断言按部分 `includes`，
+  别写「日期 · 班级」这种带分隔符的整句。
+- **页脚那句「不含原图与内部记录」会让「页面不出现原图字样」这类朴素断言误报**：断言要排除页脚
+  （`text.replace(foot, '')` 之后再判），否则把一句**如实声明**当成泄漏。
 
 ## 成长档案页的对象筛选（[第四步 US-205]）
 

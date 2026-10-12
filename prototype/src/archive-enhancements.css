@@ -279,6 +279,35 @@
 .parent-share-body p{margin:0;font-size:12px;line-height:1.7;color:#5c5241}
 .parent-share-body small{font-size:10px;line-height:1.7;color:#8a7c64}
 .parent-share-link{display:inline-flex;align-items:center;gap:6px;word-break:break-all}
+/* 家长分享页的内容区（[第四步 US-210]）：课次日期 · 成品作品图 · 课堂照片 · 五维点评。
+   视觉口径=暖金（#9a7200 / #7a5a12）· 墨黑（#3d3527）· 暖白（#fffdf4 / #fff），手机宽度优先：
+   内容列宽 100% 且所有图片 max-width:100%，390px 下不产生横向滚动。 */
+.parent-share-body.is-revoked,.parent-share-body.is-expired,.parent-share-body.is-invalid{border-color:#f0e2bb;background:#fffdf7}
+.parent-share-content{width:100%;max-width:520px;display:flex;flex-direction:column;gap:14px}
+.parent-share-lesson{padding:16px 18px;border:1px solid #eadfbd;border-radius:16px;background:#fffdf4;display:flex;flex-direction:column;gap:4px}
+.parent-share-lesson b{font-size:18px;color:#3d3527;letter-spacing:.02em}
+.parent-share-lesson span{font-size:14px;font-weight:700;color:#7a5a12}
+.parent-share-lesson small{font-size:11px;color:#8a7c64}
+.parent-share-artwork{margin:0;padding:14px;border:1px solid #eadfbd;border-radius:16px;background:#fff;box-shadow:0 12px 32px rgba(122,106,69,.10);display:flex;flex-direction:column;gap:10px}
+.parent-share-artwork img{display:block;width:100%;height:auto;border-radius:10px;background:#fff}
+.parent-share-artwork figcaption{font-size:11px;color:#8a7c64;text-align:center}
+.parent-share-media-hold{display:flex;align-items:center;justify-content:center;min-height:150px;padding:14px;border:1px dashed #e3d6ae;border-radius:12px;background:#fffdf4;color:#9a8b6a;font-size:12px;line-height:1.7;text-align:center}
+.parent-share-photos,.parent-share-reviews,.parent-share-absence{padding:16px 18px;border:1px solid #eadfbd;border-radius:16px;background:#fff;display:flex;flex-direction:column;gap:10px}
+.parent-share-photos h2,.parent-share-reviews h2{margin:0;font-size:13px;color:#7a5a12;letter-spacing:.06em}
+.parent-share-photo-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px}
+.parent-share-photo-grid img{display:block;width:100%;height:auto;border-radius:10px}
+.parent-share-photo-grid .parent-share-media-hold{min-height:96px}
+.parent-share-reviews dl{margin:0;display:flex;flex-direction:column;gap:10px}
+.parent-share-reviews dl>div{padding-bottom:10px;border-bottom:1px dashed #efe4c6;display:flex;flex-direction:column;gap:3px}
+.parent-share-reviews dl>div:last-child{padding-bottom:0;border-bottom:0}
+.parent-share-reviews dt{font-size:11px;font-weight:800;color:#9a7200;letter-spacing:.05em}
+.parent-share-reviews dd{margin:0;font-size:13px;line-height:1.85;color:#3d3527;word-break:break-word}
+.parent-share-absence b{font-size:14px;color:#3d3527}
+.parent-share-absence p{margin:0;font-size:13px;line-height:1.85;color:#5c5241;word-break:break-word}
+.parent-share-note{margin:0;font-size:11px;line-height:1.7;color:#8a7c64}
+.parent-share-archived{font-size:10px;color:#9a8b6a;text-align:center}
+.parent-share-foot{width:100%;max-width:520px;display:flex;flex-direction:column;gap:4px;text-align:center}
+.parent-share-foot small{font-size:10px;line-height:1.7;color:#8a7c64}
 @media(max-width:800px){
   .archive-forward-status-rows{grid-template-columns:1fr}
   .parent-share-open{padding:20px 12px}

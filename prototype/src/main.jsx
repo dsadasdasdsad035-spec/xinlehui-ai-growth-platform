@@ -620,7 +620,9 @@ function App(){
   };
   // 家长分享页走独立的只读页面（不进登录、不挂侧边栏）：`/p/<shareToken>` 就是全部上下文。
   // 位置在**所有 hook 之后**（US-202 的白屏坑：提前 return 之前少一个 hook 就会「比上一次多一个 hook」）。
-  if(parentShareToken) return <ParentSharePage token={parentShareToken} tokens={shareTokens} open={parentShareOpen}/>;
+  // 令牌账（`shareTokens`）与归档记录（`archivedRecords` = 云端读取 + 本机镜像去重后那一份）都传进去：
+  // 页面内容（US-210）按令牌上的 `recordId` 在这一份里找那一条记录，正文再走分享白名单。
+  if(parentShareToken) return <ParentSharePage token={parentShareToken} tokens={shareTokens} records={archivedRecords} open={parentShareOpen}/>;
   if(!auth) return <AuthScreen mode={authMode} setMode={setAuthMode} onLogin={login}/>;
   return <div className="app">
     <Sidebar role={role} page={page} nav={navByRole[role]} onNav={navigate} open={mobileNav} close={()=>setMobileNav(false)}/>
