@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, Clapperboard, Download, FileText, Frame, Gauge, Loader2, MessageSquareText, Plus, RefreshCw, Sparkles, Trash2, XCircle } from 'lucide-react';
+import { Archive, Clapperboard, Download, FileText, Frame, Gauge, Link2, Loader2, MessageSquareText, Plus, RefreshCw, Sparkles, Trash2, XCircle } from 'lucide-react';
 // 档案页的「常驻视图」（[第四步 US-206]）：
 //  - 对象 / 周期 / 缺课筛选的**可选项、默认选中、过滤、空态**在 `data/archiveTargets.js` 与
 //    `data/archiveResident.js` 两份零依赖模块里，组件只渲染它们的产物（一个名字都不写死）；
@@ -175,6 +175,32 @@ import {
 } from './data/videoClass';
 // 机构名（帧清单的片头与片尾都要写它，与装裱叠加元素的变量同一份来源）。
 import { DEFAULT_ORG_NAME } from './data/lessons';
+// 成片预览 · 下载与分享（[第四步 US-219]）：三件事的规则与文案全在 `data/videoShare.js`
+// （零依赖纯函数）—— ① 竖屏 9:16 播放器占位（服务未接入时不显示任何假 mp4）；
+// ② 下载与分享的「暂不可用」提示；③ 成片分享链接（**与图文分享同一套规则**：授权闸门 / 有效期 / 撤回）。
+// 令牌本体仍是 `data/shareTokens.js` 那一份（只用 `kind:'video'` 区分种类），这里不写第二套判定。
+import {
+  VIDEO_DOWNLOAD_LABEL,
+  VIDEO_PREVIEW_SECTION_DESC,
+  VIDEO_PREVIEW_SECTION_TITLE,
+  VIDEO_SHARE_LABEL,
+  createVideoShareTokenRecord,
+  videoPreviewView,
+  videoShareGateView,
+  videoSharePanelView,
+  videoShareTokenInput
+} from './data/videoShare';
+import {
+  SHARE_TOKEN_DEFAULT_VALID_DAYS,
+  appendShareToken,
+  replaceShareToken,
+  revokeShareTokenRecord,
+  shareTokenLink
+} from './data/shareTokens';
+import { revokeRemoteShareToken, saveRemoteShareToken } from './services/shareTokensApi';
+// 成片分享的授权闸门读的是第四步那一份归档摘要产物（`archiveStepView` → `archiveForwardView`
+// → `data/consent.js`），与图文分享**同一道校验**，这里不另写一套。
+import { archiveStepView } from './data/archiveSummary';
 import { Button } from './ui';
 
 /**
@@ -448,6 +474,78 @@ function VideoJobCard({job,isLatest,onCancel,onRetry}){
       {retryAction&&retryAction.allowed?<Button variant="secondary" icon={RefreshCw} data-video-job-action="retry" onClick={()=>onRetry(job.jobKey)}>{retryAction.label}</Button>:null}
     </div>
   </article>;
+}
+
+/**
+ * 成片预览 · 下载与分享（[第四步 US-219]）。
+ *
+ * 这一块要对得起「渲染服务还没接进来」这件事（三条验收都在这里）：
+ *  - **竖屏 9:16 播放器占位**：只有渲染服务给出成片（https 持久地址 + 正时长 + 正体积，
+ *    判据是 `videoOutputView`）时才有 `src`；否则 `<video>` 不设 `src`、也不渲染任何 `<source>`
+ *    —— 原型里不内置任何 mp4，也不编时长、封面或下载地址（`data-video-preview-mp4="none"`）；
+ *  - **下载与分享的不可用提示**：两个动作各自带一句 `unavailableText`（点击后显示 + toast），
+ *    不静默什么都不做；
+ *  - **成片分享与图文分享同一套规则**：下面的「成片分享链接」块里，授权闸门（`videoShareGateView`
+ *    读 `shareTokenGenerationGate` → `data/consent.js`）、有效期（同一份常量与下拉）、撤回
+ *    （同一条 `revokeShareTokenRecord`）与图文分享完全同源，组件不自己判断「能不能生成」。
+ */
+function VideoPreviewPanel({preview,share,notice,shareNotice,revokeOpen,onDownload,onShare,onGenerate,onRevoke,onRevokeOpen,onRevokeCancel,onValidDays,onGoAuthorization}){
+  const player=preview.player;
+  return <section className="video-preview" data-video-preview="true"
+    data-video-preview-ratio={player.ratioLabel} data-video-preview-aspect={String(player.aspect)}
+    data-video-preview-ready={player.ready?'true':'false'} data-video-preview-src={player.src}
+    data-video-preview-status={player.status} data-video-preview-playsinline={player.playsInline?'true':'false'}
+    data-video-preview-job-key={preview.jobKey} data-video-preview-mp4="none">
+    <div className="archive-section-head"><span>竖屏 9:16 · 只占位不放片</span><h4>{VIDEO_PREVIEW_SECTION_TITLE}</h4><p>{VIDEO_PREVIEW_SECTION_DESC}</p></div>
+    <div className="video-preview-body">
+      <figure className="video-preview-player" style={{aspectRatio:'9 / 16'}} data-video-preview-player={player.status} data-video-preview-player-ratio={player.ratioLabel} data-video-preview-player-src={player.src}>
+        <video className="video-preview-video" playsInline webkit-playsinline="true" preload="none" controls={player.ready} src={player.src||undefined} data-video-preview-video="true" aria-label="成片预览（竖屏 9:16）"/>
+        {player.ready?null:<figcaption className="video-preview-hold" data-video-preview-hold="true">
+          <b data-video-preview-hold-title="true">{player.placeholderTitle}</b>
+          <span data-video-preview-hold-text="true">{player.placeholderText}</span>
+        </figcaption>}
+      </figure>
+      <div className="video-preview-side">
+        <ul className="video-preview-rows">{preview.rows.map(row=><li key={row.id} data-video-preview-row={row.id} data-video-preview-row-value={row.value}>
+          <span>{row.label}</span><b data-video-preview-row-text="true">{row.value}</b>
+        </li>)}</ul>
+        <p className="video-preview-policy" data-video-preview-policy="true">{preview.policyNote}</p>
+        {preview.demoDoneNote?<p className="video-jobs-note" data-video-preview-demo-done="true">{preview.demoDoneNote}</p>:null}
+        <div className="video-preview-actions">
+          <Button variant="secondary" icon={Download} data-video-preview-download="true" onClick={onDownload}>{VIDEO_DOWNLOAD_LABEL}</Button>
+          <Button variant="secondary" icon={Link2} data-video-preview-share="true" onClick={onShare}>{VIDEO_SHARE_LABEL}</Button>
+        </div>
+        {preview.readyNote?<p className="video-preview-ready-note" data-video-preview-ready-note="true">{preview.readyNote}</p>:null}
+        {notice?<p className="video-preview-unavailable" data-video-preview-unavailable="true">{notice}</p>:null}
+      </div>
+    </div>
+    <div className="video-preview-share" data-video-preview-share-block="true" data-video-preview-share-gate={share.gate.allowed?'allowed':'blocked'} data-video-preview-share-gate-state={share.gate.state} data-video-preview-share-state={share.state} data-video-preview-share-token={share.tokenText} data-video-preview-share-days={String(share.validDays)}>
+      <b data-video-preview-share-title="true">{share.title}</b>
+      <p data-video-preview-share-rules="true">{share.rulesNote}</p>
+      <p data-video-preview-share-gate-text="true">{share.gate.note||share.gate.stateLabel}</p>
+      {share.gate.blockedNote?<p className="video-jobs-issue" data-video-preview-share-blocked-note="true">{share.gate.blockedNote}</p>:null}
+      {share.gate.entryLabel?<button type="button" className="text-link" data-video-preview-share-entry="true" onClick={onGoAuthorization}>{share.gate.entryLabel}</button>:null}
+      <label>分享有效期<select value={String(share.validDays)} onChange={event=>onValidDays(event.target.value)} data-video-preview-share-days-select="true" aria-label="成片分享有效期">{share.validDayOptions.map(option=><option key={option.days} value={String(option.days)}>{option.label}</option>)}</select></label>
+      <p data-video-preview-share-policy="true">{share.policyText}</p>
+      <em className={`video-preview-share-state is-${share.state}`} data-video-preview-share-state-label="true">{share.stateLabel}</em>
+      {share.tokenText?<div className="video-preview-share-link">
+        <code data-video-preview-share-link="true">{share.link}</code>
+        <small data-video-preview-share-expiry="true">{share.expiresText}</small>
+        {share.revokedText?<small data-video-preview-share-revoked="true">撤回于 {share.revokedText}</small>:null}
+      </div>:null}
+      <p className="video-jobs-note" data-video-preview-share-page-note="true">{share.pageNote}</p>
+      <div className="video-preview-share-actions">
+        {share.canGenerate?<Button disabled={!share.gate.allowed} data-video-preview-share-generate="true" onClick={onGenerate}>{share.generateLabel}</Button>:null}
+        {share.active?(revokeOpen
+          ? <span className="video-preview-share-confirm">
+            <Button variant="secondary" data-video-preview-share-revoke-confirm="true" onClick={onRevoke}>{share.revokeConfirmLabel}</Button>
+            <button type="button" className="text-link" data-video-preview-share-revoke-cancel="true" onClick={onRevokeCancel}>再想想</button>
+          </span>
+          : <Button variant="secondary" icon={XCircle} data-video-preview-share-revoke="true" onClick={onRevokeOpen}>{share.revokeLabel}</Button>):null}
+      </div>
+      {shareNotice?<p className="video-jobs-notice" data-video-preview-share-notice="true">{shareNotice}</p>:null}
+    </div>
+  </section>;
 }
 
 /**
@@ -783,7 +881,7 @@ function VideoClassTimeline({plan,view,onMove,onReset}){
  * 它读的是 `classEntries`（这个班级在这个周期的记录）与 `roster`（班级名单 = 顺序真源）；
  * 「顺序默认按班级名单、生成前可调整」用面板自己的 `classOrder` 局部 state 实现。
  */
-function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkCount,photoCount,teacherName,setToast,entries=[],scopeEntries=[],classEntries=[],roster=[],tokens=[]}){
+function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkCount,photoCount,teacherName,setToast,entries=[],scopeEntries=[],classEntries=[],roster=[],tokens=[],records=[],consents=null,setShareTokens=()=>{},recordAudit=()=>{},auditActor=null,navigate=null}){
   const [jobs,setJobs]=useState(()=>listVideoJobs());
   const [notice,setNotice]=useState('');
   const [simulateFail,setSimulateFail]=useState(false);
@@ -859,6 +957,93 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
     setClassOrder(videoClassMoveOrder(current,index,direction));
   },[classView,roster]);
   const resetClassOrder=useCallback(()=>setClassOrder(null),[]);
+  // ---- 成片预览 · 下载与分享（[第四步 US-219]）-------------------------------------------------
+  // 预览读的是「这条任务」：当前对象 + 周期的 jobKey 命中的那条（没有就当还没有任务）。
+  // 播放器在渲染服务给出成片之前只有一个 9:16 的空位 —— `videoPreviewView` 的 `src` 是空串，
+  // 组件因此不渲染任何 `<source>`（「不显示假 mp4」在结构上成立）。
+  const [outputNotice,setOutputNotice]=useState('');
+  const [shareNotice,setShareNotice]=useState('');
+  const [shareRevokeOpen,setShareRevokeOpen]=useState(false);
+  const [shareValidDays,setShareValidDays]=useState(SHARE_TOKEN_DEFAULT_VALID_DAYS);
+  useEffect(()=>{setOutputNotice('');setShareNotice('');setShareRevokeOpen(false)},[objectName,period,isClass]);
+  const preview=useMemo(()=>videoPreviewView({jobs,jobKey}),[jobs,jobKey]);
+  // 成片分享的授权闸门（**与图文分享同一道**）：`videoShareGateView` 逐位学员走
+  // `findConsent` → `archiveForwardView` → `shareTokenGenerationGate` —— 这里的 `step` 就是
+  // 第四步那一份归档摘要产物（`archiveStepView`），所以「先归档再转发」「家长未完成查看授权」
+  // 两句判断与第四步逐字一致，组件里没有第二套授权逻辑。
+  const gateRecord=useMemo(()=>{
+    const picked=(Array.isArray(entries)?entries:[]).find(entry=>entry&&!entry.isAbsence)||null;
+    if(!picked) return null;
+    const raw=(Array.isArray(records)?records:[]).filter(record=>record&&typeof record==='object');
+    return raw.find(record=>(picked.recordKey&&String(record.recordKey||'')===picked.recordKey)||(picked.id&&String(record.id||'')===picked.id))||null;
+  },[entries,records]);
+  const gateStep=useMemo(()=>archiveStepView({record:gateRecord}),[gateRecord]);
+  const gateStudents=useMemo(()=>{
+    if(!isClass) return objectName?[objectName]:[];
+    const list=(Array.isArray(classEntries)?classEntries:[]).filter(entry=>entry&&!entry.isAbsence);
+    const names=[];
+    (Array.isArray(roster)?roster:[]).forEach(name=>{if(name&&list.some(entry=>entry.student===name)&&!names.includes(name))names.push(name)});
+    list.forEach(entry=>{if(entry.student&&!names.includes(entry.student))names.push(entry.student)});
+    return names;
+  },[isClass,objectName,classEntries,roster]);
+  const shareGate=useMemo(()=>videoShareGateView({
+    students:gateStudents,
+    consents,
+    step:gateStep,
+    lessonDate:gateRecord?(String(gateRecord.lessonDate||'')||String(gateRecord.date||'')):'',
+    title:gateRecord?String(gateRecord.title||''):''
+  }),[gateStudents,consents,gateStep,gateRecord]);
+  const sharePanel=videoSharePanelView({tokens,jobKey,gate:shareGate,validDays:shareValidDays});
+  const videoShareActor=()=>auditActor||{actorId:teacherName,actorName:teacherName,actorRole:'teacher',actorRoleLabel:'老师'};
+  // 下载 / 分享（验收第 2 条）：服务未接入时两句话各不相同、都可读；真成片那条路径直接取服务地址，
+  // 原型不做本机副本（地址是渲染服务的 https 持久地址）。
+  const runPreviewAction=action=>{
+    if(!action) return;
+    if(!action.enabled){setOutputNotice(action.unavailableText);setToast(action.unavailableText);return;}
+    if(action.id==='download'){
+      const url=preview.player.src;
+      if(!url) return;
+      if(typeof window!=='undefined') window.open(url,'_blank','noopener');
+      setOutputNotice('已从渲染服务取成片地址（新窗口打开；原型不落本机副本）。');
+      setToast('已从渲染服务取成片地址。');
+      return;
+    }
+    setOutputNotice(preview.readyNote);
+    setToast(preview.readyNote);
+  };
+  const generateVideoShare=()=>{
+    if(!sharePanel.gate.allowed){setShareNotice(sharePanel.gate.reason);setToast(sharePanel.gate.reason);return;}
+    const created=createVideoShareTokenRecord(videoShareTokenInput({
+      jobKey,
+      type,
+      objectName,
+      className:isClass?'':(gateRecord?String(gateRecord.className||''):''),
+      period,
+      validDays:shareValidDays,
+      createdBy:teacherName
+    }),{});
+    if(!created){setShareNotice('令牌生成失败，请重试。');return;}
+    setShareTokens(current=>appendShareToken(current,created));
+    setShareRevokeOpen(false);
+    setShareNotice(sharePanel.generatedNotice);
+    setToast(`${sharePanel.generatedNotice}${shareTokenLink(created.token)}`);
+    void saveRemoteShareToken(created).catch(()=>{});
+    // 留痕（与图文分享共用同一张动作表）：对象 = 这次成片覆盖的学员 / 班级 + 任务键 + 令牌。
+    recordAudit({...videoShareActor(),action:AUDIT_ACTIONS.shareGenerate,objectName,studentId:isClass?'':objectName,recordId:created.jobKey,studentName:isClass?'':objectName,version:created.version,shareToken:created.token,scope:period,detail:`成片分享链接（${typeLabel} · ${period}）· 有效期 ${created.validDays} 天`});
+  };
+  const revokeVideoShare=()=>{
+    const target=sharePanel.active?sharePanel.token:null;
+    if(!target) return;
+    const revoked=revokeShareTokenRecord(target,{by:teacherName});
+    if(!revoked) return;
+    setShareTokens(current=>replaceShareToken(current,revoked));
+    setShareRevokeOpen(false);
+    setShareNotice(sharePanel.revokedNotice);
+    setToast(sharePanel.revokedNotice);
+    void revokeRemoteShareToken(revoked).catch(()=>{});
+    recordAudit({...videoShareActor(),action:AUDIT_ACTIONS.shareRevoke,objectName,studentId:isClass?'':objectName,recordId:revoked.jobKey,studentName:isClass?'':objectName,version:revoked.version,shareToken:revoked.token,scope:period,detail:`撤回成片分享链接（${typeLabel} · ${period}）`});
+  };
+  const goAuthorization=()=>{if(typeof navigate==='function')navigate('authorization');};
   const report=result=>{setJobs(listVideoJobs());setNotice(result.ok?result.notice:result.issue);setToast(result.ok?result.notice:result.issue)};
   const submit=()=>{
     const result=submitVideoJob({type,studentId:isClass?'':objectName,classId:isClass?objectName:'',period,objectName,lessonCount,artworkCount,photoCount,createdBy:teacherName,simulate:simulateFail?'fail':'success',simulateErrorCode});
@@ -888,6 +1073,21 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
     <VideoTimelinePreview plan={timelinePlan} endingNote={endingNote} onEndingNote={setEndingNote}/>
     {personalPlan?<VideoPersonalTimeline plan={personalPlan}/>:null}
     {classPlan&&classView?<VideoClassTimeline plan={classPlan} view={classView} onMove={moveClassOrder} onReset={resetClassOrder}/>:null}
+    <VideoPreviewPanel
+      preview={preview}
+      share={sharePanel}
+      notice={outputNotice}
+      shareNotice={shareNotice}
+      revokeOpen={shareRevokeOpen}
+      onDownload={()=>runPreviewAction(preview.actions.find(action=>action.id==='download'))}
+      onShare={()=>runPreviewAction(preview.actions.find(action=>action.id==='share'))}
+      onGenerate={generateVideoShare}
+      onRevoke={revokeVideoShare}
+      onRevokeOpen={()=>setShareRevokeOpen(true)}
+      onRevokeCancel={()=>setShareRevokeOpen(false)}
+      onValidDays={value=>setShareValidDays(value)}
+      onGoAuthorization={goAuthorization}
+    />
     {notice?<p className="video-jobs-notice" data-video-notice="true">{notice}</p>:null}
     {view.resumeSummary?<p className="video-jobs-resumed" data-video-jobs-resumed="true">{view.resumeSummary}</p>:null}
     <p className="video-jobs-summary" data-video-jobs-summary="true">{view.summary}</p>
@@ -897,7 +1097,7 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
   </section>;
 }
 
-export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,pageParams,recordsSource=null,reloadRecords=null,archiveReports=[],setArchiveReports=()=>{},teacherName='',shareTokens=[],recordAudit=()=>{},auditActor=null}){
+export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,pageParams,recordsSource=null,reloadRecords=null,archiveReports=[],setArchiveReports=()=>{},teacherName='',shareTokens=[],setShareTokens=()=>{},consents=null,recordAudit=()=>{},auditActor=null}){
   // 报告生成 / 更新要留痕（[第四步 US-211] 第 4 条：操作人 / 时间 / 对象 / 版本）——
   // 留痕入口与报告写入在同一次动作里（`generateReport`），界面只多显示一行回执。
   const [reportAuditEntry,setReportAuditEntry]=useState(null);
@@ -1168,7 +1368,7 @@ export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,p
             {timelineWindow.hasMore?<button type="button" className="primary" data-archive-page-more="true" onClick={()=>setTimelinePage(page=>Math.min(timelineWindow.pageCount,page+1))}>{timelineWindow.moreLabel}</button>:null}
           </nav>:null}
         </section>
-        <VideoJobsPanel isClass={view.isClass} objectName={view.name} period={videoPeriod} onPeriod={setVideoPeriod} lessonCount={view.summary.lessons} artworkCount={view.summary.artworks} photoCount={view.summary.photos} teacherName={teacherName} setToast={setToast} entries={videoEntries} scopeEntries={videoScopeEntries} classEntries={videoClassEntries} roster={classRoster} tokens={shareTokens}/>
+        <VideoJobsPanel isClass={view.isClass} objectName={view.name} period={videoPeriod} onPeriod={setVideoPeriod} lessonCount={view.summary.lessons} artworkCount={view.summary.artworks} photoCount={view.summary.photos} teacherName={teacherName} setToast={setToast} entries={videoEntries} scopeEntries={videoScopeEntries} classEntries={videoClassEntries} roster={classRoster} tokens={shareTokens} records={records} consents={consents} setShareTokens={setShareTokens} recordAudit={recordAudit} auditActor={auditActor} navigate={navigate}/>
         <section className="archive-perf-panel" data-archive-perf="true" data-archive-perf-measured={String(perfChecks.measured)} data-archive-perf-total={String(perfChecks.total)} data-archive-perf-all-ok={perfChecks.allOk?'true':'false'} data-archive-perf-summary-text={perfChecks.summary}>
           <div className="archive-perf-head"><Gauge size={15}/><b>档案性能</b><em data-archive-perf-summary="true">{perfChecks.summary}</em><small>{ARCHIVE_PERF_HINT}</small></div>
           <ul className="archive-perf-list">{perfChecks.rows.map(row=><li key={row.id} data-archive-perf-row={row.id} data-archive-perf-state={row.ok===null?'pending':row.ok?'ok':'over'} data-archive-perf-value={row.value} data-archive-perf-budget={row.budget} data-archive-perf-text={row.text}>

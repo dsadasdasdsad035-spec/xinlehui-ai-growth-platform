@@ -49,6 +49,25 @@ export const SHARE_TOKEN_MIN_LENGTH = 16;
 // 字母表去掉易混字符（0/O、1/l/I），家长手抄 / 口述链接时不至于看错。
 export const SHARE_TOKEN_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 
+/**
+ * 令牌的种类（[第四步 US-219]）：`record` = 图文档案分享（默认，老记录没有这个字段）、
+ * `video` = 成片分享。**种类只影响分享页渲染哪一块**，有效期 / 状态 / 撤回规则一个字都不变
+ * —— 成片分享与前一条共用同一份「生成闸门 + 有效期 + 撤回」。
+ */
+export const SHARE_TOKEN_KINDS = {
+  record: 'record',
+  video: 'video'
+};
+
+/** 读不出 / 缺失时的种类：老记录一律读成图文档案分享（向后兼容）。 */
+export const SHARE_TOKEN_KIND_DEFAULT = SHARE_TOKEN_KINDS.record;
+
+/** 令牌种类归一化（只认两个枚举，其余一律回落默认）。 */
+export function normalizeShareTokenKind(value) {
+  const kind = text(value);
+  return SHARE_TOKEN_KINDS[kind] || SHARE_TOKEN_KIND_DEFAULT;
+}
+
 /** 状态枚举（`invalid` = 记录本身读不出来，例如令牌为空）。 */
 export const SHARE_TOKEN_STATUS = {
   active: 'active',
@@ -223,6 +242,11 @@ export const SHARE_TOKEN_FIELDS = [
   'token',
   'recordId',
   'recordKey',
+  // 成片分享（[第四步 US-219]）：`kind` 区分图文 / 成片，`jobKey` + `period` 指出这条链接
+  // 指向哪一条视频任务与哪个周期（图文分享里它们是空串）。
+  'kind',
+  'jobKey',
+  'period',
   'orgId',
   'student',
   'studentId',
@@ -264,6 +288,9 @@ export function normalizeShareTokenRecord(raw) {
     token,
     recordId: text(source.recordId),
     recordKey: text(source.recordKey),
+    kind: normalizeShareTokenKind(source.kind),
+    jobKey: text(source.jobKey),
+    period: text(source.period),
     orgId: text(source.orgId),
     student: text(source.student),
     studentId: text(source.studentId),
@@ -305,6 +332,9 @@ export function createShareTokenRecord(input = {}, options = {}) {
     token: text(opts.token) || generateShareToken(opts.random),
     recordId: source.recordId,
     recordKey: source.recordKey,
+    kind: source.kind,
+    jobKey: source.jobKey,
+    period: source.period,
     orgId: source.orgId,
     student: source.student,
     studentId: source.studentId,

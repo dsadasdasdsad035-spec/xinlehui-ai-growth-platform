@@ -926,6 +926,55 @@ US-213a 那份本机演示队列（上面一节）**不是**真服务：真服�
   ② **走流程归档那一条的作品名是课题名**（`圆形变变变`），不含学员姓名：想验「作品不串档」要断言
   「不含其他学员的名字」或读帧上的 `sourceStudent`，别断言作品名前缀是学员名。
 
+## 成片预览 · 下载与分享（mock）（[第四步 US-219]）
+
+> 「渲染服务还没接进来」在成片这一侧落成四件如实的事：竖屏 9:16 播放器占位（不显示任何假 mp4）、
+> 下载与分享的「暂不可用」提示、分享页播放器带 `playsinline`、成片分享与图文分享**同一套规则**
+> （授权校验 / 有效期 / 撤回）。规则与文案的唯一真源是 `src/data/videoShare.js`（零依赖纯函数，可 Node 直跑），
+> 令牌本体仍是 `src/data/shareTokens.js`（新增 `kind` / `jobKey` / `period` 三个字段）。
+
+| 关注点 | 位置 | 说明 |
+|---|---|---|
+| 成片三件套判据 / 播放器 / 闸门 / 令牌入参 / 两块视图 | `src/data/videoShare.js`（零依赖，Node 可直跑） | `videoOutputView`、`videoPlayerView`、`videoPreviewView`、`videoShareGateView`、`videoShareTokenInput`、`videoSharePanelView`、`videoShareBlockView` |
+| 老师端面板 | `GrowthArchiveData.jsx` 的 `VideoPreviewPanel`（在 `VideoJobsPanel` 里、班级集锦**之后**、任务卡片**之前**） | `data-video-preview-*` |
+| 家长页成片块 | `ParentSharePage.jsx` 的 `ParentVideo`（由 `parentShareView` 的 `video` 字段驱动） | `data-parent-share-video-*` / `data-parent-share-player-*` |
+| 令牌种类 | `src/data/shareTokens.js` | `SHARE_TOKEN_KINDS` / `normalizeShareTokenKind`（缺失或脏值一律读成 `record`，老记录向后兼容） |
+
+- **「不显示假 mp4」是结构性的**：`videoPlayerView().src` 只在「https 地址 + 正时长 + 正体积」时才有值
+  （判据 `videoOutputView`，地址那一层复用 `videoJobs.js` 的 `videoJobOutputUrlIssue`，别再写第二套）；
+  没成片时 `<video>` 不设 `src`、不渲染 `<source>`、不带 `controls`，上面盖一层如实占位。
+  **播放器元素在「没有成片」时也要渲染**（老师端与家长页两处都带 `playsinline` + `webkit-playsinline`）——
+  家长页那一条是验收点名项；渲染一个空 `<video>` 不等于显示假 mp4，断言该查 `src` / `<source>` / 面积。
+- **成片分享 = 图文分享同一套规则**：生成前仍过 `shareTokenGenerationGate(archiveForwardView(...))`
+  （授权来源还是 `data/consent.js`），有效期仍是 `SHARE_TOKEN_DEFAULT_VALID_DAYS`（默认 30 天 + 7/30/90 下拉），
+  撤回仍走 `revokeShareTokenRecord` + `replaceShareToken` + `revokeRemoteShareToken`。
+  **班级成片逐人过闸门**（`videoShareGateView` 收 `students` 数组，任一位没过就拦下并点名）——
+  这是「同一个函数逐人调用」，不是第二套授权逻辑。
+- **家长页的成片令牌不带 `recordId`**：成片是一条周期时间线，不是某一节课。因此
+  `parentShareView` 的 `lessonBlockVisible` 在成片令牌下恒为假（否则会渲染「未记录课次日期」这种错话），
+  `recordMissingNote`（图文那句「作品与点评还没同步」）也不出现 —— 成片块自己有 `missingNote`；
+  撤回 / 过期后 `video.present` 结构性为假（连播放器都不渲染，页面上不出现孩子的信息）。
+- **分享页的 `jobs` 从哪来**：`App` 用 `useState(()=>listVideoJobs())` 读本机镜像传给 `ParentSharePage`
+  （家长页在登录之外没有别的数据源；换设备打开时找不到任务 → 播放器占位 + 一句实话，不编内容）。
+- **任务卡片之外的纪律**：US-075/076 有一类断言只数 `[data-video-job-card]` 内部（不得有 video/img/iframe），
+  新增的预览面板必须放在卡片**外面**，否则那类断言会假红。
+- **验证方式（本故事实测）**：`pnpm run build`（330~345ms）；Node 直跑 **171 项**（`/tmp/assert-us079-data.mjs`：
+  三件套判据 / 播放器三态与 playsinline / 预览动作与两句提示 / 令牌种类向后兼容 / 闸门三种拦法与班级点名 /
+  面板有效期与撤回 / 分享页块白名单 + 撤回后不出现 / 图文口径回归）；浏览器 **110 项**
+  （`/tmp/assert-us079-browser.mjs`：真实走流程归档一位已授权学员 → 面板读数 / 点下载与分享的不可用提示 /
+  生成链接 / 撤回（二次确认）→ 家长页两块（撤回态与可用态）/ 390px / 班级成片点名）；
+  回归 US-075 browser 95、US-076 browser 100、US-077 browser 91、US-078 browser 94、US-069 browser 86 全绿；
+  截图 391~397 留档。
+- **验证脚本的两个坑（本故事真踩）**：
+  ① **上一次跑挂掉没关的 Chrome 会以旧实例作答**：`launchChrome` 只探端口 `/json/version`，
+     上一次失败退出（`process.exit` 跳过 `chrome.close()`）留下的进程带着旧 profile ——
+     于是「还没有任务 / 还没有生成链接」这类断言读到的是上一轮的 localStorage（假红）。
+     脚本开头先探端口、占用就报错停下，并挂 `uncaughtException` 兜底关浏览器。
+  ② **不要在 `outerHTML` 上找学员名或 `.mp4`**：dev 模式下 Vite 把全部 CSS 注成 `<style>`，
+     而历史遗留样式里有写死的 `content:'陈一诺 · 《向着光的花》 · 2026.08.11'`；另外模板字符串里的 `\.`
+     会被吃掉（`/\.mp4/` 变成 `/.mp4/`，于是 `-mp4` 这类属性名也算命中）。判据改成：
+     名字查 `body.textContent`，媒体地址查 `[src],[href],[poster]` 的属性值。
+
 ## 老师端「课后反馈」第一步（班级 / 学员 / 课程 / 课次推荐）
 
 > **课次表单全站只有一份实现 = `TeacherFlowV2`（`main.jsx`）。** 旧的 `CreateFlow` 五步向导

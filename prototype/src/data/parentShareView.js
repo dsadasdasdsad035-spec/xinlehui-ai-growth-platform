@@ -41,6 +41,9 @@ import { findConsent } from './consent';
 // 规则本身在 `data/archiveAccess.js`（教师端与服务端读同一份口径），这里只把它的产物接进视图。
 import { archiveShareAccessView } from './archiveAccess';
 import { resolveShareToken, SHARE_TOKEN_PARENT_MESSAGES, SHARE_TOKEN_STATUS } from './shareTokens';
+// 成片分享（[第四步 US-219]）：令牌种类 `video` 时多出来的一块（竖屏 9:16 播放器 + 成片信息）。
+// 规则（授权 / 有效期 / 撤回）与图文分享共用 `shareTokens.js` 那一份；这一块只渲染它的产物。
+import { videoShareBlockView } from './videoShare';
 
 const str = value => String(value === null || value === undefined ? '' : value).trim();
 
@@ -81,11 +84,13 @@ export const PARENT_SHARE_ABSENCE_TITLE = '这节课，我们先为孩子轻轻�
 /** 页脚（告诉家长内容从哪来、能不能转发 —— 家长页没有转发入口，转发由老师那一侧做）。 */
 export const PARENT_SHARE_FOOT_NOTE = '内容由老师归档后的成长档案生成：只有装裱成品图、课堂照片与老师确认后的点评，不含原图与内部记录。';
 
-/** 五个分区的小标题（界面只渲染它们，不自己拼文案）。 */
+/** 分区的小标题（界面只渲染它们，不自己拼文案）。 */
 export const PARENT_SHARE_SECTION_TITLES = Object.freeze({
   artwork: '成品作品',
   photos: '课堂照片',
-  reviews: '老师的话'
+  reviews: '老师的话',
+  // 成片分享（[第四步 US-219]）：令牌种类是 `video` 时才出现这一块。
+  video: '成长记录成片'
 });
 
 /** 登录 / 只读标记（断言用：家长端绝不产出动作）。 */
@@ -192,15 +197,18 @@ export function parentShareMediaView({ payload = null, student = '', lessonDate 
  * 家长分享页的整份视图（界面唯一读的产物）。
  *
  * 入参：`tokens`（App 层的令牌账）+ `token`（地址里的令牌）+ `records`（App 层的归档记录）
- * + `open`（这次打开的回执：`{found, first, recorded}`）+ 可注入的 `now`。
+ * + `jobs`（App 层的视频任务列表，成片分享那一块要按令牌上的 `jobKey` 找它）+
+ * `open`（这次打开的回执：`{found, first, recorded}`）+ 可注入的 `now`。
  *
  * 返回的字段**所有状态都给全**（同形状），其中：
  *  - `contentVisible`：只有令牌可用才为 true；为 false 时 `student / lessonDate / artwork / dimensions`
  *    一律是空值 —— 「打不开」的页面上不出现任何属于这个孩子的信息；
+ *  - `video`：[第四步 US-219] 的成片块（令牌种类 `video` 时才 `present`）。撤回 / 过期之后整块不出现，
+ *    「撤回后链接立即失效」在成片这一侧同样成立；
  *  - `payload`：`archiveSharePayload` 的产物（家长页读到的正文只从它来），`leaks`：配套的泄漏复核；
  *  - `open`：打开次数 / 首次打开时间 / 这次是不是首次 / 那一句温和的回执（界面不自己拼）。
  */
-export function parentShareView({ tokens = [], token = '', records = [], open = null, now = null, origin = '', consents = null, parentScope = null, serverAccess = null } = {}) {
+export function parentShareView({ tokens = [], token = '', records = [], jobs = [], open = null, now = null, origin = '', consents = null, parentScope = null, serverAccess = null } = {}) {
   const resolved = resolveShareToken(tokens, token, now);
   const tokenRecord = resolved.record;
   // 访问判定（[第四步 US-211]）：令牌可用之后还要过「服务端判定 → 授权撤回 → 家长范围」三关，
@@ -212,9 +220,12 @@ export function parentShareView({ tokens = [], token = '', records = [], open = 
   // 被拦下时（服务端 / 授权撤回 / 家长范围）按「打不开」渲染，细则换成真正的原因；
   // 令牌本身不可用时维持原来的四种状态文案。
   const stateView = parentShareStateView(resolved.status, resolved.message, access.allowed ? '' : access.reason);
-  // 内容**只在令牌可用且访问放行时**才去取：撤回 / 过期 / 被拦下之后连记录都不查，分享数据里就只剩令牌字段。
+  // 记录**只在令牌可用且访问放行时**才去取：撤回 / 过期 / 被拦下之后连记录都不查，分享数据里就只剩令牌字段。
   const contentVisible = resolved.active && access.allowed;
   const record = contentVisible ? findSharedRecord(records, tokenRecord) : null;
+  // 成片块（[第四步 US-219]）：令牌种类是 `video` 且仍在服务期内（未被撤回 / 过期 / 拦下）时才有内容 ——
+  // 判据仍是上面那一条 `contentVisible`，本模块不另写一套「链接还能不能用」。
+  const video = videoShareBlockView({ tokenRecord, jobs, active: contentVisible });
   const payload = archiveSharePayload({ record, token: contentVisible ? resolved.token : '', origin });
   const leaks = archiveShareLeaks({ payload, record });
   // 课次信息只在内容可见时给：不可用时连学员名 / 日期都不取（牌子上写着「打不开」，就不该再露出这个孩子）。
@@ -264,8 +275,16 @@ export function parentShareView({ tokens = [], token = '', records = [], open = 
     lessonLine: [lessonDateText, className].filter(Boolean).join(' · '),
     archivedText,
     recordFound: Boolean(record),
-    recordMissingNote: contentVisible && !record ? PARENT_SHARE_RECORD_MISSING_TEXT : '',
+    // 成片分享不指向单条课次记录，**不能**拿「作品与点评还没同步」去糊弄家长（那是图文分享的话）；
+    // 成片块自己有一句「还没有对应的成片」的实话（`video.missingNote`）。
+    recordMissingNote: contentVisible && !record && !video.present ? PARENT_SHARE_RECORD_MISSING_TEXT : '',
     // 内容
+    // 成片块（[第四步 US-219]）：`present` 为假时界面整块不渲染（撤回 / 过期后连播放器都不出现）。
+    video,
+    isVideoShare: video.present,
+    // 课次块只在图文分享里渲染：成片分享没有具体课次（令牌上的 `lessonDate` 是空的），
+    // 「未记录课次日期」这种占位对成片分享是错话 —— 成片块自己的「对象 / 周期」两行承担这件事。
+    lessonBlockVisible: contentVisible && !video.present,
     artwork: media.artwork,
     photos: media.photos,
     photoCount: media.photoCount,

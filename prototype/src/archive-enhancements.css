@@ -671,6 +671,49 @@
 .video-class-crosstalk>b{font-size:11px;color:#2f6b3a}
 .video-class-crosstalk>small{font-size:9px;line-height:1.6;color:#857a64}
 .video-class-crosstalk.is-issue{border-color:#f0d7bd;background:#fdf1e4}
+/* 成片预览 · 下载与分享（[第四步 US-219]）：竖屏 9:16 播放器占位 + 与图文同规则的成片分享链接。 */
+.video-preview{display:flex;flex-direction:column;gap:10px;border:1px solid #dfe4ef;border-radius:13px;background:#fbfcff;padding:13px;min-width:0}
+.video-preview-body{display:grid;grid-template-columns:minmax(0,220px) minmax(0,1fr);gap:12px;align-items:start;min-width:0}
+.video-preview-player{position:relative;margin:0;width:100%;max-width:220px;border:1px solid #dfe4ef;border-radius:12px;background:#1f2430;overflow:hidden;display:flex;align-items:center;justify-content:center}
+.video-preview-video{display:block;width:100%;height:100%;object-fit:contain;background:#1f2430}
+.video-preview-hold{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:12px;text-align:center;background:repeating-linear-gradient(135deg,#232937,#232937 12px,#1d222d 12px,#1d222d 24px)}
+.video-preview-hold b{font-size:11px;color:#ffd88a}
+.video-preview-hold span{font-size:10px;line-height:1.7;color:#c9d2e4}
+.video-preview-side{display:flex;flex-direction:column;gap:8px;min-width:0}
+.video-preview-rows{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:4px;min-width:0}
+.video-preview-rows li{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 8px;border:1px solid #eef1f8;border-radius:9px;background:#fff;padding:6px 8px;min-width:0}
+.video-preview-rows li>span{font-size:9px;font-weight:800;color:#4a5a86;white-space:nowrap}
+.video-preview-rows li>b{font-size:11px;font-weight:700;color:#292720;word-break:break-word}
+.video-preview-policy,.video-preview-unavailable,.video-preview-ready-note{margin:0;font-size:10px;line-height:1.65;border-radius:10px;padding:8px 10px}
+.video-preview-policy{color:#5f5745;background:#fffdf6;border:1px dashed #e6d9b8}
+.video-preview-unavailable{color:#9a5a29;background:#fdf1e4;border:1px solid #f0d7bd}
+.video-preview-ready-note{color:#2f6b3a;background:#f2f9ef;border:1px solid #cfe1b4}
+.video-preview-actions{display:flex;flex-wrap:wrap;gap:8px;min-width:0}
+.video-preview-share{display:flex;flex-direction:column;gap:8px;border:1px solid #e3dcbf;border-radius:12px;background:#fffdf4;padding:11px;min-width:0}
+.video-preview-share>b{font-size:11px;color:#7a5a12}
+.video-preview-share>p{margin:0;font-size:10px;line-height:1.7;color:#7a6a45;word-break:break-word}
+.video-preview-share>label{display:flex;flex-direction:column;gap:5px;font-size:10px;font-weight:700;color:#7a6a45;max-width:220px}
+.video-preview-share-state{font-style:normal;align-self:flex-start;font-size:10px;font-weight:800;border-radius:999px;padding:3px 10px;color:#5f5745;background:#f4efe1;border:1px solid #e6d9b8}
+.video-preview-share-state.is-active{color:#2f6b3a;background:#f2f9ef;border-color:#cfe1b4}
+.video-preview-share-state.is-revoked,.video-preview-share-state.is-expired{color:#9a5a29;background:#fdf1e4;border-color:#f0d7bd}
+.video-preview-share-link{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;min-width:0}
+.video-preview-share-link code{font-size:10px;color:#3d3527;background:#fff;border:1px solid #e6d9b8;border-radius:8px;padding:4px 8px;word-break:break-all}
+.video-preview-share-link small{font-size:9px;color:#857a64}
+.video-preview-share-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center;min-width:0}
+.video-preview-share-confirm{display:flex;flex-wrap:wrap;gap:8px;align-items:center;min-width:0}
+.video-preview-share .text-link{align-self:flex-start;font-size:10px;color:#8a4b00;background:none;border:none;padding:0;cursor:pointer;text-decoration:underline}
+/* 家长分享页上的成片块：竖屏 9:16 播放器（src 只在渲染服务给出成片时才有值）。 */
+.parent-share-video{padding:16px 18px;border:1px solid #eadfbd;border-radius:16px;background:#fff;display:flex;flex-direction:column;gap:10px;width:100%}
+.parent-share-video h2{margin:0;font-size:13px;color:#7a5a12;letter-spacing:.06em}
+.parent-share-player{position:relative;margin:0;width:100%;max-width:300px;align-self:center;border:1px solid #e3d6ae;border-radius:14px;background:#1f2430;overflow:hidden;display:flex;align-items:center;justify-content:center}
+.parent-share-player-video{display:block;width:100%;height:100%;object-fit:contain;background:#1f2430}
+.parent-share-player-hold{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:16px;text-align:center;background:repeating-linear-gradient(135deg,#232937,#232937 12px,#1d222d 12px,#1d222d 24px)}
+.parent-share-player-hold b{font-size:12px;color:#ffd88a}
+.parent-share-player-hold span{font-size:11px;line-height:1.75;color:#c9d2e4}
+.parent-share-video-rows{margin:0;display:flex;flex-direction:column;gap:6px}
+.parent-share-video-rows>div{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:baseline}
+.parent-share-video-rows dt{font-size:11px;font-weight:800;color:#9a7200;letter-spacing:.05em}
+.parent-share-video-rows dd{margin:0;font-size:12px;line-height:1.7;color:#3d3527;word-break:break-word}
 @media(max-width:430px){
   .video-jobs{padding:14px}
   .video-jobs-controls{grid-template-columns:minmax(0,1fr)}
@@ -704,4 +747,10 @@
   .video-class-order button,.video-class-order>button{width:100%;min-height:44px;justify-content:center}
   .video-class-frame-body{grid-template-columns:minmax(0,1fr)}
   .video-class-info ul{grid-template-columns:minmax(0,1fr)}
+  .video-preview{padding:10px}
+  .video-preview-body{grid-template-columns:minmax(0,1fr)}
+  .video-preview-player{max-width:100%;justify-self:center}
+  .video-preview-actions button,.video-preview-share-actions button,.video-preview-share-actions .text-link{width:100%;min-height:44px;justify-content:center}
+  .video-preview-share>label{max-width:100%}
+  .video-preview-share>label select{min-height:44px}
 }

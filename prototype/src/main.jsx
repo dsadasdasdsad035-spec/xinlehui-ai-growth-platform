@@ -237,6 +237,9 @@ import {
   shareTokenStrength, shareTokenUrl, shareTokenValidDaysLabel, shareTokenView
 } from './data/shareTokens';
 import { loadRemoteShareTokens, revokeRemoteShareToken, saveRemoteShareToken } from './services/shareTokensApi';
+// 成片分享（[第四步 US-219]）：`/p/<token>` 上如果是成片令牌，分享页那一块要按令牌上的 `jobKey`
+// 找这条任务 —— 家长页在登录之外，只读本机镜像（`listVideoJobs` 进来时已经从镜像读好）。
+import { listVideoJobs } from './services/videoJobQueue';
 // 转发状态跟踪（[第四步 US-209] / F-ARCHIVE-SHARE-01）：未转发 / 已转发 / 已撤回三态的推导、
 // 转发四件事（时间 / 渠道 / 分享版本 / 打开次数）、家长打开的写入（firstOpenedAt 只写一次）、
 // 「重新发送」的执行计划全在 data 层（零依赖纯函数，可 Node 直跑断言）；界面只渲染它的产物。
@@ -479,6 +482,9 @@ function App(){
   // 令牌只在进页面时读一次地址（`readShareLinkToken`），页面本体在 `ParentSharePage` 里（内容 US-210）。
   const [parentShareToken]=useState(()=>readShareLinkToken(typeof window==='undefined'?'':(window.location&&window.location.pathname)||''));
   const [parentShareOpen,setParentShareOpen]=useState(null);
+  // 家长分享页上的成片块（[第四步 US-219]）要按令牌上的 `jobKey` 找到那条任务：
+  // 这一页在登录之外，读的就是本机镜像里那一份（没有成片时播放器只显示占位，不编内容）。
+  const [parentShareJobs]=useState(()=>listVideoJobs());
   // 管理端「生成日志 → 点评轨迹」读的轨迹账：本机镜像先渲染，云端表 / 开发适配器回来后并进去
   // （合并方向：`mergeReviewTraces` 按 traceId 去重、时间倒序）。清理（到期）也写回这一份。
   const [traceLog,setTraceLog]=useState(loadReviewTraces);
@@ -716,7 +722,7 @@ function App(){
   // 令牌账（`shareTokens`）与归档记录（`archivedRecords` = 云端读取 + 本机镜像去重后那一份）都传进去：
   // 页面内容（US-210）按令牌上的 `recordId` 在这一份里找那一条记录，正文再走分享白名单；
   // 访问判定（US-211）再叠三层：服务端结论（权威）> 授权撤回 > 家长会话范围（只能看自己孩子）。
-  if(parentShareToken) return <ParentSharePage token={parentShareToken} tokens={shareTokens} records={archivedRecords} open={parentShareOpen} consents={consents} parentScope={{parentSession,parentStudentNames:parentStudents}} serverAccess={parentShareAccess}/>;
+  if(parentShareToken) return <ParentSharePage token={parentShareToken} tokens={shareTokens} records={archivedRecords} jobs={parentShareJobs} open={parentShareOpen} consents={consents} parentScope={{parentSession,parentStudentNames:parentStudents}} serverAccess={parentShareAccess}/>;
   if(!auth) return <AuthScreen mode={authMode} setMode={setAuthMode} onLogin={login}/>;
   return <div className="app">
     <Sidebar role={role} page={page} nav={navByRole[role]} onNav={navigate} open={mobileNav} close={()=>setMobileNav(false)}/>
