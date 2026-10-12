@@ -9,6 +9,8 @@ import { Archive, Download, FileText, Frame, MessageSquareText, Plus, RefreshCw,
 //    时间线、概况、空态当场跟着换，周期与已选对象一律保留。
 // 阶段报告（[第四步 US-207a]）：键（对象 + 周期 + 类型）、快照、版本与历史、落库状态全在
 // `data/archiveReports.js`（零依赖纯函数）里，这一页只渲染它的产物 + 把结果写进 `archiveReports`。
+// 报告正文（[第四步 US-207b]）：阶段总结 / 雷达维度 / 点评原文同样是那一份快照聚合出的产物
+// （`digest` / `radar` / `review`），组件里没有一句写死的示例文案，数据不足的维度如实显示「本阶段数据不足」。
 import { loadStudentManagement } from './data/studentManagement';
 import {
   ARCHIVE_PERIOD_DEFAULT,
@@ -123,9 +125,76 @@ function ReportLessons({rows}){
 /**
  * 阶段报告面板（[第四步 US-207a]）：周期 / 类型两个选择 + 生成（已有 = 更新）+ 删除 + 历史版本回看。
  * 判据全部读 `data/archiveReports.js` 的产物（键、按钮语义、注解、禁用原因、历史行），组件不自己算。
+ * 报告**正文**（[第四步 US-207b]）：阶段总结 / 雷达维度 / 点评原文三块同样只渲染 data 层的产物 ——
+ * 课次数、作品数、点评原文与雷达分值都是归档数据聚合出来的，组件里没有一句写死的示例文案。
  */
+
+/**
+ * 阶段总结（[第四步 US-207b]）：每一句话都是归档数据聚合的产物（`digest.lines`）。
+ */
+function ReportDigest({digest}){
+  return <section className="archive-report-digest" data-archive-report-digest="true" data-archive-report-digest-insufficient={digest.insufficient?'true':'false'} data-archive-report-digest-covered={digest.coveredDimensions}>
+    <b>{digest.title}</b>
+    <ul>{digest.lines.map((line,index)=><li key={index} data-archive-report-digest-line={index}>{line}</li>)}</ul>
+  </section>;
+}
+
+/**
+ * 雷达维度（[第四步 US-207b]）：五条轴的分值 = 该维度在本阶段课次里留下点评原文的比例（覆盖度）。
+ * 几何（网格 / 辐条 / 多边形 / 圆点）全在 data 层算好，组件只渲染坐标；数据不足的维度如实标注。
+ */
+function ReportRadar({radar}){
+  return <section className="archive-report-radar" data-archive-report-radar="true" data-archive-report-radar-covered={radar.coveredDimensions} data-archive-report-radar-insufficient={radar.insufficientNames.length}>
+    <div className="archive-report-block-head"><b>{radar.title}</b><span>{radar.desc}</span></div>
+    <div className="archive-report-radar-body">
+      <svg className="archive-report-radar-svg" viewBox={`0 0 ${radar.size} ${radar.size}`} role="img" aria-label={`${radar.title}：五维覆盖度`} data-archive-report-radar-svg="true">
+        <g className="radar-grid">{radar.grid.map(row=><polygon key={row.level} points={row.points} data-archive-report-radar-grid={row.level}/>)}</g>
+        <g className="radar-spokes">{radar.spokes.map((line,index)=><line key={index} x1={line.x1} y1={line.y1} x2={line.x2} y2={line.y2}/>)}</g>
+        <polygon className="radar-fill" points={radar.polygon} data-archive-report-radar-polygon="true"/>
+        <g className="radar-dots">{radar.dots.map(dot=><circle key={dot.name} cx={dot.x} cy={dot.y} r={3.2}/>)}</g>
+      </svg>
+      <ul className="archive-report-radar-axes">
+        {radar.axes.map(axis=><li key={axis.name} data-archive-report-radar-axis={axis.name} data-archive-report-radar-value={axis.value} data-archive-report-radar-axis-covered={axis.covered} data-archive-report-radar-axis-insufficient={axis.insufficient?'true':'false'} data-archive-report-radar-axis-note={axis.note}>
+          <span>{axis.name}</span><b>{axis.value}%</b><small>{axis.note}</small>
+        </li>)}
+      </ul>
+    </div>
+    {radar.insufficientNames.length?<p className="archive-report-insufficient" data-archive-report-radar-insufficient-note="true">{radar.insufficientNames.join('、')}：{radar.insufficientText}</p>:null}
+  </section>;
+}
+
+/**
+ * 点评原文（[第四步 US-207b]）：逐维列出本阶段归档记录里**老师确认后的原文**（带课次日期与作品名）。
+ * 一段原文都没有的维度显示「本阶段数据不足」—— 不用示例文案把版面填满（FR-240）。
+ */
+function ReportReviewTexts({review}){
+  return <section className="archive-report-review" data-archive-report-review="true" data-archive-report-review-covered={review.coveredDimensions} data-archive-report-review-insufficient={review.insufficientNames.length} data-archive-report-review-texts={review.textCount}>
+    <div className="archive-report-block-head"><b>{review.title}</b><span>{review.desc}</span></div>
+    <div className="archive-report-review-grid">{review.rows.map(row=><article key={row.name} className={row.insufficient?'is-insufficient':''} data-archive-report-review-dimension={row.name} data-archive-report-review-count={row.count} data-archive-report-review-insufficient={row.insufficient?'true':'false'} data-archive-report-review-note={row.note}>
+      <header><b>{row.name}</b><small>{row.note}</small></header>
+      {row.insufficient
+        ?<p className="archive-report-insufficient" data-archive-report-review-empty="true">{review.insufficientText}</p>
+        :<ul>{row.texts.map((text,index)=><li key={`${row.name}-${index}`} data-archive-report-review-text="true" data-archive-report-review-text-date={text.date}>
+          <small>{text.date}{text.title?` · 《${text.title}》`:''}</small>
+          <p>{text.text}</p>
+        </li>)}</ul>}
+    </article>)}</div>
+  </section>;
+}
+
+/** 报告正文三块 + 概况与课次行：当前版本与历史版本读**同一组字段**（历史版本给的是那一版的聚合结果）。 */
+function ReportBody({body}){
+  return <>
+    <ReportDigest digest={body.digest}/>
+    <ReportFacts facts={body.facts}/>
+    <ReportRadar radar={body.radar}/>
+    <ReportReviewTexts review={body.review}/>
+  </>;
+}
+
 function ArchiveReportPanel({reportKey, reportView, period, type, issue, busy, notice, stale, deleteOpen, historyVersion, onPeriod, onType, onGenerate, onDeleteOpen, onDeleteCancel, onDelete, onHistoryView, onHistoryBack}){
   const historyEntry=reportView&&historyVersion?reportView.history.find(entry=>entry.version===historyVersion)||null:null;
+  const body=historyEntry||reportView;
   const typeHint=(ARCHIVE_REPORT_TYPE_OPTIONS.find(option=>option.name===type)||{}).hint||'';
   return <section className="archive-report" data-archive-report-section="true" data-archive-report-key={reportKey} data-archive-report-period={period} data-archive-report-type={type} data-archive-report-exists={reportView?'true':'false'} data-archive-report-stale={stale?'true':'false'} data-archive-report-busy={busy?'true':'false'}>
     <div className="archive-section-head"><span>阶段报告 · 按「对象 + 周期 + 类型」落库</span><h3>{ARCHIVE_REPORT_SECTION_TITLE}</h3><p>{ARCHIVE_REPORT_SECTION_DESC}</p></div>
@@ -147,7 +216,7 @@ function ArchiveReportPanel({reportKey, reportView, period, type, issue, busy, n
           {historyEntry?<Button variant="secondary" data-archive-report-history-back="true" onClick={onHistoryBack}>{ARCHIVE_REPORT_HISTORY_BACK}</Button>:null}
         </div>
       </header>
-      <ReportFacts facts={historyEntry?historyEntry.facts:reportView.facts}/>
+      <ReportBody body={body}/>
       <div className="archive-report-lessons-head"><b>{ARCHIVE_REPORT_LESSON_TITLE}</b><span>来自归档数据的聚合结果（生成那一刻的快照）</span></div>
       {reportView.lessonRows.length||historyEntry?<ReportLessons rows={historyEntry?historyEntry.lessonRows:reportView.lessonRows}/>:<p className="archive-report-empty-line">这个周期里还没有可聚合的课次。</p>}
       {stale&&!historyEntry?<p className="archive-report-stale" data-archive-report-stale-hint="true">{ARCHIVE_REPORT_STALE_HINT}</p>:null}

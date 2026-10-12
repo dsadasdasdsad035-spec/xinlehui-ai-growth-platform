@@ -18,6 +18,10 @@
 // 口径不在这里另写一套：目标过滤读 `data/archiveTargets.js`（个人按学员、班级按班级），周期窗口读
 // 同一份的 `filterArchiveRecordsByPeriod`，五维维度名读 `data/reviewDetailPanel.js` 的
 // `REVIEW_DIMENSION_NAMES`，时间读数读 `data/archiveSummary.js` 的 `formatArchiveTime`。
+//
+// 报告**正文**（雷达维度 / 点评原文 / 阶段总结）见本文件下半部分的 US-207b 一节：
+// 三块都由快照里的课次与点评原文聚合成视图产物（`archiveReportRadarView` / `archiveReportReviewView` /
+// `archiveReportDigestView`），数据不足的维度明说「本阶段数据不足」（FR-239、FR-240）。
 
 import { archiveRecordMediaView } from './archiveMedia';
 import { REVIEW_DIMENSION_NAMES } from './reviewDetailPanel';
@@ -101,6 +105,192 @@ export const ARCHIVE_REPORT_DELETE_DONE = '报告已删除；归档记录与作�
 export const ARCHIVE_REPORT_LOCAL_NOTE = '云端这次没有接到这份报告，它已经保存在本机镜像里；云端表接上之后会随下一次写入同步过去。';
 export const ARCHIVE_REPORT_STALE_HINT = '归档里有比这份报告更新的内容，点「更新报告」生成新的一版（旧版本会留在历史里）。';
 export const ARCHIVE_REPORT_LESSON_TITLE = '这份报告覆盖的课次';
+
+// ---- 报告正文：雷达维度 / 点评原文 / 阶段总结（[第四步 US-207b] / FR-239、FR-240、FR-242）-------
+//
+// 报告里的每一句话、每一个数字都必须是**归档数据聚合**的产物（FR-239 禁止写死的示例文案）：
+//  ① 雷达维度：五条轴（`REVIEW_DIMENSION_NAMES`，与第三步、档案页同一份）的分值 = 该维度在
+//     本阶段课次里留下老师点评原文的**比例（覆盖度）**，不是给孩子的能力打分 —— 编不出分就不编；
+//  ② 点评原文：逐维列出本阶段归档记录里**老师确认后的原文**（带课次日期与作品名）；
+//  ③ 阶段总结：用聚合出的数字拼出来的几句话（课次数 / 作品数 / 照片数 / 有原文的维度）。
+// 数据不足的维度**必须**明说「本阶段数据不足」（FR-240）—— 宁缺毋滥，不用示例数据填充。
+// 三块都只读快照（`snapshot.lessons`），所以历史版本回看看到的是**当时**的聚合结果，不是今天重算的。
+
+/** 数据不足的那句话（FR-240 的验收原文；界面、断言与文案都读这一句，谁都不许另写一份）。 */
+export const ARCHIVE_REPORT_INSUFFICIENT_TEXT = '本阶段数据不足';
+
+/** 三块的标题与说明（界面只渲染这一份，不再各写一句）。 */
+export const ARCHIVE_REPORT_RADAR_TITLE = '雷达维度';
+export const ARCHIVE_REPORT_RADAR_DESC = '五个维度全部由本阶段归档的点评原文聚合：分值是该维度在课次里留下原文的比例（覆盖度），不是给孩子的能力打分。';
+export const ARCHIVE_REPORT_REVIEW_TITLE = '点评原文';
+export const ARCHIVE_REPORT_REVIEW_DESC = '每一段都摘自本阶段归档记录里老师确认后的点评原文；没有原文的维度如实标注，不用示例文案填充。';
+export const ARCHIVE_REPORT_DIGEST_TITLE = '阶段总结';
+export const ARCHIVE_REPORT_DIGEST_INSUFFICIENT = '本阶段数据不足：这些课次里还没有可聚合的点评原文，报告不会用示例文案填充。';
+
+/** 每个维度最多展示几段点评原文（快照是文本、要进 localStorage，不设上限会顶爆配额）。 */
+export const ARCHIVE_REPORT_REVIEW_TEXT_LIMIT = 3;
+
+/** 雷达画布几何（viewBox 尺寸 / 半径 / 网格圈）：界面只渲染这一份几何，不自己算坐标。 */
+export const ARCHIVE_REPORT_RADAR_GEOMETRY = { size: 240, radius: 88, levels: [0.25, 0.5, 0.75, 1] };
+
+const round2 = value => Math.round(value * 100) / 100;
+
+/** 快照里的一节课在某维度上的原文（缺字段 / 脏值一律读成空串，不抛错）。 */
+function lessonDimensionText(lesson, name) {
+  const dimensions = lesson && Array.isArray(lesson.dimensions) ? lesson.dimensions : [];
+  const row = dimensions.find(item => item && str(item.name) === name);
+  return str(row && row.text);
+}
+
+/**
+ * 逐维聚合（雷达轴与点评原文共用同一份产物：两处不许各数一遍）。
+ *
+ * 分母 = 本阶段**有点评机会的课次**（缺课记录按档案口径没有五维、只有那句温柔的话，不进分母
+ * —— 否则「这学期缺过一次课」会把每个维度都算成没写全）。
+ * `covered` = 有原文的课次数；`insufficient` = 一段原文都没有（FR-240 的判据）。
+ */
+export function archiveReportDimensionAggregate(snapshot) {
+  const source = snapshot && typeof snapshot === 'object' ? snapshot : {};
+  const lessons = Array.isArray(source.lessons) ? source.lessons : [];
+  const total = lessons.filter(lesson => !(lesson && lesson.isAbsence)).length;
+  return REVIEW_DIMENSION_NAMES.map(name => {
+    const texts = lessons
+      .map(lesson => ({
+        date: str(lesson && lesson.date),
+        title: str(lesson && lesson.title),
+        text: lessonDimensionText(lesson, name)
+      }))
+      .filter(row => row.text);
+    const covered = texts.length;
+    const latest = covered ? texts[covered - 1] : null;
+    return {
+      name,
+      covered,
+      total,
+      ratio: total ? covered / total : 0,
+      value: total ? Math.round((covered / total) * 100) : 0,
+      insufficient: covered === 0,
+      note: covered === 0
+        ? ARCHIVE_REPORT_INSUFFICIENT_TEXT
+        : `${covered}/${total} 节课有原文`,
+      // 最新的课次排前面（快照里的课次是日期升序的）。
+      texts: texts.slice().reverse().slice(0, ARCHIVE_REPORT_REVIEW_TEXT_LIMIT),
+      latest
+    };
+  });
+}
+
+/**
+ * 雷达视图（FR-239 的「雷达维度」）：五条轴的比值 + SVG 几何（网格 / 辐条 / 多边形 / 圆点）。
+ * 界面只渲染这里的 `grid` / `spokes` / `polygon` / `dots`，不自己算三角函数（几何可 Node 直跑断言）。
+ */
+export function archiveReportRadarView(snapshot) {
+  const axes = archiveReportDimensionAggregate(snapshot);
+  const geometry = ARCHIVE_REPORT_RADAR_GEOMETRY;
+  const center = geometry.size / 2;
+  const step = (Math.PI * 2) / axes.length;
+  const pointAt = (index, ratio) => {
+    const angle = -Math.PI / 2 + index * step;
+    return {
+      x: round2(center + Math.cos(angle) * geometry.radius * ratio),
+      y: round2(center + Math.sin(angle) * geometry.radius * ratio)
+    };
+  };
+  const grid = geometry.levels.map(level => ({
+    level,
+    ratio: level,
+    points: axes.map((axis, index) => pointAt(index, level)).map(point => `${point.x},${point.y}`).join(' ')
+  }));
+  const spokes = axes.map((axis, index) => {
+    const end = pointAt(index, 1);
+    return { x1: center, y1: center, x2: end.x, y2: end.y };
+  });
+  const dots = axes.map((axis, index) => {
+    const point = pointAt(index, axis.ratio);
+    return { name: axis.name, value: axis.value, ratio: axis.ratio, x: point.x, y: point.y };
+  });
+  const insufficientNames = axes.filter(axis => axis.insufficient).map(axis => axis.name);
+  return {
+    title: ARCHIVE_REPORT_RADAR_TITLE,
+    desc: ARCHIVE_REPORT_RADAR_DESC,
+    size: geometry.size,
+    center: { x: center, y: center },
+    radius: geometry.radius,
+    grid,
+    spokes,
+    polygon: dots.map(dot => `${dot.x},${dot.y}`).join(' '),
+    dots,
+    axes,
+    coveredDimensions: axes.filter(axis => axis.covered > 0).length,
+    insufficientNames,
+    insufficientText: ARCHIVE_REPORT_INSUFFICIENT_TEXT,
+    allInsufficient: insufficientNames.length === axes.length
+  };
+}
+
+/** 点评原文视图（FR-239 的「点评原文」）：逐维列出原文；没有原文的维度给「本阶段数据不足」。 */
+export function archiveReportReviewView(snapshot) {
+  const axes = archiveReportDimensionAggregate(snapshot);
+  const rows = axes.map(axis => ({
+    name: axis.name,
+    covered: axis.covered,
+    total: axis.total,
+    count: axis.texts.length,
+    insufficient: axis.insufficient,
+    note: axis.insufficient ? ARCHIVE_REPORT_INSUFFICIENT_TEXT : axis.note,
+    texts: axis.texts
+  }));
+  return {
+    title: ARCHIVE_REPORT_REVIEW_TITLE,
+    desc: ARCHIVE_REPORT_REVIEW_DESC,
+    rows,
+    coveredDimensions: rows.filter(row => !row.insufficient).length,
+    textCount: rows.reduce((total, row) => total + row.count, 0),
+    insufficientNames: rows.filter(row => row.insufficient).map(row => row.name),
+    insufficientText: ARCHIVE_REPORT_INSUFFICIENT_TEXT
+  };
+}
+
+/**
+ * 阶段总结（FR-239 的「阶段总结」）：**每一句话都是从归档聚合出来的数字拼的**，没有示例文案。
+ * 一条课次都没有 / 一段原文都没有时，如实写「本阶段数据不足」，不用示例数据把版面填满。
+ */
+export function archiveReportDigestView(snapshot) {
+  const source = snapshot && typeof snapshot === 'object' ? snapshot : {};
+  const axes = archiveReportDimensionAggregate(snapshot);
+  const lessons = num(source.lessonCount);
+  const covered = axes.filter(axis => !axis.insufficient);
+  const insufficientNames = axes.filter(axis => axis.insufficient).map(axis => axis.name);
+  if (!lessons) {
+    return {
+      title: ARCHIVE_REPORT_DIGEST_TITLE,
+      insufficient: true,
+      lines: [ARCHIVE_REPORT_DIGEST_INSUFFICIENT],
+      coveredDimensions: 0,
+      insufficientNames,
+      insufficientText: ARCHIVE_REPORT_INSUFFICIENT_TEXT
+    };
+  }
+  const lines = [
+    `本阶段（${str(source.period) || '未记录周期'}）共聚合 ${lessons} 节课：${num(source.artworkCount)} 幅成品作品、${num(source.photoCount)} 张课堂照片${num(source.absenceCount) ? `，其中 ${num(source.absenceCount)} 节缺课（温柔留白）` : '，没有缺课'}。`
+  ];
+  if (!covered.length) {
+    lines.push(ARCHIVE_REPORT_DIGEST_INSUFFICIENT);
+  } else {
+    lines.push(`五个维度里有 ${covered.length} 个留下了老师确认后的点评原文：${covered.map(axis => `${axis.name}（${axis.covered}/${axis.total} 节课）`).join('、')}。`);
+    lines.push(insufficientNames.length
+      ? `「${insufficientNames.join('、')}」在这些课次里还没有可聚合的原文，报告中如实标注「${ARCHIVE_REPORT_INSUFFICIENT_TEXT}」。`
+      : '五个维度在每一节课上都有原文，雷达是完整的。');
+  }
+  return {
+    title: ARCHIVE_REPORT_DIGEST_TITLE,
+    insufficient: covered.length === 0,
+    lines,
+    coveredDimensions: covered.length,
+    insufficientNames,
+    insufficientText: ARCHIVE_REPORT_INSUFFICIENT_TEXT
+  };
+}
 
 /** 生成入口的禁用原因（一条都读不到时如实说明，不给笼统的「请完善信息」）。 */
 export function archiveReportGenerateIssue({ name = '', total = 0, count = 0, period = '' } = {}) {
@@ -247,7 +437,12 @@ export function archiveReportSnapshotView(snapshot) {
       photoCount: num(lesson && lesson.photoCount),
       dimensionCount: num(lesson && lesson.dimensionCount),
       dimensions: (Array.isArray(lesson && lesson.dimensions) ? lesson.dimensions : []).map(row => ({ name: str(row && row.name), text: str(row && row.text) }))
-    }))
+    })),
+    // 报告正文三块（US-207b）：范围 / 点评原文 / 阶段总结全部由**这份快照**聚合 —— 历史版本回看时
+    // 看到的是当时的数据（不是拿今天的记录重算）。
+    radar: archiveReportRadarView(source),
+    review: archiveReportReviewView(source),
+    digest: archiveReportDigestView(source)
   };
 }
 
@@ -482,7 +677,11 @@ export function archiveReportView(report, { now } = {}) {
       annotation: `生成于 ${archiveReportDateText(entry.generatedAt, now) || '未记录时间'} · 共 ${entryView.lessonCount} 节课`,
       lessonCount: entryView.lessonCount,
       facts: entryView.facts,
-      lessonRows: entryView.lessonRows
+      lessonRows: entryView.lessonRows,
+      // 历史版本看的是**那一版的**雷达 / 点评原文 / 阶段总结（同一份快照聚合出来的）。
+      radar: entryView.radar,
+      review: entryView.review,
+      digest: entryView.digest
     };
   });
   return {
@@ -511,6 +710,10 @@ export function archiveReportView(report, { now } = {}) {
     absenceCount: snapshotView.absenceCount,
     facts: snapshotView.facts,
     lessonRows: snapshotView.lessonRows,
+    // 报告正文（US-207b）：雷达维度 / 点评原文 / 阶段总结，全部由这份快照聚合（含历史版本回看）。
+    radar: snapshotView.radar,
+    review: snapshotView.review,
+    digest: snapshotView.digest,
     history,
     historyCount: history.length,
     hasHistory: history.length > 0

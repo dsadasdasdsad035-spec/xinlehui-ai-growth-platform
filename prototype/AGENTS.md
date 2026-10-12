@@ -302,6 +302,41 @@ React + Vite 单页原型（`src/main.jsx` 是主入口，另按模块拆出 `sr
     断言标签要读 `span` 的文本，不要对整块 `textContent` 用 `split(' ')`；历史行的文本里还带着
     「查看这一版」按钮的文案，断言注解要读行内的 `span`。
 
+## 报告正文：雷达维度 / 点评原文 / 阶段总结（[第四步 US-207b] / FR-239、FR-240、FR-242）
+
+> 报告里的**每一句话、每一个数字**都必须由归档数据聚合得出（FR-239 禁止写死的示例文案）。
+> 三块正文都收在 `src/data/archiveReports.js`（零依赖纯函数），档案页只渲染它们的产物
+> （`ReportDigest` / `ReportRadar` / `ReportReviewTexts`，`GrowthArchiveData.jsx`）。
+
+- **三块产物 + 唯一真源**：`archiveReportDimensionAggregate(snapshot)` 逐维聚合（雷达轴与点评原文**共用
+  这一份**，两处不许各数一遍）→ `archiveReportRadarView` / `archiveReportReviewView` / `archiveReportDigestView`。
+  `archiveReportSnapshotView` 一次给全 `radar / review / digest`，`archiveReportView` 与**历史版本行**都转发同一组
+  字段（历史版本回看读的是**那一版快照**的聚合结果，不是拿今天的记录重算 —— 这正是「快照」要防的事）。
+- **雷达分值 = 覆盖度，不是能力打分**：五条轴取 `REVIEW_DIMENSION_NAMES`（与第三步同一份），
+  `value = covered / total`（百分数）；`total` = 本阶段**有点评机会的课次**（缺课记录按档案口径没有五维、
+  只有那句温柔的话，**不进分母** —— 否则缺一次课就会把每个维度都拉低）。编不出分就不编：
+  没有任何原文的维度 `value = 0`、`insufficient = true`、`note = ARCHIVE_REPORT_INSUFFICIENT_TEXT`。
+- **数据不足必须明说**（FR-240）：`ARCHIVE_REPORT_INSUFFICIENT_TEXT = '本阶段数据不足'` 是**唯一真源**
+  （界面里连这个字符串都不许再写一遍，断言直接查界面源码里没有它）；雷达/点评原文/阶段总结三块都走同一句。
+- **雷达几何在 data 层算**：`ARCHIVE_REPORT_RADAR_GEOMETRY`（viewBox 240 / 半径 88 / 四圈网格）+
+  `grid / spokes / polygon / dots` 全部是 data 层的产物（界面里没有 `Math.cos` / `Math.sin`）——
+  几何可以直接用 Node 断言（圆心、覆盖 100% 落在半径上、覆盖 50% 落在半径一半、数据不足时退化到圆心）。
+- **点评原文**：逐维列出归档记录里的**原文 + 课次日期 + 作品名**（每维上限
+  `ARCHIVE_REPORT_REVIEW_TEXT_LIMIT = 3`，最新课次在前）；缺课记录的 `reviews.summary` **不算**点评原文。
+- **界面钩子**（断言读这些）：`data-archive-report-digest`（`-line` / `-insufficient` / `-covered`）、
+  `data-archive-report-radar`（`-covered` / `-insufficient` / `-radar-svg` / `-radar-polygon` /
+  `-radar-insufficient-note`）、`data-archive-report-radar-axis=<维度名>`（`-value` / `-axis-covered` /
+  `-axis-insufficient` / `-axis-note`）、`data-archive-report-review`（`-covered` / `-insufficient` / `-texts`）、
+  `data-archive-report-review-dimension=<维度名>`（`-count` / `-insufficient` / `-note`）、
+  `-review-text`（`-text-date`）、`-review-empty`。
+- **写死的示例报告正文已经删掉**：`main.jsx` 里的 `ArchiveStudio`（US-207b 删除）曾带着
+  「美术能力 / 本学期进步点 / 下学期学习规划 / 老师寄语」那段示例文案与写死的「陈一诺 · 7岁 /
+  已记录 18 次课程」—— 那是 PRD 点名的「写死的示例文案」。断言姿势：`stripComments` 后在
+  `main.jsx` 里搜那几个句子（0 命中）。
+- **验证口径**：DOM 读数必须等于**页面内 import 真实 data 模块**的独立重算（
+  `buildArchiveReportSnapshot` + 三个 view 函数），而不是等于脚本里手抄的期望值；
+  期望值只在「纯夹具、无流程归档」的用例里硬编码（例如 2 节课 + 1 节缺课的覆盖度 = 100/100/50/50/50）。
+
 ## 老师端「课后反馈」第一步（班级 / 学员 / 课程 / 课次推荐）
 
 > **课次表单全站只有一份实现 = `TeacherFlowV2`（`main.jsx`）。** 旧的 `CreateFlow` 五步向导
