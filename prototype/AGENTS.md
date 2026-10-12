@@ -3556,7 +3556,11 @@ US-222 管「成片怎么版本化」，这一节管「谁能碰这些成片、�
   多图拼贴：合成一个 slot 的 `grid`，档位由 `posterGridShape()` 给（4→2×2 / 6–9→3×3 / 10–12→3×4，
   **列在前**），超 `maxItems` 用 `posterEvenSample()` 按课次均匀精选；`cellCaption.visible` 时
   每格的**卡片高度会缩掉一条标注带**（所以「行距 = 格高 + 间距」而不是「卡片高 + 间距」）。
-  `{ url: '' }` 是**占位格**（保留格子、不画图，FR-321 的班级占位格）。
+  `{ url: '' }` 是**占位格**（保留格子、不画图，FR-321 的班级占位格），占位格可以再带一句
+  `placeholderText`（如「本期暂无作品」）：由 `paintPosterCellPlaceholder()` 居中写在白卡片里 ——
+  只留格子不写字，家长看不出那是「还没交作品」还是「漏了」（US-305 真踩）。字号 = 格宽的
+  `POSTER_CELL_PLACEHOLDER_FONT_RATIO`（0.12）、上限压在短边 3%、最多两行（超行走同一支
+  `layoutPosterText`）；不带这个字段的调用方（单作品 / 阶段）渲染结果逐字节不变。
 - **素材入参只有三种形状**，归一入口是纯函数 `posterImageEntries()` / `posterImagePlan(spec, data)`：
   `data.images` 字符串 / 数组 → 归**第一个 image 槽**；对象 → 按槽 id 取（没命中就不画）；
   `data.image` 是单张的便捷写法；`data.logo` 是机构 Logo（模板自带 `slot.url` 优先）。
@@ -3748,6 +3752,52 @@ US-303 补的是后半截，两个模块：
   逐格量几何（等宽等高 · 列间距=gap · 行间距=gap+标注行高 · 每列对齐）与像素（逐格作品墨迹 · 逐格日期墨迹 ·
   间隙干净）；② 14 幅 + 1 幅 = 15 幅 → 预览上方出现验收原文并只画 12 格（3×4）；另含周期切换、日期标注
   开关（关掉 → 格子变高、格下无墨迹）、导出 PNG 2160×3840 + 文件名、390px、console 干净）。
+
+## 班级集体海报的学员格子、分批与占位格（[海报 US-305] / FR-315、FR-319、FR-321、FR-322）
+
+「全班每个孩子一格」的作品墙（1080×1920）。与单作品 / 阶段两支同分工（`data` 定规则、`services` 落笔）：
+
+- `src/data/posterClass.js`（data 层纯函数，可 `node` 直跑）= 格子 / 顺序 / 分批 / 缺件：
+  - **格子从学员来，不是从作品来**（这是与阶段海报最大的区别）：顺序真源 = **班级名单**
+    （`posterClassBaseOrder`：名单在前，名单之外但本期有记录的学员接在后面 —— 有记录的孩子一定占一格；
+    没记录姓名的记录合成最后一格，展签写「未记录姓名」）。每位学员取本周期**最新一幅**成品图
+    （`posterClassPicks`：只收有成品图的记录、按课次升序覆盖写入，留下的就是最新那一条；缺课记录没有
+    成品图，只会让那一位走占位格）。「哪张图能显示」照旧读 `archiveRecordMediaView(record,{surface:'teacher'})`。
+  - **本期无作品的学员保留占位格**（FR-321）：`posterClassCells` 给这一格 `{url:'', placeholderText:'本期暂无作品'}`，
+    格子与展签（姓名）都在 —— **绝不跳过**，否则那位家长会以为漏掉了自己的孩子。
+  - **超过上限（默认 30）不裁剪，改成分批**（FR-322）：`posterClassBatches` 按顺序每 30 位一批，
+    `posterClassBatchNote` 给那句提示（含 `1of2` 页码说明），`posterClassBatchPlan(plan, n)` 用**同一份
+    上下文**重建另一批（网格 / 占位 / 二维码 / Logo 都走同一条 compose，不会出现两种版式）。
+    「已收录 M / 共 N」那种精选口径只属于阶段拼贴，别搬到班级墙上（那就等于少画一个孩子）。
+  - **作品墙的网格由本层算好、显式写进 spec**（`posterClassWallGrid`：`columns = ceil(sqrt(n))`、
+    `rows = ceil(n/columns)`；模板写死了行列且放得下就尊重模板）。为什么必须显式写：渲染层的自适应档位
+    只覆盖到 12 格（2×2 / 3×3 / 3×4），30 位学员会**溢出画布**；写死行列后 `posterEvenSample` 也不会
+    再精选掉人（`maxItems` 放到网格容量与本批人数的大者）。
+  - **缺件补丁只给二维码位与 Logo 位**（复用 `posterSingleSpecPatch`，不传 `artworkMissing`）：
+    作品墙**永远不过「图位缺件」那一支** —— 把它换成一句文案会把 30 个格子塌成一个。
+    姓名标注开关（默认开）只拨墙那一格的 `cellCaption.visible`，坐标与样式一个字不改。
+  - 文件名：`{班级名}_{周期}_班级海报.{png|jpg}`，分批时带页码 `_1of2`（`posterClassFilename`；
+    空片段不拼接、非法字符走装裱导出那一支）。
+- `src/services/posterClass.js` = 渲染与下载：`renderPosterClass`（预览 1× = 1080×1920）、
+  `exportPosterClassPng`（导出 2× = 2160×3840，先过导出门）、`exportPosterClassBatches`（逐批重建
+  plan → 渲染 → 下载，批间隔 `POSTER_CLASS_BATCH_DOWNLOAD_GAP_MS` 避开浏览器的连续下载节流，
+  某一批失败只进 `failures`，不影响其它批次）。下载那一支复用 `services/posterSingle.js` 的
+  `downloadPosterSingleBlob`。
+- 界面（**成长档案页**的班级视图，`GrowthArchiveData.jsx` 的 `ClassPosterPanel`，仅 `view.isClass` 时渲染）：
+  周期下拉 + 「每格下方标注学员姓名」开关 + 顺序编辑列表（上移 / 下移 / 恢复班级名单顺序，
+  `posterClassMoveOrder` 以**当前生效顺序**为底，不是以名单为底）+ 批次选择（超上限时）+
+  「导出第 N 批 PNG」与「分批导出全部 N 张」。班级 / 名单 / 记录 / 令牌都来自档案页已有的 state
+  （`view.name` / `classRoster` / `records` / `shareTokens`）；机构 Logo 取**默认装裱模板**的水印图
+  （`defaultFramingPreset` + `frameSpecRenderView().overlays.watermark.logo.url`），没配置就走 Logo 位兜底文案。
+- 验证口径：`/tmp/assert-us094.mjs`（Node，**186 项**：网格 12 档逐一比对 / 名单顺序与调整 /
+  代表作取最新一幅 / 占位格 / 32 位分 2 批与页码 / 装配读数 / 空态与导出门 / 分享与 Logo 补丁 /
+  文件名 / 分层纪律 / 幂等与脏输入）+ `/tmp/assert-us094-browser.mjs`（CDP，**102 项**：真机走到
+  成长档案的班级视图，6 位学员（5 幅唯一纯色 + 1 位占位）—— 画布 1080×1920、顶部班级名与周期、
+  3×2 网格、**逐格取格心颜色确认作品与姓名不串格**、占位格里的「本期暂无作品」真的画出来了（像素）、
+  顺序调整后绑定跟着换、姓名标注开关、导出 PNG 2160×3840 + 文件名、32 位学员分批（6×5、两批按钮、
+  分批导出下载 2 张 `1of2`/`2of2`）、有效分享 → 底部换真二维码（码板深色模块占比）、390px、console 干净）。
+- 已知边界：内置班级模板的版式（作品墙占上部、底部机构与二维码）沿用 US-302a 的参数，**底部留白较多**
+  是模板 `y` 比例（相对短边）在 1920 高画布上的既有表现 —— 改版式属后台模板参数，不在本故事范围。
 
 ## 容易踩的坑
 

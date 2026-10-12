@@ -31,6 +31,7 @@ import {
   posterGridShape,
   posterEvenSample,
   POSTER_CANVAS_EDGE_RANGE,
+  POSTER_MUTED_COLORS,
   POSTER_VARIABLE_KEYS
 } from '../data/posterTemplates';
 import { paintQrMatrixBox } from './framing';
@@ -50,6 +51,15 @@ export const POSTER_SHADOW = {
 
 /** 省略号（FR-311：超过 `maxLines` 截断并加省略号）。 */
 export const POSTER_ELLIPSIS = '…';
+
+/**
+ * 占位格里的那句话（`placeholderText`，如 FR-321 的「本期暂无作品」）：
+ * 字号按**格子宽度**的比例算、上限压在画布短边的 3%（大格子里不至于夸张成一整块字）。
+ * 三处（班级墙的占位格、断言与将来的其它拼贴）读同一份。
+ */
+export const POSTER_CELL_PLACEHOLDER_FONT_RATIO = 0.12;
+export const POSTER_CELL_PLACEHOLDER_MAX_RATIO = 0.03;
+export const POSTER_CELL_PLACEHOLDER_MAX_LINES = 2;
 
 /**
  * 设备画布尺寸：`scale` 是导出倍数，但要**封顶在 canvas 单边上限**（默认 4096）。
@@ -237,15 +247,21 @@ export function decodePosterImage(source) {
  *   - 数组 → 逐条（元素可以是字符串或 `{ url, caption }`，`caption` 供每格标注用）；
  *   - 空值 → 空列表（那一支不画，不猜）。
  * 条目里 `url` 一律过素材地址闸（不把任意串当图片地址），`{ url: '' }` 是**占位格**
- * （保留格子、不画图 —— FR-321 的班级占位格就是这个形状）。
+ * （保留格子、不画图 —— FR-321 的班级占位格就是这个形状）；
+ * 占位格可以再带一句 `placeholderText`（如「本期暂无作品」），它会画在格子里（见
+ * `paintPosterCellPlaceholder`）——「保留占位格」才是验收要的东西，一块空白卡片不是。
  */
 export function posterImageEntries(value) {
   const list = Array.isArray(value) ? value : value === undefined || value === null || value === '' ? [] : [value];
   return list.map((item) => {
     if (item && typeof item === 'object' && !Array.isArray(item)) {
-      return { url: posterImageUrl(item.url), caption: variableValue(item.caption) };
+      return {
+        url: posterImageUrl(item.url),
+        caption: variableValue(item.caption),
+        placeholderText: variableValue(item.placeholderText)
+      };
     }
-    return { url: posterImageUrl(item), caption: '' };
+    return { url: posterImageUrl(item), caption: '', placeholderText: '' };
   });
 }
 
@@ -480,9 +496,47 @@ function paintPosterCard(ctx, { box, slot, image, canvas }) {
   return { box, imageBox, border };
 }
 
+/**
+ * 占位格里的那句话（如「本期暂无作品」）：白卡片已经在 `paintPosterCard` 里画好，
+ * 这里只把一句文案居中写进格子 —— 字号随格子宽度走、上限压在短边 3%（大格子里不至于夸张），
+ * 超过两行时按渲染层统一的换行器截断（与文字位同一支 `layoutPosterText`）。
+ *
+ * 为什么必须有这一笔：`{url:''}` 的占位格在绘制层本来是「留一块白卡片」，而验收（FR-321）要的是
+ * 「保留一个『本期暂无作品』占位格」—— 只留格子不写字，家长看不出那是「还没交作品」还是「漏了」。
+ */
+function paintPosterCellPlaceholder(ctx, { box, text, slot, canvas }) {
+  const value = variableValue(text);
+  const caption = slot.cellCaption || {};
+  const padding = posterRatioToPixels(slot.paddingRatio, canvas);
+  const maxWidth = Math.max(0, box.width - padding * 2);
+  const fontSize = Math.min(
+    box.width * POSTER_CELL_PLACEHOLDER_FONT_RATIO,
+    posterShortEdge(canvas) * POSTER_CELL_PLACEHOLDER_MAX_RATIO
+  );
+  if (!value || !(fontSize > 0) || !(maxWidth > 0)) return null;
+  const font = `${fontSize}px sans-serif`;
+  ctx.save();
+  ctx.globalAlpha = alphaOf(slot.opacity);
+  // **先设字体再测量**（与文字位同一条纪律：measureText 量的是当前字体）。
+  ctx.font = font;
+  ctx.fillStyle = caption.color || POSTER_MUTED_COLORS.brown;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  const measure = (needle) => ctx.measureText(needle).width;
+  const layout = layoutPosterText({ text: value, maxWidth, maxLines: POSTER_CELL_PLACEHOLDER_MAX_LINES, measure });
+  const lineHeight = fontSize * 1.35;
+  const totalHeight = lineHeight * layout.lines.length;
+  const startY = box.y + Math.max(0, (box.height - totalHeight) / 2);
+  layout.lines.forEach((line, index) => {
+    ctx.fillText(line, box.x + box.width / 2, startY + index * lineHeight);
+  });
+  ctx.restore();
+  if (!layout.lines.length) return null;
+  return { text: value, lines: layout.lines, truncated: layout.truncated, box, fontSize, lineHeight, centerX: box.x + box.width / 2 };
+}
+
 /** 每格下方（或上方）的课次日期 / 作品名标注（`cellCaption`）。 */
-function paintPosterCellCaption(ctx, { box, text, slot, canvas }) {
-  const caption = slot.cellCaption;
+function paintPosterCellCaption(ctx, { box, text, slot, canvas }) {  const caption = slot.cellCaption;
   const fontSize = posterRatioToPixels(caption.sizeRatio, canvas);
   if (!text || !(fontSize > 0) || !(box.width > 0)) return null;
   ctx.save();
@@ -622,6 +676,10 @@ function drawImageSlot(ctx, { slot, canvas, context, entries, warnings }) {
     const entry = sampled[index] || null;
     const image = entry?.image || null;
     const painted = paintPosterCard(ctx, { box: cardBox, slot, image, canvas });
+    // 没有作品的那一格：白卡片已经画好，再把「本期暂无作品」写进去（FR-321 的占位格）。
+    const placeholder = image
+      ? null
+      : paintPosterCellPlaceholder(ctx, { box: cardBox, text: entry?.placeholderText || '', slot, canvas });
     const captionText = entry?.caption ? applyPosterVariables(entry.caption, context).text : '';
     const caption = captionBox ? paintPosterCellCaption(ctx, { box: captionBox, text: captionText, slot, canvas }) : null;
     cells.push({
@@ -631,6 +689,8 @@ function drawImageSlot(ctx, { slot, canvas, context, entries, warnings }) {
       border: painted.border,
       captionBox,
       caption,
+      placeholder,
+      placeholderText: entry?.placeholderText || '',
       url: entry?.url || '',
       drawn: !!image
     });

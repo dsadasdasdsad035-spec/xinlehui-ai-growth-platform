@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, Clapperboard, Download, FileText, Frame, Gauge, Link2, Loader2, MessageSquareText, Plus, RefreshCw, Sparkles, Trash2, XCircle } from 'lucide-react';
+import { Archive, Clapperboard, Download, FileText, Frame, Gauge, Image, Link2, Loader2, MessageSquareText, Plus, RefreshCw, Sparkles, Trash2, XCircle } from 'lucide-react';
 // 档案页的「常驻视图」（[第四步 US-206]）：
 //  - 对象 / 周期 / 缺课筛选的**可选项、默认选中、过滤、空态**在 `data/archiveTargets.js` 与
 //    `data/archiveResident.js` 两份零依赖模块里，组件只渲染它们的产物（一个名字都不写死）；
@@ -257,6 +257,39 @@ import {
   shareTokenLink
 } from './data/shareTokens';
 import { revokeRemoteShareToken, saveRemoteShareToken } from './services/shareTokensApi';
+// 班级集体海报（[海报 US-305] / FR-315、FR-321、FR-322）：格子 / 顺序 / 分批 / 占位的规则全在
+// `data/posterClass.js`（零依赖纯函数，可 node 直跑断言），渲染与下载在 `services/posterClass.js`
+// （预览 1×、导出 2×，同一个 `renderPoster`；分批导出逐批重建 plan）。这一页只渲染它们的产物。
+import {
+  POSTER_CLASS_BATCH_EXPORT_LABEL,
+  POSTER_CLASS_CAPTION_TOGGLE_LABEL,
+  POSTER_CLASS_DEFAULT_PERIOD,
+  POSTER_CLASS_NO_ARTWORK_TEXT,
+  POSTER_CLASS_ORDER_MOVE_DOWN_LABEL,
+  POSTER_CLASS_ORDER_MOVE_UP_LABEL,
+  POSTER_CLASS_ORDER_NOTE,
+  POSTER_CLASS_ORDER_RESET_DONE,
+  POSTER_CLASS_ORDER_RESET_LABEL,
+  POSTER_CLASS_PERIOD_OPTIONS,
+  POSTER_CLASS_UNNAMED_TEXT,
+  buildPosterClassPlan,
+  posterClassExportGate,
+  posterClassMoveOrder
+} from './data/posterClass';
+import {
+  POSTER_CLASS_PREVIEW_SCALE,
+  POSTER_CLASS_RENDER_FAILED_TEXT,
+  createPosterClassUrl,
+  exportPosterClassBatches,
+  exportPosterClassPng,
+  releasePosterClassUrl,
+  renderPosterClass
+} from './services/posterClass';
+import { POSTER_SINGLE_SHARE_PENDING_TEXT } from './data/posterSingle';
+// 机构 Logo 的取值与第四步海报同一支判据：默认装裱模板里配置的那张水印图（没配置就用机构名兜底）。
+import { defaultFramingPreset } from './data/framingPresets';
+import { frameSpecRenderView } from './services/frameSpec';
+import { artworkExportSizeText } from './data/artworkExport';
 // 成片版本 · 更新提示 · 历史版本 · 删除与级联（[第四步 US-222] / FR-301 ~ FR-304）：落库字段
 // （videoKey / version / generatedAt / specSnapshot）、「有 N 幅作品已更新，建议重新生成」那句提示、
 // 版本自增与历史快照、删除只动成片、以及归档记录删除时的级联判据全在 `data/videoRecords.js`
@@ -1236,6 +1269,185 @@ function VideoMobilePanel({view, notice, onMeasure}){
  *  - **390px 不溢出**：`measureVideoOverflow()` 按 `VIDEO_MOBILE_TARGETS` 逐块量 `scrollWidth / clientWidth`。
  *  六行读数与逐块测量都渲染在 `VideoMobilePanel`（`data-video-mobile-*`）。
  */
+/**
+ * 班级集体海报（[海报 US-305] / FR-315、FR-321、FR-322）：「全班每个孩子一格」的作品墙。
+ *
+ * 三件事都在数据层，组件只渲染产物 + 三个动作：
+ *  - 格子从**学员**来（顺序真源 = 班级名单，名单之外但本期有记录的学员接在后面），每位学员取本周期
+ *    **最新一幅**成品图；本期没有作品的学员**保留占位格**（格内写「本期暂无作品」，展签仍是姓名）——
+ *    「跳过某位孩子」在所有路径上都不会发生（FR-321）。
+ *  - 学员数超过上限（默认 30）**不裁剪**：按顺序分批，一次出一批（`plan.batch`），文件名带 `1of2`
+ *    页码；`分批导出全部` 逐批渲染下载（FR-322；打包 zip 不在本期）。
+ *  - 顺序默认按名单、生成前可调整：上移 / 下移只改这一张海报的排布（`posterClassMoveOrder`），
+ *    不动班级名单本身；恢复班级名单顺序把调整清掉。
+ *
+ * `data-poster-class-*` 上的读数全部来自 `buildPosterClassPlan()` 的产物（界面不自己重算一遍）。
+ */
+function ClassPosterPanel({className,roster=[],records=[],tokens=[],teacherName='',orgName='',logo='',setToast=()=>{}}){
+  const [period,setPeriod]=useState(POSTER_CLASS_DEFAULT_PERIOD);
+  // 顺序调整、姓名标注开关、当前出图批次：都是「这一次生成」的局部 state（不落库、不进班级名单）。
+  const [order,setOrder]=useState(null);
+  const [nameCaptions,setNameCaptions]=useState(true);
+  const [batchIndex,setBatchIndex]=useState(1);
+  const [preview,setPreview]=useState({key:'',url:'',phase:'idle',warnings:[],width:0,height:0});
+  const [notice,setNotice]=useState({phase:'idle',message:''});
+  const [busy,setBusy]=useState(false);
+  const shareOrigin=typeof window==='undefined'?'':(window.location?.origin||'');
+  const plan=useMemo(()=>buildPosterClassPlan({
+    records,className,roster,period,order,batchIndex,tokens,today:null,
+    teacherName,orgName,logo,origin:shareOrigin,nameCaptions
+  }),[records,className,roster,period,order,batchIndex,tokens,teacherName,orgName,logo,shareOrigin,nameCaptions]);
+  const gate=posterClassExportGate(plan);
+  // 换班级 / 换周期：顺序调整与批次都绑在「这一次出图」上，一起清掉（回执同理）。
+  useEffect(()=>{setOrder(null);setBatchIndex(1);setNotice({phase:'idle',message:''})},[className,period]);
+  // 预览重绘键 = 真正会改变这张图的所有输入（班级 / 周期 / 本批的格子与顺序 / 模板 / 链接 / 开关）。
+  const renderKey=plan.hasClass&&gate.allowed?[
+    plan.templateKey,plan.className,plan.periodLabel,plan.batch.index,plan.wall.grid.label,
+    plan.batch.cells.map(cell=>`${cell.student}:${cell.hasArtwork?'art':'none'}:${cell.url.slice(-24)}:${cell.caption}`).join(','),
+    plan.data.logo,plan.data.shareUrl,plan.wall.nameCaptions?'captions':'no-captions'
+  ].join('|'):'';
+  useEffect(()=>{
+    if(!renderKey){
+      setPreview({key:'',url:'',phase:'idle',warnings:[],width:0,height:0});
+      return ()=>{};
+    }
+    let cancelled=false;
+    let createdUrl='';
+    setPreview({key:renderKey,url:'',phase:'pending',warnings:[],width:0,height:0});
+    renderPosterClass(plan,{scale:POSTER_CLASS_PREVIEW_SCALE}).then(rendered=>{
+      if(cancelled) return;
+      if(!rendered||!rendered.blob){
+        setPreview({key:renderKey,url:'',phase:'failed',warnings:[],width:0,height:0});
+        return;
+      }
+      createdUrl=createPosterClassUrl(rendered);
+      setPreview({key:renderKey,url:createdUrl,phase:'ready',warnings:rendered.warnings||[],width:rendered.width,height:rendered.height});
+    }).catch(()=>{
+      if(!cancelled) setPreview({key:renderKey,url:'',phase:'failed',warnings:[],width:0,height:0});
+    });
+    return ()=>{ cancelled=true; if(createdUrl) releasePosterClassUrl(createdUrl); };
+  // 预览随「重绘键」重跑：键里已经包含了 plan 上所有会影响这张图的输入。
+  },[renderKey]);
+  // 顺序调整：以**当前生效顺序**（`plan.students.ordered`，未调整时就是名单顺序）为底换位。
+  const moveStudent=(index,direction)=>{
+    setOrder(posterClassMoveOrder(plan.students.ordered,index,direction));
+    setNotice({phase:'idle',message:''});
+  };
+  const resetOrder=()=>{setOrder(null);setNotice({phase:'done',message:POSTER_CLASS_ORDER_RESET_DONE});};
+  const exportCurrent=async()=>{
+    if(!gate.allowed){setNotice({phase:'blocked',message:gate.reason});return;}
+    setBusy(true);
+    const result=await exportPosterClassPng(plan);
+    setBusy(false);
+    if(!result.ok){setNotice({phase:'failed',message:result.reason});return;}
+    const message=`班级海报已导出（第 ${plan.batch.index} / ${plan.batch.total} 批）：${result.filename} · ${result.rendered.width}×${result.rendered.height} · ${artworkExportSizeText(result.bytes)}`;
+    setNotice({phase:'done',message});
+    setToast(`${result.filename} 已下载`);
+  };
+  const exportAllBatches=async()=>{
+    if(!gate.allowed){setNotice({phase:'blocked',message:gate.reason});return;}
+    setBusy(true);
+    const result=await exportPosterClassBatches(plan);
+    setBusy(false);
+    if(!result.count){setNotice({phase:'failed',message:result.reason||POSTER_CLASS_RENDER_FAILED_TEXT});return;}
+    const message=`分批导出完成：${result.count} / ${result.total} 批已下载（${result.filenames.join('、')}）`;
+    setNotice({phase:result.ok?'done':'failed',message});
+    setToast(`已下载 ${result.count} 张班级海报`);
+  };
+  const state=!plan.hasClass
+    ?'empty'
+    :(!gate.allowed?'blocked':(preview.phase==='ready'?'ready':preview.phase));
+  const cellsView=plan.batch.cells;
+  return (
+    <section className="poster-class" data-poster-class="true"
+      data-poster-class-state={state}
+      data-poster-class-template={plan.templateKey}
+      data-poster-class-canvas={`${plan.spec.canvas.width}x${plan.spec.canvas.height}`}
+      data-poster-class-name={plan.className}
+      data-poster-class-period={plan.period}
+      data-poster-class-period-label={plan.periodLabel}
+      data-poster-class-window-from={plan.window.from}
+      data-poster-class-window-to={plan.window.to}
+      data-poster-class-students={String(plan.students.total)}
+      data-poster-class-roster={String(plan.students.roster)}
+      data-poster-class-extra={String(plan.students.extra)}
+      data-poster-class-artworks={String(plan.students.artworks)}
+      data-poster-class-placeholders={String(plan.students.placeholders)}
+      data-poster-class-batch={String(plan.batch.index)}
+      data-poster-class-batch-total={String(plan.batch.total)}
+      data-poster-class-batch-size={String(plan.batch.size)}
+      data-poster-class-batch-range={`${plan.batch.from}-${plan.batch.to}`}
+      data-poster-class-batch-note={plan.batch.note}
+      data-poster-class-batch-filename={plan.batch.filename}
+      data-poster-class-grid={plan.wall.grid.label}
+      data-poster-class-grid-columns={String(plan.wall.grid.columns)}
+      data-poster-class-grid-rows={String(plan.wall.grid.rows)}
+      data-poster-class-captions={plan.wall.nameCaptions?'on':'off'}
+      data-poster-class-order-adjusted={plan.order.adjusted?'true':'false'}
+      data-poster-class-order={plan.students.ordered.join('、')}
+      data-poster-class-cell-list={cellsView.map(cell=>`${cell.caption}>${cell.title||POSTER_CLASS_NO_ARTWORK_TEXT}`).join('|')}
+      data-poster-class-cell-bindings={cellsView.map(cell=>`${cell.student||POSTER_CLASS_UNNAMED_TEXT}@${cell.hasArtwork?cell.url:'slot'}`).join('|')}
+      data-poster-class-export={gate.allowed?'allowed':'blocked'}
+      data-poster-class-export-reason={gate.reason}
+      data-poster-class-preview={preview.phase}
+      data-poster-class-warnings={preview.warnings.join(' / ')}>
+      <div className="poster-class-head">
+        <Image size={14}/>
+        <b>班级集体海报</b>
+        <em className={`is-${state}`} data-poster-class-badge="true">{state==='ready'?'已生成':state==='pending'?'生成中':state==='blocked'?'暂无格子':state==='failed'?'生成失败':state==='empty'?'待选班级':'准备中'}</em>
+        {plan.templateName?<small data-poster-class-template-name="true">{plan.templateName}</small>:null}
+      </div>
+      {plan.hasClass?<div className="poster-class-body">
+        <div className="poster-class-controls">
+          <label>周期<select value={period} onChange={event=>setPeriod(event.target.value)} data-poster-class-period-select="true">{POSTER_CLASS_PERIOD_OPTIONS.map(name=><option key={name} value={name}>{name}</option>)}</select></label>
+          <small data-poster-class-range="true">{plan.periodLabel}</small>
+          <label className="poster-class-toggle"><input type="checkbox" checked={nameCaptions} onChange={event=>setNameCaptions(event.target.checked)} data-poster-class-captions-toggle="true"/><span>{POSTER_CLASS_CAPTION_TOGGLE_LABEL}</span></label>
+          <small data-poster-class-limit="true">单张上限 {plan.batch.limit} 位学员</small>
+        </div>
+        <p className="poster-class-order-note" data-poster-class-order-note="true">{POSTER_CLASS_ORDER_NOTE}{plan.order.adjusted?`（已调整：${plan.students.ordered.join('、')}）`:''}</p>
+        {plan.batch.note?<p className="poster-class-batch-note" data-poster-class-batch-note-line="true">{plan.batch.note}</p>:null}
+        {plan.batch.total>1?<div className="poster-class-batch-row" data-poster-class-batch-row="true">
+          <span>出图批次</span>
+          {plan.batches.map(item=><button type="button" key={item.index} className={item.index===plan.batch.index?'active':''} data-poster-class-batch-pick={String(item.index)} data-poster-class-batch-pick-size={String(item.size)} onClick={()=>setBatchIndex(item.index)}>第 {item.index} 批（{item.size} 位）</button>)}
+        </div>:null}
+        <figure className="poster-class-preview" data-poster-class-preview-box="true">
+          {preview.url
+            ?<img src={preview.url} alt={`${plan.className}的班级作品墙预览（1080×1920，第 ${plan.batch.index} 批）`} data-poster-class-image="true"/>
+            :<span className="poster-class-hold" data-poster-class-hold="true">{preview.phase==='failed'?'海报没有渲染成功':gate.allowed?'正在生成海报预览…':gate.reason}</span>}
+        </figure>
+        <div className="poster-class-meta">
+          <ul>
+            <li data-poster-class-line="class">班级：{plan.className} · 第 {plan.batch.index} / {plan.batch.total} 批（{plan.batch.from}-{plan.batch.to} 位）</li>
+            <li data-poster-class-line="period">周期：{plan.periodLabel}</li>
+            <li data-poster-class-line="wall">作品墙：{plan.wall.grid.label} 网格（{plan.wall.grid.columns} 列 × {plan.wall.grid.rows} 行）· 本批 {plan.batch.size} 格（作品 {plan.batch.artworks} · {POSTER_CLASS_NO_ARTWORK_TEXT} {plan.batch.placeholders}）</li>
+            <li data-poster-class-line="share">分享：{plan.share.pending?POSTER_SINGLE_SHARE_PENDING_TEXT:`链接可用 · ${plan.share.link}`}</li>
+          </ul>
+          <ol className="poster-class-order-list" data-poster-class-order-list="true" data-poster-class-order-total={String(plan.students.total)}>
+            {plan.students.ordered.map((studentName,index)=><li key={studentName||`unnamed-${index}`} data-poster-class-order-row={String(index)} data-poster-class-order-name={studentName}>
+              <span data-poster-class-order-label="true">{index+1}. {studentName||POSTER_CLASS_UNNAMED_TEXT}</span>
+              <button type="button" data-poster-class-move-up={String(index)} disabled={index===0} onClick={()=>moveStudent(index,-1)}>{POSTER_CLASS_ORDER_MOVE_UP_LABEL}</button>
+              <button type="button" data-poster-class-move-down={String(index)} disabled={index===plan.students.ordered.length-1} onClick={()=>moveStudent(index,1)}>{POSTER_CLASS_ORDER_MOVE_DOWN_LABEL}</button>
+            </li>)}
+          </ol>
+          <div className="poster-class-order-actions">
+            <button type="button" data-poster-class-order-reset="true" disabled={!plan.order.adjusted} onClick={resetOrder}>{POSTER_CLASS_ORDER_RESET_LABEL}</button>
+          </div>
+          {plan.notes.length?<ul className="poster-class-notes">
+            {plan.notes.map(note=><li key={note} data-poster-class-note="true">{note}</li>)}
+          </ul>:null}
+          {preview.warnings.length?<p className="poster-class-warning" data-poster-class-warning="true">{preview.warnings.join('；')}</p>:null}
+          <div className="poster-class-actions">
+            <Button icon={Download} disabled={!gate.allowed||busy} onClick={exportCurrent} data-poster-class-export-button="true">{busy?'正在导出…':gate.allowed?`导出第 ${plan.batch.index} 批 PNG`:'暂时不能导出'}</Button>
+            {plan.batch.total>1?<Button variant="secondary" icon={Download} disabled={!gate.allowed||busy} onClick={exportAllBatches} data-poster-class-export-all="true">{`${POSTER_CLASS_BATCH_EXPORT_LABEL} ${plan.batch.total} 张`}</Button>:null}
+            {gate.allowed?null:<small data-poster-class-block-reason="true">{gate.reason}</small>}
+            {notice.message?<small data-poster-class-notice="true">{notice.message}</small>:null}
+          </div>
+        </div>
+      </div>:<p className="poster-class-empty" data-poster-class-empty="true">{plan.notes[0]}</p>}
+    </section>
+  );
+}
+
 function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkCount,photoCount,teacherName,setToast,entries=[],scopeEntries=[],classEntries=[],roster=[],tokens=[],records=[],musicTracks=[],videoRecords=[],consents=null,setShareTokens=()=>{},setVideoRecords=()=>{},recordAudit=()=>{},auditActor=null,auditLog=[],videoQuota=null,videoRetention=null,management=null,navigate=null}){
   const [jobs,setJobs]=useState(()=>listVideoJobs());
   const [notice,setNotice]=useState('');
@@ -1846,7 +2058,7 @@ function VideoJobsPanel({isClass,objectName,period,onPeriod,lessonCount,artworkC
   </section>;
 }
 
-export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,pageParams,recordsSource=null,reloadRecords=null,archiveReports=[],setArchiveReports=()=>{},teacherName='',shareTokens=[],setShareTokens=()=>{},musicTracks=[],videoRecords=[],setVideoRecords=()=>{},consents=null,recordAudit=()=>{},auditActor=null,auditLog=[],videoQuota=null,videoRetention=null}){
+export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,pageParams,recordsSource=null,reloadRecords=null,archiveReports=[],setArchiveReports=()=>{},teacherName='',shareTokens=[],setShareTokens=()=>{},musicTracks=[],videoRecords=[],setVideoRecords=()=>{},consents=null,recordAudit=()=>{},auditActor=null,auditLog=[],videoQuota=null,videoRetention=null,framingPresets=[]}){
   // 报告生成 / 更新要留痕（[第四步 US-211] 第 4 条：操作人 / 时间 / 对象 / 版本）——
   // 留痕入口与报告写入在同一次动作里（`generateReport`），界面只多显示一行回执。
   const [reportAuditEntry,setReportAuditEntry]=useState(null);
@@ -1906,6 +2118,15 @@ export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,p
       .map(item=>String((item&&item.name)||'').trim())
       .filter(Boolean);
   },[management,view.isClass,view.name]);
+  // 班级作品墙的机构 Logo（[海报 US-305] / FR-323）：取**默认装裱模板**里配置的那张水印图 ——
+  // 与第四步海报同一支判据（`frameSpecRenderView().overlays.watermark.logo.url`）；没配置时
+  // 数据层会把 Logo 位换成机构名（占位补丁），这里不编一个假地址。
+  const classPosterLogo=useMemo(()=>{
+    const preset=defaultFramingPreset(framingPresets);
+    if(!preset) return '';
+    const renderView=frameSpecRenderView(preset.spec);
+    return String((renderView&&renderView.overlays&&renderView.overlays.watermark&&renderView.overlays.watermark.logo&&renderView.overlays.watermark.logo.url)||'').trim();
+  },[framingPresets]);
   // 四种状态（加载 / 就绪 / 空 / 错误）读的是同一个产物，四份读数同形状。
   const sourceStatus=recordsSource&&recordsSource.phase?recordsSource.phase:'ready';
   const phase=archiveResidentPhase({source:sourceStatus,count:view.count});
@@ -2120,6 +2341,7 @@ export default function GrowthArchiveData({records=[],setToast=()=>{},navigate,p
             {timelineWindow.hasMore?<button type="button" className="primary" data-archive-page-more="true" onClick={()=>setTimelinePage(page=>Math.min(timelineWindow.pageCount,page+1))}>{timelineWindow.moreLabel}</button>:null}
           </nav>:null}
         </section>
+        {view.isClass?<ClassPosterPanel className={view.name} roster={classRoster} records={records} tokens={shareTokens} teacherName={teacherName} orgName={DEFAULT_ORG_NAME} logo={classPosterLogo} setToast={setToast}/>:null}
         <VideoJobsPanel isClass={view.isClass} objectName={view.name} period={videoPeriod} onPeriod={setVideoPeriod} lessonCount={view.summary.lessons} artworkCount={view.summary.artworks} photoCount={view.summary.photos} teacherName={teacherName} setToast={setToast} entries={videoEntries} scopeEntries={videoScopeEntries} classEntries={videoClassEntries} roster={classRoster} tokens={shareTokens} records={records} consents={consents} musicTracks={musicTracks} videoRecords={videoRecords} auditLog={auditLog} videoQuota={videoQuota} videoRetention={videoRetention} management={management} setShareTokens={setShareTokens} setVideoRecords={setVideoRecords} recordAudit={recordAudit} auditActor={auditActor} navigate={navigate}/>
         <section className="archive-perf-panel" data-archive-perf="true" data-archive-perf-measured={String(perfChecks.measured)} data-archive-perf-total={String(perfChecks.total)} data-archive-perf-all-ok={perfChecks.allOk?'true':'false'} data-archive-perf-summary-text={perfChecks.summary}>
           <div className="archive-perf-head"><Gauge size={15}/><b>档案性能</b><em data-archive-perf-summary="true">{perfChecks.summary}</em><small>{ARCHIVE_PERF_HINT}</small></div>
