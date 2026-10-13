@@ -44,6 +44,14 @@ docs/*项目记忆*.md
 docs/_render/
 .workbuddy/
 
+# ── 自动化循环的过程记录：公开仓库不收录，只在本机留档 ──────────────
+# 注意区分：tasks/*.md 是 PRD 正文（需求留档，**要**收录）；
+# progress.txt / prd.json 是循环的运行日志与故事清单，不进公开仓库。
+progress.txt
+prd.json
+.last-branch
+.video_agent/
+
 # ── 一次性调试脚手架（依赖本机 /tmp 与固定 persona，不属于项目代码）──
 prototype/tr.mjs
 
@@ -60,3 +68,9 @@ __pycache__/
 .wbapp_*.genie
 .idea/
 .vscode/
+
+# ── 界面截图：测试产物，不入库 ───────────────────────────────────
+# 自动化循环每跑一个故事都会往这里丢 2-3 MB 的验证截图，
+# 历史上曾累积到 431 MB / 1401 个版本。截图是可在本机重新生成的产物，
+# 不进公开仓库（本机文件保留，随时可重新生成）。
+prototype/screenshots/
